@@ -494,9 +494,92 @@ was right — the subject was wrong).
 
 ### Step 5 — second signal (only now)
 
-Only after Steps 2–4 hold. Candidates, ranked by live evidence: pending-approval pile-ups, automations
-failing repeatedly (`reliability.ts` already detects these), agents that never get used, stalled tasks.
-Each goes through the identical vertical: detect → card → action → measure.
+Only after Steps 2–4 hold. Candidates, ranked by live evidence: **agent shape** (below — the largest
+measured cost of any candidate here), pending-approval pile-ups, automations failing repeatedly
+(`reliability.ts` already detects these), agents that never get used, stalled tasks. Each goes through
+the identical vertical: detect → card → action → measure.
+
+#### Candidate: **agent shape** — "this delegate does not need to be an agent"
+
+**The evidence** (instawp, 7 days to 2026-08-17). Delegation, not human work, is what the fleet spends:
+
+| lane | conversations | spend |
+|---|---|---|
+| agent→agent `task:` | 437 | **$8,640** |
+| cron | 221 | $1,114 |
+| **human-started** | **77** | **$1,027** |
+
+**815 tasks were created by agents; 3 by humans.** A one-line question — *"can we disable bot detection
+for route welcome"* — became **19 descendant sessions, depth 5, $600**. Every hop is a fresh session
+paying a full context reload, which is why splitting work costs an agent fleet far more than it costs a
+human team: a human hand-off is a two-minute conversation between people who already hold the context.
+
+**The signal.** A delegate is separate for one of four reasons — its own **credentials**, **untrusted
+input** isolation, **async/long-running** work, or an **independent fresh context**. Only the last is
+satisfied by a sub-agent, and only knowledge (no isolation at all) is satisfied by a skill:
+
+| tier | gives you | costs |
+|---|---|---|
+| skill | knowledge, loaded into the *current* context | ~nothing |
+| sub-agent | a *fresh* context, in-process, caller's principal + budget | small |
+| agent | own session, own credentials, own lifetime | ~$20 + a launch |
+
+The card names delegates whose separation buys none of the top three — i.e. ones that should be a
+sub-agent or a skill. Computable today from what the OS already stores:
+
+| signal | source | what it rules out |
+|---|---|---|
+| own credentials | `shellSecrets` + `secret_assignments` | can't be a sub-agent (it runs under the caller's principal) |
+| `active_ms` per session | `term_sessions` | long work can't be a sub-agent — it holds the caller's turn open |
+| owns automations | `automations` | it's a trigger endpoint, not a delegation hop |
+| hand-off volume + sources | `tasks` | whether there is anything to save |
+| already reachable as a sub-agent | prompt refs + `.aos-managed.json` | both doors open ⇒ close the expensive one |
+| open / in-flight work | `tasks`, live sessions | blocks any action until drained |
+
+**⚠ The classifier is the hard part, and a plausible one is wrong.** Building the first two folds by
+hand, three agents were classified from real data and **all three were wrong on the first pass**:
+
+- `qa` — credentials byte-identical to `engineer`, so it read as pure ceremony (99 hand-offs/week). It
+  is not: **20.6 min average, 76 tool calls, `active_ms` 19.9 of 20.6** — it provisions sandboxes/devX
+  boxes, drives a real browser, and is the independent observer the branch-freeze protocol depends on.
+- `apidocs-bot` — no secrets, so it read as collapsible. It owns a live webhook automation; folding it
+  breaks the drift check.
+- `code-reviewer` — proposed as a *skill*. Wrong tier: a skill loads into the caller's context and its
+  entire value is **not seeing** the author's reasoning. It became `subagentOnly` (v0.361.0).
+
+So the card must state **which signal disqualified an agent**, not just a verdict — the verdict alone
+reproduces exactly the "detection without proposal" failure of §2b, with worse consequences, because
+acting on it deletes a teammate. Note also §2's lesson that a naive per-agent view misleads: rank by
+hand-offs **saved**, and show the denominator.
+
+**One signal that does NOT work today.** The gate audit cannot classify read-vs-write: of 9,139
+`gate.decision` events in the window, **8,573 are `shell.exec`** (then `file.write` 471,
+`connector.call` 93, `secret.put` 2). The capability grain cannot tell a `git diff` from a deploy, so
+"is this agent read-only?" is not derivable. Any classifier assuming otherwise is guessing.
+
+**Not to be built: a one-click "fold agent → skill" button.** Same reasoning as Step 2's refusal to put
+buttons on the runtime-death card, and stronger here. The mechanics are trivial (`CLAUDE.md` →
+`SKILL.md`); the judgement is where all three hand-classifications failed, and the destination tier is
+usually **sub-agent**, not skill — so a "→ skill" button bakes in the tier that fits least often. It is
+also not done when the skill exists: it is done when **every caller stops delegating**, which means
+editing other agents' `CLAUDE.md` — the clobber-prone path that already needed `assessClaudeMdEdit` +
+`baseHash` guards after two live incidents. A button that creates a skill and leaves nine prompts still
+calling `task_create(assignee:"agent:qa")` has added a duplicate and changed nothing.
+
+Ship the **recommendation read-only first**. An action follows only for the class the classifier earns
+confidence on (no credentials, short sessions, no automations, no in-flight work), listing the blockers
+and the referencing prompts before it acts.
+
+**Honest sizing, so this is not oversold.** On instawp the confident class is ~2 agents and ~8
+hand-offs/week. Two folds shipped by hand (`code-reviewer` → `subagentOnly`, plus the self-dispatch
+refusal) are worth ~$1,440/week. The remaining **$7,300/week sits in `infra-ops` (221 hand-offs),
+`engineer` (165) and `qa` (103)** — genuinely long, credentialed work that no fold can touch. That is
+an argument for the card being *diagnostic* rather than an action surface, and for the delegation
+budget (§ related) being the bigger lever.
+
+**Measured how** (Step 4's rule — measure the card, not our clicks): the fold's whole point is fewer
+sessions, so the outcome is `tasks` hand-offs to the named delegate before vs after, and the
+`task.subagent_only.refused` / `task.self_dispatch.refused` audits give the counterfactual directly.
 
 ### Step 6 — retire what didn't earn its place
 
@@ -557,4 +640,10 @@ Live DB paths: northwind `~/agent-os-data/northwind/agent-os.db`; globex
 - [`daily-digest-plan.md`](./daily-digest-plan.md) — the push surface Step 3 rides.
 - [`oversight-plane.md`](./oversight-plane.md) — the `Intervention` gap named there is the same gap
   Step 4 closes.
+- [`subagents-plan.md`](./subagents-plan.md) — the sub-agent tier the **agent shape** candidate
+  recommends folding into (`materializeSubagents`, `spawnableAsSubagent`, `usableSubagents`, and the
+  `subagentOnly` inverse added for it in v0.361.0).
+- [`webhook-ingress.md`](./webhook-ingress.md) — the sibling waste class found in the same pass: the
+  agent's own reply echoing back as an event and buying a session to be ignored, now filterable at the
+  ingress with `when`/`unless` instead of by a Claude session.
 - [`PILLARS.md`](./PILLARS.md) — Pillar 10; update its grade when Step 4 lands, not before.
