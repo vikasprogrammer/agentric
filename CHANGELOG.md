@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.372.0]
+### Added
+- **A new agent-first console at `/v2`, isolated from the classic app.** A minimal, x.ai-style
+  surface where the agent — not a global page — is the unit: the left rail is just the fleet, and
+  selecting an agent opens a workspace with everything about it on one sub-nav — a chat-first
+  Overview, plus Automations, Insights, Memory and Settings. Insights that used to live on a
+  fleet-wide page are scoped into each agent. Built as its own Vite entry (`web/v2.html` →
+  `web/src/v2/`) with its own tokens and reset — no shared code with `App.tsx`, no change to the
+  classic console at `/`, which is untouched. Served at `/v2` by `src/server.ts`. This first cut
+  renders a mock fleet; the next increment wires it to live `/api/state` + `/api/sessions`.
+
 ## [0.371.0]
 ### Changed
 - **The terse brief was rewritten, measured head-to-head, and reverted — and the benchmark grew the

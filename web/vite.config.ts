@@ -15,6 +15,8 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         termbed: fileURLToPath(new URL('./termbed.html', import.meta.url)),
+        // v2: the isolated agent-first console at /v2 (its own entry, no shared code with App.tsx).
+        v2: fileURLToPath(new URL('./v2.html', import.meta.url)),
       },
     },
   },
