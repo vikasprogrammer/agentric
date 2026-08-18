@@ -506,6 +506,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const idx = path.join(WEB_DIST, 'index.html');
     return sendFile(res, fs.existsSync(idx) ? idx : CONSOLE_HTML, 'text/html; charset=utf-8');
   }
+  // /v2 — the isolated agent-first console (its own Vite entry, web/dist/v2.html). Served like '/':
+  // a public SPA shell; its /api/* calls carry the same aos_sid cookie. Distinct from the classic
+  // console at '/', which is untouched. See web/src/v2/.
+  if (method === 'GET' && (p === '/v2' || p === '/v2/' || p === '/v2.html')) {
+    const idx = path.join(WEB_DIST, 'v2.html');
+    if (fs.existsSync(idx)) return sendFile(res, idx, 'text/html; charset=utf-8');
+    return end(res, 404);
+  }
   if (method === 'GET' && p === '/health') return sendJson(res, 200, { ok: true, tenant: os.tenant, name: os.tenantName, version: VERSION });
   // Public marketing landing page — a standalone static HTML doc (no auth, no React). Served straight
   // off disk from public/landing.html so it can be iterated on without a web build. Distinct from the
