@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.373.1]
+### Changed
+- **`/v2` polish:** the fleet rail is now ordered by **maturity, most mature first** (agents with no
+  track record sink to the bottom), and the most mature agent is selected by default. Maturity comes
+  from a single `/api/agents/stats` call on load, which also seeds the per-agent Insights cache so that
+  tab opens instantly. The light theme now sits on a **white** background instead of the warm-gray
+  ground.
+
 ## [0.373.0]
 ### Added
 - **The `/v2` agent-first console is now wired to live data.** The mock fleet is gone: the rail loads

@@ -26,7 +26,7 @@
 }
 @media (prefers-color-scheme: light) {
   :root {
-    --ground: #f7f6f3; --panel: #fff; --panel-2: #fbfaf8;
+    --ground: #ffffff; --panel: #ffffff; --panel-2: #f7f7f6;
     --ink: #17171a; --ink-dim: #55565a; --ink-faint: #8a8b8e;
     --line: rgba(0,0,0,0.09); --line-strong: rgba(0,0,0,0.16); --hover: rgba(0,0,0,0.035); --active: rgba(0,0,0,0.06);
     --run: #16a34a; --wait: #b7791f; --block: #dc2626; --idle: #8a8b8e;
@@ -41,7 +41,7 @@
   --run-soft:rgba(74,222,128,0.14); --wait-soft:rgba(244,183,64,0.14); --block-soft:rgba(251,107,107,0.14); color-scheme: dark;
 }
 :root[data-theme="light"] {
-  --ground:#f7f6f3; --panel:#fff; --panel-2:#fbfaf8; --ink:#17171a; --ink-dim:#55565a; --ink-faint:#8a8b8e;
+  --ground:#ffffff; --panel:#ffffff; --panel-2:#f7f7f6; --ink:#17171a; --ink-dim:#55565a; --ink-faint:#8a8b8e;
   --line:rgba(0,0,0,0.09); --line-strong:rgba(0,0,0,0.16); --hover:rgba(0,0,0,0.035); --active:rgba(0,0,0,0.06);
   --run:#16a34a; --wait:#b7791f; --block:#dc2626; --idle:#8a8b8e;
   --run-soft:rgba(22,163,74,0.12); --wait-soft:rgba(183,121,31,0.12); --block-soft:rgba(220,38,38,0.10); color-scheme: light;
