@@ -65,7 +65,7 @@ import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { checkDeps, checkDepUpdates, installDeps, updateNpmDep } from './edge/deps';
 import { CATALOG, redact } from './connectors/connectors';
 import { GithubIdentity } from './edge/github-identity';
-import { PrCache, taskPrRefs, prSummary, type PrToken } from './edge/task-prs';
+import { PrCache, taskPrRefs, taskPrRefsBulk, prSummary, type PrToken } from './edge/task-prs';
 import { convertAppManifest, userInstallationStatus } from './connectors/github';
 import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
@@ -3597,7 +3597,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // (the board shows title/labels; the description tab reads `detail.task.body` from GET /api/tasks/:id,
     // which still returns the full text). Search is server-side (`?q=`), so the client needs no haystack.
     const slim = tasks.map((t) => (t.body ? { ...t, body: clipText(t.body, LIST_CLIP) } : t));
-    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me) });
+    // Per-task PR rollups for the board cards — "did this one ship anything, and did it land?" without
+    // opening it. TWO extra queries for the whole board (the refs are parsed from rows pre-filtered in
+    // SQL; the states come from the `github_prs` cache), and NO GitHub calls: refreshing 500 cards on a
+    // page load would burn the rate limit to render a number. `prCounts` is parsed BEFORE the body clip
+    // above would matter — `tasks`, not `slim`, so a link past the clip point still counts.
+    const prCounts = new PrCache(os.db, os.tenant).summaries(taskPrRefsBulk(os.db, tasks));
+    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), prCounts, agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me) });
   }
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);

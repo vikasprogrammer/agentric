@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.369.0] — 2026-08-18
+### Added
+- **PR count on the board cards.** "Did this task ship anything, and did it land?" now reads off the
+  board and list rows, not just the open task: a chip showing how many pull requests the task references,
+  coloured by the worst outstanding state — violet when everything merged, emerald while anything is
+  still open, red when they all closed unmerged — with the split in its tooltip. `GET /api/tasks` returns
+  `prCounts` from **two extra queries for the whole board** (~9 ms and +9 KB on a 1.3 MB payload,
+  measured on a copy of the live 408-task northwind board) and **no GitHub calls** — refreshing 500 cards
+  on a 5-second poll would burn the rate limit to render a number, so a chip shows the status that task's
+  own detail view last fetched.
+### Fixed
+- **The bulk PR parse undercounted 10 of 408 live tasks.** Its SQL prefilter (`LIKE '%/pull/%'`) dropped
+  the `api.github.com/…/pulls/<n>` form and every bare `PR #n` written in a note that carried no URL of
+  its own — so a card could show fewer PRs than the task's own sidebar listed, with nothing to say so.
+  Caught before shipping by a parity assertion that now runs over the whole board in
+  `scripts/task-pr-links-test.cjs`: bulk and per-task must return identical refs for every task.
+
 ## [0.368.0] — 2026-08-18
 ### Added
 - **A task filed as a draft can now be finished — or binned — where you're reading it.** The room's

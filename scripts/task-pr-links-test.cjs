@@ -17,7 +17,7 @@ delete process.env.AGENT_OS_SECRET_KEY;
 let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
-const { extractPrRefs, taskPrRefs, prKey, PrCache, prSummary } = require(path.join(ROOT, 'dist/edge/task-prs.js'));
+const { extractPrRefs, taskPrRefs, taskPrRefsBulk, prKey, PrCache, prSummary } = require(path.join(ROOT, 'dist/edge/task-prs.js'));
 const aos = loadAgentOS();
 
 console.log('\n\x1b[1m1) the parser finds what agents actually write\x1b[0m');
@@ -84,6 +84,52 @@ assert(cache.stale(older).length === 3, 'and a status older than the TTL goes st
 
 const sum = prSummary(warm);
 assert(sum.total === 3 && sum.merged === 1 && sum.open === 1 && sum.closed === 1, 'the summary counts each state once', JSON.stringify(sum));
+
+console.log('\n\x1b[1m4) the board\'s bulk pass agrees with the per-task read, shape for shape\x1b[0m');
+// The board can't run two queries per card, so it inverts the read: two SQL-prefiltered scans, grouped in
+// JS. That prefilter is the risk — a shape the parser accepts but the SQL filters out makes a card
+// undercount a task whose own sidebar shows the link, and nothing would ever say so. (The first cut did
+// exactly this: it missed the api.github.com `/pulls/` form and every bare `PR #n` written in a note that
+// carried no URL — 10 of 408 tasks on the live northwind board.) So the assertion is PARITY, per shape.
+const bulkTasks = [];
+const mkLinked = (title, body, notes) => {
+  const t = aos.tasks.create({ tenant: aos.tenant, title, body, createdBy: 'm_alice' });
+  for (const n of notes ?? []) aos.tasks.update(t.id, { note: n, by: 'agent:engineer' });
+  bulkTasks.push(t.id);
+  return t.id;
+};
+mkLinked('plain url in the body', 'shipped https://github.com/acme/web/pull/1');
+mkLinked('url only in a note', '', ['done: https://github.com/acme/web/pull/2']);
+// The two shapes the first prefilter dropped:
+mkLinked('the gh api form', '', ['see https://api.github.com/repos/acme/web/pulls/3']);
+const bare = mkLinked('bare number in a LATER note', 'work starts at https://github.com/acme/web/pull/4', []);
+aos.db.prepare(`INSERT INTO messages (id, type, session_id, agent, title, body, status, created_at)
+                 VALUES (?, 'task.chat', ?, 'engineer', '', ?, 'open', ?)`)
+  .run('m_bare', `task:${bare}`, 'reverted in PR #5 — no link handy', Date.now() + 1000);
+mkLinked('a PR in the TITLE: merge PR #6', 'context https://github.com/acme/web/pull/7');
+mkLinked('mentions nothing at all', 'just prose about a pull-through cache');
+
+const all = aos.tasks.list({ tenant: aos.tenant, limit: 500 });
+const bulk = taskPrRefsBulk(aos.db, all);
+let mismatch = 0, missed = [];
+for (const t of all) {
+  const b = (bulk.get(t.id) ?? []).map(prKey).sort().join(',');
+  const single = taskPrRefs(aos.db, t.id, aos.tasks.get(t.id)).map(prKey).sort().join(',');
+  if (b !== single) { mismatch++; missed.push(`${t.title}: bulk[${b}] vs single[${single}]`); }
+}
+assert(mismatch === 0, 'every task on the board parses identically in bulk and on its own', missed.slice(0, 2).join(' | '));
+assert((bulk.get(bare) ?? []).length === 2, 'a bare "PR #5" in a note with no URL still reaches the board count', String((bulk.get(bare) ?? []).length));
+assert(!bulk.has(bulkTasks[bulkTasks.length - 1]), 'a task mentioning no PR is absent from the map (no empty rollups on the wire)');
+
+const rollups = cache.summaries(bulk);
+assert(Object.keys(rollups).length === bulk.size, 'one rollup per task that has links');
+// The title task (PR #6 + .../pull/7) references two PRs neither of which was ever fetched above.
+const unfetched = rollups[bulkTasks[4]];
+assert(unfetched.total === 2 && unfetched.merged + unfetched.open + unfetched.closed === 0,
+  'a never-fetched PR counts toward the card total but lands in no state bucket', JSON.stringify(unfetched));
+const firstRoll = cache.summaries(new Map([[t.id, refs]]));
+assert(firstRoll[t.id].total === 3 && firstRoll[t.id].merged === 1 && firstRoll[t.id].open === 1 && firstRoll[t.id].closed === 1,
+  'the cached states carry into the board rollup', JSON.stringify(firstRoll[t.id]));
 
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m`);
 fs.rmSync(HOME, { recursive: true, force: true });
