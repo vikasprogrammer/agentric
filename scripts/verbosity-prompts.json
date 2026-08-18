@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "note": "Tool-free prompts. Every one is answerable from the text in the prompt itself, so the assistant emits ONLY narration (text blocks) and no tool_use — which is the point: tool_use arguments are ~85% of a real session's output tokens and terse cannot compress them. Each prompt carries `mustMention`: literal substrings (case-insensitive) that a CORRECT answer has to contain. They are the completeness guard — a run that gets shorter by dropping them has not saved anything, it has degraded. Keep them to facts a terse answer must still state (identifiers, numbers, error strings), never to prose.",
+  "prompts": [
+    {
+      "id": "debug-off-by-one",
+      "category": "debugging",
+      "prompt": "This function is meant to return the last `n` items of `arr`, but `tail([1,2,3,4,5], 2)` returns `[4,5,undefined]`.\n\n```js\nfunction tail(arr, n) {\n  const out = [];\n  for (let i = arr.length - n; i <= arr.length; i++) out.push(arr[i]);\n  return out;\n}\n```\n\nWhat is wrong and how do I fix it?",
+      "mustMention": ["<=", "arr.length"]
+    },
+    {
+      "id": "explain-error",
+      "category": "debugging",
+      "prompt": "My Node service prints this and exits:\n\n```\nError: listen EADDRINUSE: address already in use :::3010\n    at Server.setupListenHandle [as _listen2] (node:net:1898:16)\n```\n\nWhat does this mean and what are my options?",
+      "mustMention": ["EADDRINUSE", "3010"]
+    },
+    {
+      "id": "review-diff",
+      "category": "review",
+      "prompt": "Review this diff and tell me if it is safe to merge.\n\n```diff\n-  const rate = limits[plan] ?? 100;\n+  const rate = limits[plan] || 100;\n   if (requests > rate) return deny();\n```\n\nThe `limits` map may legitimately contain `0` for a suspended plan.",
+      "mustMention": ["0", "||"]
+    },
+    {
+      "id": "sql-explain",
+      "category": "analysis",
+      "prompt": "Explain what this query returns and name one reason it might be slow on a large table.\n\n```sql\nSELECT agent, COUNT(*) AS n\n  FROM term_sessions\n WHERE created_at >= ? AND status = 'done'\n GROUP BY agent\n ORDER BY n DESC\n LIMIT 10;\n```",
+      "mustMention": ["agent", "created_at"]
+    },
+    {
+      "id": "status-report",
+      "category": "reporting",
+      "prompt": "You just finished a task. Here is what happened: you were asked to fix a failing test in `auth.test.ts`; the failure was a token expiry comparison using `<` instead of `<=`; you changed one line in `src/auth/token.ts:44`; the full suite now passes (128 tests); you did not touch anything else. Report the outcome.",
+      "mustMention": ["token.ts", "128"]
+    },
+    {
+      "id": "answer-narrow-question",
+      "category": "qa",
+      "prompt": "In one answer: does a SQLite `WAL` mode database still create the `-shm` file if only one process ever opens it?",
+      "mustMention": ["-shm"]
+    },
+    {
+      "id": "multi-step-plan",
+      "category": "planning",
+      "prompt": "I need to rename an environment variable from `OLD_TOKEN` to `NEW_TOKEN` across a Node service that runs on three machines under systemd. Give me the ordered steps so nothing breaks mid-rollout.",
+      "mustMention": ["OLD_TOKEN", "NEW_TOKEN"]
+    },
+    {
+      "id": "tradeoff-question",
+      "category": "qa",
+      "prompt": "Should I store a user's session token in a cookie or in localStorage for a server-rendered app? Give me your recommendation and the reason.",
+      "mustMention": ["cookie"]
+    },
+    {
+      "id": "summarize-tool-output",
+      "category": "reporting",
+      "prompt": "Here is the output of a command I just ran. Tell me what it means.\n\n```\n$ df -h /\nFilesystem      Size  Used Avail Capacity  Mounted on\n/dev/disk3s5    926Gi  879Gi   12Gi    99%    /\n```",
+      "mustMention": ["99%", "12Gi"]
+    },
+    {
+      "id": "regex-explain",
+      "category": "analysis",
+      "prompt": "What does this regex match, and give me one input it wrongly rejects: `^[a-z0-9]+(-[a-z0-9]+)*$`",
+      "mustMention": ["-"]
+    },
+    {
+      "id": "risky-op",
+      "category": "safety",
+      "prompt": "I want to reclaim space on the box. Is it safe for me to run `sudo rm -rf /var/log/*` on a production server?",
+      "mustMention": ["/var/log"]
+    },
+    {
+      "id": "api-design",
+      "category": "design",
+      "prompt": "I have an endpoint `POST /api/tasks` that creates a task. A caller sometimes retries after a timeout and I get duplicates. What is the standard fix?",
+      "mustMention": ["idempot"]
+    },
+    {
+      "id": "compare-two",
+      "category": "qa",
+      "prompt": "What is the practical difference between `git merge --squash` and `git rebase` for getting a feature branch onto main?",
+      "mustMention": ["squash", "rebase"]
+    },
+    {
+      "id": "config-question",
+      "category": "qa",
+      "prompt": "In nginx, my location block sets `proxy_set_header Upgrade $http_upgrade;` and `proxy_set_header Connection \"upgrade\";`. Every plain HTTP request to that upstream now returns 502. Why?",
+      "mustMention": ["502", "Connection"]
+    }
+  ]
+}
