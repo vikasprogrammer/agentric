@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.370.4] — 2026-08-18
+### Fixed
+- **Folded notification/update lines get a real icon + label, not the raw kind.** A `message.update`
+  card rendered a generic muted dot whose tooltip/aria-label leaked the internal kind string
+  (`"message.update"`). Now an agent progress **update** shows a note icon labelled "Progress update", a
+  notification a bell, a published artifact a package, etc.; other lines' glyphs label as
+  "Approval" / "Question" / "Session" instead of the dotted id.
+
 ## [0.370.3] — 2026-08-18
 ### Fixed
 - **A done session in the feed now shows its verdict, not an empty dot.** The feed was rendering a
