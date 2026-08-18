@@ -5709,10 +5709,16 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
   const childrenOf = new Map<string, string[]>()
   const rootThreads: string[] = []
   if (lens === 'feed') {
+    // Tasks whose delegated RUN is already in this page — its session line (nested in the chain) is the
+    // real thing, so the matching "Task done" notification card would just list the same work twice.
+    const tasksWithRun = new Set<string>()
+    for (const it of items) if (isSessionKind(it) && it.spawnedBy?.startsWith('task:')) tasksWithRun.add(it.spawnedBy.slice(5))
     for (const it of items) {
       if (isSessionKind(it) && it.threadId) {
         const cur = byThread.get(it.threadId)
         if (!cur || it.ts > cur.ts) byThread.set(it.threadId, it)
+      } else if (it.kind === 'message.task' && it.target?.kind === 'task' && tasksWithRun.has(it.target.id)) {
+        continue // drop the redundant task card — its run is shown in the chain
       } else flatItems.push(it)
     }
     for (const [tid, it] of byThread) {

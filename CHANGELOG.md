@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.370.1] — 2026-08-18
+### Fixed
+- **The feed no longer lists a delegated task twice.** A delegated run appears nested in its hand-off
+  chain; its "Task done" notification card was *also* shown flat at top level — the same work listed
+  twice. The Feed lens now drops a `message.task` card when that task's delegated run is already present
+  on the page (its session line, matched by `spawned_by = task:<id>`) — the run is the real thing, the
+  card is redundant. A task card with no run in view (done elsewhere / pruned by the window) still shows.
+
 ## [0.370.0]
 ### Added
 - **`npm run bench:verbosity` — a paired, controlled benchmark for `TERSE_OUTPUT_BRIEF`, and the
