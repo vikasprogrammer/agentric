@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
-import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, Ban, Copy as CopyIcon } from 'lucide-react'
+import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, CircleDashed, Ban, Copy as CopyIcon } from 'lucide-react'
 import { GitPullRequest, GitPullRequestClosed, GitMerge, Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -5441,6 +5441,22 @@ function feedItemRole(it: FeedItem): StatusRole {
   return 'ok'
 }
 
+/** The status glyph for a feed line. A LIVE session reads exactly like the sessions list
+ *  (working/ready/needs-you). A FINISHED session shows its VERDICT — a green check for success, red ✕ for
+ *  failure/crash, amber for partial — like the sessions list and chain rail, instead of the neutral
+ *  "ended" dot that made every done run (even a success) look empty. A run that ended without a report
+ *  gets a dashed ring ("done — no report"), clearer than a bare pip but still claiming nothing. */
+function feedGlyph(it: FeedItem, s: Session | undefined): ReactNode {
+  if (s && isLive(s)) return <SessionStatus s={s} iconClass="h-4 w-4" />
+  if (isSessionKind(it)) {
+    const v = it.kind === 'session.crashed' ? 'failure' : (verdictOf(it.outcome ?? undefined) ?? 'none')
+    const m = VERDICT_META[v]
+    const Icon = v === 'none' ? CircleDashed : m.icon
+    return <span className="inline-flex shrink-0" title={v === 'none' ? 'done — no report' : m.label}><Icon className={`h-4 w-4 ${m.tone}`} /></span>
+  }
+  return <RoleIcon role={feedItemRole(it)} label={it.kind} className="h-4 w-4" />
+}
+
 /** A one-word origin hint from a session's provenance prefix (spawned_by). */
 function provenanceHint(spawnedBy: string | null): string | null {
   if (!spawnedBy) return null
@@ -5679,7 +5695,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
       <div key={it.uid} className="flex gap-3">
         <div className="flex flex-col items-center">
           <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-muted/60">
-            {s ? <SessionStatus s={s} iconClass="h-4 w-4" /> : <RoleIcon role={feedItemRole(it)} label={it.kind} className="h-4 w-4" />}
+            {feedGlyph(it, s)}
           </span>
           <span className="w-px flex-1 bg-border" />
         </div>
