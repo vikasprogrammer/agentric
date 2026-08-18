@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.370.0]
+### Added
+- **`npm run bench:verbosity` — a paired, controlled benchmark for `TERSE_OUTPUT_BRIEF`, and the
+  negative result it returned.** `verbositySavings()` compares terse and normal sessions as they
+  happened on a live tenant; run against the real instapods DB it calls terse 28–92% WORSE on four of
+  five comparable agents. None of that was evidence, for three reasons the query cannot fix from the
+  inside: `term_sessions.output_tokens` is ~85% `tool_use` arguments and ~18% thinking (measured over 40
+  live transcripts), so it barely contains the narration the brief compresses; dividing by turns lets
+  the treatment move its own denominator (`marketing-manager` is 92% worse per turn and 25% cheaper per
+  session, from the same rows); and the arms are a 2026-08-07 cutover, not a split. So the brief is now
+  measured directly instead — `scripts/verbosity-benchmark.cjs` runs 14 tool-free prompts through both
+  arms of an otherwise identical `claude -p`, tools disallowed so the response is pure narration,
+  scoring provider-reported narration tokens (`output_tokens - thinking_tokens`) and a `mustMention`
+  completeness guard so brevity bought by dropping required facts scores as degradation. The brief is
+  read from `dist/`, so the text measured is always the text shipped. Two conditions — the brief alone,
+  and the brief behind a real ~14k-token `company.md` — put a number on dilution.
+  **The result: -0.6% and -4.6% mean narration change, terse shorter on 6/14 and 5/14 prompts.** The
+  treatment effect (13–18%) is smaller than the rep-to-rep spread within a single arm (22–24%), so the
+  brief's effect is not distinguishable from noise; completeness was unharmed, so it is not trading
+  substance for brevity either. Dilution is real but minor (4 points) and was not the cause — the brief
+  does not land even in a bare prompt. Contributing factor recorded in the source: 72% of its words tell
+  the model NOT to compress (312 words of carve-out and reassurance vs 123 instructing brevity).
+
 ## [0.369.1] — 2026-08-18
 ### Fixed
 - **The feed's live activity line no longer reads a bare capability id like `shell.exec`.** Two classifier

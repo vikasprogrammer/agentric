@@ -15,6 +15,30 @@
 // by model and by task. That is exactly why `verbositySavings` exists — the flag ships with the query
 // that can falsify it.
 //
+// AND IT DID. `npm run bench:verbosity` (scripts/verbosity-benchmark.cjs) ran the brief as a paired,
+// controlled A/B — 14 tool-free prompts, both arms, claude-sonnet-5, 2 reps, tools disallowed so the
+// response is pure narration. The result: a mean per-prompt narration change of **-0.6% in a bare
+// system prompt and -4.6% behind the real 14k-token company context**, with terse the shorter arm on
+// 6/14 and 5/14 prompts — a coin flip. The treatment effect (13–18%) is SMALLER than the rep-to-rep
+// spread WITHIN one arm (22–24%), so the brief's effect on narration length is not distinguishable
+// from noise. Completeness was unharmed (terse 28/28 vs normal 26/28 minimal), so it is not trading
+// brevity for substance either — it is simply not landing.
+//
+// Two things the benchmark also established, both of which invalidate reading `verbositySavings` as
+// evidence about this brief:
+//   - **`output_tokens` cannot measure narration.** Over 40 recent live transcripts the assistant's
+//     output bytes are ~85% `tool_use` ARGUMENTS (file writes, commands, patches) and ~15% `text`.
+//     Thinking is a further ~18% of the token counter. The brief compresses narration only, so even
+//     total compliance could not move `output_tokens` more than ~15% — and the ±50–90% per-agent
+//     swings the query reports on live data are tool-use volume, i.e. which task the agent drew.
+//   - **The brief spends 72% of its words telling the model NOT to compress.** 123 words instruct
+//     brevity; 312 are carve-outs and reassurance ("terse is not vague", "completeness wins over
+//     length every time"). For contrast the `caveman` project's SKILL.md — concrete drop-lists, a
+//     pattern template, a worked before/after example — benchmarks at 65% on the same kind of
+//     paired harness.
+// Re-run the benchmark before changing the text below, and again after. Do not quote a saving from
+// `verbositySavings` alone.
+//
 // The carve-out has a failure mode of its own, and it showed up live: a terse `engineer` run answered a
 // console question at essay length, and the owner had to reply "explain to me in 1 liner". Nothing was
 // broken — the answer landed in the exempt lane, and "write them in full, ordinary prose" reads as a
@@ -67,7 +91,9 @@ export interface VerbosityArm {
   /** Conversation turns across them — the denominator. A run with more turns costs more for reasons
    *  that have nothing to do with verbosity, so totals are not comparable; per-turn is. */
   turns: number;
-  /** Mean output tokens per turn — the metric the brief acts on DIRECTLY. */
+  /** Mean output tokens per turn. NOT a measure of narration length — see the correction on
+   *  {@link verbositySavings}. `output_tokens` is dominated by tool-call arguments and thinking, both
+   *  of which the brief leaves untouched. */
   outputPerTurn: number;
   /** Mean total USD per turn — what actually lands on the bill (output is a minority of it). */
   usdPerTurn: number;
