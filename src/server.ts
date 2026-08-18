@@ -6689,7 +6689,9 @@ function latestActivity(os: AgentOS, runId: string): { primitive: string; summar
     .all<{ ts: number; type: string; data: string }>(os.tenant, runId);
   for (const r of rows) {
     const d = classifyActivity(r.type, safeJson(r.data));
-    if (d) return { primitive: d.primitive, summary: clipText(d.summary, 140), ts: r.ts };
+    // Require a non-empty summary — a classified-but-empty descriptor (e.g. a bare primitive) would render
+    // as a blinking dot with nothing after it. Keep scanning for the newest event that actually says something.
+    if (d && d.summary && d.summary.trim()) return { primitive: d.primitive, summary: clipText(d.summary, 140), ts: r.ts };
   }
   const u = os.db
     .prepare("SELECT created_at AS ts, body FROM messages WHERE session_id = ? AND type = 'update' ORDER BY created_at DESC LIMIT 1")
