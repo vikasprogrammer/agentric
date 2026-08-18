@@ -74,7 +74,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -3788,10 +3788,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const r = autos.dispatchTask(task.id, { guard: false, by: me.email }); // explicit human action — no pile-up guard
     return sendJson(res, r.ok ? 200 : 409, r.ok ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason });
   }
+  // Delete. Owner/admin may remove any task; ANY member may remove a DRAFT of their own — a task they
+  // filed that has never been dispatched and no session has ever touched (`isDraftTask`). A never-run
+  // task is a note the author wrote and nobody acted on: there is no run history to erase, no cost
+  // attributed, nothing another person is waiting on. Needing an admin to bin your own typo'd task is
+  // the kind of friction that leaves the board full of dead drafts nobody dares clear.
   if (taskId && method === 'DELETE') {
-    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const doomed = os.tasks.get(taskId[1]);
+    if (!doomed) return sendJson(res, 404, { ok: false });
+    const draft = isDraftTask(doomed, tm.taskRuns(doomed.id).length);
+    const mine = doomed.createdBy === me.id || doomed.owner === me.id;
+    if (!isAdmin(me) && !(draft && mine)) {
+      return sendJson(res, 403, { error: draft ? 'only its author (or an owner/admin) can delete this draft' : 'this task has already been worked — owner or admin required' });
+    }
     const ok = os.tasks.remove(taskId[1]);
-    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.deleted', data: { id: taskId[1] } });
+    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.deleted', data: { id: taskId[1], draft, byAuthor: mine } });
     return sendJson(res, ok ? 200 : 404, { ok });
   }
 

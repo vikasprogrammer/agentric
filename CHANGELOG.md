@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.368.0] — 2026-08-18
+### Added
+- **A task filed as a draft can now be finished — or binned — where you're reading it.** The room's
+  **Description** tab is editable in place (wide editor, title + markdown, Save/Cancel); before this its
+  only affordance was an "Add one" link that flipped the 320px sidebar into an edit form, and a task that
+  already had a description offered no edit control in the room at all. A pencil in the room header opens
+  it from any tab.
+- **Its author can delete a draft — no admin needed.** A *draft* is a task nothing has acted on: no
+  dispatch attempt, no `lastSessionId`, no session linked to it (`isDraftTask`). Deleting was owner/admin-
+  only, so a member who filed a task to refine later needed someone else to bin their own note, and dead
+  drafts piled up on the board. The moment a session touches the task it stops being a draft, permanently
+  — a run history is evidence, not the author's to erase — and one member still can't delete another's.
+  The room and sidebar label the state (`draft` chip) so the looser rule reads as deliberate. Pinned by
+  `scripts/task-draft-delete-test.cjs`.
+
 ## [0.367.0] — 2026-08-17
 ### Added
 - **A task now shows the pull requests it produced, and whether they landed.** The run history said how

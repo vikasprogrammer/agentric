@@ -599,6 +599,30 @@ three); in the full-page room, picking a run swaps the **Session** tab to that r
 task can be read attempt by attempt. Reads are tenant-wide like the rest of the detail payload; *attaching*
 to any run is still gated by the terminal's own authz. Pinned by `scripts/task-runs-test.cjs`.
 
+### Drafts — a task nobody has acted on yet
+
+A task is often filed before it's ready: a rough note to flesh out later, then dispatch. Two things made
+that shape awkward. In the room the **Description** tab was read-only — its only affordance flipped the
+320px sidebar into an edit form, and a task that already *had* a description offered no edit control there
+at all — so refining a draft meant leaving the page it lives on. And **delete was owner/admin-only**, so a
+member who mis-filed their own note needed someone else to bin it; the board accumulated dead drafts
+nobody dared clear.
+
+`isDraftTask(task, runCount)` (`src/types.ts`) names the state: `attempts === 0 && !lastSessionId &&
+runCount === 0` — nothing has ever run for it. On that, two rules:
+
+- The room's Description tab **edits in place** (title + markdown, in the wide column; the sidebar keeps
+  its fields via `detailBody({ editInline: false })`), with a pencil in the room header to reach it from
+  any tab. Editing is not restricted to drafts — an in-flight task's description is legitimately revised,
+  and every edit lands in its activity log.
+- `DELETE /api/tasks/:id` accepts **its author** (`createdBy` or `owner`) when the task is a draft;
+  owner/admin still delete anything. The asymmetry is deliberate: a draft has no run history to erase, no
+  cost attributed, and nobody waiting on it, while a worked task's record is evidence and not the author's
+  to remove. Once a session touches it — a dispatch attempt, a `lastSessionId`, or an agent claiming it
+  from its own run — it stops being a draft permanently, archived runs included. Authorship, not status,
+  is the boundary: a member can never delete another member's draft. Pinned by
+  `scripts/task-draft-delete-test.cjs`.
+
 ### Pull requests — parsed out of the task, not attached to it
 
 The run history says how many **attempts** a task took; it never said what those attempts **shipped**. The
