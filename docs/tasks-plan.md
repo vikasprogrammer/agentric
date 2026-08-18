@@ -645,7 +645,24 @@ Status is the second half and strictly an enrichment. `GET /api/tasks/:id/prs` r
 the App's bot token, then anonymously (which answers for a public repo). Results cache in **`github_prs`**,
 a pure cache — every row is one API call away from being rebuilt — shared by every task that mentions the
 same PR. The detail payload carries the CACHED list so the sidebar paints instantly; the refresh is the
-separate call. `merged` is tracked apart from `closed` (GitHub reports a merged PR as closed, and rendering
+separate call.
+
+The **board** answers the same question without opening a card: `GET /api/tasks` returns `prCounts`
+(taskId → `{total, merged, open, closed, draft}`), rendered as a chip on each board card and list row.
+The single-task read costs two queries per task, which is right for one open task and wrong for 500, so
+`taskPrRefsBulk` inverts it into **two queries total** — rows pre-filtered in SQL to those that could
+mention a PR (`MENTIONS_PR_SQL`), grouped in JS, parsed through the same `refsFromScraps` as the detail
+view. Measured on a copy of the live northwind board: 408 tasks, 123 with links, **~9 ms** warm and
++9 KB on a 1.3 MB payload. The board makes **no GitHub calls** — 500 cards' worth of refreshes on a 5 s
+poll would burn the rate limit to render a number — so a chip shows the status that task's detail view
+last fetched: the count is always right, the merged/open split is as fresh as the last time someone
+opened it.
+
+The SQL prefilter is the one thing that can silently break this: a shape the parser accepts but the
+filter drops makes a card undercount a task whose own sidebar shows the link, and nothing would say so.
+The first cut did exactly that (`'%/pull/%'` missed the `api.github.com/…/pulls/` form and every bare
+`PR #n` in a note carrying no URL — 10 of 408 tasks). So the test asserts **parity**, per shape: bulk and
+per-task must return the same refs for every task on the board. `merged` is tracked apart from `closed` (GitHub reports a merged PR as closed, and rendering
 it that way reads as *abandoned*), and a PR with no status shows as a plain link, never a guessed state.
 Pinned by `scripts/task-pr-links-test.cjs`.
 

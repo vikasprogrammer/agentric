@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -9710,6 +9710,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   )
   const [tasks, setTasks] = useState<Task[] | null>(null)
   const [discussions, setDiscussions] = useState<Record<string, TaskDiscussionSummary>>({})
+  /** taskId → its PR rollup, for the board/list cards. Server-computed in the list payload (no per-card
+   *  fetch); absent for a task that mentions no PR. */
+  const [prCounts, setPrCounts] = useState<Record<string, TaskPrSummary>>({})
   const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
   // Live sessions, cross-referenced against a task's lastSessionId to know which cards are running right now.
   const [sessions, setSessions] = useState<Session[]>([])
@@ -9848,6 +9851,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     const r = await api.tasks(q)
     setTasks(r.tasks ?? [])
     setDiscussions(r.discussions ?? {})
+    setPrCounts(r.prCounts ?? {})
     if (r.counts) setCounts(r.counts)
     // Only the sessions a visible task points at (its `lastSessionId`) are needed here — to light up a
     // "doing" card as live via `liveOf`. Fetch exactly those instead of the whole ~950-row list on a 5 s
@@ -10023,6 +10027,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
           )}
           {dm && <span className={`inline-flex items-center gap-0.5 rounded px-1 text-[10px] ${dm.overdue ? 'bg-red-500/15 text-red-600' : dm.soon ? 'text-amber-600' : ''}`}><Clock className="h-2.5 w-2.5" />{dm.label}</span>}
           {t.goalId && goalChip(t.goalId)}
+          {prCounts[t.id] && <TaskPrChip s={prCounts[t.id]} />}
           {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
           <span className="ml-auto font-mono text-[10px] opacity-60">{t.id}</span>
         </div>
@@ -10675,6 +10680,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
                             </span>
                           )}
                           {t.goalId && goalChip(t.goalId, 'hidden shrink-0 sm:inline-flex')}
+                          {prCounts[t.id] && <span className="shrink-0"><TaskPrChip s={prCounts[t.id]} /></span>}
                           {unmetCount(t) > 0 && <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blockers">⏳ {unmetCount(t)}</span>}
                           {live && <span className={`inline-flex shrink-0 items-center gap-1 font-mono text-[10px] ${statusTone(live)}`}><SessionStatus s={live} iconClass="h-3 w-3" />{statusLabel(live)} · {fmtElapsed(now - live.createdAt)}</span>}
                           {t.labels.map((l) => <Badge key={l} variant="outline" className="hidden shrink-0 px-1 py-0 text-[10px] md:inline-flex">{l}</Badge>)}
@@ -11349,6 +11355,30 @@ function TaskPullRequests({ taskId, prs, onRefreshed }: { taskId: string; prs: T
         })}
       </div>
     </div>
+  )
+}
+
+/**
+ * A task card's PR chip — "this one shipped 2, one merged", readable without opening the task.
+ *
+ * Colour follows the WORST outstanding state rather than the count: all merged is the only green-light
+ * case (violet), anything still open is in-flight (emerald), and everything closed unmerged is the
+ * outcome worth noticing (red). Status here is whatever the task's detail view last fetched — the board
+ * never calls GitHub — so the number is always right even when the split is a few minutes stale.
+ */
+function TaskPrChip({ s }: { s: TaskPrSummary }) {
+  if (!s.total) return null
+  const parts = [s.merged && `${s.merged} merged`, s.open && `${s.open} open`, s.closed && `${s.closed} closed`].filter(Boolean)
+  const known = s.merged + s.open + s.closed
+  const Icon = s.open > 0 ? GitPullRequest : s.merged === s.total ? GitMerge : s.closed === s.total && s.total > 0 ? GitPullRequestClosed : GitPullRequest
+  const cls = s.open > 0 ? 'text-emerald-600' : s.merged === s.total ? 'text-violet-500' : s.closed === s.total ? 'text-red-500' : 'text-muted-foreground'
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 text-[10px] ${cls}`}
+      title={`${s.total} pull request${s.total === 1 ? '' : 's'}${parts.length ? ` — ${parts.join(', ')}` : ''}${known < s.total ? ` (${s.total - known} with no status yet)` : ''}`}
+    >
+      <Icon className="h-2.5 w-2.5" />{s.total}
+    </span>
   )
 }
 

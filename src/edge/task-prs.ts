@@ -100,7 +100,11 @@ export function extractPrRefs(
     out.push(ref);
   };
   const body = String(text ?? '');
-  if (!body) return out;
+  // Cheap reject before any regex. The board parses every task's title+body on each poll, and most of
+  // them mention no PR at all — an indexOf pair is ~an order of magnitude cheaper than running three
+  // regexes over a long description to learn nothing. Mirrors MENTIONS_PR_SQL, and must stay a superset
+  // of what the patterns below accept.
+  if (!body || !(body.includes('/pull') || body.includes('PR #') || body.includes('PR#') || body.includes('pull request'))) return out;
   for (const re of [PR_URL_RE, PR_API_URL_RE]) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -158,7 +162,12 @@ function taskScraps(db: Db, taskId: string, task: Task | undefined): Scrap[] {
  * "when did this task produce a PR" is the question the ordering answers.
  */
 export function taskPrRefs(db: Db, taskId: string, task: Task | undefined): PrRef[] {
-  const scraps = taskScraps(db, taskId, task);
+  return refsFromScraps(taskScraps(db, taskId, task));
+}
+
+/** The parse itself, over one task's texts. Shared by the single-task read and the board's bulk pass so
+ *  a card's count can never disagree with the list the task's own sidebar shows. */
+function refsFromScraps(scraps: Scrap[]): PrRef[] {
   const byKey = new Map<string, PrRef>();
   // Scraps are oldest-first, so the first sighting of a key wins and later repeats are ignored.
   const add = (r: { owner: string; repo: string; number: number; url: string }, s: Scrap) => {
@@ -178,6 +187,56 @@ export function taskPrRefs(db: Db, taskId: string, task: Task | undefined): PrRe
     for (const s of scraps) for (const r of extractPrRefs(s.text, ctx)) add(r, s);
   }
   return [...byKey.values()].sort((a, b) => a.at - b.at || a.number - b.number);
+}
+
+/**
+ * SQL prefilter for "this text could mention a PR" — the bulk pass's only defence against scanning every
+ * event and message body in JS. It must be a SUPERSET of what the parser accepts or the board would
+ * silently undercount a task its own detail view shows links for, which is exactly what the first cut
+ * did: `'%/pull/%'` alone missed the `api.github.com/…/pulls/<n>` form AND every bare `PR #<n>` written
+ * in a note that carried no URL of its own (10 of 408 tasks on the live northwind board). Widen this
+ * whenever `extractPrRefs` learns a new shape; `scripts/task-pr-links-test.cjs` fails the day it drifts.
+ */
+const MENTIONS_PR_SQL = "(body LIKE '%/pull/%' OR body LIKE '%/pulls/%' OR body LIKE '%PR #%' OR body LIKE '%PR#%' OR body LIKE '%pull request%')";
+
+/**
+ * The board's pass: PR refs for MANY tasks at once, as `taskId → refs` (tasks with none are absent).
+ *
+ * The single-task path issues two queries per task, which is right for one open task and wrong for a
+ * board of 500 — so this inverts it into **two queries total**, filtered in SQL to the rows that even
+ * mention a PR (`LIKE '%/pull/%'`, ~100 of 1.8k rows on the live northwind tenant, 2 ms) and then
+ * grouped in JS. The task's own title/body come from the list the caller already loaded, so no third
+ * query. Identical parse per task via `refsFromScraps`, so a card and its task detail can never disagree.
+ */
+export function taskPrRefsBulk(db: Db, tasks: Array<Pick<Task, 'id' | 'title' | 'body' | 'createdAt'>>): Map<string, PrRef[]> {
+  const out = new Map<string, PrRef[]>();
+  if (!tasks.length) return out;
+  const byTask = new Map<string, Scrap[]>();
+  const push = (taskId: string, scrap: Scrap) => {
+    const arr = byTask.get(taskId);
+    if (arr) arr.push(scrap); else byTask.set(taskId, [scrap]);
+  };
+  const known = new Set(tasks.map((t) => t.id));
+  for (const t of tasks) {
+    if (t.title) push(t.id, { text: t.title, at: t.createdAt, source: 'body' });
+    if (t.body) push(t.id, { text: t.body, at: t.createdAt, source: 'body' });
+  }
+  for (const r of db
+    .prepare(`SELECT task_id, kind, body, created_at FROM task_events WHERE ${MENTIONS_PR_SQL}`)
+    .all<{ task_id: string; kind: string; body: string; created_at: number }>()) {
+    if (known.has(r.task_id)) push(r.task_id, { text: r.body, at: r.created_at, source: r.kind === 'comment' ? 'discussion' : 'activity' });
+  }
+  for (const r of db
+    .prepare(`SELECT session_id, body, created_at FROM messages WHERE session_id LIKE 'task:%' AND type IN ('task.chat','task','task.mention') AND ${MENTIONS_PR_SQL}`)
+    .all<{ session_id: string; body: string; created_at: number }>()) {
+    const taskId = r.session_id.slice('task:'.length);
+    if (known.has(taskId)) push(taskId, { text: r.body, at: r.created_at, source: 'discussion' });
+  }
+  for (const [taskId, scraps] of byTask) {
+    const refs = refsFromScraps(scraps.sort((a, b) => a.at - b.at));
+    if (refs.length) out.set(taskId, refs);
+  }
+  return out;
 }
 
 // ── status cache ────────────────────────────────────────────────────────────────────────────────────
@@ -210,6 +269,27 @@ export class PrCache {
       .all<PrRow>(this.tenant, ...keys);
     const byKey = new Map(rows.map((r) => [r.id, r]));
     return refs.map((r) => toTaskPr(r, byKey.get(prKey(r))));
+  }
+
+  /**
+   * Board pass: `taskId → summary` for many tasks in ONE cache query. Offline by construction — the
+   * board never triggers a GitHub fetch, because 500 cards' worth of refreshes on every page load would
+   * burn the rate limit to render a number. A card therefore shows the status the task's own detail view
+   * last fetched, which is the correct trade: the count is always right, the merged/open split is as
+   * fresh as the last time someone opened that task.
+   */
+  summaries(refsByTask: Map<string, PrRef[]>): Record<string, TaskPrSummary> {
+    const out: Record<string, TaskPrSummary> = {};
+    if (!refsByTask.size) return out;
+    const keys = [...new Set([...refsByTask.values()].flat().map(prKey))];
+    const rows = this.db
+      .prepare(`SELECT * FROM github_prs WHERE tenant = ? AND id IN (${keys.map(() => '?').join(',')})`)
+      .all<PrRow>(this.tenant, ...keys);
+    const byKey = new Map(rows.map((r) => [r.id, r]));
+    for (const [taskId, refs] of refsByTask) {
+      out[taskId] = prSummary(refs.map((r) => toTaskPr(r, byKey.get(prKey(r)))));
+    }
+    return out;
   }
 
   /** Which of these need a (re)fetch — never fetched, or older than the TTL. `force` takes everything. */
@@ -283,9 +363,19 @@ function toTaskPr(ref: PrRef, row?: PrRow): TaskPr {
   };
 }
 
+/** The per-task rollup a board card and the sidebar header render. */
+export interface TaskPrSummary {
+  total: number;
+  merged: number;
+  open: number;
+  closed: number;
+  /** Of the open ones, how many are drafts — an open PR nobody is meant to review yet. */
+  draft: number;
+}
+
 /** Roll a task's PRs into the one-line summary the board/sidebar header shows. */
-export function prSummary(prs: TaskPr[]): { total: number; merged: number; open: number; closed: number; draft: number } {
-  const out = { total: prs.length, merged: 0, open: 0, closed: 0, draft: 0 };
+export function prSummary(prs: TaskPr[]): TaskPrSummary {
+  const out: TaskPrSummary = { total: prs.length, merged: 0, open: 0, closed: 0, draft: 0 };
   for (const p of prs) {
     if (p.state === 'merged') out.merged++;
     else if (p.state === 'closed') out.closed++;
