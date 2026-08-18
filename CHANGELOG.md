@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.370.3] — 2026-08-18
+### Fixed
+- **A done session in the feed now shows its verdict, not an empty dot.** The feed was rendering a
+  finished session with the neutral "ended" glyph (a tiny muted circle) regardless of how it went — so
+  even a successful run looked empty. It now shows the run's **verdict** like the sessions list and chain
+  rail do: a green check for success, red ✕ for failure/crash, amber slash for partial; a run that ended
+  without calling `report` gets a dashed ring ("done — no report") — clearer than a bare pip, still
+  claiming nothing. Live sessions are unchanged (working / ready / needs-you).
+
 ## [0.370.2] — 2026-08-18
 ### Fixed
 - **No more blank line after the live-activity dot.** The running-session "currently…" line sometimes
