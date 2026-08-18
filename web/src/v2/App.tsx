@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type AgentInfo, type Automation, type MemoryRecord, type Member, type RuntimeTuning, type Session } from '@/lib/api'
+import { api, type AgentInfo, type AgentStats, type Automation, type MemoryRecord, type Member, type RuntimeTuning, type Session } from '@/lib/api'
 import { buildAgents, overviewStats, relTime, sessionRow, type AgentVM, type Status } from './data'
 import './v2.css'
 
@@ -116,7 +116,7 @@ function Automations({ items, loading }: { items: Automation[] | undefined; load
 
 function pct(n: number): string { return `${Math.round(n * 100)}%` }
 
-function Insights({ stats, loading }: { stats: import('@/lib/api').AgentStats | undefined; loading: boolean }) {
+function Insights({ stats, loading }: { stats: AgentStats | undefined; loading: boolean }) {
   if (loading || !stats) return <div className="panel"><div className="empty">Reading this agent’s track record…</div></div>
   if (stats.confidence === 'none' || stats.runs.total === 0) {
     return <div className="panel"><div className="empty">No signal yet — insights build up once this agent has some graded runs.</div></div>
@@ -204,7 +204,7 @@ function Settings({ config, prompt, loading }: { config: (RuntimeTuning & { desc
 interface Detail {
   automations?: Automation[]
   memory?: MemoryRecord[]
-  stats?: import('@/lib/api').AgentStats
+  stats?: AgentStats
   config?: RuntimeTuning & { description?: string }
   prompt?: string
 }
@@ -253,6 +253,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
 
+  const [statsById, setStatsById] = useState<Record<string, AgentStats>>({})
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tab, setTab] = useState<TabKey>('overview')
   const [filter, setFilter] = useState('')
@@ -271,12 +272,24 @@ export default function App() {
       setMe(m)
       if (!m) return
       try {
-        const [state, sess] = await Promise.all([api.state(), api.sessions()])
+        const [state, sess, statsResp] = await Promise.all([
+          api.state(),
+          api.sessions(),
+          api.agentStatsAll().catch(() => ({ stats: [] as AgentStats[] })),
+        ])
         if (cancelled) return
         setTenant(state.tenantName || state.tenant)
         setAgentsInfo(state.agents || [])
         setSessions(Array.isArray(sess) ? sess : [])
-        setSelectedId((state.agents && state.agents[0]?.id) || null)
+        // Maturity map drives the rail order; seed the per-agent Insights cache so that tab is instant.
+        const byId: Record<string, AgentStats> = {}
+        const seeded: Record<string, Detail> = {}
+        for (const s of statsResp.stats || []) { byId[s.agentId] = s; seeded[s.agentId] = { stats: s } }
+        setStatsById(byId)
+        setDetails(seeded)
+        // Default-select the most mature agent (top of the sorted rail).
+        const ordered = [...(state.agents || [])].sort((a, b) => (byId[b.id]?.maturity ?? -1) - (byId[a.id]?.maturity ?? -1))
+        setSelectedId(ordered[0]?.id ?? null)
       } catch {
         if (!cancelled) setError('Could not load the fleet. Is the server reachable?')
       } finally {
@@ -286,7 +299,11 @@ export default function App() {
     return () => { cancelled = true }
   }, [])
 
-  const agents = useMemo(() => buildAgents(agentsInfo, sessions), [agentsInfo, sessions])
+  // Fleet ordered by maturity, most mature first (agents with no track record sink to the bottom).
+  const agents = useMemo(() => {
+    const list = buildAgents(agentsInfo, sessions)
+    return list.sort((a, b) => (statsById[b.id]?.maturity ?? -1) - (statsById[a.id]?.maturity ?? -1))
+  }, [agentsInfo, sessions, statsById])
   const shown = useMemo(
     () => agents.filter((a) => a.id.toLowerCase().includes(filter.toLowerCase())),
     [agents, filter],
