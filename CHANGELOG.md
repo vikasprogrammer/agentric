@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.374.0]
+### Added
+- **`/v2` session viewer — our own, not the terminal or a chat box.** Clicking a recent session opens a
+  read-only, human-readable timeline built on `/api/sessions/:id/conversation`: the person's prompts,
+  the agent's replies (rendered as markdown), and each governed **activity** (tool action with an
+  ok/running/error status) — with inline cards for any artifacts, KB pages, or apps the run produced. A
+  header carries the title, status/verdict, cost, duration, turns and model; live runs still link out to
+  the classic terminal, and runs with no persisted transcript get a friendly empty state. Reuses the
+  shared `react-markdown` dependency (code-split, so the v2 core stays small).
+
 ## [0.373.4]
 ### Added
 - **`/v2` per-agent live-session count.** Each agent row in the rail now shows a small badge with how

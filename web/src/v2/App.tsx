@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type AgentInfo, type AgentStats, type Automation, type MemoryRecord, type Member, type RuntimeTuning, type Session } from '@/lib/api'
 import { buildAgents, overviewStats, relTime, sessionRow, type AgentVM, type Status } from './data'
+import SessionViewer from './SessionViewer'
 import './v2.css'
 
 // Agentric v2 — the agent-first console, wired to live data. Each agent carries its own
@@ -26,7 +27,7 @@ function StatePill({ status, text }: { status: Status; text: string }) {
 
 /* ─────────────────────────── Overview (chat-first) ─────────────────────────── */
 
-function Overview({ agent }: { agent: AgentVM }) {
+function Overview({ agent, onOpen }: { agent: AgentVM; onOpen: (s: Session) => void }) {
   const now = Date.now()
   const recent = agent.sessions.slice(0, 6)
   return (
@@ -50,14 +51,14 @@ function Overview({ agent }: { agent: AgentVM }) {
             {recent.map((s) => {
               const r = sessionRow(s, now)
               return (
-                <div className="item" key={r.key}>
+                <button className="item item-btn" key={r.key} onClick={() => onOpen(s)} title="Open session viewer">
                   <span className={`dot ${r.tag || 'idle'}`} style={r.tag ? undefined : { opacity: 0.4 }} />
                   <span className="grow"><div className="t">{r.t}</div><div className="d">{r.d}</div></span>
                   {r.tag
                     ? <span className={`tag ${r.tag}`}>{r.tagText}</span>
                     : <span className={`verdict ${r.verdict === 'ok' ? 'ok' : 'warn'}`}>{r.verText}</span>}
                   <span className="when">{r.when}</span>
-                </div>
+                </button>
               )
             })}
           </div>
@@ -214,8 +215,8 @@ interface Detail {
   prompt?: string
 }
 
-function Workspace({ agent, tab, onTab, detail, loadingTab }: {
-  agent: AgentVM; tab: TabKey; onTab: (t: TabKey) => void; detail: Detail; loadingTab: boolean
+function Workspace({ agent, tab, onTab, detail, loadingTab, onOpenSession }: {
+  agent: AgentVM; tab: TabKey; onTab: (t: TabKey) => void; detail: Detail; loadingTab: boolean; onOpenSession: (s: Session) => void
 }) {
   const counts: Record<string, number | undefined> = {
     automations: detail.automations?.length,
@@ -239,7 +240,7 @@ function Workspace({ agent, tab, onTab, detail, loadingTab }: {
           </button>
         ))}
       </nav>
-      {tab === 'overview' && <Overview agent={agent} />}
+      {tab === 'overview' && <Overview agent={agent} onOpen={onOpenSession} />}
       {tab === 'automations' && <Automations items={detail.automations} loading={loadingTab} />}
       {tab === 'insights' && <Insights agent={agent} stats={detail.stats} loading={loadingTab} />}
       {tab === 'memory' && <Memory items={detail.memory} loading={loadingTab} />}
@@ -262,6 +263,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tab, setTab] = useState<TabKey>('overview')
   const [filter, setFilter] = useState('')
+  const [openSession, setOpenSession] = useState<Session | null>(null)
 
   // Per-agent lazy detail cache, keyed by agent id.
   const [details, setDetails] = useState<Record<string, Detail>>({})
@@ -356,7 +358,7 @@ export default function App() {
     if (agent) void loadDetail(agent.id, tab)
   }, [agent, tab, loadDetail])
 
-  function selectAgent(id: string) { setSelectedId(id); setTab('overview') }
+  function selectAgent(id: string) { setSelectedId(id); setTab('overview'); setOpenSession(null) }
 
   // ── render gates ──
   if (me === undefined || (!ready && me)) {
@@ -434,9 +436,11 @@ export default function App() {
           </div>
         </aside>
 
-        {agent
-          ? <Workspace agent={agent} tab={tab} onTab={setTab} detail={details[agent.id] || {}} loadingTab={loadingTab} />
-          : <main className="workspace"><div className="empty" style={{ marginTop: 40 }}>No agents to show yet.</div></main>}
+        {openSession
+          ? <SessionViewer session={openSession} onBack={() => setOpenSession(null)} />
+          : agent
+            ? <Workspace agent={agent} tab={tab} onTab={setTab} detail={details[agent.id] || {}} loadingTab={loadingTab} onOpenSession={setOpenSession} />
+            : <main className="workspace"><div className="empty" style={{ marginTop: 40 }}>No agents to show yet.</div></main>}
       </div>
     </div>
   )
