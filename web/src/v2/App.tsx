@@ -410,15 +410,19 @@ export default function App() {
           {error ? <div className="empty" style={{ margin: 8 }}>{error}</div> : null}
           {shown.length === 0 && !error
             ? <div className="empty" style={{ margin: 8 }}>No agents.</div>
-            : shown.map((a) => (
-              <button key={a.id} className={`agent-row ${a.id === selectedId ? 'active' : ''}`} onClick={() => selectAgent(a.id)}>
-                <span className={`dot ${a.status}`} />
-                <span className="col">
-                  <div className="nm">{a.id}</div>
-                  <div className="meta">{a.statusText}</div>
-                </span>
-              </button>
-            ))}
+            : shown.map((a) => {
+              const live = a.sessions.filter((s) => s.alive || s.status === 'running').length
+              return (
+                <button key={a.id} className={`agent-row ${a.id === selectedId ? 'active' : ''}`} onClick={() => selectAgent(a.id)}>
+                  <span className={`dot ${a.status}`} />
+                  <span className="col">
+                    <div className="nm">{a.id}</div>
+                    <div className="meta">{a.statusText}</div>
+                  </span>
+                  {live > 0 ? <span className={`agent-count ${a.status === 'wait' ? 'wait' : ''}`} title={`${live} live session${live === 1 ? '' : 's'}`}>{live}</span> : null}
+                </button>
+              )
+            })}
           <a className="new-agent" href="/" style={{ textDecoration: 'none', display: 'block' }}>＋  New agent</a>
           <div className="rail-sep" />
           <div className="rail-mini">

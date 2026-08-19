@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.373.4]
+### Added
+- **`/v2` per-agent live-session count.** Each agent row in the rail now shows a small badge with how
+  many sessions that agent has live right now (green, or amber when it's the one waiting on a human).
+  Hidden when the agent has none. Complements the fleet summary above it.
+
 ## [0.373.3]
 ### Added
 - **`/v2` fleet glance in the rail.** Under the Fleet header, a compact summary shows how many sessions

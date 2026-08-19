@@ -99,6 +99,8 @@ body { background: var(--ground); }
 .agent-row .nm { font-size: 13px; line-height: 1.25; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-row .meta { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); }
 .agent-row .col { min-width: 0; flex: 1; }
+.agent-count { flex: none; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 10.5px; line-height: 15px; padding: 0 6px; border-radius: var(--r-pill); color: var(--run); background: var(--run-soft); border: 1px solid color-mix(in srgb, var(--run) 30%, transparent); }
+.agent-count.wait { color: var(--wait); background: var(--wait-soft); border-color: color-mix(in srgb, var(--wait) 30%, transparent); }
 .rail-sep { height: 1px; background: var(--line); margin: 8px 8px; }
 .rail-mini { padding: 4px 9px; }
 .rail-mini a { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 8px; color: var(--ink-dim); text-decoration: none; font-size: 12.5px; cursor: pointer; }
