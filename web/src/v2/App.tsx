@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type AgentInfo, type AgentStats, type Automation, type MemoryRecord, type Member, type RuntimeTuning, type Session } from '@/lib/api'
 import { buildAgents, overviewStats, relTime, sessionRow, type AgentVM, type Status } from './data'
 import './v2.css'
@@ -28,11 +28,9 @@ function StatePill({ status, text }: { status: Status; text: string }) {
 
 function Overview({ agent }: { agent: AgentVM }) {
   const now = Date.now()
-  const stats = overviewStats(agent.sessions, now)
   const recent = agent.sessions.slice(0, 6)
   return (
     <div className="panel">
-      <p className="thesis">Everything about this agent lives here — no hunting across a dozen global pages.</p>
       <div className="console">
         <div className="prompt">
           <textarea rows={1} placeholder={`Message ${agent.id}…  ask it to do something, or start a session`} />
@@ -43,12 +41,6 @@ function Overview({ agent }: { agent: AgentVM }) {
           <span className="chip">◈ run-as: you</span>
           <a className="chip" href={`/?spawn=${encodeURIComponent(agent.id)}`}>◱ Open live session</a>
         </div>
-      </div>
-      <div className="stat-row">
-        <div className="stat"><div className="k">Runs · 7d</div><div className="v">{stats.runs}</div><div className="sub">across all triggers</div></div>
-        <div className="stat"><div className="k">Cost · 7d</div><div className="v">{stats.cost}</div><div className="sub">sum of run cost</div></div>
-        <div className="stat"><div className="k">Live now</div><div className="v">{stats.live}</div><div className="sub">sessions alive</div></div>
-        <div className="stat"><div className="k">Needs you</div><div className="v">{stats.needs}</div><div className="sub">blocked on a human</div></div>
       </div>
       <div className="section-title"><h3>Recent sessions</h3><a href="/">All sessions →</a></div>
       {recent.length === 0
@@ -116,29 +108,42 @@ function Automations({ items, loading }: { items: Automation[] | undefined; load
 
 function pct(n: number): string { return `${Math.round(n * 100)}%` }
 
-function Insights({ stats, loading }: { stats: AgentStats | undefined; loading: boolean }) {
-  if (loading || !stats) return <div className="panel"><div className="empty">Reading this agent’s track record…</div></div>
-  if (stats.confidence === 'none' || stats.runs.total === 0) {
-    return <div className="panel"><div className="empty">No signal yet — insights build up once this agent has some graded runs.</div></div>
-  }
-  const rows: { t: string; d: string; when: string }[] = [
-    { t: `Maturity ${pct(stats.maturity)} · ${stats.confidence} confidence`, d: `Autonomy ${pct(stats.autonomy)}, denial rate ${pct(stats.denialRate)}, over ${stats.runs.total} runs (${stats.runs.done} done, ${stats.runs.crashed} crashed).`, when: stats.lastRunAt ? `${relTime(stats.lastRunAt)} ago` : '' },
-    { t: `Human ratings: ${stats.rated.up}↑ / ${stats.rated.down}↓`, d: stats.successRate != null ? `Self-reported success rate ${pct(stats.successRate)} across ${stats.outcomes.success + stats.outcomes.failure + stats.outcomes.inconclusive} reported runs.` : 'Not enough reported outcomes to rate success yet.', when: '' },
-    { t: `Gate: ${stats.actions.autoApproved} auto-approved, ${stats.actions.humanGated} sent to a human, ${stats.actions.denied} denied`, d: `${stats.actions.governed} governed effects total. ${stats.deniedRuns} run(s) hit a hard deny.`, when: '' },
-  ]
-  return (
-    <div className="panel">
-      <p className="thesis">Learned from this agent’s own runs — the fleet-wide Insights page folds into each agent.</p>
-      <div className="list">
-        {rows.map((x, i) => (
-          <div className="item" key={i}>
-            <span className="grow" style={{ padding: '2px 0' }}><div className="t">{x.t}</div><div className="d">{x.d}</div></span>
-            {x.when ? <span className="when">{x.when}</span> : null}
-          </div>
-        ))}
-      </div>
+function Insights({ agent, stats, loading }: { agent: AgentVM; stats: AgentStats | undefined; loading: boolean }) {
+  const s = overviewStats(agent.sessions)
+  const tiles = (
+    <div className="stat-row">
+      <div className="stat"><div className="k">Runs · 7d</div><div className="v">{s.runs}</div><div className="sub">across all triggers</div></div>
+      <div className="stat"><div className="k">Cost · 7d</div><div className="v">{s.cost}</div><div className="sub">sum of run cost</div></div>
+      <div className="stat"><div className="k">Live now</div><div className="v">{s.live}</div><div className="sub">sessions alive</div></div>
+      <div className="stat"><div className="k">Needs you</div><div className="v">{s.needs}</div><div className="sub">blocked on a human</div></div>
     </div>
   )
+  let body: ReactNode
+  if (loading && !stats) {
+    body = <div className="empty">Reading this agent’s track record…</div>
+  } else if (!stats || stats.confidence === 'none' || stats.runs.total === 0) {
+    body = <div className="empty">No maturity signal yet — it builds up once this agent has graded runs.</div>
+  } else {
+    const rows: { t: string; d: string; when: string }[] = [
+      { t: `Maturity ${pct(stats.maturity)} · ${stats.confidence} confidence`, d: `Autonomy ${pct(stats.autonomy)}, denial rate ${pct(stats.denialRate)}, over ${stats.runs.total} runs (${stats.runs.done} done, ${stats.runs.crashed} crashed).`, when: stats.lastRunAt ? `${relTime(stats.lastRunAt)} ago` : '' },
+      { t: `Human ratings: ${stats.rated.up}↑ / ${stats.rated.down}↓`, d: stats.successRate != null ? `Self-reported success rate ${pct(stats.successRate)} across ${stats.outcomes.success + stats.outcomes.failure + stats.outcomes.inconclusive} reported runs.` : 'Not enough reported outcomes to rate success yet.', when: '' },
+      { t: `Gate: ${stats.actions.autoApproved} auto-approved, ${stats.actions.humanGated} sent to a human, ${stats.actions.denied} denied`, d: `${stats.actions.governed} governed effects total. ${stats.deniedRuns} run(s) hit a hard deny.`, when: '' },
+    ]
+    body = (
+      <>
+        <p className="thesis">Learned from this agent’s own runs — the fleet-wide Insights page folds into each agent.</p>
+        <div className="list">
+          {rows.map((x, i) => (
+            <div className="item" key={i}>
+              <span className="grow" style={{ padding: '2px 0' }}><div className="t">{x.t}</div><div className="d">{x.d}</div></span>
+              {x.when ? <span className="when">{x.when}</span> : null}
+            </div>
+          ))}
+        </div>
+      </>
+    )
+  }
+  return <div className="panel">{tiles}{body}</div>
 }
 
 /* ─────────────────────────── Memory ─────────────────────────── */
@@ -236,7 +241,7 @@ function Workspace({ agent, tab, onTab, detail, loadingTab }: {
       </nav>
       {tab === 'overview' && <Overview agent={agent} />}
       {tab === 'automations' && <Automations items={detail.automations} loading={loadingTab} />}
-      {tab === 'insights' && <Insights stats={detail.stats} loading={loadingTab} />}
+      {tab === 'insights' && <Insights agent={agent} stats={detail.stats} loading={loadingTab} />}
       {tab === 'memory' && <Memory items={detail.memory} loading={loadingTab} />}
       {tab === 'settings' && <Settings config={detail.config} prompt={detail.prompt} loading={loadingTab} />}
     </main>

@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.373.2]
+### Changed
+- **`/v2` Overview slimmed down.** Dropped the "everything about this agent lives here" blurb and moved
+  the four stat tiles (Runs·7d, Cost·7d, Live now, Needs you) onto the **Insights** tab, so Overview is
+  just the chat console + recent sessions. The agent description in the workspace header is now clamped
+  to two lines instead of taking over the header.
+### Fixed
+- **`/v2` button styling.** Buttons rendered as links (Run agent, the send arrow, the console chips, New
+  agent) were showing underlines and the send `↑` wasn't centered — the links are now styled as proper
+  buttons (no underline, flex-centered content).
+
 ## [0.373.1]
 ### Changed
 - **`/v2` polish:** the fleet rail is now ordered by **maturity, most mature first** (agents with no
