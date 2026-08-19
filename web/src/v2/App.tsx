@@ -374,7 +374,11 @@ export default function App() {
     )
   }
 
-  const needsYou = sessions.filter((s) => (s.alive || s.status === 'running') && s.blocked).length
+  // Fleet-wide session glance for the rail.
+  const liveSessions = sessions.filter((s) => s.alive || s.status === 'running')
+  const runningCount = liveSessions.filter((s) => s.working).length
+  const needsYou = liveSessions.filter((s) => s.blocked).length
+  const liveCount = liveSessions.length
 
   return (
     <div className="app">
@@ -394,6 +398,11 @@ export default function App() {
           <div className="rail-head">
             <span className="eyebrow">Fleet</span>
             <span className="eyebrow">{shown.length} agent{shown.length === 1 ? '' : 's'}</span>
+          </div>
+          <div className="rail-substat">
+            <span className="s"><span className="dot idle" style={{ opacity: liveCount ? 0.7 : 0.4 }} /><b>{liveCount}</b> live</span>
+            <span className="s"><span className="dot run" style={{ boxShadow: 'none' }} /><b>{runningCount}</b> running</span>
+            {needsYou > 0 ? <span className="s"><span className="dot wait" style={{ boxShadow: 'none' }} /><b>{needsYou}</b> waiting</span> : null}
           </div>
           <div className="rail-search">
             <input placeholder="Search agents…" value={filter} onChange={(e) => setFilter(e.target.value)} />

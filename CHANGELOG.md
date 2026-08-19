@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.373.3]
+### Added
+- **`/v2` fleet glance in the rail.** Under the Fleet header, a compact summary shows how many sessions
+  are **live** and **running** right now, plus a **waiting** count (only when something is blocked on a
+  human). Derived from the sessions already loaded — no extra request.
+
 ## [0.373.2]
 ### Changed
 - **`/v2` Overview slimmed down.** Dropped the "everything about this agent lives here" blurb and moved
