@@ -1,0 +1,7 @@
+# Boot does real work before the port opens: SQLite migrations, tenant registry, owner seeding,
+# ttyd spawn, scheduler + chat sockets. Give it room rather than failing a healthy deploy.
+WAIT=5
+TIMEOUT=30
+ATTEMPTS=18
+
+/health
