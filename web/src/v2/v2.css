@@ -100,19 +100,19 @@ body { background: var(--ground); }
 .rail-mini { padding: 4px 9px; }
 .rail-mini a { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 8px; color: var(--ink-dim); text-decoration: none; font-size: 12.5px; cursor: pointer; }
 .rail-mini a:hover { background: var(--hover); color: var(--ink); }
-.new-agent { margin-top: 6px; border: 1px dashed var(--line-strong); color: var(--ink-dim); border-radius: 9px; padding: 8px 9px; text-align: center; cursor: pointer; font-size: 12.5px; background: transparent; font-family: var(--font); width: 100%; }
+.new-agent { margin-top: 6px; border: 1px dashed var(--line-strong); color: var(--ink-dim); border-radius: 9px; padding: 8px 9px; text-align: center; cursor: pointer; font-size: 12.5px; background: transparent; font-family: var(--font); width: 100%; text-decoration: none; display: block; }
 .new-agent:hover { background: var(--hover); color: var(--ink); }
 
 .workspace { padding: 22px 26px 60px; max-width: 940px; margin: 0 auto; width: 100%; }
 .ws-head { display: flex; align-items: flex-start; gap: 16px; padding-bottom: 16px; }
 .ws-title { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; display: flex; align-items: center; gap: 11px; }
 .ws-handle { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
-.ws-blurb { color: var(--ink-dim); font-size: 13.5px; margin-top: 5px; max-width: 62ch; }
+.ws-blurb { color: var(--ink-dim); font-size: 13.5px; margin-top: 5px; max-width: 62ch; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .status-pill { font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em; padding: 3px 9px 3px 8px; border-radius: var(--r-pill); display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); color: var(--ink-dim); text-transform: uppercase; }
 .status-pill.run { color: var(--run); border-color: color-mix(in srgb, var(--run) 30%, transparent); background: var(--run-soft); }
 .status-pill.wait { color: var(--wait); border-color: color-mix(in srgb, var(--wait) 30%, transparent); background: var(--wait-soft); }
 .status-pill.block { color: var(--block); border-color: color-mix(in srgb, var(--block) 30%, transparent); background: var(--block-soft); }
-.btn { font-family: var(--font); font-size: 13px; font-weight: 520; border-radius: 9px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--line-strong); background: var(--ink); color: var(--ground); }
+.btn { font-family: var(--font); font-size: 13px; font-weight: 520; border-radius: 9px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--line-strong); background: var(--ink); color: var(--ground); text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
 .btn:hover { opacity: 0.9; }
 .btn.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
 .btn.ghost:hover { background: var(--hover); }
@@ -138,9 +138,9 @@ body { background: var(--ground); }
 .console .prompt { display: flex; align-items: flex-end; gap: 10px; }
 .console textarea { flex: 1; resize: none; background: transparent; border: none; outline: none; color: var(--ink); font-family: var(--font); font-size: 15px; line-height: 1.5; min-height: 44px; padding: 6px 2px; }
 .console textarea::placeholder { color: var(--ink-faint); }
-.send { width: 36px; height: 36px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--ink); color: var(--ground); cursor: pointer; flex: none; font-size: 16px; }
+.send { width: 36px; height: 36px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--ink); color: var(--ground); cursor: pointer; flex: none; font-size: 16px; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; line-height: 1; }
 .console .row2 { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
-.chip { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 3px 9px; cursor: pointer; background: transparent; }
+.chip { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 3px 9px; cursor: pointer; background: transparent; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
 .chip:hover { background: var(--hover); color: var(--ink); }
 
 .section-title { display: flex; align-items: baseline; justify-content: space-between; margin: 24px 0 12px; }
