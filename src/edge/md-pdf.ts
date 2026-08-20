@@ -27,16 +27,27 @@
 // ── page geometry (points; 72pt = 1 inch) ────────────────────────────────────────
 const PAGE_W = 595.28;   // A4
 const PAGE_H = 841.89;
-const MARGIN = 56;
+const MARGIN = 64;
 const CONTENT_W = PAGE_W - MARGIN * 2;
-const BODY_SIZE = 10.5;
-const LINE_GAP = 1.45;   // multiple of the font size
-const PARA_GAP = 6;
+const BODY_SIZE = 10.2;
+const LINE_GAP = 1.55;   // multiple of the font size — generous leading is most of what makes prose read
+const PARA_GAP = 9;
 
-/** Heading sizes by level (1-6) and the space above/below each. */
-const H_SIZE = [0, 20, 16, 13.5, 12, 11, 10.5];
-const H_ABOVE = [0, 16, 14, 12, 10, 9, 8];
-const H_BELOW = [0, 8, 7, 6, 5, 4, 4];
+/** Heading sizes by level (1-6) and the space above/below each. A document is skimmed before it is read,
+ *  so the jumps between levels are deliberately large enough to see from arm's length. */
+const H_SIZE = [0, 19, 14.5, 12, 11, 10.4, 10.2];
+const H_ABOVE = [0, 20, 18, 14, 12, 10, 9];
+const H_BELOW = [0, 9, 8, 6, 5, 4, 4];
+
+/** Ink. Pure black on white is harsh in print and unusual in a designed document; near-black plus two
+ *  greys does most of the work of looking typeset. */
+const INK = '0.13 0.14 0.16';
+const MUTED = '0.42 0.44 0.48';
+const RULE = '0.85 0.86 0.88';
+const RULE_SOFT = '0.92 0.93 0.94';
+const CODE_BG = '0.965 0.968 0.975';
+const HEAD_BG = '0.945 0.950 0.960';
+const LINK = [0.11, 0.36, 0.72] as [number, number, number];
 
 type FontId = 'F1' | 'F2' | 'F3' | 'F4' | 'F5';   // regular, bold, italic, bold-italic, mono
 
@@ -118,7 +129,16 @@ function toWinAnsi(s: string): string {
     const win = WINANSI[ch];
     if (win) { out += win; continue; }
     if (c <= 0xff && !(c >= 0x80 && c <= 0x9f)) { out += ch; continue; }
-    out += ASCII_FALLBACK[ch] ?? '?';
+    const ascii = ASCII_FALLBACK[ch];
+    if (ascii !== undefined) { out += ascii; continue; }
+    // Circled digits ①②③ are a favourite of agent-written headings; as `?` they read as corruption.
+    if (c >= 0x2460 && c <= 0x2473) { out += String(c - 0x2460 + 1); continue; }
+    // Decorative pictographs are DROPPED, not questioned. An agent's "## 🧬 Decode" rendered as
+    // "## ? Decode", and a stray `?` in a heading reads as a rendering fault; the missing emoji doesn't.
+    // Anything else unrepresentable (CJK, say) still becomes `?`, because there the character carried
+    // meaning and silently dropping it would misreport the document.
+    if (isPictograph(c)) continue;
+    out += '?';
   }
   return out;
 }
@@ -129,10 +149,22 @@ const WINANSI: Record<string, string> = {
   '\u2019': '\x92', '\u201c': '\x93', '\u201d': '\x94', '\u2022': '\x95', '\u2013': '\x96',
   '\u2014': '\x97', '\u2122': '\x99', '\u203a': '\x9b',
 };
+/** Emoji, dingbats, arrows-as-decoration, variation selectors and ZWJ — glyphs that carry tone, not
+ *  content, so losing them costs the reader nothing. */
+function isPictograph(c: number): boolean {
+  return (c >= 0x1f000 && c <= 0x1faff)      // emoji blocks
+    || (c >= 0x2600 && c <= 0x27bf)          // misc symbols + dingbats
+    || (c >= 0x2b00 && c <= 0x2bff)          // arrows/shapes
+    || c === 0xfe0f || c === 0xfe0e          // variation selectors
+    || c === 0x200d                          // zero-width joiner
+    || (c >= 0x1f1e6 && c <= 0x1f1ff);       // regional indicators (flags)
+}
+
 /** No WinAnsi glyph, but a readable ASCII stand-in beats a `?`. */
 const ASCII_FALLBACK: Record<string, string> = {
   '\u2192': '->', '\u2190': '<-', '\u21d2': '=>', '\u2713': 'v', '\u2714': 'v', '\u2717': 'x',
-  '\u2718': 'x', '\u2500': '-', '\u00a0': ' ', '\u2212': '-',
+  '\u2718': 'x', '\u2500': '-', '\u00a0': ' ', '\u2212': '-', '\u2248': '~', '\u2264': '<=',
+  '\u2265': '>=', '\u2260': '!=', '\u00d7': 'x', '\u2022': '\u2022',
 };
 /** AFM widths for the WinAnsi punctuation above (Helvetica / Helvetica-Bold), which differ enough from a
  *  letter's advance that guessing them visibly misplaces a line's break — an em dash is 1000 units. */
@@ -197,7 +229,7 @@ export function parseInline(md: string, baseFont: FontId, size: number): Span[] 
           flush();
           const label = md.slice(i + 1, close);
           const href = md.slice(close + 2, end).split(/\s+/)[0];
-          for (const s of parseInline(label, baseFont, size)) spans.push({ ...s, link: href, color: [0.1, 0.35, 0.75] });
+          for (const s of parseInline(label, baseFont, size)) spans.push({ ...s, link: href, color: LINK });
           i = end;
           continue;
         }
@@ -376,7 +408,7 @@ export function markdownToPdf(md: string, opts: MdPdfOptions = {}): Buffer {
       for (const p of line.pieces) {
         if (!p.text.trim()) continue;
         const px = MARGIN + xOffset + p.x;
-        const color = p.color ? `${p.color[0]} ${p.color[1]} ${p.color[2]} rg ` : '0 0 0 rg ';
+        const color = p.color ? `${p.color[0]} ${p.color[1]} ${p.color[2]} rg ` : `${INK} rg `;
         cur.ops.push(`BT ${color}/${p.font} ${p.size} Tf 1 0 0 1 ${px.toFixed(2)} ${y.toFixed(2)} Tm (${pdfStr(toWinAnsi(p.text))}) Tj ET`);
         if (p.link) {
           // A real annotation, so the link is clickable in the reader rather than just blue text.
@@ -387,25 +419,40 @@ export function markdownToPdf(md: string, opts: MdPdfOptions = {}): Buffer {
     }
   };
 
-  // Title block — the artifact's own title, so a printed page identifies itself.
+  // Title block — the artifact's own title, so a printed page identifies itself. An accent bar rather
+  // than another hairline: the eye needs one thing at the top of page 1 that is not text.
   if (opts.title) {
-    drawLines(layout([{ text: opts.title, font: 'F2', size: 19 }], CONTENT_W));
+    y -= 4;
+    cur.ops.push(`${LINK.join(' ')} rg ${MARGIN} ${(y - 1).toFixed(2)} 34 2.6 re f`);
+    y -= 16;
+    drawLines(layout([{ text: opts.title, font: 'F2', size: 21 }], CONTENT_W));
     if (opts.subtitle) {
-      y -= 2;
-      drawLines(layout([{ text: opts.subtitle, font: 'F1', size: 9, color: [0.42, 0.42, 0.42] }], CONTENT_W));
+      y -= 3;
+      drawLines(layout([{ text: opts.subtitle, font: 'F1', size: 8.6, color: [0.42, 0.44, 0.48] }], CONTENT_W));
     }
-    y -= 6;
-    cur.ops.push(`0.8 0.8 0.8 RG 0.7 w ${MARGIN} ${y.toFixed(2)} m ${(PAGE_W - MARGIN).toFixed(2)} ${y.toFixed(2)} l S`);
-    y -= 14;
+    y -= 10;
+    cur.ops.push(`${RULE} RG 0.7 w ${MARGIN} ${y.toFixed(2)} m ${(PAGE_W - MARGIN).toFixed(2)} ${y.toFixed(2)} l S`);
+    y -= 20;
   }
 
-  for (const b of parseBlocks(md)) {
+  // The artifact's title is already set above, and an agent's report almost always opens with the same
+  // words as its own H1 — printing both is a stutter at the top of page 1.
+  const blocks = parseBlocks(md);
+  if (opts.title && blocks[0]?.kind === 'heading' && blocks[0].level === 1 && sameish(blocks[0].text, opts.title)) blocks.shift();
+
+  for (const b of blocks) {
     switch (b.kind) {
       case 'heading': {
         const size = H_SIZE[b.level];
         y -= H_ABOVE[b.level];
-        need(size * LINE_GAP);
+        // Keep a heading with at least two lines of what follows: a heading alone at the foot of a page is
+        // the single most obvious sign that nobody looked at the output.
+        need(size * LINE_GAP + BODY_SIZE * LINE_GAP * 2);
         drawLines(layout(parseInline(b.text, 'F2', size), CONTENT_W));
+        if (b.level <= 2) {
+          y -= 4;
+          cur.ops.push(`${b.level === 1 ? RULE : RULE_SOFT} RG 0.6 w ${MARGIN} ${y.toFixed(2)} m ${(PAGE_W - MARGIN).toFixed(2)} ${y.toFixed(2)} l S`);
+        }
         y -= H_BELOW[b.level];
         break;
       }
@@ -442,54 +489,85 @@ export function markdownToPdf(md: string, opts: MdPdfOptions = {}): Buffer {
         }
         for (const l of inner) {
           if (y - lineH < MARGIN + 24) {
-            cur.ops.unshift(`0.96 0.96 0.97 rg ${(MARGIN - 4).toFixed(2)} ${(y - 4).toFixed(2)} ${(CONTENT_W + 8).toFixed(2)} ${(boxTop - y + 8).toFixed(2)} re f`);
+            cur.ops.unshift(`${CODE_BG} rg ${(MARGIN - 6).toFixed(2)} ${(y - 6).toFixed(2)} ${(CONTENT_W + 12).toFixed(2)} ${(boxTop - y + 12).toFixed(2)} re f`);
             newPage();
           }
           y -= lineH;
-          cur.ops.push(`BT 0.15 0.15 0.18 rg /F5 ${size} Tf 1 0 0 1 ${(MARGIN + 4).toFixed(2)} ${y.toFixed(2)} Tm (${pdfStr(toWinAnsi(l))}) Tj ET`);
+          cur.ops.push(`BT 0.16 0.18 0.22 rg /F5 ${size} Tf 1 0 0 1 ${(MARGIN + 6).toFixed(2)} ${y.toFixed(2)} Tm (${pdfStr(toWinAnsi(l))}) Tj ET`);
         }
         // The tint goes UNDER the text, so it is unshifted to the front of this page's operators.
-        cur.ops.unshift(`0.96 0.96 0.97 rg ${(MARGIN - 4).toFixed(2)} ${(y - 5).toFixed(2)} ${(CONTENT_W + 8).toFixed(2)} ${(Math.min(boxTop, PAGE_H - MARGIN) - y + 9).toFixed(2)} re f`);
-        y -= PARA_GAP + 3;
+        cur.ops.unshift(`${CODE_BG} rg ${(MARGIN - 6).toFixed(2)} ${(y - 7).toFixed(2)} ${(CONTENT_W + 12).toFixed(2)} ${(Math.min(boxTop, PAGE_H - MARGIN) - y + 13).toFixed(2)} re f`);
+        y -= PARA_GAP + 4;
         break;
       }
       case 'quote': {
         const top = y;
         drawLines(layout(parseInline(b.text, 'F3', BODY_SIZE), CONTENT_W - 14), 14);
-        cur.ops.push(`0.75 0.78 0.85 RG 2 w ${(MARGIN + 3).toFixed(2)} ${(y - 1).toFixed(2)} m ${(MARGIN + 3).toFixed(2)} ${top.toFixed(2)} l S`);
+        cur.ops.push(`${LINK.join(' ')} RG 2 w ${(MARGIN + 2).toFixed(2)} ${(y - 1).toFixed(2)} m ${(MARGIN + 2).toFixed(2)} ${top.toFixed(2)} l S`);
         y -= PARA_GAP;
         break;
       }
       case 'rule':
         need(12);
         y -= 6;
-        cur.ops.push(`0.85 0.85 0.85 RG 0.7 w ${MARGIN} ${y.toFixed(2)} m ${(PAGE_W - MARGIN).toFixed(2)} ${y.toFixed(2)} l S`);
+        cur.ops.push(`${RULE} RG 0.7 w ${MARGIN} ${y.toFixed(2)} m ${(PAGE_W - MARGIN).toFixed(2)} ${y.toFixed(2)} l S`);
         y -= 8;
         break;
       case 'table': {
-        // Monospaced grid: real column layout needs measurement + reflow, and a fixed-width table reads
-        // correctly at a glance, which is what a table in a report is for.
-        const size = 8.6;
+        // A real grid, not monospaced rows: proportional text, wrapped cells, a tinted header and hairline
+        // row separators. The earlier version set tables in Courier and truncated cells to fit, which is
+        // what made a data-heavy report look like a terminal dump — and truncation loses the data.
+        const size = 8.9;
+        const PAD = 5;
         const cols = Math.max(...b.rows.map((r) => r.length));
-        const want: number[] = [];
-        for (let c = 0; c < cols; c++) want.push(Math.max(...b.rows.map((r) => (r[c] ?? '').length)));
-        const budget = Math.floor(CONTENT_W / ((W_MONO * size) / 1000)) - (cols - 1) * 2;
-        // Water-filling, not uniform scaling. Scaling every column by the same factor squeezes a narrow
-        // column (a 6-char label) as hard as a 90-char prose cell, and the label — the part that makes the
-        // row readable — is what disappears. Instead find the cap that fits and clip only the columns
-        // above it, so short columns always survive whole.
-        const fit = fitColumns(want, Math.max(cols * MIN_COL, budget));
-        b.rows.forEach((row, ri) => {
-          const text = row.map((cell, c) => (cell.length > fit[c] ? cell.slice(0, Math.max(1, fit[c] - 1)) + '…' : cell.padEnd(fit[c]))).join('  ');
-          need(size * 1.4);
-          y -= size * 1.4;
-          cur.ops.push(`BT 0 0 0 rg /${ri === 0 ? 'F5' : 'F5'} ${size} Tf 1 0 0 1 ${MARGIN} ${y.toFixed(2)} Tm (${pdfStr(toWinAnsi(text))}) Tj ET`);
-          if (ri === 0) {
-            y -= 3;
-            cur.ops.push(`0.8 0.8 0.8 RG 0.5 w ${MARGIN} ${y.toFixed(2)} m ${(PAGE_W - MARGIN).toFixed(2)} ${y.toFixed(2)} l S`);
-          }
+        const cell = (r: number, c: number) => (b.rows[r][c] ?? '').trim();
+
+        // Natural width = the widest cell, measured in the font it will be drawn in; then water-fill the
+        // available space so narrow label columns keep their width and only wide prose columns give way.
+        const natural: number[] = [];
+        for (let c = 0; c < cols; c++) {
+          let w = 0;
+          for (let r = 0; r < b.rows.length; r++) w = Math.max(w, textWidth(cell(r, c), r === 0 ? 'F2' : 'F1', size) + PAD * 2);
+          natural.push(Math.min(w, CONTENT_W * 0.6));
+        }
+        const widths = fitColumns(natural, CONTENT_W, MIN_COL_PT);
+
+        // Lay every cell out first: a row is as tall as its tallest cell, and we need that before drawing
+        // the header fill or deciding whether the row fits on this page.
+        const rows = b.rows.map((row, r) => {
+          const cells = widths.map((w, c) => layout(parseInline(cell(r, c), r === 0 ? 'F2' : 'F1', size), w - PAD * 2));
+          const height = Math.max(size * 1.5, ...cells.map((ls) => ls.reduce((a, l) => a + l.height, 0))) + PAD;
+          return { cells, height };
         });
-        y -= PARA_GAP;
+
+        y -= 2;
+        rows.forEach((row, r) => {
+          if (y - row.height < MARGIN + 30) {
+            newPage();
+            y -= 2;
+          }
+          const top = y;
+          if (r === 0) cur.ops.push(`${HEAD_BG} rg ${MARGIN} ${(top - row.height).toFixed(2)} ${CONTENT_W.toFixed(2)} ${row.height.toFixed(2)} re f`);
+          let x = MARGIN;
+          row.cells.forEach((lines, c) => {
+            let cy = top - PAD * 0.6;
+            for (const line of lines) {
+              cy -= line.height;
+              for (const piece of line.pieces) {
+                if (!piece.text.trim()) continue;
+                const color = piece.color ? `${piece.color[0]} ${piece.color[1]} ${piece.color[2]} rg ` : `${INK} rg `;
+                cur.ops.push(`BT ${color}/${piece.font} ${piece.size} Tf 1 0 0 1 ${(x + PAD + piece.x).toFixed(2)} ${cy.toFixed(2)} Tm (${pdfStr(toWinAnsi(piece.text))}) Tj ET`);
+                if (piece.link) {
+                  cur.annots.push(`<< /Type /Annot /Subtype /Link /Border [0 0 0] /Rect [${(x + PAD + piece.x).toFixed(2)} ${(cy - 2).toFixed(2)} ${(x + PAD + piece.x + piece.w).toFixed(2)} ${(cy + piece.size).toFixed(2)}] /A << /S /URI /URI (${pdfStr(piece.link)}) >> >>`);
+                }
+              }
+            }
+            x += widths[c];
+          });
+          y = top - row.height;
+          cur.ops.push(`${r === 0 ? RULE : RULE_SOFT} RG 0.5 w ${MARGIN} ${y.toFixed(2)} m ${(PAGE_W - MARGIN).toFixed(2)} ${y.toFixed(2)} l S`);
+        });
+        y -= PARA_GAP + 2;
         break;
       }
     }
@@ -498,9 +576,18 @@ export function markdownToPdf(md: string, opts: MdPdfOptions = {}): Buffer {
 
   // Page numbers, added once the total is known.
   pages.forEach((pg, i) => {
+    const foot = (MARGIN - 26).toFixed(2);
+    pg.ops.push(`${RULE_SOFT} RG 0.5 w ${MARGIN} ${(MARGIN - 16).toFixed(2)} m ${(PAGE_W - MARGIN).toFixed(2)} ${(MARGIN - 16).toFixed(2)} l S`);
+    if (opts.title) {
+      // Clip rather than wrap: a footer that grows to two lines is worse than a truncated one.
+      let t = opts.title;
+      while (textWidth(t, 'F1', 8) > CONTENT_W * 0.6 && t.length > 4) t = t.slice(0, -2);
+      if (t !== opts.title) t += '…';
+      pg.ops.push(`BT ${MUTED} rg /F1 8 Tf 1 0 0 1 ${MARGIN} ${foot} Tm (${pdfStr(toWinAnsi(t))}) Tj ET`);
+    }
     const label = `${i + 1} / ${pages.length}`;
     const w = textWidth(label, 'F1', 8);
-    pg.ops.push(`BT 0.55 0.55 0.55 rg /F1 8 Tf 1 0 0 1 ${(PAGE_W - MARGIN - w).toFixed(2)} ${(MARGIN - 18).toFixed(2)} Tm (${pdfStr(label)}) Tj ET`);
+    pg.ops.push(`BT ${MUTED} rg /F1 8 Tf 1 0 0 1 ${(PAGE_W - MARGIN - w).toFixed(2)} ${foot} Tm (${pdfStr(label)}) Tj ET`);
   });
 
   return assemble(pages, opts.title);
@@ -550,8 +637,18 @@ function assemble(pages: PageDraw[], title?: string): Buffer {
   return Buffer.concat(chunks);
 }
 
-/** Smallest a table column may be squeezed to before it stops carrying information. */
+/** Are these the same heading, allowing for the date/suffix an artifact title tends to carry? Compared on
+ *  letters alone so "Startup DNA — Airbtics" matches "Startup DNA - Airbtics (2026-08-20)". */
+function sameish(a: string, b: string): boolean {
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const [x, z] = [norm(a), norm(b)];
+  return !!x && (x === z || z.startsWith(x) || x.startsWith(z));
+}
+
+/** Smallest a table column may be squeezed to before it stops carrying information — characters for the
+ *  monospaced callers, points for the proportional grid. */
 const MIN_COL = 4;
+const MIN_COL_PT = 46;
 
 /**
  * Choose column widths that fit `budget` characters in total, clipping only the columns wide enough to
@@ -559,18 +656,25 @@ const MIN_COL = 4;
  * its full width, every wider one is clipped to the cap. That is what a reader wants from a squeezed
  * table — labels intact, long prose cells truncated.
  */
-export function fitColumns(want: number[], budget: number): number[] {
+export function fitColumns(want: number[], budget: number, min = MIN_COL): number[] {
   const total = want.reduce((a, w) => a + w, 0);
-  if (total <= budget) return want.slice();
-  let cap = MIN_COL;
-  for (;;) {
-    const used = want.reduce((a, w) => a + Math.min(w, cap), 0);
-    const next = want.reduce((a, w) => a + Math.min(w, cap + 1), 0);
-    if (next > budget || cap > 400) break;
-    cap++;
-    if (used === next) continue;   // no column is at the cap any more — nothing left to grow
+  if (total <= budget) {
+    // Room to spare: give it to the widest column rather than leaving a short table hugging the left
+    // margin — a grid that stops halfway across the page reads as broken layout, not as restraint.
+    const slack = budget - total;
+    if (slack > 1 && want.length) {
+      const widest = want.indexOf(Math.max(...want));
+      return want.map((w, i) => (i === widest ? w + slack : w));
+    }
+    return want.slice();
   }
-  return want.map((w) => Math.max(MIN_COL, Math.min(w, cap)));
+  let cap = min;
+  for (;;) {
+    const next = want.reduce((a, w) => a + Math.min(w, cap + 1), 0);
+    if (next > budget || cap > 10000) break;
+    cap++;
+  }
+  return want.map((w) => Math.max(min, Math.min(w, cap)));
 }
 
 /** Is this artifact one we can turn into a PDF? Markdown only for now — a `.txt` would work too, but

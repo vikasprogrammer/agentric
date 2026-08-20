@@ -81,7 +81,13 @@ assert(/\\350|è|caf/.test(uni), 'Latin-1 text survives');
 // ASCII would be a downgrade, and emitting them as raw UTF-8 would corrupt the stream.
 assert(/\x93hi\x94/.test(uni), 'curly quotes keep their real WinAnsi glyphs');
 assert(/\x97/.test(uni), 'an em dash is the WinAnsi em dash, not -- and not ?');
-assert(/\?/.test(uni), 'a glyph no standard font has becomes ? instead of corrupting the stream');
+assert(/\?/.test(uni), 'a meaningful glyph no standard font has becomes ? instead of corrupting the stream');
+// …but a decorative one is dropped: "## 🧬 Decode" rendering as "## ? Decode" reads as a broken renderer.
+const emoji = markdownToPdf('# \u{1F9EC} Decode\n\nDone \u2705\n').toString('latin1');
+assert(/\(Decode\) Tj/.test(emoji) && !/\(\?\) Tj/.test(emoji), 'emoji are dropped, not questioned');
+const circled = markdownToPdf('Phase \u2460 and \u2461, roughly \u2248 3\n').toString('latin1');
+assert(/\(1\) Tj/.test(circled) && /\(2,\) Tj/.test(circled), 'circled digits become digits');
+assert(/~/.test(circled) && !/\?/.test(circled), 'maths symbols get ASCII equivalents');
 const arrows = markdownToPdf('one → two ✓\n').toString('latin1');
 assert(/->/.test(arrows) && /\(one\) Tj/.test(arrows), 'a character with no WinAnsi glyph falls back to ASCII');
 
@@ -106,7 +112,10 @@ assert(pageCount >= 2, `the page tree reports ${pageCount} pages`);
 assert(new RegExp(`\\(1 / ${pageCount}\\) Tj`).test(long), 'page numbers know the total');
 
 console.log('\n\x1b[1m5b) Table columns: clip the wide ones, keep the narrow ones whole\x1b[0m');
-assert(JSON.stringify(fitColumns([5, 8, 10], 100)) === JSON.stringify([5, 8, 10]), 'a table that fits is left alone');
+// A table with room to spare keeps every column's natural width and hands the slack to the widest one,
+// so the grid spans the text column instead of stopping halfway across the page.
+const roomy = fitColumns([5, 8, 10], 100);
+assert(roomy[0] === 5 && roomy[1] === 8 && roomy.reduce((a, w) => a + w, 0) === 100, 'a table that fits keeps its columns and fills the width', JSON.stringify(roomy));
 const squeezed = fitColumns([6, 90, 12], 60);
 assert(squeezed[0] === 6 && squeezed[2] === 12, 'narrow columns survive a squeeze intact — they carry the labels');
 assert(squeezed[1] < 90 && squeezed.reduce((a, w) => a + w, 0) <= 60, 'only the wide column is clipped, and the row fits');

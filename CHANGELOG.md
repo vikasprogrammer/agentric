@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.379.0] - 2026-08-20
+
+### Changed
+- **Markdown → PDF now looks like a document, not a terminal dump.** The first version set tables in
+  Courier and truncated cells to make them fit, which is what a data-heavy report is mostly made of —
+  so the whole export read as low effort. Tables are now a real grid: proportional text, per-cell word
+  wrap, natural column widths water-filled into the text column (narrow label columns keep their width,
+  and spare space goes to the widest column instead of leaving the grid short), a tinted header row and
+  hairline separators, with links inside cells still clickable. Nothing is truncated any more.
+  Also: wider margins and leading, a stronger heading scale with rules under H1/H2, a heading kept with
+  the two lines that follow it, an accent bar and hairline in the title block, a footer carrying the
+  document title beside the page number, near-black ink instead of pure black, and the artifact title no
+  longer printed twice when the document's own H1 says the same thing. Decorative emoji are dropped
+  rather than rendered as `?` (a stray `?` in a heading reads as a broken renderer), circled digits
+  ①②③ become 1/2/3, and `≈ ≤ ≥ ≠ ×` get ASCII equivalents.
+
 ## [0.378.2] - 2026-08-20
 
 ### Fixed
