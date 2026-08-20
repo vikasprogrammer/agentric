@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.380.0] - 2026-08-20
+
+### Added
+- **A proposed agent edit is now visible from the Agents roster.** When an agent proposes a change to
+  another agent (`agent_propose_update`), the review queue renders on the TARGET agent's settings page —
+  the one page nobody opens unless they already know something is waiting there. Each agent in the roster
+  (both the gallery cards and the split-view list) now carries a violet "N proposed" badge, and the task
+  composer's header gets a matching button that jumps straight to the queue. Owner-only endpoint, so the
+  badge simply never renders for anyone who couldn't approve it.
+
+### Changed
+- **Open review cards moved from Inbox → Activity to Inbox → "Needs you".** `skill.proposed`,
+  `skill.request`, `agent.update.proposed`, `goal.update.proposed`, `automation.proposed`,
+  `policy.proposal`, `secret.request`, `host.proposed`, `connection.request` and `app.proposed` are all
+  pending decisions that change nothing until a human acts, yet every one of them rendered as a muted,
+  read-only Activity row that scrolled away. They now render as action cards — each deep-linking to the
+  page that resolves it — and count toward the Inbox badge. An `agent.update.proposed` can be approved or
+  rejected in the card itself (owner only, the same gate `/api/agents/proposals/:id/approve` enforces),
+  with a "See the full diff" link through to the target's settings for the before → after.
+  Pinned by `scripts/proposal-surfacing-test.cjs` — the inline approve button only works because a review
+  card's MESSAGE id *is* its proposal id, which nothing had ever asserted.
+
 ## [0.379.0] - 2026-08-20
 
 ### Changed
