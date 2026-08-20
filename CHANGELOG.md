@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.375.0]
+### Changed
+- **A completion no longer resurrects a cold caller — the poke-back's resume lane is priced by what the
+  wake is FOR.** The wake queue's three lanes are not equally expensive: injecting into a live pane is
+  free and in-context, while `--resume`ing an exited caller costs a session in which the agent re-derives
+  the whole situation from a blank context and re-decides what to tell the human. Measured on a live
+  tenant over 14 days: 140 wake-ups, 71 injected and 69 resumed (~$11.60 marginal each, 6.2 turns, ~15%
+  of that tenant's spend) — and **45 of the 69 resumes were plain "your delegate finished"**, while 21 of
+  the 69 filed a NEW task, which dispatches a run, which wakes a caller. One wrong first analysis rode
+  that loop into eight Discord messages in 68 minutes, three of them the same agent correcting its own
+  earlier correction. So a wake-up now carries a `kind`: `poke-done` injects into a live caller exactly as
+  before but is **dropped** at a cold one (audited `agent.poke.skipped`, `reason: 'done-cold-caller'`) —
+  nobody is stuck, the result is durable on the task and the owner already has the `task.notified` card;
+  `poke-blocked` (handed back) and `poke-stranded` (the delegate's run died) keep the full ladder, since
+  there the caller is the only one who can move the work. A mixed batch resumes and carries the
+  completions along free. `task_create`'s `poke_on_done` description now states this rather than promising
+  a wake-up it may not deliver. `docs/tasks-plan.md` §3.8; pinned by `scripts/wakeup-queue-test.cjs`.
+
+### Fixed
+- **Stopping a run from the console no longer spawns another agent 10 minutes later.** The stranded-task
+  sweep treated "the delegate's run ended without closing its task" as always meaning nobody is coming —
+  including when a human had just hit stop, which is the case where somebody very much is. On the live
+  fleet a founder killed a delegate at 09:28 and the sweep woke its caller at 09:38, which re-opened the
+  stopped work as a PR. `sweepStrandedTasks` now reads the `session.stopped` principal (`system` = the
+  reaper, an agent id = a self-stop, a member's email = a person) and a human halt is recorded but never
+  woken; a self-stop still wakes the caller, since the agent may have left work behind. New pin:
+  `scripts/stranded-human-stop-test.cjs`.
+
 ## [0.374.0]
 ### Added
 - **`/v2` session viewer — our own, not the terminal or a chat box.** Clicking a recent session opens a

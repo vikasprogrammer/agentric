@@ -14,7 +14,10 @@
  *   4 a wedged sibling holds the wake-up (never a rival claude, never a drop) and the retry delivers it;
  *   5 a wedged OWN transcript is still killed before resuming — that conversation has no other door;
  *   6 the concurrency cap defers the resume lane instead of dropping it;
- *   7 a wake-up that can never be delivered EXPIRES loudly — audit + an inbox card to the run's owner.
+ *   7 a wake-up that can never be delivered EXPIRES loudly — audit + an inbox card to the run's owner;
+ *   8 a `poke-done` INJECTS into a live pane but never resurrects a cold caller — good news is not worth a
+ *     claude, and resurrecting one is what fed the delegation loop (see the wakeups.ts module header);
+ *   9 a hand-back (`poke-blocked`) still resumes, and one in a batch carries the completions along.
  *
  * Isolated home; the session backend is stubbed, so no tmux and no real `claude` are involved.
  */
@@ -34,7 +37,7 @@ const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
 const { TerminalManager } = require(path.join(ROOT, 'dist/terminal.js'));
 const { Automations } = require(path.join(ROOT, 'dist/edge/automations.js'));
-const { MAX_ATTEMPTS } = require(path.join(ROOT, 'dist/edge/wakeups.js'));
+const { MAX_ATTEMPTS, WAKE_KIND_DONE } = require(path.join(ROOT, 'dist/edge/wakeups.js'));
 
 const aos = loadAgentOS();
 const tm = new TerminalManager(aos, 'http://127.0.0.1:0', path.join(HOME, 'tmux.sock'));
@@ -210,6 +213,53 @@ console.log('\n\x1b[1m7) a wake-up that can never land EXPIRES loudly\x1b[0m');
   assert(!!card, 'and a human is told what never landed — a silent pending row is the bug we started from', card);
   assert(card && card.audience_kind === 'member' && card.audience_id === alice.id, 'addressed to the run\'s owner', card);
   assert(livePanes.has('aos-' + sib), 'expiring never ends somebody else\'s run');
+}
+
+console.log('\n\x1b[1m8) a `poke-done` injects into a live caller but never RESUMES a cold one\x1b[0m');
+{
+  // Live caller: a completion is cheap and in-context — this lane is exactly what the poke was built for.
+  idleAgent();
+  const live = mkSession('cs-8', { status: 'done' });
+  const hit = q.enqueue({ agent: 'caller', transcript: 'cs-8', runAs: alice.id, source: 'tsk_8a', message: '✅ Really done: shipped', kind: WAKE_KIND_DONE });
+  assert(hit.ok && hit.sessionId === live && hit.via === 'inject', 'a live caller still hears it, in its own pane', hit);
+
+  // Cold caller: nobody is stuck, the result is durable in the task, the human already has the card.
+  idleAgent();
+  mkSession('cs-8b', { status: 'done', pane: false });
+  const before = spawned.length;
+  const r = q.enqueue({ agent: 'caller', transcript: 'cs-8b', runAs: alice.id, source: 'tsk_8b', message: '✅ Really done: shipped', kind: WAKE_KIND_DONE });
+  assert(!r.ok && !r.queued, 'a cold caller is left cold — decided, not deferred', r);
+  assert(spawned.length === before, 'NO claude spawned to deliver good news', spawned.slice(before));
+  const row = aos.db.prepare("SELECT * FROM agent_wakeups WHERE source = 'tsk_8b'").get();
+  assert(row.status === 'dropped', 'the row settles `dropped`, so it never expires into an inbox card', row);
+  const skip = aos.db.prepare("SELECT * FROM audit_events WHERE type = 'agent.poke.skipped' ORDER BY id DESC LIMIT 1").get();
+  assert(skip && JSON.parse(skip.data).reason === 'done-cold-caller', 'and the skip is audited next to the pokes that did fire', skip && skip.data);
+  q.sweep(5);
+  assert(spawned.length === before, 'and no tick resurrects it later', spawned.slice(before));
+}
+
+console.log('\n\x1b[1m9) a HAND-BACK still resumes — and carries any completions with it\x1b[0m');
+{
+  idleAgent();
+  mkSession('cs-9', { status: 'done', pane: false });
+  const before = spawned.length;
+  // The hand-off that earns the resume is held first (no headroom); the completion lands while it waits.
+  // Order matters and should: a completion arriving at a cold caller with nothing else pending is DECIDED
+  // on arrival (case 8), not parked in the hope that a hand-back turns up later to pay for a session.
+  q.enqueue({ agent: 'caller', transcript: 'cs-9', runAs: alice.id, source: 'tsk_9b', message: '⛔ Handed back: blocked on a key', kind: 'poke-blocked' }, { budget: 0 });
+  const r = q.enqueue({ agent: 'caller', transcript: 'cs-9', runAs: alice.id, source: 'tsk_9a', message: '✅ Really done: the easy half', kind: WAKE_KIND_DONE }, { budget: 5 });
+  assert(r.ok && r.via === 'resume', 'the caller is the only one who can move a blocked hand-off', r);
+  assert(spawned.length === before + 1, 'one session for the batch', spawned.slice(before));
+  const task = spawned[spawned.length - 1].task;
+  assert(task.includes('blocked on a key') && task.includes('the easy half'), 'the completion rides along free rather than being dropped', task.slice(0, 200));
+  assert(rows('pending').length === 0, 'nothing left pending', rows('pending'));
+
+  // A stranded delegate (its run died without closing) is the other resume-worthy class.
+  idleAgent();
+  mkSession('cs-9c', { status: 'done', pane: false });
+  const n2 = spawned.length;
+  const s = q.enqueue({ agent: 'caller', transcript: 'cs-9c', runAs: alice.id, source: 'tsk_9c', message: '⚠️ Ran out: it ended without closing', kind: 'poke-stranded' }, { budget: 5 });
+  assert(s.ok && s.via === 'resume' && spawned.length === n2 + 1, 'a stranding wakes the caller too', s);
 }
 
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m`);

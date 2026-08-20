@@ -44,6 +44,27 @@
  * wake-up stays pending for the next tick instead of falling through to a resume. The fall-through was
  * only there because there was nowhere to keep the message; now there is, and "late" beats "a second
  * claude in a live workspace".
+ *
+ * ## Not every wake-up is worth a claude ({@link WAKE_KIND_DONE})
+ *
+ * The three lanes are not equally priced. Injecting into a live pane is free and in-context: the caller
+ * reads the result inside the plan that produced the hand-off. RESUMING a cold caller is neither — it
+ * costs a session, and the woken agent comes back with a fresh context in which it re-derives the whole
+ * situation and re-decides what to tell the human. Measured on northwind over 14 days: 140 wake-ups, 71
+ * injected (~free) and 69 resumed (~$11.60 marginal each, 6.2 turns), and 21 of those 69 filed a NEW task
+ * — which dispatches a run, which wakes a caller, which files a task. The loop is self-feeding.
+ *
+ * So the resume lane now asks what the wake-up is FOR:
+ *
+ *  - `poke-done` — the delegate finished. Nobody is stuck. The result is already durable in the task
+ *    (`task_get`) and the human already has the `task.notified` card, so a cold caller is left cold and
+ *    the wake-up is **dropped**, audited `agent.poke.skipped`. 45 of those 69 resumes were this.
+ *  - `poke-blocked` / `poke-stranded` — the delegate handed the work BACK, or its run died without
+ *    closing. There the caller is the only one who can move it, and a resume is what it costs. Kept.
+ *
+ * A `poke-done` still injects into a live pane — cheap, in-context, exactly what it was built for. What
+ * goes away is resurrecting an agent to tell it good news. Any other `kind` (the legacy `poke`, a future
+ * `approval`) keeps the full ladder: this narrows on an explicit declaration, never by default.
  */
 import { newId } from '../id';
 import { AgentOS } from '../kernel';
@@ -56,6 +77,11 @@ export const MAX_ATTEMPTS = 5;
 export const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** Most agents woken in one sweep — bounds a backlog's blast radius on any single tick. */
 export const MAX_AGENTS_PER_SWEEP = 10;
+/**
+ * The wake class that is NOT worth spawning a claude for: a delegate finished and nobody is stuck (see the
+ * module header). Injects like any other wake-up; refuses only the resume lane.
+ */
+export const WAKE_KIND_DONE = 'poke-done';
 
 export interface WakeupInput {
   /** Caller agent id (bare, no `agent:` prefix). */
@@ -68,7 +94,10 @@ export interface WakeupInput {
   message: string;
   /** What woke it — a task id today. `(agent, source, kind)` is the dedupe key. */
   source: string;
-  /** Wake-up class; today only `poke`. Kept so a future "your approval landed" wake reuses the queue. */
+  /**
+   * Wake-up class. Also the resume lane's admission test: {@link WAKE_KIND_DONE} injects but never spawns
+   * (see the module header); `poke-blocked` / `poke-stranded` / anything else keeps the full ladder.
+   */
   kind?: string;
   /** Session title for the resume lane. */
   title?: string;
@@ -131,6 +160,10 @@ export class WakeupQueue {
     const newest = pending[pending.length - 1];
     const message = this.coalesce(pending);
     const principal = newest.run_as ? `member:${newest.run_as}` : 'system';
+    // Does this batch justify a claude if nothing is live? Only if at least ONE wake-up is somebody being
+    // stuck. Good news alone rides the inject lanes or not at all — the news is already in the task and
+    // the human already has the card. A mixed batch resumes and carries the completions along for free.
+    const doneOnly = pending.every((p) => p.kind === WAKE_KIND_DONE);
 
     // Lane 1 + 2 — a live pane. Prefer one bound to a pending wake-up's own transcript (the caller
     // continues its own plan); otherwise any live session of this agent. Liveness is `reachable` (the
@@ -154,12 +187,16 @@ export class WakeupQueue {
       // A wedged pane on the wake-up's OWN transcript is a dead end — that conversation can only be
       // continued by resuming it, so end the wedged run first (exactly as `chatSend` does) and fall
       // through. A wedged SIBLING is someone else's live work: leave it alone and retry next tick.
-      if (own) this.tm.stopSession(dest.id, 'system');
-      else return { ok: false, reason: 'sibling session did not accept the wake-up — queued for retry', queued: true };
+      if (!own) return { ok: false, reason: 'sibling session did not accept the wake-up — queued for retry', queued: true };
+      // …unless a resume was never on the table: killing a wedged run only to drop the news would cost
+      // the run and deliver nothing. Leave it alone and settle.
+      if (doneOnly) return this.dropDone(agentId, pending);
+      this.tm.stopSession(dest.id, 'system');
     }
 
     // Lane 3 — nothing of this agent is live. Resume the transcript in a fresh `poke:` run. One session
     // for ALL pending wake-ups: they were coalesced above, so N completions cost one claude, not N.
+    if (doneOnly) return this.dropDone(agentId, pending);
     if (opts.budget !== undefined && opts.budget <= 0) {
       this.bump(pending);
       return { ok: false, reason: 'at the concurrency cap — queued for the next tick', queued: true };
@@ -222,7 +259,32 @@ export class WakeupQueue {
       `\n\nHandle every one of them before you pick your own work back up.`;
   }
 
-  private settle(rows: Row[], status: 'delivered' | 'expired', via: string, sessionId: string | null): void {
+  /**
+   * Settle a batch of pure `poke-done` wake-ups that found no live pane. Not a failure and not a retry —
+   * a DECISION, so the row closes `dropped` rather than sitting pending until it expires into an inbox
+   * card. (Expiry means "we could not reach the caller and someone should know"; this means "there was
+   * nothing here worth reaching it for".) Audited so the count is visible next to the pokes that did fire.
+   */
+  private dropDone(agentId: string, rows: Row[]): WakeupDelivery {
+    this.settle(rows, 'dropped', 'none', null);
+    this.os.audit.append({
+      ts: Date.now(),
+      runId: '-',
+      tenant: this.os.tenant,
+      principal: 'system',
+      type: 'agent.poke.skipped',
+      data: {
+        caller: agentId,
+        source: rows[rows.length - 1].source,
+        sources: rows.length > 1 ? rows.map((r) => r.source) : undefined,
+        reason: 'done-cold-caller',
+        kind: WAKE_KIND_DONE,
+      },
+    });
+    return { ok: false, reason: 'caller is cold and the hand-off is done — the result stands in the task', queued: false };
+  }
+
+  private settle(rows: Row[], status: 'delivered' | 'expired' | 'dropped', via: string, sessionId: string | null): void {
     const now = Date.now();
     for (const r of rows) {
       this.db

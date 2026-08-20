@@ -79,6 +79,15 @@ const handOff = (title) => {
   return t.id;
 };
 const pokes = () => spawned.filter((s) => (s.spawnedBy || '').startsWith('poke:')).length;
+/** A live session of the caller on the given transcript — the inject destination for a wake-up. */
+const liveCaller = (cs) => {
+  const id = 'ses_live_' + (++n);
+  aos.db.prepare(`INSERT INTO term_sessions (id,agent,title,task,tmux,status,headless,resident,run_as,spawned_by,claude_session_id,created_at,updated_at)
+    VALUES (?,'caller','work','work',?,'running',1,0,?,?,?,?,?)`)
+    .run(id, 'aos-' + id, alice.id, alice.id, cs, Date.now(), Date.now());
+  livePanes.add('aos-' + id);
+  return id;
+};
 const skipAudit = () => aos.db.prepare("SELECT data FROM audit_events WHERE type = 'agent.poke.skipped'").all().map((r) => JSON.parse(r.data));
 const ownerCards = (taskId) => aos.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE session_id = ? AND audience_id = ?").get(`task:${taskId}`, alice.id).n;
 
@@ -119,9 +128,19 @@ console.log('\n\x1b[1m4) the flag cannot outlive the wait\x1b[0m');
   aos.tasks.update(id, { status: 'blocked', blockedOn: 'human', by: 'agent:delegate' });
   aos.tasks.update(id, { status: 'doing', by: 'agent:delegate' });
   assert(aos.tasks.get(id).blockedOn === undefined, 'leaving blocked clears it', aos.tasks.get(id));
+  // The caller is LIVE here, which is the lane a completion has always been for: it lands in the pane, in
+  // the plan that produced the hand-off. (A completion reaching a caller that has exited is a different
+  // question — it is dropped rather than resurrecting one; `wakeup-queue-test.cjs` case 8 pins that.)
+  const caller = liveCaller('cs-caller');
   const before = pokes();
   aos.tasks.update(id, { status: 'done', note: 'shipped', by: 'agent:delegate' });
-  assert(pokes() === before + 1, 'so the DONE poke is delivered — a stale flag can never mute a real result');
+  const wake = aos.db.prepare('SELECT * FROM agent_wakeups WHERE source = ?').get(id);
+  assert(wake && wake.status === 'delivered' && wake.delivered_via === 'inject' && wake.delivered_session === caller,
+    'so the DONE wake is delivered — a stale flag can never mute a real result', wake);
+  // (The `blocked-on-human` skip from the earlier block step stays on the record — what must NOT appear is
+  // a skip for the completion itself.)
+  assert(!skipAudit().some((d) => d.source === id && d.reason === 'done-cold-caller'), 'and the completion itself was never skipped', skipAudit());
+  assert(pokes() === before, 'delivering it into the live caller cost no new session');
 }
 
 console.log('\n\x1b[1m5) the caller closing its own hand-off still never self-wakes\x1b[0m');
