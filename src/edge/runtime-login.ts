@@ -27,6 +27,7 @@ import crypto from 'crypto';
 import { CodingRuntimeId, CODING_RUNTIMES } from '../types';
 import { SessionBackend } from './session-backend';
 import { RuntimeAccountStore } from '../state/runtime-accounts';
+import { credentialDirHasLogin, keychainForget } from './runtime-account-check';
 
 /** How long a half-finished login may hold a pane before it's swept (the human has to visit a browser,
  *  so this is generous; the OAuth code itself expires well inside it). */
@@ -222,7 +223,10 @@ export class RuntimeLoginManager {
 
     // Completion is the credential file the runtime itself wrote — checked before anything on screen, so
     // a finished login is registered even if the pane rendered something we don't recognise.
-    if (fs.existsSync(path.join(l.dir, CODING_RUNTIMES[l.runtime].credentialEnv.configDirFile))) return toState(this.finish(l));
+    // "Signed in" is a credential the runtime wrote — a FILE on Linux, a Keychain item on macOS (see
+    // credentialDirHasLogin). Checking only the file stranded every Mac login: the CLI printed
+    // "Logged in as …" and we timed out waiting for a file the platform never writes.
+    if (credentialDirHasLogin(l.runtime, l.dir)) return toState(this.finish(l));
 
     if (Date.now() - l.startedAt > TTL_MS) return toState(this.fail(l, 'the login timed out — start it again, or run it on the box and add the dir by path'));
 
@@ -249,6 +253,15 @@ export class RuntimeLoginManager {
       l.codeAt = undefined;
       l.answered = new Set();
       l.notice = 'that code was rejected — a fresh sign-in link is being prepared, open THAT one (the previous link is no longer valid)';
+      return toState(l);
+    }
+
+    // The CLI parks on "Login successful. Press Enter to continue…" after a good code. The credential is
+    // already stored by then, so this is only good manners — it lets the CLI exit instead of leaving a
+    // pane sitting on a prompt until we kill it.
+    if (/Login successful/i.test(pane) && !l.answered.has('login-done')) {
+      this.deps.backend.injectText('', l.tmux, '', true, true, 1);
+      l.answered.add('login-done');
       return toState(l);
     }
 
@@ -341,9 +354,13 @@ export class RuntimeLoginManager {
     try { this.deps.backend.kill('', l.tmux); } catch { /* pane may already be gone */ }
     if (opts?.keepDir) return;
     // Only ever removes a dir this manager created for this attempt, and only when it holds no login.
+    // On macOS "holds a login" means a Keychain item keyed by this dir's PATH — which outlives the dir.
+    // Forget it too: otherwise a later login into the same path silently inherits the abandoned account,
+    // and the pool would show one name while authenticating as someone else.
     try {
-      if (!fs.existsSync(path.join(l.dir, CODING_RUNTIMES[l.runtime].credentialEnv.configDirFile))) {
+      if (!credentialDirHasLogin(l.runtime, l.dir)) {
         fs.rmSync(l.dir, { recursive: true, force: true });
+        keychainForget(l.dir);
       }
     } catch { /* best effort */ }
   }

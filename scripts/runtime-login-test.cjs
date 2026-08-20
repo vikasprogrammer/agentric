@@ -159,6 +159,20 @@ s = m.start('claude-code', 'wrapped');
 s = m.poll(s.id);
 assert(s.phase === 'awaiting-code' && s.url === URL, 'a URL wrapped across rows is reassembled and surfaced whole', JSON.stringify(s));
 
+console.log('\n\x1b[1m2b) macOS keeps the login in the Keychain, not in the dir\x1b[0m');
+const { keychainServiceFor, credentialDirHasLogin } = require(path.join(ROOT, 'dist/edge/runtime-account-check.js'));
+// Pinned against the real items on a live Mac: claude names the item after sha256(configDir)[0..8]. Get
+// this wrong and every Mac login strands — the CLI signs in, and we wait out the grace for a file that
+// platform never writes.
+assert(keychainServiceFor('/Users/vmini/agent-os-data/instapods/runtime-accounts/claude-code/tools') === 'Claude Code-credentials-3cd0e6be',
+  'the Keychain service name is Claude Code-credentials-<sha256(dir)[0..8]>', keychainServiceFor('/tmp'));
+assert(keychainServiceFor('/a') !== keychainServiceFor('/b'), 'each config dir gets its own item — which is what makes rotation work on a Mac');
+const fileDir = path.join(HOME, 'has-file');
+fs.mkdirSync(fileDir, { recursive: true });
+fs.writeFileSync(path.join(fileDir, '.credentials.json'), '{}');
+assert(credentialDirHasLogin('claude-code', fileDir), 'a dir with the credential file counts as signed in (the Linux shape)');
+assert(!credentialDirHasLogin('claude-code', path.join(HOME, 'nothing-here')), 'an empty dir does not');
+
 console.log('\n\x1b[1m3) Guards on what may be started at all\x1b[0m');
 m = mk();
 const boom = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
@@ -191,6 +205,20 @@ m.cancel(orphanStart.id);
 
 assert(m.supported('codex').ok === false, 'a runtime whose login flow has not been walked is not offered');
 assert(m.supported('claude-code').ok === true, 'claude-code is offered');
+
+console.log('\n\x1b[1m3b) A login completes on the platform own storage\x1b[0m');
+// The completion check goes through credentialDirHasLogin, so a runtime that stores its login anywhere
+// that function recognises finishes the flow. Here: the file shape (portable); the Keychain shape is
+// pinned by its service-name vector above, since a test can't write another process's Keychain ACL.
+m = mk();
+pane = URL_SCREEN;
+s = m.start('claude-code', 'stored');
+s = m.poll(s.id);
+m.submitCode(s.id, 'good-code');
+writeLogin('stored');
+s = m.poll(s.id);
+assert(s.phase === 'done', 'the credential appearing completes the login', JSON.stringify(s));
+assert(!!aos.runtimeAccounts.get('claude-code', 'stored'), 'and the account is registered');
 
 console.log('\n\x1b[1m4) Cancel leaves nothing behind\x1b[0m');
 m = mk();

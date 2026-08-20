@@ -38,7 +38,7 @@ import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerAsk } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
-import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, RuntimeCheckResult } from './edge/runtime-account-check';
+import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, keychainHasLogin, RuntimeCheckResult } from './edge/runtime-account-check';
 import { refreshStaleUsage } from './edge/runtime-account-usage';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
@@ -4848,7 +4848,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const token = acct.kind === 'token'
         ? (acct.apiKeyRef ? os.secrets.getSync(os.tenant, '*', acct.apiKeyRef) : undefined)
         : (acct.configDir ? readConfigDirToken(acct.configDir) : undefined);
-      if (!token) return sendJson(res, 400, { error: acct.kind === 'token' ? 'token value not found in the vault' : 'no .credentials.json found in the credential dir' });
+      if (!token) {
+        // On macOS the login is a Keychain item whose ACL only claude holds, so there is no token for us
+        // to probe with. The account still LAUNCHES fine — say that, instead of implying it is broken.
+        const keychained = acct.kind === 'oauth' && !!acct.configDir && keychainHasLogin(acct.configDir);
+        return sendJson(res, 400, {
+          error: acct.kind === 'token' ? 'token value not found in the vault'
+            : keychained ? 'this account is signed in via the macOS Keychain, which only claude can read — it launches normally, but its usage can’t be probed from here'
+            : 'no .credentials.json found in the credential dir',
+        });
+      }
       const check = await checkClaudeToken(token);
       os.runtimeAccounts.recordCheck(runtime, name, { ok: check.ok, note: check.note, usage: check.usage });
       // A now-valid token re-enables a previously auto-disabled account; usage-exhaustion re-parks it limited.
