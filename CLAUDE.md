@@ -383,6 +383,15 @@ Key modules:
   policy gate — same posture as `slack_reply`. Each tool is a session-secret-gated loopback call to an `/api/*` route that sits BEFORE
   the member-auth gate. Canonical tool↔route↔store matrix + the governance notes:
   `docs/agent-mcp-tools.md`. See also `docs/memory-layer-plan.md`.
+- `src/edge/setup.ts` — the **install wizard's** status roll-up (`GET /api/setup`, console `#/setup` +
+  a dismissible banner): six post-install steps (runtime credential → company context → Composio key →
+  chat channel → team → agents). Deliberately **read-side only** — each step is re-derived from the store
+  that owns that setting and the wizard UI writes through that setting's EXISTING endpoint, so a step
+  finished by CLI/another admin ticks itself and no step can disagree with its Settings page. The only
+  state it owns is `settings: setup_state` (dismissal + per-step "not now" — intent isn't derivable).
+  Credential detection is best-effort by design and says so: pool → box `.credentials.json` → **macOS
+  Keychain** (a signed-in Mac has no creds FILE) → `ANTHROPIC_API_KEY` (reported `unknown`, not `done`).
+  Pinned by `scripts/setup-wizard-test.cjs`.
 - `src/state/kb.ts` — the **Knowledge Base plane** (`os.kb`): the shared, tenant-wide *living* wiki agents
   + humans co-author. Markdown on disk (`<home>/kb/<section>/<slug>.md`) + SQLite/FTS mirror, full
   **revision chain + revert**, auto-apply + audit (no gate). Agent tools `kb_search`/`kb_read`/`kb_write`/

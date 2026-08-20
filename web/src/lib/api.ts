@@ -1303,6 +1303,33 @@ export interface GovernanceThresholds {
   bulkDeleteCount: number
 }
 
+// ── install wizard ───────────────────────────────────────────────────────────────
+export type SetupStepId = 'claude' | 'company' | 'composio' | 'chat' | 'team' | 'agents'
+export interface SetupStep {
+  id: SetupStepId
+  title: string
+  why: string
+  /** Required steps gate "setup complete" and drive the console banner. */
+  required: boolean
+  /** `unknown` = there is evidence of a credential but the launch path can't be proven from here. */
+  status: 'done' | 'todo' | 'unknown'
+  /** Evidence behind the status ("2 accounts in the rotation pool") — never a secret. */
+  detail: string
+  skipped: boolean
+}
+export interface SetupStatus {
+  steps: SetupStep[]
+  done: number
+  total: number
+  /** Required steps neither done nor skipped. */
+  blocking: number
+  complete: boolean
+  dismissedAt: number | null
+  /** Whether this box can drive a runtime sign-in from the console. */
+  guidedLogin: boolean
+  guidedLoginWhy?: string
+}
+
 export interface IntegrationsResp {
   /** Never the raw key — only whether it's set and a masked hint (••••last4). */
   composio: { set: boolean; hint: string }
@@ -2033,6 +2060,13 @@ export const api = {
   killSwitch: () => call<{ engaged: boolean; reason?: string; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/kill-switch'),
   setKillSwitch: (engaged: boolean, reason?: string, haltSessions?: boolean) => call<{ ok: boolean; engaged: boolean; reason?: string; halted?: number; updatedBy?: string; error?: string }>('POST', '/api/settings/kill-switch', { engaged, reason, haltSessions }),
 
+
+  // Install wizard: one read-side roll-up of "what's still unconfigured". Fixing a step calls that
+  // setting's own endpoint (saveCompany, saveIntegrations, invite, …) — these three only read, skip
+  // and dismiss.
+  setup: () => call<SetupStatus & { error?: string }>('GET', '/api/setup'),
+  skipSetupStep: (step: SetupStepId, skip = true) => call<SetupStatus & { error?: string }>('POST', '/api/setup/skip', { step, skip }),
+  dismissSetup: (dismissed = true) => call<SetupStatus & { error?: string }>('POST', '/api/setup/dismiss', { dismissed }),
 
   settings: () => call<CompanySettings>('GET', '/api/settings'),
   saveCompany: (companyMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/company', { companyMd }),

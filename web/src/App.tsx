@@ -19,19 +19,20 @@ import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOT
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
+import { SetupPage, SetupBanner } from '@/setup'
 import { docPages } from '@/docs'
 import { Xterm } from './Xterm'
 
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'overview' | 'feed' | 'inbox' | 'cockpit' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'apps' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
+type Route = 'setup' | 'overview' | 'feed' | 'inbox' | 'cockpit' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'apps' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['overview', 'feed', 'inbox', 'cockpit', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'apps', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
+const ROUTES: Route[] = ['setup', 'overview', 'feed', 'inbox', 'cockpit', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'apps', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
 // The single source of truth for a page's human name — used for the header <h1> AND the browser-tab
 // title, so both always agree. The `agent` detail page appends the agent id at the call site.
 const ROUTE_TITLES: Record<Route, string> = {
-  overview: 'Overview', feed: 'Feed', inbox: 'Inbox', cockpit: 'Cockpit', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
+  setup: 'Set up', overview: 'Overview', feed: 'Feed', inbox: 'Inbox', cockpit: 'Cockpit', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
   'new-agent': 'New agent', agent: 'Agent', connectors: 'Connections', team: 'Team',
   automations: 'Automations', goals: 'Goals', tasks: 'Tasks', memory: 'Memory', insights: 'Insights',
   kb: 'Knowledge Base', skills: 'Skills', apps: 'Apps', files: 'Files', artifacts: 'Library', audit: 'Audit log',
@@ -1808,6 +1809,8 @@ function Console({ me }: { me: Member }) {
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
+          {route !== 'setup' && !fullBleed && <SetupBanner me={me} />}
+          {route === 'setup' && <SetupPage me={me} step={detail} onStep={(id) => nav('setup', id)} onDone={refreshState} />}
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} sessions={sessions} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
@@ -15301,6 +15304,9 @@ function SettingsPage({ me, state, tab: tabParam, onTab, onStateChange }: { me: 
         <TabButton on={tab === 'governance'} href={navHref('settings', 'governance')} onClick={() => setTab('governance')}>Governance</TabButton>
         <TabButton on={tab === 'policy'} href={navHref('settings', 'policy')} onClick={() => setTab('policy')}>Policy</TabButton>
         <TabButton on={tab === 'system'} href={navHref('settings', 'system')} onClick={() => setTab('system')}>System</TabButton>
+        {/* The wizard is dismissible, so it needs a way back — an install that grows a team or adds a
+            chat channel months later wants the same checklist. */}
+        <a className="mt-1 border-t px-3 py-2 text-xs text-muted-foreground hover:text-foreground" href="#/setup">Setup checklist →</a>
       </div>
       <div className="min-w-0 flex-1">
         {tab === 'company' ? <CompanySettings me={me} />

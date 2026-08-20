@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.376.0] - 2026-08-20
+
+### Added
+- **Setup wizard** — a post-install checklist at `#/setup` (owner/admin), opened once automatically on
+  a new install and reachable afterwards from Settings → Setup checklist, plus a dismissible one-line
+  banner while work is outstanding. Six steps in the order they matter: sign in to a coding runtime
+  (drives the same guided login as Settings → Runtime accounts), write the company context (with a
+  starter outline, because an empty textarea reliably produces nothing), add a Composio API key,
+  connect Slack/Discord/Telegram, invite teammates with a role explainer, and install a first agent
+  from the catalog. `GET /api/setup` + `POST /api/setup/skip|dismiss` (`src/edge/setup.ts`).
+  Every step is **derived** from the store that owns its setting and fixed through that setting's
+  existing endpoint — so a step completed by CLI or another admin ticks itself, and the checklist can
+  never disagree with the Settings page behind it. Skipping is recorded as a decision (the step keeps
+  reporting its true status while it stops blocking), and dismissing hides the banner without faking
+  completion. Runtime-credential detection covers the pool, the box's `.credentials.json`, the **macOS
+  Keychain** (a signed-in Mac has no credentials file, so a file-only check would tell every Mac
+  operator to sign in again) and `ANTHROPIC_API_KEY` (reported as `unknown`, since the interactive TUI
+  may still want a subscription login). Pinned by `scripts/setup-wizard-test.cjs` (38 assertions, wired
+  into `npm run test:governance`).
+
 ### Documentation
 - Deployment: document the ttyd `-b /terminal` base-path gotcha — a trailing slash on the
   `/terminal/` `proxy_pass` strips the prefix, ttyd 404s the WebSocket upgrade, and the browser

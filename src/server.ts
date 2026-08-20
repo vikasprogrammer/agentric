@@ -44,6 +44,7 @@ import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { TelegramSocket } from './edge/telegram-socket';
 import { AppSupervisor } from './edge/app-supervisor';
+import { buildSetupStatus, skipSetupStep, dismissSetup, SETUP_STEP_IDS, type SetupStepId } from './edge/setup';
 import { DreamingEngine, recommendationResolved, guidanceStale } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
@@ -5025,6 +5026,34 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const halted = tm.stopAllRunning(me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'sessions.stop_all', data: { halted } });
     return sendJson(res, 200, { ok: true, halted });
+  }
+
+  // ── install wizard (the post-install checklist) ────────────────────────────────
+  // Read-side only: every step is re-derived from the store that owns that setting, and the wizard UI
+  // fixes a step by calling that setting's OWN endpoint (PUT /api/settings/company, …). The only state
+  // these two writers touch is "skip"/"dismiss" — see src/edge/setup.ts.
+  if (method === 'GET' && p === '/api/setup') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    // "Own" agents = the fleet minus what every install is seeded with; a seeded agent-author is not
+    // evidence that anybody has built a team yet.
+    const ownAgents = terminalAgents(os).filter((a) => !a.builtIn).length;
+    return sendJson(res, 200, buildSetupStatus(os, { ownAgents, guidedLogin: tm.logins.supported('claude-code') }));
+  }
+  if (method === 'POST' && p === '/api/setup/skip') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as { step?: unknown; skip?: unknown };
+    const step = String(b.step ?? '') as SetupStepId;
+    if (!SETUP_STEP_IDS.includes(step)) return sendJson(res, 400, { error: `unknown setup step: ${step}` });
+    skipSetupStep(os, step, b.skip !== false, me.email);
+    const ownAgents = terminalAgents(os).filter((a) => !a.builtIn).length;
+    return sendJson(res, 200, buildSetupStatus(os, { ownAgents, guidedLogin: tm.logins.supported('claude-code') }));
+  }
+  if (method === 'POST' && p === '/api/setup/dismiss') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as { dismissed?: unknown };
+    dismissSetup(os, b.dismissed !== false, me.email);
+    const ownAgents = terminalAgents(os).filter((a) => !a.builtIn).length;
+    return sendJson(res, 200, buildSetupStatus(os, { ownAgents, guidedLogin: tm.logins.supported('claude-code') }));
   }
 
   // ── company settings (workspace-wide context injected into every claude-code agent) ──
