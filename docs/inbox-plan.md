@@ -47,6 +47,18 @@ Three design choices make it robust:
 
 The first three are **"Needs you"**; the rest are **"Activity"**.
 
+**Open review cards are "Needs you" too (v0.380.0).** `skill.proposed`/`skill.request`,
+`agent.update.proposed`, `goal.update.proposed`, `automation.proposed`, `policy.proposal`,
+`secret.request`, `host.proposed`, `connection.request` and `app.proposed` are the "an agent filed
+something for a human to decide" family (`REVIEW_KINDS` in `web/src/App.tsx`, mirroring
+`REVIEW_PRESENTATION` in `src/tenant-registry.ts`). While `status = 'open'` they are pending decisions that
+change nothing until someone acts, so they render as action cards — each deep-linking to the page that
+resolves it — instead of scrolling away as muted Activity rows. An `agent.update.proposed` is decidable in
+the card itself (owner only, same gate the route enforces), because its review queue otherwise lives
+inside the TARGET agent's settings page, which is the one place a reviewer has no reason to open. That
+target also carries the flag on the **Agents roster** — a violet "N proposed" badge per agent, plus a
+button in the composer header.
+
 **Explicit-audience cards (`audience_kind`/`audience_id`).** Most cards inherit their visibility from the
 session that wrote them (`canViewRow` on the session's provenance/run-as). A card can instead **name its
 recipient** via an Audience (`member`/`admins`/`approvers`/`sessionOwner`) — then `canViewMessageRow`

@@ -2318,6 +2318,17 @@ function ShareAgentDialog({ me, agent, open, onOpenChange }: { me: Member; agent
   )
 }
 
+/** "N agents want to change this one" — the roster flag for open `agent_propose_update` cards targeting an
+ *  agent. Renders nothing at zero, so a clean fleet stays visually quiet. */
+function ProposedEditsBadge({ n, className = '' }: { n: number; className?: string }) {
+  if (!n) return null
+  return (
+    <Badge variant="outline" className={`shrink-0 gap-1 border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700 ${className}`} title={`${n} proposed edit${n === 1 ? '' : 's'} awaiting review`}>
+      <Pencil className="h-2.5 w-2.5 shrink-0" /> {n}
+    </Badge>
+  )
+}
+
 function AgentsPage({
   me, agents, sessions, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport, onRefresh, nav,
 }: {
@@ -2382,6 +2393,23 @@ function AgentsPage({
     }).catch(() => {})
     return () => { ok = false }
   }, [])
+
+  // Open cross-agent edit proposals, counted per TARGET agent. The review queue itself lives on the target's
+  // settings page, which meant a pending proposal was invisible from the roster you actually work in — this
+  // is the "someone wants to change this agent" flag, and it links straight to the queue. Owner-only
+  // endpoint (a 403 leaves the map empty, so the badge simply never renders for anyone else). Refetched
+  // when the selected agent changes, which is also what happens on the way back from approving one.
+  const [proposalCounts, setProposalCounts] = useState<Record<string, number>>({})
+  useEffect(() => {
+    let ok = true
+    api.agentUpdateProposals().then((r) => {
+      if (!ok) return
+      const counts: Record<string, number> = {}
+      for (const pr of r.proposals ?? []) counts[pr.target] = (counts[pr.target] ?? 0) + 1
+      setProposalCounts(counts)
+    }).catch(() => {})
+    return () => { ok = false }
+  }, [selected])
 
   // The chosen agent is driven by the URL (`#/agents/<id>`) so a refresh keeps it. When the URL names
   // no agent (a bare `#/agents`), fall back to the last one you used (remembered across visits) then
@@ -2470,6 +2498,16 @@ function AgentsPage({
         <RuntimeBadge runtime={agent.runtime} />
         {agent.builtIn && <BuiltInBadge />}
         <div className="ml-auto flex items-center gap-1">
+          {(proposalCounts[agent.id] ?? 0) > 0 && (
+            <Button
+              render={<a href={navHref('agent', agent.id)} />}
+              size="sm" variant="outline" className="h-8 shrink-0 gap-1 border-violet-300 px-2 text-xs text-violet-700"
+              onClick={onNavClick(() => onEdit(agent.id))}
+              title="another agent proposed an edit to this one — review it"
+            >
+              <Pencil className="h-3.5 w-3.5" /> {proposalCounts[agent.id]} proposed {proposalCounts[agent.id] === 1 ? 'edit' : 'edits'}
+            </Button>
+          )}
           {(autoCounts[agent.id] ?? 0) > 0 && (
             <Button
               render={<a href={navHref('automations', agent.id)} />}
@@ -2592,6 +2630,7 @@ function AgentsPage({
                         <RuntimeBadge runtime={a.runtime} />
                         {a.builtIn && <BuiltInBadge />}
                         <MaturityBadge s={maturity[a.id]} />
+                        <ProposedEditsBadge n={proposalCounts[a.id] ?? 0} />
                       </span>
                       {a.description && <span className="line-clamp-2 text-[11px] text-muted-foreground">{a.description}</span>}
                     </a>
@@ -2620,6 +2659,7 @@ function AgentsPage({
                       <span className="truncate">{a.id}</span>
                       <span className="ml-auto flex shrink-0 items-center gap-1">
                         {liveRunOf(a.id) && <SessionStatus s={liveRunOf(a.id)!} iconClass="h-3.5 w-3.5" />}
+                        <ProposedEditsBadge n={proposalCounts[a.id] ?? 0} />
                         <MaturityBadge s={maturity[a.id]} />
                         {a.builtIn && <BuiltInBadge />}
                       </span>
@@ -4580,11 +4620,43 @@ function SessionsPage({
 }
 
 // ── Inbox ──────────────────────────────────────────────────────────────────────
-/** An item needs the human: an unresolved approval, an unanswered question, or a session that fired a
- *  Notification (Claude is blocked waiting on a permission prompt / idle input). */
+/** The "an agent filed something for a human to decide" family — a proposal or request that stays OPEN
+ *  until someone approves or rejects it, and changes nothing until they do. Each entry names the page
+ *  whose review UI resolves it; mirrors REVIEW_PRESENTATION in `src/tenant-registry.ts`, which builds the
+ *  same link for the out-of-band DM. Keyed loosely (`Record<string, …>`) because a card type can reach the
+ *  console before the `Msg` union names it. */
+const REVIEW_KINDS: Record<string, { page: Route; detail?: string; label: string }> = {
+  'skill.proposed': { page: 'skills', label: 'Skills' },
+  'skill.request': { page: 'skills', label: 'Skills' },
+  'host.proposed': { page: 'connectors', label: 'Connections' },
+  'connection.request': { page: 'connectors', label: 'Connections' },
+  'policy.proposal': { page: 'settings', detail: 'policy', label: 'Settings → Policy' },
+  'secret.request': { page: 'settings', detail: 'secrets', label: 'Settings → Secrets' },
+  'automation.proposed': { page: 'automations', label: 'Automations' },
+  'agent.update.proposed': { page: 'agents', label: 'Agents' },
+  'goal.update.proposed': { page: 'goals', label: 'Goals' },
+  'app.proposed': { page: 'apps', label: 'Apps' },
+}
+
+/** Where an open review card is acted on. An `agent.update.proposed` names its TARGET, so it deep-links to
+ *  that agent's settings page — where the review queue actually renders — rather than the Agents index. */
+function reviewTarget(m: Msg): { page: Route; detail?: string; label: string } | null {
+  const r = REVIEW_KINDS[m.type]
+  if (!r) return null
+  const tgt = (m.args as { target?: string } | undefined)?.target
+  if (m.type === 'agent.update.proposed' && tgt) return { page: 'agent', detail: tgt, label: `${tgt}’s settings` }
+  return r
+}
+
+/** An item needs the human: an unresolved approval, an unanswered question, a session that fired a
+ *  Notification (Claude is blocked waiting on a permission prompt / idle input) — or an open review card.
+ *  That last clause is why these are here at all: a proposal is a PENDING DECISION, but every one of them
+ *  used to render as a muted Activity row, so an agent's request to edit another agent (or install a skill,
+ *  or tighten a policy) scrolled away unnoticed and could only be found by opening the target's own page. */
 const isActionRequired = (m: Msg): boolean =>
   ((m.type === 'approval' || m.type === 'question') && m.status === 'pending') ||
-  (m.type === 'notification' && m.status === 'open')
+  (m.type === 'notification' && m.status === 'open') ||
+  (m.status === 'open' && !!REVIEW_KINDS[m.type])
 
 /** An agent flagged a progress update as a key milestone / heads-up (carried in `args.important`). */
 const isImportant = (m: Msg): boolean =>
@@ -6092,13 +6164,68 @@ function ApprovalBrief({ m }: { m: Msg }) {
   )
 }
 
-/** An action-required item (approval · question · waiting-notification) — a compact, coloured card with
- *  its controls inline. Pending only; once resolved the item drops into the read-only Activity feed. */
+/** The glyph for each open review card in "Needs you" — one per {@link REVIEW_KINDS} entry. */
+const REVIEW_ICON: Record<string, LucideIcon> = {
+  'skill.proposed': Sparkles, 'skill.request': Sparkles,
+  'host.proposed': Server, 'connection.request': Plug,
+  'policy.proposal': Shield, 'secret.request': KeyRound,
+  'automation.proposed': Zap, 'agent.update.proposed': Pencil,
+  'goal.update.proposed': Target, 'app.proposed': Package,
+}
+
+/** An action-required item (approval · question · waiting-notification · open review card) — a compact,
+ *  coloured card with its controls inline. Pending only; once resolved the item drops into the read-only
+ *  Activity feed. */
 function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: (tmux: string, title: string) => void; onDismiss: (id: string) => void }) {
   const [busy, setBusy] = useState(false)
   const [answer, setAnswer] = useState('')
+  const [hint, setHint] = useState('')
   const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
   const time = <span className="shrink-0 pt-0.5 text-[11px] tabular-nums text-muted-foreground">{timeAgo(m.createdAt)}</span>
+
+  // ── An agent filed a proposal / request for a human to decide. Every kind gets a card that deep-links
+  //    to the page that resolves it; an agent-edit proposal — the one whose review UI is buried inside the
+  //    TARGET agent's settings — is decidable right here, so an owner never has to go looking for it.
+  //    Resolving flips the card's status server-side, so the next poll drops it out of "Needs you". ──
+  const review = reviewTarget(m)
+  if (review) {
+    const Icon = REVIEW_ICON[m.type] ?? Pencil
+    const isAgentEdit = m.type === 'agent.update.proposed'
+    // Approving an agent edit is owner-only (rewriting another agent's prompt is an owner act), and the
+    // server re-checks — the buttons are hidden for everyone else rather than failing on click.
+    const canDecide = isAgentEdit && me.role === 'owner'
+    const decide = async (approve: boolean) => {
+      if (approve && !window.confirm(`Apply this edit to ${review.detail}?\n\nIt rewrites the agent's listing/CLAUDE.md and records a revertable revision. The change applies on the agent's next session.`)) return
+      setBusy(true); setHint('')
+      const r = approve ? await api.approveAgentUpdateProposal(m.id) : await api.rejectAgentUpdateProposal(m.id)
+      setBusy(false)
+      if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
+      setHint(approve ? 'applied' : 'rejected')
+    }
+    return (
+      <div className="rounded-lg border border-violet-300 bg-violet-50/40 px-3 py-2.5">
+        <div className="flex items-start gap-2.5">
+          <Icon className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
+          <div className="min-w-0 flex-1">
+            <MsgHeading m={m}>
+              <Badge variant="outline" className="shrink-0 border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">awaiting review</Badge>
+            </MsgHeading>
+            <div className="mt-1 whitespace-pre-line break-words text-xs text-muted-foreground"><InlineLinks text={m.body} /></div>
+          </div>
+          {time}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-6">
+          {canDecide && <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => decide(true)}>Approve &amp; apply</Button>}
+          {canDecide && <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => decide(false)}>Reject</Button>}
+          <Button render={<a href={navHref(review.page, review.detail)} />} size="sm" variant={canDecide ? 'ghost' : 'default'} className="h-7 px-2.5 text-xs">
+            {canDecide ? 'See the full diff' : `Review in ${review.label}`}
+          </Button>
+          {isAgentEdit && !canDecide && <span className="text-[11px] text-muted-foreground">an owner has to approve this one</span>}
+          {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
+        </div>
+      </div>
+    )
+  }
 
   // ── Notification — either "Claude is waiting on you" (session-backed) or a proactive insight alert
   //    (session-less; deep-links to the page that acts on it, never to a phantom session terminal). ──
