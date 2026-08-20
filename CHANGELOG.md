@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.378.0] - 2026-08-20
+
+### Added
+- **Download as PDF** for Markdown deliverables — a button in the Library detail pane and in the
+  full-screen viewer, backed by `GET /api/artifacts/:id/pdf` (same visibility gate as `/raw`, audited
+  `artifact.pdf.exported`). The PDF is rendered **on demand and never stored**, so editing the Markdown
+  can't leave a stale PDF beside it, and the `.md` stays the source of truth.
+  `src/edge/md-pdf.ts` is a dependency-free renderer: it uses only the 14 standard PDF fonts, so nothing
+  is embedded and no headless browser is needed on a box that already runs agents. It covers headings,
+  paragraphs, lists (with hanging indents), fenced code on a tint, block quotes, rules, tables as
+  monospaced rows, and inline bold/italic/code/links — links as real PDF annotations, so they stay
+  clickable. Text is laid out with the fonts' actual AFM metrics rather than an estimate, curly quotes /
+  en–em dashes / bullets keep their real WinAnsi glyphs, accented Latin survives, and anything a standard
+  font can't draw degrades to an ASCII stand-in instead of corrupting the stream. Markdown only for now —
+  the button promises exactly what the renderer delivers. Pinned by `scripts/md-pdf-test.cjs` (48
+  assertions incl. xref offsets that really point at their objects, and no run extending past the margin).
+
 ## [0.377.1] - 2026-08-20
 
 ### Fixed

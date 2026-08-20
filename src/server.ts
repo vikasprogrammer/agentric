@@ -44,6 +44,7 @@ import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { TelegramSocket } from './edge/telegram-socket';
 import { AppSupervisor } from './edge/app-supervisor';
+import { markdownToPdf, isMarkdownArtifact } from './edge/md-pdf';
 import { buildSetupStatus, skipSetupStep, dismissSetup, SETUP_STEP_IDS, type SetupStepId } from './edge/setup';
 import { DreamingEngine, recommendationResolved, guidanceStale } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
@@ -6013,6 +6014,33 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const resolved = os.artifacts.readPath(a.id, url.searchParams.get('file') || undefined);
     if (!resolved) return sendJson(res, 404, { error: 'file not found' });
     return streamArtifactFile(req, res, resolved);
+  }
+  // Markdown deliverable → PDF, rendered on demand (never stored: the .md stays the source of truth, so
+  // an edit can't leave a stale PDF beside it). Same gate as /raw. Markdown only for now — the button
+  // promises exactly what it delivers.
+  const artPdfMatch = p.match(/^\/api\/artifacts\/([\w-]+)\/pdf$/);
+  if (method === 'GET' && artPdfMatch) {
+    const a = os.artifacts.get(artPdfMatch[1]);
+    if (!a) return sendJson(res, 404, { error: 'not found' });
+    if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam) return sendJson(res, 403, { error: 'forbidden' });
+    if (!isMarkdownArtifact(a.mime, a.filename)) return sendJson(res, 400, { error: 'only Markdown artifacts can be exported as PDF' });
+    const resolved = os.artifacts.readPath(a.id);
+    if (!resolved) return sendJson(res, 404, { error: 'file not found' });
+    let md: string;
+    try { md = fs.readFileSync(resolved.absPath, 'utf8'); } catch { return sendJson(res, 404, { error: 'file not readable' }); }
+    const when = new Date(a.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    const pdf = markdownToPdf(md, { title: a.title || a.filename, subtitle: `${a.agent} · ${when}` });
+    const name = a.filename.replace(/\.(md|markdown)$/i, '') + '.pdf';
+    os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: me.email, type: 'artifact.pdf.exported', data: { id: a.id, filename: name, bytes: pdf.length } });
+    res.writeHead(200, {
+      'content-type': 'application/pdf',
+      'content-length': String(pdf.length),
+      // attachment, not inline: this route exists because someone asked for a FILE to send on.
+      'content-disposition': `attachment; filename="${name.replace(/[^\w.\-]+/g, '_')}"`,
+      'cache-control': 'no-store',
+    });
+    res.end(pdf);
+    return;
   }
   const artMatch = p.match(/^\/api\/artifacts\/([\w-]+)$/);
   // Move an artifact into a folder ('' = root). Same gate as delete: owner/admin, or the member whose
