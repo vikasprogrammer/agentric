@@ -48,7 +48,12 @@ export interface SessionBackend {
   /** Type into a live pane. `verify` (default true) asks the backend to CONFIRM the text became a turn
    *  rather than parking in the composer; pass false when the session is mid-turn, where parking is the
    *  correct behaviour and confirming it would report a working agent as failed. */
-  injectText(space: string, tmuxName: string, text: string, submit: boolean, verify?: boolean): boolean;
+  /** `enterPresses` (default {@link SUBMIT_ATTEMPTS}) is how many times Enter is pressed after the text
+   *  settles. Two is right for an agent composer, where a swallowed Enter parks the message. It is WRONG
+   *  for a one-shot CLI prompt: there the second Enter lands on whatever screen the first produced — on
+   *  claude's login that is "Press Enter to retry", so the stray press silently re-armed the flow with a
+   *  fresh PKCE challenge while the console still showed the old link. Pass 1 for prompts like that. */
+  injectText(space: string, tmuxName: string, text: string, submit: boolean, verify?: boolean, enterPresses?: number): boolean;
   /** Live tmux session names, or null when liveness can't be polled (→ rely on end signals). */
   aliveNames(): Set<string> | null;
   /** Per-session resident memory: tmux session name → summed RSS **in KiB** of that session's pane
@@ -183,13 +188,13 @@ export class LocalSessionBackend implements SessionBackend {
    * actually carry it — see `docs/tasks-plan.md` §3.6 for the transcript-based check that should replace
    * this comment.
    */
-  injectText(_space: string, tmuxName: string, text: string, submit: boolean, _verify = true): boolean {
+  injectText(_space: string, tmuxName: string, text: string, submit: boolean, _verify = true, enterPresses = SUBMIT_ATTEMPTS): boolean {
     // `-l` = literal: send the bytes as typed, not as tmux key names (a path could contain `;`, `-`,
     // etc.). Submit is a SEPARATE send-keys with the `Enter` key name so it's interpreted as a return.
     const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, '-l', text], { stdio: 'ignore' });
     if (r.status !== 0) return false;
     if (!submit) return true;
-    for (let attempt = 1; attempt <= SUBMIT_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= Math.max(1, enterPresses); attempt++) {
       sleepSync(PASTE_SETTLE_MS * attempt);   // let the paste finish assembling before the Enter lands
       spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, 'Enter'], { stdio: 'ignore' });
     }
@@ -343,7 +348,7 @@ export class LauncherSessionBackend implements SessionBackend {
     void this.client.stopSession(space, tmuxName).catch(() => undefined);
   }
 
-  injectText(_space: string, _tmuxName: string, _text: string, _submit: boolean): boolean {
+  injectText(_space: string, _tmuxName: string, _text: string, _submit: boolean, _verify?: boolean, _enterPresses?: number): boolean {
     // Under uid isolation the session's tmux lives on a member-private (0700) socket the app can't
     // reach; injecting would need a launcher verb. Not yet supported — callers degrade gracefully
     // (the file is still saved; only the auto-typed reference is skipped).

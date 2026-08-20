@@ -234,10 +234,15 @@ function ClaudeStep({ status, onChanged }: { status: SetupStatus; onChanged: () 
             <span className="text-xs font-medium">Signing in as <span className="font-mono">{login.name}</span></span>
             <button className="text-xs text-muted-foreground hover:text-foreground" onClick={cancel}>Cancel</button>
           </div>
-          {login.phase === 'starting' && <Hint>Starting the runtime's sign-in — the authorization link appears here in a moment…</Hint>}
+          {login.notice && <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-400">{login.notice}</p>}
+          {login.phase === 'starting' && <Hint>{login.notice ? 'Preparing a fresh authorization link…' : "Starting the runtime's sign-in — the authorization link appears here in a moment…"}</Hint>}
           {login.phase === 'awaiting-code' && login.url && (
             <div className="space-y-2">
-              <Hint>1. Open the link and authorize, then 2. paste the code it gives you.</Hint>
+              <Hint>
+                1. Open the link and authorize, then 2. paste the code it gives you — the WHOLE string, including the
+                <span className="font-mono"> #…</span> tail. Each link is single-use: if a code is rejected, use the fresh
+                link that appears here, not the page you already have open.
+              </Hint>
               <Link href={login.url}>Open the authorization page</Link>
               <div className="flex items-center gap-2">
                 <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="paste code" className="h-8 w-72 font-mono text-xs" />

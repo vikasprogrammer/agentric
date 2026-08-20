@@ -139,7 +139,15 @@ export interface RuntimeSpecInfo {
 /** A guided sign-in in flight: the console starts it, shows `url` for the human to authorize, takes the
  *  code back, and the runtime's own CLI writes the credential dir. */
 export type LoginPhase = 'starting' | 'awaiting-code' | 'exchanging' | 'done' | 'failed'
-export interface RuntimeLogin { id: string; runtime: string; name: string; phase: LoginPhase; url?: string; error?: string; startedAt: number }
+export interface RuntimeLogin {
+  id: string; runtime: string; name: string; phase: LoginPhase; url?: string; error?: string
+  /** A recoverable hiccup while the flow CONTINUES — a rejected code, with a fresh link on the way.
+   *  Distinct from `error`, which ends the login. */
+  notice?: string
+  /** Codes rejected so far in this login. */
+  codeAttempts?: number
+  startedAt: number
+}
 /** `refreshing` = `<runtime>/<name>` for each account whose usage snapshot is being re-probed in the
  *  background right now (the read kicked it — see src/edge/runtime-account-usage.ts). The `accounts` in
  *  THIS response are the pre-probe reading, so a non-empty list means "read again shortly for fresh %". */
