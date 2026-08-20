@@ -50,6 +50,11 @@ export interface LoginState {
   url?: string;
   /** Why it failed, in operator language, with the manual fallback when relevant. */
   error?: string;
+  /** A recoverable hiccup the human needs to know about while the flow CONTINUES — today: the runtime
+   *  rejected a code and the pane has been re-armed with a fresh link. Cleared once they act on it. */
+  notice?: string;
+  /** How many codes have been rejected so far. Bounded by {@link MAX_CODE_ATTEMPTS}. */
+  codeAttempts: number;
   startedAt: number;
 }
 
@@ -107,8 +112,18 @@ const PROMPTS: { key: string; re: RegExp }[] = [
   { key: 'theme', re: /Choose the text style/i },
   { key: 'method', re: /Select login method/i },
 ];
-/** The CLI rejected the pasted code — worth surfacing verbatim rather than waiting out the TTL. */
+/** The CLI rejected the pasted code — worth surfacing verbatim rather than waiting out the TTL. Matches
+ *  both the older wording ("Invalid code provided") and what claude 2.1.237 prints for a bad/expired code
+ *  or a code exchanged against a stale PKCE challenge: `OAuth error: Request failed with status code 400`. */
 const BAD_CODE_RE = /(invalid|expired|failed).{0,30}(code|token|authoriz)/i;
+/** The CLI parks on this after a rejected code and re-runs the whole flow when Enter is pressed — which
+ *  mints a NEW authorize URL (new state + PKCE challenge). That is the recovery path, and also the reason
+ *  a stray Enter is destructive: it re-arms silently, so any code from the link the human already opened
+ *  is then guaranteed to fail. We press it deliberately and re-publish the fresh link. */
+const RETRY_PROMPT_RE = /Press Enter to retry/i;
+/** Rejected codes tolerated before giving up. Two is enough to cover a mistyped/half-copied paste without
+ *  looping a human through a URL that some environmental problem will reject every time. */
+const MAX_CODE_ATTEMPTS = 3;
 
 export class RuntimeLoginManager {
   private readonly logins = new Map<string, Login>();
@@ -190,7 +205,7 @@ export class RuntimeLoginManager {
       // needs no reassembly heuristic.
       cols: 900,
     });
-    const login: Login = { id, runtime, name: clean, phase: 'starting', startedAt: Date.now(), dir, tmux, answered: new Set() };
+    const login: Login = { id, runtime, name: clean, phase: 'starting', startedAt: Date.now(), dir, tmux, answered: new Set(), codeAttempts: 0 };
     this.logins.set(id, login);
     this.deps.audit('runtime.account.login.started', { runtime, name: clean, dir });
     return toState(login);
@@ -214,7 +229,28 @@ export class RuntimeLoginManager {
     const pane = this.deps.backend.capturePane('', l.tmux);
     if (pane == null) return toState(this.fail(l, 'the login process is no longer running — start it again'));
 
-    if (BAD_CODE_RE.test(pane)) return toState(this.fail(l, 'the runtime rejected that code — start again and copy the code from the browser exactly'));
+    // A rejected code is recoverable, and used to be treated as fatal. The CLI is sitting on "Press Enter
+    // to retry", which re-runs the flow and prints a NEW authorize URL — so drive that ourselves and hand
+    // the human a fresh link, rather than telling them to start over while the pane quietly re-arms with a
+    // challenge the link in their browser no longer matches. That mismatch is what made a second attempt
+    // fail as reliably as the first.
+    if (BAD_CODE_RE.test(pane)) {
+      if (l.codeAttempts >= MAX_CODE_ATTEMPTS) {
+        return toState(this.fail(l, `the runtime rejected ${l.codeAttempts} codes — sign in on the box with CLAUDE_CONFIG_DIR=${l.dir} claude, then add that dir by path`));
+      }
+      l.codeAttempts++;
+      this.deps.audit('runtime.account.login.code.rejected', { runtime: l.runtime, name: l.name, attempt: l.codeAttempts });
+      // Re-arm: press Enter on the retry prompt, drop the stale URL, and go back to waiting for the CLI to
+      // print the next one. `answered` is reset because the retry replays the same pre-browser prompts.
+      if (RETRY_PROMPT_RE.test(pane)) this.deps.backend.injectText('', l.tmux, '', true, true, 1);
+      l.phase = 'starting';
+      l.url = undefined;
+      l.urlSeenAt = undefined;
+      l.codeAt = undefined;
+      l.answered = new Set();
+      l.notice = 'that code was rejected — a fresh sign-in link is being prepared, open THAT one (the previous link is no longer valid)';
+      return toState(l);
+    }
 
     // Answer each pre-browser prompt once, by accepting its highlighted default.
     for (const p of PROMPTS) {
@@ -226,7 +262,7 @@ export class RuntimeLoginManager {
     }
 
     const url = extractAuthorizeUrl(pane);
-    if (url && l.phase === 'starting') {
+    if (url && l.phase === 'starting' && l.url === undefined) {
       if (looksWhole(url)) {
         l.phase = 'awaiting-code';
         l.url = url;
@@ -256,9 +292,14 @@ export class RuntimeLoginManager {
     if (l.phase !== 'awaiting-code') throw new Error(`this login is ${l.phase}, not waiting for a code`);
     const clean = code.trim();
     if (!clean) throw new Error('code required');
-    if (!this.deps.backend.injectText('', l.tmux, clean, true)) throw new Error('could not reach the login process — start it again');
+    // ONE Enter, deliberately: the backend's default double-press exists for an agent composer that can
+    // swallow the first one. Here the second lands on the screen the first produced — "Press Enter to
+    // retry" after a bad code — silently re-running the flow with a new PKCE challenge, so the console's
+    // link and the CLI's expectation drifted apart and every later code was rejected.
+    if (!this.deps.backend.injectText('', l.tmux, clean, true, true, 1)) throw new Error('could not reach the login process — start it again');
     l.phase = 'exchanging';
     l.codeAt = Date.now();
+    l.notice = undefined;
     return toState(l);
   }
 
@@ -320,5 +361,6 @@ export class RuntimeLoginManager {
 }
 
 const toState = (l: Login): LoginState => ({
-  id: l.id, runtime: l.runtime, name: l.name, phase: l.phase, url: l.url, error: l.error, startedAt: l.startedAt,
+  id: l.id, runtime: l.runtime, name: l.name, phase: l.phase, url: l.url, error: l.error,
+  notice: l.notice, codeAttempts: l.codeAttempts, startedAt: l.startedAt,
 });

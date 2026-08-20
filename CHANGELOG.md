@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.377.1] - 2026-08-20
+
+### Fixed
+- Guided runtime sign-in (Settings → Runtime accounts, and the setup wizard) kept rejecting valid codes.
+  Two causes, both ours. `injectText` presses Enter **twice** — right for an agent composer that can
+  swallow the first, wrong for a one-shot CLI prompt: the second press landed on claude's
+  `Press Enter to retry` screen, which silently re-runs the whole login with a **new PKCE challenge**,
+  so the link the human already had open no longer matched what the CLI was waiting for and every
+  subsequent code failed with `OAuth error: Request failed with status code 400`. The code is now
+  submitted with exactly one Enter (`injectText` takes an `enterPresses` count). And a rejected code is
+  treated as **recoverable** rather than fatal: the flow presses the retry prompt deliberately, waits for
+  the CLI's fresh authorize URL, and republishes it with a notice saying the earlier link is dead —
+  instead of telling the operator to "start again" while the pane re-armed behind their back. Bounded at
+  three rejections, then it hands over the manual `CLAUDE_CONFIG_DIR=… claude` path. Audited
+  `runtime.account.login.code.rejected`. Both sign-in surfaces now also say the code is the whole
+  string including its `#…` tail, and that each link is single-use.
+
 ## [0.377.0] - 2026-08-20
 
 ### Changed

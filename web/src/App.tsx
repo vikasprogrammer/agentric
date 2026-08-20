@@ -16932,11 +16932,16 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
                   <span className="text-xs font-medium">Signing in as <span className="font-mono">{login.name}</span></span>
                   <button className="text-xs text-muted-foreground hover:text-foreground" onClick={cancelLogin}>Cancel</button>
                 </div>
-                {login.phase === 'starting' && <p className="text-xs text-muted-foreground">Starting the runtime's sign-in — the authorization link appears here in a moment…</p>}
+                {login.notice && (
+                  <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-xs text-amber-700 dark:text-amber-400">{login.notice}</p>
+                )}
+                {login.phase === 'starting' && <p className="text-xs text-muted-foreground">{login.notice ? 'Preparing a fresh authorization link…' : "Starting the runtime's sign-in — the authorization link appears here in a moment…"}</p>}
                 {login.phase === 'awaiting-code' && login.url && (
                   <div className="space-y-2">
                     <p className="text-xs text-muted-foreground">
-                      1. Open this link and authorize as the account you're adding, then 2. paste the code it gives you.
+                      1. Open this link and authorize as the account you're adding, then 2. paste the code it gives you —
+                      the WHOLE string, including the <span className="font-mono">#…</span> tail. Each link is single-use: if a
+                      code is rejected, wait for the fresh link that appears here rather than re-using the page you already opened.
                     </p>
                     <div className="flex items-center gap-2">
                       <a href={login.url} target="_blank" rel="noreferrer" className="truncate text-xs text-blue-600 underline dark:text-blue-400">{login.url}</a>

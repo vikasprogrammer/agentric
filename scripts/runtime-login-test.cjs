@@ -33,7 +33,7 @@ const spawned = [], killed = [];
 const backend = {
   spawn: (_s, spec) => spawned.push(spec),
   capturePane: () => pane,
-  injectText: (_s, tmux, text, submit) => { typed.push({ tmux, text, submit }); return true; },
+  injectText: (_s, tmux, text, submit, _verify, enterPresses) => { typed.push({ tmux, text, submit, enterPresses }); return true; },
   kill: (_s, tmux) => killed.push(tmux),
 };
 const audits = [];
@@ -92,14 +92,40 @@ assert(s.phase === 'failed' && /no longer running/.test(s.error), 'a dead pane f
 assert(!aos.runtimeAccounts.get('claude-code', 'gone'), 'nothing is registered');
 assert(!fs.existsSync(path.join(accountsDir, 'claude-code', 'gone')), 'and the empty credential dir is cleaned up');
 
+// A rejected code is RECOVERABLE, and getting this wrong is what made the live failure self-perpetuating:
+// the CLI parks on "Press Enter to retry", and any Enter there re-runs the whole flow with a NEW PKCE
+// challenge. So a stray press (the composer's default double-Enter) silently invalidated the link the
+// human already had open, and their next code was rejected for a reason nothing on screen explained.
 m = mk();
 pane = URL_SCREEN;
 s = m.start('claude-code', 'badcode');
 s = m.poll(s.id);
+const beforeSubmit = typed.length;
 m.submitCode(s.id, 'nope');
-pane = 'Invalid code provided. Please try again.';
+assert(typed[beforeSubmit].enterPresses === 1, 'the code is submitted with exactly ONE Enter — a second lands on the retry prompt and re-arms the flow');
+pane = 'OAuth error: Request failed with status code 400\n Press Enter to retry.';
+const beforeRetry = typed.length;
 s = m.poll(s.id);
-assert(s.phase === 'failed' && /rejected that code/.test(s.error), 'a rejected code is surfaced instead of waiting out the timeout', JSON.stringify(s));
+assert(s.phase === 'starting' && !s.url, 'a rejected code re-arms the login instead of ending it', JSON.stringify(s));
+assert(/rejected/.test(s.notice || ''), 'and says so, telling the human the earlier link is dead', JSON.stringify(s));
+assert(s.codeAttempts === 1, 'the rejection is counted');
+assert(typed.length === beforeRetry + 1 && typed[beforeRetry].enterPresses === 1, 'exactly one Enter is pressed on the retry prompt');
+assert(audits.some((a) => a.type === 'runtime.account.login.code.rejected'), 'the rejection is audited');
+// The retry prints a FRESH url — that, not the stale one, is what the console must show.
+const URL2 = URL.replace('state=xyz', 'state=fresh2');
+pane = `Browser didn't open? Use the url below to sign in (c to copy)\n${URL2}\n Paste code here if prompted >`;
+s = m.poll(s.id);
+assert(s.phase === 'awaiting-code' && s.url === URL2, 'the fresh link replaces the dead one', JSON.stringify(s));
+m.submitCode(s.id, 'nope2');
+assert(!m.poll(s.id).notice, 'submitting again clears the stale notice');
+// …but it does not loop forever: a code that keeps failing ends with the manual fallback.
+for (let i = 0; i < 4 && m.poll(s.id).phase !== 'failed'; i++) {
+  pane = 'OAuth error: Request failed with status code 400\n Press Enter to retry.';
+  s = m.poll(s.id);
+  if (s.phase === 'starting') { pane = URL_SCREEN.replace('state=xyz', `state=r${i}`); s = m.poll(s.id); m.submitCode(s.id, 'nope'); }
+}
+assert(s.phase === 'failed' && /sign in on the box/.test(s.error), 'repeated rejections stop and hand over the manual path', JSON.stringify(s));
+assert(!aos.runtimeAccounts.get('claude-code', 'badcode'), 'nothing is registered from a failed login');
 
 m = mk();
 pane = THEME;
