@@ -562,6 +562,28 @@ in `src/types.ts` and `TeamStore.canRun()`.
   `/terminal/`+cookie → 200, no-cookie → 401, WS handshake (`Upgrade` + `Sec-WebSocket-Protocol: tty`) →
   101. Was isolated to umbrella (that one config was hand-written differently); jump-server + initech
   configs were clean.
+- **nginx gotcha on any hand-written vhost (hooli, 2026-08-20) — a trailing slash on the ttyd
+  `proxy_pass`.** The app launches ttyd with **`-b /terminal`**, so its WebSocket lives at
+  **`/terminal/ws`**. Writing the location as `proxy_pass http://127.0.0.1:3011/;` (**with** the trailing
+  slash) makes nginx strip the location prefix and ask ttyd for `/ws` — ttyd 404s the upgrade and drops
+  the connection, so the browser terminal is a **solid black pane** and the log shows
+  `GET /terminal/ws → 502` + `upstream prematurely closed connection while reading response header`.
+  Sessions meanwhile spawn and run perfectly (cost accrues, transcript written), so it reads as
+  "sessions are not spawning" when nothing is wrong with sessions. Fix = **drop the trailing slash**
+  (`proxy_pass http://127.0.0.1:3011;`) so the URI passes through unchanged. Note the 502 string is
+  identical to the umbrella `Connection: upgrade` gotcha above but the blast radius differs — that one
+  502s EVERY request, this one only `/terminal/ws`. Probe ttyd directly to tell them apart:
+  `curl -o /dev/null -w '%{http_code}' localhost:3011/terminal/` = 200 while `…:3011/ws` = 404 means the
+  base path is `/terminal` and your `proxy_pass` is rewriting it away. Verify the fix with the same WS
+  handshake as above → **101** with a cookie, **401** without.
+  ⚠ **Diagnostic trap while verifying:** `curl -b <jar>` against the loopback can return a misleading
+  **401** for `/terminal/` (the jar's `#HttpOnly_localhost` entry doesn't match), which looks exactly
+  like a broken `auth_request`. Re-test with an explicit `-H "Cookie: aos_sid=…"` before believing it.
+- **⚠ Ubuntu's `ttyd` apt package auto-enables a ROOT login shell.** `apt-get install ttyd` also installs
+  and **enables** `ttyd.service` — `/usr/bin/ttyd -W -i lo -p 7681 -O login` running as **root**, entirely
+  separate from the app-spawned ttyd on `TTYD_PORT`. It is loopback-bound, so not internet-reachable, but
+  it is a root shell on a box that runs agents and it returns on every reboot. Disable it on any box that
+  installs ttyd from apt: `sudo systemctl disable --now ttyd`.
 - **Hardened-unit gotcha — `ReadWritePaths=` dirs must pre-exist.** Under `ProtectHome=read-only` the
   unit fails to start with `status=226/NAMESPACE` (`Failed to set up mount namespacing: <path>: No such
   file or directory`) if any carve-out path is missing. On a fresh box `~/.config`/`~/.cache`/`~/.claude`

@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+### Documentation
+- Deployment: document the ttyd `-b /terminal` base-path gotcha — a trailing slash on the
+  `/terminal/` `proxy_pass` strips the prefix, ttyd 404s the WebSocket upgrade, and the browser
+  terminal renders as a black pane with `GET /terminal/ws → 502` while sessions run normally
+  (reads as "sessions won't spawn"). Added to the CLAUDE.md nginx gotcha list and the tenant
+  box-migration checklist, with the probe that distinguishes it from the backslash-403 and the
+  unconditional-`Connection: upgrade` 502, plus the cookie-jar false-401 diagnostic trap.
+- Deployment: note that Ubuntu's `ttyd` apt package auto-enables `ttyd.service`, a **root** login
+  shell on `:7681` separate from the app-spawned ttyd — disable it on any apt-installed box.
+
 ## [0.375.0]
 ### Changed
 - **A completion no longer resurrects a cold caller — the poke-back's resume lane is priced by what the
