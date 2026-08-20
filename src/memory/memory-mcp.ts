@@ -979,7 +979,7 @@ const TOOLS = [
         goalId: { type: 'string', description: 'Link this task to a strategic goal it advances (see goal_list for ids). Its progress then counts toward that goal.' },
         goal: { type: 'string', description: 'The single-line objective the delegate must achieve — the definition of done. On a headless auto-dispatched task the worker runs under this as a `/goal` and converges autonomously until it holds (alias for `criteria`). This is what to state when you delegate WITH a goal.' },
         criteria: { type: 'string', description: 'A single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". When set on a headless auto-dispatched task, the worker runs under this as a `/goal` and converges autonomously until it holds. Synonym of `goal`.' },
-        poke_on_done: { type: 'boolean', description: 'Async wake-up on completion: hand off, end your turn, and be woken automatically when the delegate finishes (or blocks) — no polling. The async counterpart to `wait` (which blocks in-line). DEFAULTS ON when you delegate to another agent, so the loop closes itself — set it to false only when you truly want fire-and-forget and do NOT need the result. Ignored on a self-assignment or an open/human task (no separate caller to wake).' },
+        poke_on_done: { type: 'boolean', description: 'Async wake-up: hand off, end your turn, and hear back without polling. The async counterpart to `wait` (which blocks in-line). DEFAULTS ON when you delegate to another agent. What it guarantees: a COMPLETION reaches you if you are still running when it lands, and stays on the task if you are not — it will not start a new run of you just to deliver good news; a HAND-BACK (blocked) or a delegate whose run dies WILL wake you even if you have exited, since only you can move those. So if you need the result to act on, either stay up, use `wait`, or read the task later. Ignored on a self-assignment or an open/human task (no separate caller to wake).' },
         dependsOn: { type: 'array', items: { type: 'string' }, description: 'Task ids this task is BLOCKED BY — it will not dispatch until they are all done. To encode a pipeline: file the earlier steps first, capture their ids from the results, and pass them here so this step waits for them.' },
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
@@ -2475,10 +2475,14 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
     const outcome = await taskWait({ id: d.id, timeoutSeconds: args.timeoutSeconds });
     return `Filed task ${d.id}: "${title}"${who}.\n${outcome}`;
   }
-  // poke_on_done (explicit or the agent→agent default) → don't poll or wait. End your turn; you'll be
-  // woken with the result the moment the delegate finishes (or blocks).
+  // poke_on_done (explicit or the agent→agent default) → don't poll or wait. End your turn; the result
+  // reaches you if you are still up when it lands. It is NOT a promise of a new run: a completion reaching
+  // a caller that has exited is dropped rather than resurrecting it (docs/tasks-plan.md §3.8), because the
+  // result is durable on the task and the owner already has the card. A hand-back or a dead delegate DOES
+  // wake a cold caller — those are the cases where the caller is the only one who can move the work. Say so
+  // plainly here: an agent told "you'll be woken" that then isn't will sit and wait for nothing.
   if (pokeOnDone) {
-    return `Filed task ${d.id}: "${title}"${who}. You'll be woken with the result when it finishes — you can end your turn now; no need to poll.`;
+    return `Filed task ${d.id}: "${title}"${who}. End your turn — no polling. The result comes to you if you're still running when it lands; if your run has ended by then it stays on the task (task_get "${d.id}"), and you'll only be woken back up if it comes back BLOCKED or its run dies.`;
   }
   return `Filed task ${d.id}: "${title}"${who}. Track it with task_get "${d.id}".`;
 }

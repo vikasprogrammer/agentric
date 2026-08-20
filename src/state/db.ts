@@ -788,12 +788,14 @@ function migrate(db: Db): void {
       tenant            TEXT NOT NULL,
       agent             TEXT NOT NULL,          -- the CALLER agent id (bare, no agent: prefix)
       source            TEXT NOT NULL,          -- what woke it — a task id today
-      kind              TEXT NOT NULL,          -- wake class: 'poke' (room for 'approval', …)
+      kind              TEXT NOT NULL,          -- wake class: 'poke-done' | 'poke-blocked' | 'poke-stranded'
+                                                -- (legacy 'poke'; room for 'approval', …). 'poke-done' is
+                                                -- inject-only — it never spawns a resume (edge/wakeups.ts).
       transcript        TEXT NOT NULL,          -- caller's pinned claude session id — the resume target
       run_as            TEXT,                   -- member the woken run acts as (identity passthrough)
       title             TEXT,                   -- session title for the resume lane
       message           TEXT NOT NULL,          -- must stand alone: a sibling session has no shared context
-      status            TEXT NOT NULL,          -- 'pending' | 'delivered' | 'expired'
+      status            TEXT NOT NULL,          -- 'pending' | 'delivered' | 'expired' | 'dropped'
       attempts          INTEGER NOT NULL DEFAULT 0,
       delivered_via     TEXT,                   -- 'inject' | 'inject-sibling' | 'resume' | 'none'
       delivered_session TEXT,                   -- the session that received it

@@ -591,11 +591,11 @@ export class Automations {
    * The delegate (task assignee) is always the actor, never the caller, so this can't self-wake. Audited
    * `agent.poked`.
    */
-  pokeCaller(input: { callerAgent: string; callerClaudeId: string; runAs?: string; message: string; source: string; title?: string }): FireResult {
+  pokeCaller(input: { callerAgent: string; callerClaudeId: string; runAs?: string; message: string; source: string; title?: string; kind?: string }): FireResult {
     const cap = this.concurrencyCap();
     const budget = cap > 0 ? Math.max(0, cap - this.tm.admissionSessionCount()) : Infinity;
     const r = this.wakeups.enqueue(
-      { agent: input.callerAgent, transcript: input.callerClaudeId, runAs: input.runAs, message: input.message, source: input.source, title: input.title },
+      { agent: input.callerAgent, transcript: input.callerClaudeId, runAs: input.runAs, message: input.message, source: input.source, title: input.title, kind: input.kind },
       { budget },
     );
     if (r.ok) return { ok: true, sessionId: r.sessionId, tmux: r.tmux };
