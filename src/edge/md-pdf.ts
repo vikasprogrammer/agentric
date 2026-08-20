@@ -471,12 +471,14 @@ export function markdownToPdf(md: string, opts: MdPdfOptions = {}): Buffer {
         // correctly at a glance, which is what a table in a report is for.
         const size = 8.6;
         const cols = Math.max(...b.rows.map((r) => r.length));
-        const widths: number[] = [];
-        for (let c = 0; c < cols; c++) widths.push(Math.max(...b.rows.map((r) => (r[c] ?? '').length)));
-        const total = widths.reduce((a, w) => a + w + 3, 0);
-        const budget = Math.floor((CONTENT_W) / ((W_MONO * size) / 1000));
-        const scale = total > budget ? budget / total : 1;
-        const fit = widths.map((w) => Math.max(3, Math.floor((w + 3) * scale) - 3));
+        const want: number[] = [];
+        for (let c = 0; c < cols; c++) want.push(Math.max(...b.rows.map((r) => (r[c] ?? '').length)));
+        const budget = Math.floor(CONTENT_W / ((W_MONO * size) / 1000)) - (cols - 1) * 2;
+        // Water-filling, not uniform scaling. Scaling every column by the same factor squeezes a narrow
+        // column (a 6-char label) as hard as a 90-char prose cell, and the label — the part that makes the
+        // row readable — is what disappears. Instead find the cap that fits and clip only the columns
+        // above it, so short columns always survive whole.
+        const fit = fitColumns(want, Math.max(cols * MIN_COL, budget));
         b.rows.forEach((row, ri) => {
           const text = row.map((cell, c) => (cell.length > fit[c] ? cell.slice(0, Math.max(1, fit[c] - 1)) + '…' : cell.padEnd(fit[c]))).join('  ');
           need(size * 1.4);
@@ -546,6 +548,29 @@ function assemble(pages: PageDraw[], title?: string): Buffer {
   out(`trailer\n<< /Size ${count} /Root 1 0 R /Info ${infoNum} 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`);
 
   return Buffer.concat(chunks);
+}
+
+/** Smallest a table column may be squeezed to before it stops carrying information. */
+const MIN_COL = 4;
+
+/**
+ * Choose column widths that fit `budget` characters in total, clipping only the columns wide enough to
+ * afford it. Raise a cap until the total reaches the budget: every column narrower than the cap keeps
+ * its full width, every wider one is clipped to the cap. That is what a reader wants from a squeezed
+ * table — labels intact, long prose cells truncated.
+ */
+export function fitColumns(want: number[], budget: number): number[] {
+  const total = want.reduce((a, w) => a + w, 0);
+  if (total <= budget) return want.slice();
+  let cap = MIN_COL;
+  for (;;) {
+    const used = want.reduce((a, w) => a + Math.min(w, cap), 0);
+    const next = want.reduce((a, w) => a + Math.min(w, cap + 1), 0);
+    if (next > budget || cap > 400) break;
+    cap++;
+    if (used === next) continue;   // no column is at the cap any more — nothing left to grow
+  }
+  return want.map((w) => Math.max(MIN_COL, Math.min(w, cap)));
 }
 
 /** Is this artifact one we can turn into a PDF? Markdown only for now — a `.txt` would work too, but

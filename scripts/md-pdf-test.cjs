@@ -24,7 +24,7 @@ delete process.env.AGENT_OS_SECRET_KEY;
 let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
-const { markdownToPdf, parseBlocks, parseInline, isMarkdownArtifact, textWidth } = require(path.join(ROOT, 'dist/edge/md-pdf.js'));
+const { markdownToPdf, parseBlocks, parseInline, isMarkdownArtifact, textWidth, fitColumns } = require(path.join(ROOT, 'dist/edge/md-pdf.js'));
 
 console.log('\n\x1b[1m1) Block parsing — a fence is text, not markdown\x1b[0m');
 const blocks = parseBlocks([
@@ -104,6 +104,16 @@ assert(/\/Type \/Page\b[\s\S]*\/Type \/Page\b/.test(long), 'a long document pagi
 const pageCount = Number(/\/Count (\d+)/.exec(long)[1]);
 assert(pageCount >= 2, `the page tree reports ${pageCount} pages`);
 assert(new RegExp(`\\(1 / ${pageCount}\\) Tj`).test(long), 'page numbers know the total');
+
+console.log('\n\x1b[1m5b) Table columns: clip the wide ones, keep the narrow ones whole\x1b[0m');
+assert(JSON.stringify(fitColumns([5, 8, 10], 100)) === JSON.stringify([5, 8, 10]), 'a table that fits is left alone');
+const squeezed = fitColumns([6, 90, 12], 60);
+assert(squeezed[0] === 6 && squeezed[2] === 12, 'narrow columns survive a squeeze intact — they carry the labels');
+assert(squeezed[1] < 90 && squeezed.reduce((a, w) => a + w, 0) <= 60, 'only the wide column is clipped, and the row fits');
+assert(fitColumns([80, 80, 80], 12).every((w) => w >= 4), 'an impossible budget still leaves every column readable');
+const tbl = markdownToPdf(['| Field | Value | Source |', '| --- | --- | --- |',
+  ['| Name | Airbtics, LLC | ', 'site footer plus a very long provenance note '.repeat(4), '|'].join('')].join('\n')).toString('latin1');
+assert(/\(Field/.test(tbl) && /Name/.test(tbl), 'the label column is not truncated away');
 
 console.log('\n\x1b[1m6) Links become real annotations\x1b[0m');
 const linked = markdownToPdf('See [the docs](https://example.com/docs) for more.\n').toString('latin1');

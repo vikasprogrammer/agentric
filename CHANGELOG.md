@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.378.1] - 2026-08-20
+
+### Fixed
+- Markdown → PDF: a table too wide for the page squeezed every column by the same factor, so a 6-char
+  label column ("Field", "Name") was clipped to `Na…` while a 90-char prose cell kept most of its text —
+  losing exactly the part that makes a row readable. Column widths are now water-filled: raise a cap
+  until the row fits, keep every column narrower than the cap whole, and clip only the ones above it.
+
 ## [0.378.0] - 2026-08-20
 
 ### Added
