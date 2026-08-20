@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.377.0] - 2026-08-20
+
+### Changed
+- `scripts/make-live.sh` deploys **every configured tenant on the box**, not just one. Targets come from
+  `AOS_LIVE_TARGETS="<tenant>:<checkout>:<port>[:<label>] …"` in the untracked env file (the older
+  single-tenant `AOS_LIVE_TENANT`/`CHECKOUT`/`LABEL`/`PORT`/`LOG` form still works when it's unset), and
+  `--only <tenant>` deploys one. Tenants sharing a checkout are synced and built once, then each service
+  restarted — which is why the phases are now build-everything-then-restart-everything: a broken commit
+  leaves EVERY server untouched instead of only the first one. Restarts run one tenant at a time and stop
+  at the first failed health check, naming the tenants that already moved plus the rollback command.
+  Fixes the standing footgun where a second tenant on the same box silently kept running old code because
+  the deploy script only ever kicked one launchd label.
+
 ## [0.376.0] - 2026-08-20
 
 ### Added

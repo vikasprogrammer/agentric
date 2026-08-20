@@ -84,10 +84,15 @@ terminal in a test". Leftovers show as `ttyd … attach.sh /tmp/aos-*-test-*/tmu
   KeepAlive, home `~/agent-os-data/northwind` (kept OUTSIDE the repo checkout so a spawned agent's
   parent-dir CLAUDE.md walk can't pick up this repo's own CLAUDE.md; new tenants go alongside as
   `~/agent-os-data/<slug>`), on :3010, fronted by `tailscale serve` http→3010): **"make it live" is
-  `scripts/make-live.sh`** — it syncs the dedicated live checkout (`~/agent-os-live`) to `origin/main`,
-  installs only if a lockfile moved, builds both bundles, gates on `npm run test:governance`, restarts
-  via `launchctl kickstart` (never `pkill`), and verifies `/health` reports the version it just built,
-  printing the rollback command if it doesn't. `--dry-run` shows what would deploy. The manual
+  `scripts/make-live.sh`** — it syncs each dedicated live checkout (`~/agent-os-live`, and any other
+  tenant's own) to `origin/main`, installs only if a lockfile moved, builds both bundles, gates on
+  `npm run test:governance`, restarts via `launchctl kickstart` (never `pkill`), and verifies `/health`
+  reports the version it just built, printing the rollback command if it doesn't. It deploys **every
+  tenant listed in `AOS_LIVE_TARGETS`** (`<tenant>:<checkout>:<port>[:<label>]`, space-separated, in the
+  untracked `~/.agentric-live.env`) — a second tenant on the box silently keeping old code because the
+  script only kicked one launchd label was a real recurring bug. All builds run BEFORE any restart, so a
+  bad commit leaves every server untouched; `--only <tenant>` narrows it, `--dry-run` shows what would
+  deploy. The manual
   equivalent is `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`; logs at
   `~/agent-os-data/northwind/server.log`; load/unload with `launchctl load -w|unload <plist>`.)
 - **Agent-facing MCP tools (`src/memory/memory-mcp.ts` — `recall`/`remember`/`revise`/`forget`, the
