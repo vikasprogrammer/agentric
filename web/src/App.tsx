@@ -7016,6 +7016,9 @@ function FullArtifactView({ id }: { id: string }) {
         <div className="ml-auto flex shrink-0 items-center gap-2">
           <a href={raw} target="_blank" rel="noreferrer"><Button size="sm" variant="ghost"><ExternalLink className="mr-1 h-4 w-4" />Raw</Button></a>
           <a href={raw} download={a.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
+          {isMarkdownArt(a) && (
+            <a href={api.artifactPdfUrl(a.id)}><Button size="sm" variant="secondary" title="Render this Markdown as a PDF"><FileText className="mr-1 h-4 w-4" />Download as PDF</Button></a>
+          )}
         </div>
       </header>
       <main className="px-4 py-6">
@@ -7588,6 +7591,11 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                         (image/pdf/video/html) open their raw URL, which the browser renders full-screen itself. */}
                     <a href={(isMarkdownArt(selected) || (isTextMime(selected.mime) && !isHtmlArt(selected))) ? `#/view/${selected.id}` : api.artifactRawUrl(selected.id)} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="secondary"><ExternalLink className="mr-1 h-4 w-4" />Open</Button></a>
                     <a href={api.artifactRawUrl(selected.id)} download={selected.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
+                    {/* Markdown only: the server renders it, so the promise on the button is one the
+                        renderer can keep. Other types already download as themselves. */}
+                    {isMarkdownArt(selected) && (
+                      <a href={api.artifactPdfUrl(selected.id)}><Button size="sm" variant="secondary" title="Render this Markdown as a PDF"><FileText className="mr-1 h-4 w-4" />PDF</Button></a>
+                    )}
                     {(me.role === 'owner' || me.role === 'admin' || selected.source === me.id) && (
                       <>
                         {(isMarkdownArt(selected) || (isTextMime(selected.mime) && !isHtmlArt(selected))) && editing !== selected.id && (

@@ -2206,6 +2206,8 @@ export const api = {
   editArtifact: (id: string, content: string) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('PUT', `/api/artifacts/${id}/content`, { content }),
   /** Direct URL to an artifact's bytes (for <img>/<iframe>/download). `file` selects a sibling (sites). */
   artifactRawUrl: (id: string, file?: string) => `/api/artifacts/${id}/raw${file ? `?file=${encodeURIComponent(file)}` : ''}`,
+  /** Markdown artifacts only — the server renders the PDF on demand and sends it as an attachment. */
+  artifactPdfUrl: (id: string) => `/api/artifacts/${id}/pdf`,
 
   // Hosted apps (owner/admin) — the management surface for small server-side apps.
   apps: () => call<{ apps: AppInfo[]; enabled: boolean }>('GET', '/api/apps'),
