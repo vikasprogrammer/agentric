@@ -23,6 +23,8 @@
  */
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { createHash } from 'crypto';
+import { spawnSync } from 'child_process';
 import { RuntimeUsage, RuntimeUsageWindow } from '../state/runtime-accounts';
 import { CodingRuntimeId, CODING_RUNTIMES } from '../types';
 
@@ -82,9 +84,50 @@ const describe = (u: RuntimeUsage): string => {
   return parts.length ? `valid · ${parts.join(' · ')} used` : 'valid';
 };
 
+/**
+ * Where claude actually keeps a credential dir's login on macOS.
+ *
+ * On Linux it writes `<dir>/.credentials.json`. On macOS it writes the **login Keychain** instead —
+ * one generic-password item per config dir, named `Claude Code-credentials-<first 8 hex of
+ * sha256(configDir)>` (the bare `Claude Code-credentials` is the default `~/.claude` login). That is
+ * why the pool still rotates correctly on a Mac — each account's dir maps to its own Keychain item —
+ * and why every "is this dir logged in?" check that only stats a file answers **no** on macOS for a dir
+ * that is perfectly signed in. That mismatch stranded the guided login: the sign-in succeeded, the pane
+ * said "Logged in as …", and the poll waited out its grace for a file the platform never writes.
+ *
+ * Existence is all we check. Reading the VALUE needs the item's ACL, which only claude itself holds
+ * (`security -w` exits 36), and prompting a human for their Keychain password from inside a web request
+ * is not a thing we will ever do — so a Keychain-stored account can be detected and launched, but not
+ * usage-probed. {@link readConfigDirToken} says so by returning undefined.
+ */
+export function keychainServiceFor(dir: string): string {
+  return `Claude Code-credentials-${createHash('sha256').update(dir).digest('hex').slice(0, 8)}`;
+}
+
+/** Does the macOS Keychain hold a login for this config dir? Metadata-only lookup — no ACL prompt.
+ *  Always false off darwin. */
+export function keychainHasLogin(dir: string): boolean {
+  if (process.platform !== 'darwin') return false;
+  try {
+    return spawnSync('security', ['find-generic-password', '-s', keychainServiceFor(dir)], { timeout: 4000, stdio: 'ignore' }).status === 0;
+  } catch { return false; }
+}
+
+/** Remove a config dir's Keychain login. Called when a login is abandoned or its dir archived: leaving
+ *  the item behind means a LATER login into the same path silently inherits the old account, which is the
+ *  worst outcome available (a pool row labelled one account, authenticating as another). Best-effort —
+ *  deletion can be refused by the item's ACL, so callers must not depend on it. */
+export function keychainForget(dir: string): boolean {
+  if (process.platform !== 'darwin') return false;
+  try {
+    return spawnSync('security', ['delete-generic-password', '-s', keychainServiceFor(dir)], { timeout: 4000, stdio: 'ignore' }).status === 0;
+  } catch { return false; }
+}
+
 /** Best-effort read of the OAuth access token from a `claude login` credential dir's `.credentials.json`
  *  (the `oauth` account kind). `claude` keeps this token fresh on disk, so a live read is current.
- *  Returns undefined when the dir/file/shape isn't present. */
+ *  Returns undefined when the dir/file/shape isn't present — INCLUDING on macOS, where the login lives in
+ *  the Keychain behind an ACL only claude holds. Such an account launches fine; it just can't be probed. */
 export function readConfigDirToken(dir: string): string | undefined {
   try {
     const j = JSON.parse(readFileSync(join(dir, '.credentials.json'), 'utf8'));
@@ -98,7 +141,11 @@ export function readConfigDirToken(dir: string): string | undefined {
  *  doesn't fall back to the box login, it drops the CLI into its interactive login picker and the run hangs
  *  there until the reaper — so both the add handler and the launcher refuse it. */
 export function credentialDirHasLogin(runtime: CodingRuntimeId, dir: string): boolean {
-  try { return existsSync(join(dir, CODING_RUNTIMES[runtime].credentialEnv.configDirFile)); } catch { return false; }
+  try {
+    if (existsSync(join(dir, CODING_RUNTIMES[runtime].credentialEnv.configDirFile))) return true;
+    // macOS keeps claude's login in the Keychain, not in the dir — see keychainServiceFor.
+    return runtime === 'claude-code' && keychainHasLogin(dir);
+  } catch { return false; }
 }
 
 /** Probe a Claude subscription OAuth token via a 1-token Messages call and read the usage headers. Never

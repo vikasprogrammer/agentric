@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.378.2] - 2026-08-20
+
+### Fixed
+- Guided runtime sign-in never completed **on macOS**: the pane showed `Logged in as …`, then the console
+  waited out its grace and reported "the runtime did not complete the sign-in". Claude writes
+  `<configDir>/.credentials.json` on Linux but stores the login in the **macOS Keychain** instead — one
+  generic-password item per config dir, `Claude Code-credentials-<sha256(configDir)[0..8]>` — so the
+  completion check was watching for a file the platform never writes. `credentialDirHasLogin` now
+  recognises either shape, which also means a Keychain-backed account is accepted by the launcher rather
+  than silently falling back to the box login. Abandoning a login now forgets its Keychain item too: the
+  item is keyed by PATH and outlives the deleted dir, so a later login into the same path would otherwise
+  inherit the earlier account — a pool row labelled one account while authenticating as another.
+  Refresh on such an account now explains that only claude can read the item (it launches fine, its usage
+  just can't be probed) instead of reporting a missing file. The CLI's post-login
+  `Press Enter to continue…` screen is dismissed rather than left parked.
+
 ## [0.378.1] - 2026-08-20
 
 ### Fixed
