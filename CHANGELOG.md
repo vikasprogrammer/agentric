@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.381.0] - 2026-08-22
+
+### Added
+- **Agents are now steered away from backgrounding work whose cleanup can't survive the tool call.** The
+  companion to v0.380.1: that release reaps the orphaned spinners after the fact, this one nudges the
+  agent before they exist. `ReliabilityMonitor` gains a second detector on the existing `instruct` channel
+  (allow + `additionalContext`, the one path verified to reach the model mid-turn). It fires only when a
+  shell command backgrounds a job (a bare `&` — not `&&`, `2>&1` or `&>`) **and** has no `trap` **and**
+  either cleans up on the happy path only (`kill %1`, `kill $!`, `jobs -p | xargs kill`) or spawns a
+  sleep-less `while` spin. A plain `npm run dev &` therefore stays quiet: it promised nothing that a dead
+  tool call could break. The note names the concrete fix (`trap 'kill 0' EXIT;`) and explicitly invites the
+  agent to ignore it when the processes are meant to outlive the command — the non-coercive framing §8a
+  showed the model heeds rather than flags as prompt-injection. Once per session per command shape, because
+  a nagging steer is one the model learns to ignore. Audited `reliability.detached_work`, same
+  `AOS_RELIABILITY=0` kill switch as the loop detector.
+
+  Detection lives in `src/edge/reliability.ts`, **not** in `terminal/gate-hook.sh`: the hook is dumb
+  transport (governance PR #2) and every riskiness judgement is made server-side, where it can be tested
+  and can't drift per runtime. Pinned by `scripts/detached-work-steer-test.cjs`.
+
 ## [0.380.1] - 2026-08-21
 
 ### Fixed
