@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.380.1] - 2026-08-21
+
+### Fixed
+- **The process janitor now reaps agent shells orphaned by a dead tool call.** On 2026-08-20 an agent ran a
+  Go race test under deliberate CPU contention — `(for i in $(seq 1 24); do (while :; do :; done) & done;
+  go test …; jobs -p | xargs kill)` — and the tool call died before the trailing `kill`. The 24 spinner
+  subshells were reparented to init and spun at ~30% CPU each for a day and a half: **load 29 on 12 cores**,
+  882 CPU-minutes apiece, every governed effect on the box queued behind them. Neither existing sweep could
+  see them — they hold no tmux socket (so the ttyd/tmux janitor skipped them) and they are in no
+  `term_sessions` row (so the session reaper never knew them). The janitor now also treats `PPID == 1` on a
+  process still carrying a claude-code Bash-tool argv (`… -c … /shell-snapshots/snapshot-…`) as proof of
+  unreachability: that argv only survives on a shell that forked without exec'ing, so its spawning `claude`
+  is gone and its output can never reach a session. A daemonised server (`nohup npm run dev &`) exec's and
+  therefore never matches. Same guards as the socket kinds — own uid, older than 10 minutes, seen on two
+  consecutive sweeps — and a survivor now escalates SIGTERM → SIGKILL instead of being re-TERMed forever.
+  Counts land on the existing `orphan.reaped` audit event as `shell`. Pinned by
+  `scripts/process-janitor-test.cjs`.
+
 ## [0.380.0] - 2026-08-20
 
 ### Added

@@ -390,9 +390,10 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     try { rt.tm.reapIdleSessions(); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
   }), 60_000);
   reaper.unref?.();
-  // Process janitor: reap ttyd/tmux left behind pointing at tmux sockets that no longer exist (see
-  // ProcessJanitor). Process-wide, not per-tenant — it scans the process table, not any DB. Audited onto
-  // the seed tenant with the counts, because a janitor that silently cleans up after a leak hides the leak.
+  // Process janitor: reap ttyd/tmux left behind pointing at tmux sockets that no longer exist, plus agent
+  // shells reparented to init by a dead tool call (see ProcessJanitor). Process-wide, not per-tenant — it
+  // scans the process table, not any DB. Audited onto the seed tenant with the counts, because a janitor
+  // that silently cleans up after a leak hides the leak.
   const janitor = new ProcessJanitor(() => {
     const live = new Set<string>();
     registry.forEach((rt) => { if (rt.os.paths?.tmuxSocket) live.add(rt.os.paths.tmuxSocket); });
@@ -401,10 +402,10 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   const janitorTimer = setInterval(() => {
     try {
       const r = janitor.sweep();
-      if (r.ttyd === 0 && r.tmux === 0) return;
+      if (r.ttyd === 0 && r.tmux === 0 && r.shell === 0) return;
       const os = registry.default()?.os;
-      console.log(`  [janitor] reaped ${r.ttyd} orphaned ttyd + ${r.tmux} orphaned tmux (unreachable sockets)`);
-      if (os) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'orphan.reaped', data: { ttyd: r.ttyd, tmux: r.tmux, pending: r.pending } });
+      console.log(`  [janitor] reaped ${r.ttyd} orphaned ttyd + ${r.tmux} orphaned tmux (unreachable sockets) + ${r.shell} orphaned agent shells (reparented to init)`);
+      if (os) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'orphan.reaped', data: { ttyd: r.ttyd, tmux: r.tmux, shell: r.shell, pending: r.pending } });
     } catch { /* never let the janitor crash the process */ }
   }, 5 * 60_000);
   janitorTimer.unref?.();
