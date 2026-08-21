@@ -4410,13 +4410,16 @@ export class TerminalManager {
 
     if (decision.effect === 'allow') {
       // Behavioural-failure watch (phase 3): the effect is allowed, but if it completes a no-progress
-      // LOOP we let it through WITH an advisory note — an `instruct` (allow + additionalContext) that
-      // nudges the agent to break the loop. Soft by design: the model may ignore it. Sub-agent calls
-      // don't carry a distinct run to loop within, so watch only top-level effects.
+      // LOOP — or backgrounds work whose cleanup can't survive the tool call — we let it through WITH an
+      // advisory note: an `instruct` (allow + additionalContext) nudging the agent. Soft by design: the
+      // model may ignore it. Sub-agent calls don't carry a distinct run to loop within, so watch only
+      // top-level effects.
       if (this.reliabilityOn && !sub) {
         const sig = this.reliability.observe(sessionId, capability, args, brief.headline, Date.now());
         if (sig) {
-          this.audit(sessionId, agent, 'reliability.loop', { capability, signature: brief.signature, count: sig.count });
+          const data: Record<string, unknown> = { capability, signature: brief.signature };
+          if (sig.kind === 'loop') data.count = sig.count; else data.reason = sig.reason;
+          this.audit(sessionId, agent, sig.kind === 'loop' ? 'reliability.loop' : 'reliability.detached_work', data);
           return { decision: 'allow', note: sig.note };
         }
       }
