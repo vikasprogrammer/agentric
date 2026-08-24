@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.389.0]
+### Changed
+- **`verbositySavings()` is retired; the console now reports terse ADOPTION, not savings.** The flag
+  shipped beside a query meant to falsify it — cost per turn, terse arm against normal arm, on live
+  traffic — and Settings → Runtime defaults rendered the deltas in green and amber. Four controlled
+  benchmark runs established that the query cannot mean what it was read to mean, so it is removed
+  rather than caveated. Three defects, none fixable from inside a query over `term_sessions`:
+  `output_tokens` is ~85% `tool_use` arguments and ~18% thinking, so it barely contains the narration
+  the brief compresses (against the live instapods DB it called terse 28–92% *worse* on four of five
+  agents — that was tool-use volume); dividing by turns lets the treatment move its own denominator
+  (`marketing-manager` read 92% worse per turn and 25% cheaper per session from the same rows); and
+  the two arms are a 2026-08-07 cutover rather than a split.
+  `verbosityAdoption()` replaces it — per-level session counts, per agent, over a trailing window, with
+  pre-flag rows kept in their own `unstamped` bucket so the panel cannot overstate the flag's reach. A
+  row count is a claim the data supports. `GET /api/settings/verbosity-savings` becomes
+  `GET /api/settings/verbosity-adoption`; the panel's caption now states the measured ceiling (~1% of
+  spend, because narration is a small share of what an agent emits) and points at
+  `npm run bench:verbosity` for the effect question, which belongs to a controlled experiment and not
+  to a comparison of live runs.
+  The removed test assertions were all **passing** — the arithmetic was correct throughout. That is the
+  point worth keeping: a well-tested number can still be the wrong number, and no amount of per-turn
+  hygiene turned `output_tokens` into a measure of narration.
+
 ## [0.388.0]
 ### Added
 - **`npm run bench:verbosity-turns` — the multi-turn harness, and the answer on per-turn

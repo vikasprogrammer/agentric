@@ -52,7 +52,7 @@ import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
 import { buildInsights } from './edge/insights';
-import { verbositySavings } from './edge/verbosity';
+import { verbosityAdoption } from './edge/verbosity';
 import { buildImprovements } from './edge/improvements';
 import { Diagnosis, ANALYST_ID } from './edge/diagnosis';
 import { Improver, proposalSlug, IMPROVER_ID } from './edge/improver';
@@ -4570,13 +4570,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, ...saved });
   }
 
-  // ── did terse output actually cost less? The measurement that ships WITH the verbosity flag, so the
-  //    claim can be checked against this workspace's own traffic instead of taken on faith. Read-only,
-  //    owner/admin (it exposes fleet-wide spend). `days` widens the trailing window.
-  if (method === 'GET' && p === '/api/settings/verbosity-savings') {
+  // ── how far has the terse flag actually spread? Counts only. The predecessor route
+  //    (/api/settings/verbosity-savings) reported cost-per-turn deltas and was retired in v0.389.0:
+  //    `output_tokens` is ~85% tool-call arguments, so it could not measure the narration the brief
+  //    acts on, and the console was rendering the result as a saving. The effect question belongs to
+  //    `npm run bench:verbosity` / `bench:verbosity-turns`, not to a query over live traffic.
+  //    Read-only, owner/admin. `days` widens the trailing window.
+  if (method === 'GET' && p === '/api/settings/verbosity-adoption') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const days = Math.max(1, Math.min(Math.floor(Number(url.searchParams.get('days')) || 30), 365));
-    return sendJson(res, 200, { windowDays: days, ...verbositySavings(os.db, days) });
+    return sendJson(res, 200, verbosityAdoption(os.db, days));
   }
 
   // ── fleet-wide sub-agent posture ('all' | 'none') — owner/admin only ──
