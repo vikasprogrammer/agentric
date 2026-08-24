@@ -937,7 +937,9 @@ export interface Automation {
   type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram' | 'clickup'
   mode: ExecMode
   schedule?: string
-  /** composio: trigger slug. slack: event type (app_mention/message) or channel id. webhook: a
+  /** composio: trigger slug. slack: event type (app_mention/message) or channel id, optionally
+   *  followed by `when`/`unless` clauses over the message (`C0ABUSE1 when text ~ "abuse report"`);
+   *  a channel-scoped filter also watches that channel for non-mention messages. webhook: a
    *  comma-separated event list (`convo.created, convo.note.*`). '' = any. */
   filter?: string
   /** webhook: dot path to the source's conversation id in the payload — follow-ups on the same

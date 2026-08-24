@@ -14,7 +14,7 @@ work*; automations answer *when the work starts*.
 | **Schedule (cron)** | a time rolls around | nightly reports, hourly health checks, a Monday digest |
 | **Webhook** | an HTTP call hits its private URL | wiring up an external tool or a "when X happens in our app" hook |
 | **Composio** | a connected third-party app emits an event | reacting to Stripe, GitHub, a form, etc. via Composio |
-| **Slack message** | the bot is @mentioned or DM'd | "hey @Agentric, /support look at this ticket" |
+| **Slack message** | the bot is @mentioned or DM'd — or a **watched channel** gets a matching message | "hey @Agentric, /support look at this ticket"; abuse reports landing in #trust-safety |
 | **Discord message** | the bot is @mentioned or DM'd | the same, in a Discord server or DM |
 
 Slack and Discord run over an **outbound** connection, so there's no public URL to expose — set the
@@ -43,6 +43,52 @@ is pinged in the console and by Slack/Discord DM, and nothing happens until they
 
 A **pile-up guard** stops a schedule from re-firing while its previous run is still alive, so a slow
 job never stacks copies of itself.
+
+## Watching a Slack channel
+
+A Slack automation's **trigger filter** is a scope, optionally followed by a condition:
+
+```
+<channel id | app_mention | message>  [ when … ]  [ unless … ]
+```
+
+Leave it blank and the automation fires on any Slack message the app receives. Name a **channel id**
+and two things happen:
+
+1. It fires only on that channel.
+2. That channel becomes a **watch** — messages there fire it *without* anyone @mentioning the bot.
+
+That second point is the difference between "an agent you summon" and "an agent that reads a
+channel". A report someone pastes, forwards, or relays into `#trust-safety` is not addressed to
+anybody; requiring an @mention would make the automation depend on the reporter remembering to
+summon it. (Only an automation scoped to that exact channel is woken this way — a blank or
+`*` filter keeps its old mention-and-DM behaviour, so turning this on for one channel can't change
+what your existing automations do.)
+
+### Conditions
+
+A watched channel carries ordinary conversation too, and *every* message would otherwise start a
+run. `when` / `unless` cut it down **before** a session is spawned:
+
+```
+C0ABUSE1 when text ~ "abuse report"
+C0ABUSE1 when text ~ "abuse" and text !~ "resolved"
+C0ABUSE1 unless actor == "Status Bot"
+```
+
+- `when` fires only if **every** condition holds; `unless` drops only if **every** condition holds.
+- Operators: `==`, `!=`, `~` (contains), `!~` (does not contain), joined by `and`. Case-insensitive.
+- `text` is the message with any bot mention stripped — what a human reads. `actor` is the sender's
+  resolved name. Any other field of the Slack event is reachable by its dot path (`files.0.name`).
+
+This is the same grammar webhook filters use, and it exists for the same reason: without it, the
+cheapest decision in the system — *"this message isn't mine"* — is made by a whole Claude session
+reading the prompt it was spawned with. An instruction in the agent's prompt can't help, because it
+runs **after** the spawn it was meant to prevent.
+
+> Messages posted by other **bots and apps** are ignored on every Slack path, watch included. If your
+> reports are delivered by an integration rather than typed by a person, send them to a **webhook**
+> automation instead — same conditions, full payload, real signature auth.
 
 ## You don't need an automation to reach an agent
 

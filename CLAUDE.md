@@ -240,7 +240,18 @@ Key modules:
   pinned claude id — headless runs now launch with `--session-id $CLAUDE_SESSION_ID` (stored in
   `term_sessions.claude_session_id`). Caveat: plain in-thread replies only reach the socket if the Slack app
   subscribes to `message.channels`/etc. AND the bot is in-channel (`app_mention` covers only @mentions). The
-  socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
+  **Filters + channel watch (v0.390.0):** a slack automation's `filter` is `<scope> [when …] [unless …]`
+  — the scope half keeps its old meaning (exact event type or channel id, '' / `*` = any) and the clause
+  half is `webhook-ingress.ts`'s predicate grammar (`evaluatePredicates`, split out of `evaluateFilter`)
+  over the Slack event, with `text` = the mention-stripped body and `actor` = the resolved sender. Naming
+  a channel id ALSO makes it a watch: `slack-socket.ts` stops dropping non-mention messages in that
+  channel and calls `fireSlack(…, { channelWatch: true, router: false })`. Narrow on purpose — only an
+  exactly-channel-scoped automation is woken (a `*` scope suddenly eating every channel message would
+  multiply a live tenant's spend with nobody having edited anything) and the `/agent` router never runs
+  there. Bot-posted messages are still dropped (`ev.fromBot`) — an integration that POSTS reports belongs
+  on a webhook automation. Slack filters are validated at save time (the predicate layer fails open at
+  runtime, so that's the only place a typo is caught). Pinned by `scripts/slack-content-filter-test.cjs`.
+  The socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
   (no `ws` dep). Slack here is INGRESS-native; Composio remains the webhook ingress lane.
 - `src/edge/discord-socket.ts` + `src/connectors/discord.ts` — **native Discord via the Gateway**: a
   one-for-one mirror of the Slack path. One company bot (single `Bot …` token in Settings → Integrations)

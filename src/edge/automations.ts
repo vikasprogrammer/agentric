@@ -30,6 +30,7 @@ import {
   THREAD_TTL_MS,
   deliveryKey,
   evaluateFilter,
+  evaluatePredicates,
   parseFilter,
   resolveEvent,
   threadKey,
@@ -157,6 +158,24 @@ export function recentCronOccurrence(spec: CronSpec, from: Date, windowMin: numb
  */
 export type ExecMode = 'interactive' | 'headless';
 
+// ── chat-trigger filters (slack/discord/telegram/clickup share this shape) ──────
+// A chat automation's `filter` is `<scope> [when …] [unless …]`. The scope half is an exact event-type
+// or channel/chat id (blank / `*` = any); everything from the first `when`/`unless` keyword on is a
+// payload predicate in the grammar `webhook-ingress.ts` already owns. Splitting them here means the
+// two halves never have to know about each other, and a filter with no clause parses to exactly its
+// historical scope string.
+
+/** The scope half of a chat filter, lowercased and trimmed. '' = match any. */
+function chatScope(filter: string | undefined): string {
+  return parseFilter(filter).events.trim().toLowerCase();
+}
+
+/** Does a chat scope admit this event? Exact match on the event type OR the channel/chat id. */
+function matchesChatScope(scope: string, eventType: string, channel: string): boolean {
+  if (!scope || scope === '*') return true;
+  return scope === eventType.trim().toLowerCase() || scope === channel.trim().toLowerCase();
+}
+
 export interface Automation {
   id: string;
   agentId: string;
@@ -177,8 +196,10 @@ export interface Automation {
   /** Shared key for POST /hooks/<id> (webhook type only). */
   secret?: string;
   /** Match filter. composio: the trigger slug (e.g. SLACK_DIRECT_MESSAGE_RECEIVED). slack: an event
-   *  type (`app_mention`/`message`) or a channel id to scope to. webhook: a comma-separated event list,
-   *  `prefix.*` allowed. '' / '*' = any event of that type. */
+   *  type (`app_mention`/`message`) or a channel id to scope to, optionally followed by the same
+   *  `when`/`unless` payload clauses webhook uses (`C0ABUSE1 when text ~ "abuse report"`) — see
+   *  {@link Automations.fireSlack}. webhook: a comma-separated event list, `prefix.*` allowed, plus
+   *  those clauses. '' / '*' = any event of that type. */
   filter?: string;
   /** Secret the SOURCE signs the request body with (webhook type). Set ⇒ an unsigned or badly signed
    *  delivery is refused, so the URL key stops being the only credential. See `webhook-ingress.ts`. */
@@ -489,7 +510,12 @@ export class Automations {
       filter = (input.filter || '').trim().toUpperCase(); // '' = any Composio trigger
       if (input.mode === undefined) mode = 'headless'; // event-driven runs are unattended by default
     } else if (input.type === 'slack') {
-      filter = (input.filter || '').trim(); // event type (app_mention/message) or channel id; '' = any
+      // `<scope> [when …] [unless …]` — scope is an event type (app_mention/message) or a channel id,
+      // '' = any. The predicate half fails OPEN at runtime, so save time is the only place a typo is
+      // ever caught; without this a mistyped clause reads as a working filter and fires on everything.
+      filter = (input.filter || '').trim();
+      const badSlack = validateFilter(filter);
+      if (badSlack) throw new Error(badSlack);
       if (input.mode === undefined) mode = 'headless'; // event-driven runs are unattended by default
     } else if (input.type === 'discord') {
       filter = (input.filter || '').trim(); // event type (mention/direct_message) or channel id; '' = any
@@ -623,7 +649,7 @@ export class Automations {
         : a.type === 'composio'
           ? patch.filter.trim().toUpperCase()
           : patch.filter.trim();
-    if (a.type === 'webhook') {
+    if (a.type === 'webhook' || a.type === 'slack') {
       const bad = validateFilter(nextFilter ?? undefined); // same save-time gate as add()
       if (bad) throw new Error(bad);
     }
@@ -1188,16 +1214,47 @@ export class Automations {
   }
 
   /**
-   * Inbound native Slack message (Socket Mode; the bot was @-mentioned or DMed). Fire every enabled
-   * `slack` automation whose `filter` matches the event type or channel ('' / '*' = any). `runAsMember`
-   * (resolved from the Slack user's email upstream) runs the session AS that member — per-member tools
-   * + inbox; absent → the company identity. Event-driven, so no pile-up guard. Returns sessions started.
+   * Inbound native Slack message (Socket Mode). Fire every enabled `slack` automation this event
+   * matches. `runAsMember` (resolved from the Slack user's email upstream) runs the session AS that
+   * member — per-member tools + inbox; absent → the company identity. Event-driven, so no pile-up
+   * guard. Returns sessions started.
+   *
+   * A slack `filter` is `<scope> [when …] [unless …]`:
+   *   - **scope** — an exact event type (`app_mention`/`message`) or channel id; '' / '*' = any. Its
+   *     historical meaning, unchanged.
+   *   - **when / unless** — the payload predicates from `webhook-ingress.ts`, evaluated against the
+   *     Slack event body with the mention-stripped message on `text`. `C0ABUSE1 when text ~ "abuse
+   *     report"` is a standing watch on one channel for one kind of message.
+   *
+   * The predicates are the point: without them the cheapest decision in the system ("this message
+   * isn't mine") is made by a whole Claude session reading the prompt it was spawned with. A gate
+   * written into an agent's prompt runs AFTER the spawn it was meant to prevent.
+   *
+   * `opts.channelWatch` marks a plain channel message that carried no @mention — see the caller in
+   * `slack-socket.ts`. Two things change for it, both deliberately conservative:
+   *   - only an automation whose scope names THIS channel id can fire. A blank / `*` / event-type
+   *     scope is a subscription to the mention-and-DM stream it was written against; letting it also
+   *     consume every message in every channel the bot sits in would multiply a live tenant's spend
+   *     with nobody having edited anything.
+   *   - the `/agent` chat router never runs (`opts.router === false`), so ordinary channel chatter
+   *     can't provoke the help list.
+   *
+   * `dropped` names the first predicate that refused a scope-matching automation, so "why didn't it
+   * fire" is answerable from the audit row instead of by re-reading the filter.
    */
   async fireSlack(
     event: { eventType: string; channel: string; threadTs: string; user: string; actorLabel: string; text: string; raw: unknown },
     runAsMember?: string,
-  ): Promise<{ fired: number; sessions: string[]; reply?: string }> {
+    opts: { channelWatch?: boolean; router?: boolean } = {},
+  ): Promise<{ fired: number; sessions: string[]; reply?: string; dropped?: string }> {
     const sessions: string[] = [];
+    let dropped: string | undefined;
+    // What the `when`/`unless` paths read. The raw Slack event, but with `text` replaced by the
+    // mention-stripped body the agent will actually be given (so a filter matches what a human reads,
+    // not `<@B123> …`), plus the resolved sender label — `unless actor == "Status Bot"` is a filter
+    // people reach for immediately and there is no path to it in the raw event.
+    const raw = event.raw && typeof event.raw === 'object' ? (event.raw as Record<string, unknown>) : {};
+    const body = { ...raw, text: event.text, channel: event.channel, eventType: event.eventType, actor: event.actorLabel };
     const extra =
       `Triggered from Slack by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}` +
       (event.threadTs ? ` (thread ${event.threadTs})` : '') + `.\n` +
@@ -1207,15 +1264,22 @@ export class Automations {
       `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
     for (const a of this.list()) {
       if (!a.enabled || a.type !== 'slack') continue;
-      const f = (a.filter || '').trim().toLowerCase();
-      if (f && f !== '*' && f !== event.eventType.toLowerCase() && f !== event.channel.toLowerCase()) continue;
+      const scope = chatScope(a.filter);
+      if (opts.channelWatch && (!scope || scope === '*' || scope !== event.channel.toLowerCase())) continue;
+      if (!matchesChatScope(scope, event.eventType, event.channel)) continue;
+      const verdict = evaluatePredicates(a.filter, body);
+      if (!verdict.ok) {
+        if (!dropped && verdict.reason === 'payload') dropped = verdict.predicate;
+        continue;
+      }
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, slack: { channel: event.channel, threadTs: event.threadTs } });
       if (r.ok) sessions.push(r.sessionId);
     }
     // No specific automation matched → the shared chat front door: resolve a pending disambiguation,
     // honour an explicit `/name`, else auto-route (route / ask / help list) — reachable fleet-wide.
+    // Skipped for a channel watch: that message was never addressed to us.
     let reply: string | undefined;
-    if (sessions.length === 0) {
+    if (sessions.length === 0 && opts.router !== false) {
       const r = await this.routeUnmatched({
         key: `slack:${event.channel}:${event.threadTs || event.channel}`,
         text: event.text,
@@ -1226,7 +1290,19 @@ export class Automations {
       sessions.push(...r.sessions);
       reply = r.reply;
     }
-    return { fired: sessions.length, sessions, reply };
+    return { fired: sessions.length, sessions, reply, dropped };
+  }
+
+  /**
+   * Is any enabled `slack` automation standing watch on this channel id? The cheap pre-check
+   * `slack-socket.ts` runs before it lets a non-mention channel message through at all — so a workspace
+   * with no channel-scoped automation keeps the old behaviour exactly (every plain channel message
+   * dropped) and pays one in-memory scan, not a fire path.
+   */
+  watchesSlackChannel(channel: string): boolean {
+    const want = (channel || '').trim().toLowerCase();
+    if (!want) return false;
+    return this.list().some((a) => a.enabled && a.type === 'slack' && chatScope(a.filter) === want);
   }
 
   /**

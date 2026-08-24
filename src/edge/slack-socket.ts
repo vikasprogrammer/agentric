@@ -185,13 +185,42 @@ export class SlackSocket {
       return;
     }
 
-    // Not a thread continuation. A plain channel `message` (no @mention) only reached us because the app
-    // subscribes to `message.channels` FOR that continuity — it's just chatter in a channel the bot
-    // happens to sit in, never a fresh trigger. Only an explicit @mention (`app_mention`) or a DM
-    // (`im`/`mpim`) starts a new run; otherwise drop it silently so we don't spam the `/agent` router's
-    // help list into the channel. (Mirrors Discord, whose parser already drops non-mention guild messages.)
+    // Not a thread continuation. A plain channel `message` (no @mention) normally reached us only because
+    // the app subscribes to `message.channels` FOR that continuity — chatter in a channel the bot happens
+    // to sit in, never a fresh trigger, so it is dropped rather than spamming the `/agent` router's help
+    // list into the channel.
+    //
+    // The one exception is a **channel watch**: an automation whose filter names THIS channel id is a
+    // standing instruction to act on what lands there ("abuse reports arrive in #trust-safety"), and such
+    // reports are pasted, forwarded or relayed — almost never addressed to the bot. Requiring an @mention
+    // makes the automation depend on the reporter remembering to summon it. So a watched channel's
+    // messages go to `fireSlack` with `channelWatch`, which fires ONLY channel-scoped automations whose
+    // `when`/`unless` predicates hold, and never the router. Everything else still drops here.
     const isDm = ev.channelType === 'im' || ev.channelType === 'mpim';
-    if (ev.eventType !== 'app_mention' && !isDm) return;
+    if (ev.eventType !== 'app_mention' && !isDm) {
+      if (!this.autos.watchesSlackChannel(ev.channel)) return;
+      const watch = await this.autos.fireSlack(
+        { eventType: ev.eventType, channel: ev.channel, threadTs: ev.threadTs, user: ev.user, actorLabel, text, raw: ev.raw },
+        runAsMember,
+        { channelWatch: true, router: false },
+      );
+      // Audited only when something happened. A watched channel sees every message pass through here, so
+      // an unconditional audit row would make the busiest channel the loudest thing in the audit log.
+      if (watch.fired > 0 || watch.dropped) {
+        this.os.audit.append({
+          ts: Date.now(),
+          runId: watch.sessions[0] ?? '-',
+          tenant: this.os.tenant,
+          principal: runAsMember ? `member:${runAsMember}` : 'slack',
+          type: 'trigger.slack',
+          data: { eventType: ev.eventType, channel: ev.channel, watch: true, runAs: runAsMember ?? null, fired: watch.fired, dropped: watch.dropped ?? null },
+        });
+      }
+      if (watch.fired > 0) {
+        await postMessage(this.os.settings.slackBotToken(), ev.channel, `:robot_face: On it — working on this now.`, ev.threadTs);
+      }
+      return;
+    }
 
     // Inline approve/deny: a DM reply from someone with a pending approval we sent them resolves the gate
     // directly (no trip to the web Inbox) — the approval-side twin of the question path below. Only for
