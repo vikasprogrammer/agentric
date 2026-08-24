@@ -23,7 +23,7 @@ let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
-const { staleUsageAccounts, refreshStaleUsage, USAGE_STALE_MS } = require(path.join(ROOT, 'dist/edge/runtime-account-usage.js'));
+const { staleUsageAccounts, refreshStaleUsage, USAGE_STALE_MS, BACKGROUND_USAGE_STALE_MS } = require(path.join(ROOT, 'dist/edge/runtime-account-usage.js'));
 
 const aos = loadAgentOS();
 const store = aos.runtimeAccounts;
@@ -109,6 +109,38 @@ const NOW = Date.now();
   await r.done;
   assert(store.get('claude-code', 'd').usage?.weekly?.usedPct === 55, 'the previous reading survives a probe that throws');
   assert(store.get('claude-code', 'd').enabled === true, 'a failed probe never disables an account');
+
+  console.log('\n\x1b[1m6) The SCHEDULER TICK refreshes the snapshot with no human read\x1b[0m');
+  // The bug this pins: refreshStaleUsage was reachable ONLY from GET /api/runtime-accounts, so on an
+  // unattended box the snapshot froze and pick() kept dispatching to an account that had already hit its
+  // weekly wall. Measured on the instawp tenant: ~20% of inbound support tickets silently dropped over
+  // three days, each discovered by burning a real customer ticket. Automations.tick now sweeps too.
+  reset();
+  mk('e');
+  // A snapshot that is fresh for the BACKGROUND window must not be probed by the tick...
+  store.recordCheck('claude-code', 'e', { ok: true, note: 'valid', usage: usage(20, 5), now: NOW - 60_000 });
+  let probed = 0;
+  r = refreshStaleUsage(aos, { staleMs: BACKGROUND_USAGE_STALE_MS, probe: async () => { probed++; return { ok: true, note: 'valid', usage: usage(20, 5) }; } });
+  await r.done;
+  assert(probed === 0, 'a snapshot inside the background window costs nothing on a 20s tick');
+
+  // ...but one older than the background window is re-probed, and an exhausted reading parks the account
+  // BEFORE the next pick() can hand it live work.
+  const eReset = NOW + 7200_000;
+  store.recordCheck('claude-code', 'e', { ok: true, note: 'valid', usage: usage(20, 5), now: NOW - BACKGROUND_USAGE_STALE_MS - 1 });
+  r = refreshStaleUsage(aos, {
+    staleMs: BACKGROUND_USAGE_STALE_MS,
+    probe: async () => { probed++; return { ok: true, note: 'valid · weekly 100% used', usage: { weekly: { usedPct: 100, resetsAt: eReset } }, limitedUntil: eReset }; },
+  });
+  await r.done;
+  assert(probed === 1, 'a snapshot older than the background window IS probed without any console read');
+  assert(store.get('claude-code', 'e').usage?.weekly?.usedPct === 100, 'the tick applies the fresh reading');
+  const spent = store.get('claude-code', 'e');
+  assert(spent.status === 'limited' && spent.limitedUntil === eReset,
+    'an exhausted account is parked by the background sweep, not by a dropped ticket', `status=${spent.status}`);
+
+  assert(BACKGROUND_USAGE_STALE_MS > USAGE_STALE_MS,
+    'the background window is longer than the read window (nobody is watching a screen)');
 
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
   try { fs.rmSync(HOME, { recursive: true, force: true }); } catch { /* best effort */ }

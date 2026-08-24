@@ -22,6 +22,7 @@ import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
 import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './concierge';
 import { sweepStrandedTasks } from './task-reconcile';
+import { refreshStaleUsage, BACKGROUND_USAGE_STALE_MS } from './runtime-account-usage';
 import { WakeupQueue } from './wakeups';
 import {
   DEDUPE_TTL_MS,
@@ -1788,6 +1789,13 @@ export class Automations {
     // Advance any in-flight async video renders (poll → ingest on completion). Fire-and-forget: it's
     // async, tick is sync, and a poll error must never break the scheduler loop.
     void this.tm.pollVideoJobs().catch(() => {});
+    // Keep the runtime-account quota snapshot fresh. Until this existed the snapshot was refreshed ONLY
+    // when a human opened Settings → Runtime accounts, so on an unattended box `pick()` kept dispatching to
+    // an account that had already hit its weekly wall — and the way we found out was a dropped customer
+    // ticket. Self-throttling: `refreshStaleUsage` probes only accounts staler than
+    // BACKGROUND_USAGE_STALE_MS, de-dupes in-flight probes and caps the batch, so calling it on every ~20s
+    // tick costs nothing until a snapshot actually ages out. Fire-and-forget for the same reason as above.
+    void refreshStaleUsage(this.os, { staleMs: BACKGROUND_USAGE_STALE_MS }).done.catch(() => {});
     // Whole-box concurrency cap (#137). Count sessions already alive and stop firing NEW scheduler spawns
     // once we hit the ceiling. A deferred spawn isn't stamped `lastFiredAt` (and a `once` isn't disabled),
     // so it retries next tick: a `once`/`task` stays due indefinitely; a `cron` is retried only within its
