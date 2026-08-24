@@ -1312,7 +1312,7 @@ export interface GovernanceThresholds {
 }
 
 // ── install wizard ───────────────────────────────────────────────────────────────
-export type SetupStepId = 'claude' | 'company' | 'composio' | 'chat' | 'team' | 'agents'
+export type SetupStepId = 'claude' | 'company' | 'composio' | 'chat' | 'github' | 'memory' | 'team' | 'agents'
 export interface SetupStep {
   id: SetupStepId
   title: string

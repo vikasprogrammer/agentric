@@ -389,8 +389,11 @@ Key modules:
   the member-auth gate. Canonical tool↔route↔store matrix + the governance notes:
   `docs/agent-mcp-tools.md`. See also `docs/memory-layer-plan.md`.
 - `src/edge/setup.ts` — the **install wizard's** status roll-up (`GET /api/setup`, console `#/setup` +
-  a dismissible banner): six post-install steps (runtime credential → company context → Composio key →
-  chat channel → team → agents). Deliberately **read-side only** — each step is re-derived from the store
+  a dismissible banner): eight post-install steps (runtime credential → company context → Composio key →
+  chat channel → GitHub App → memory layer → team → agents). The GitHub step counts EITHER half of the App
+  (OAuth pair = members commit as themselves · App id + private key = the company-bot push token); the
+  memory step counts only a real upgrade over the keyword-only default (an embedder on the built-in store,
+  or automem/libSQL). Deliberately **read-side only** — each step is re-derived from the store
   that owns that setting and the wizard UI writes through that setting's EXISTING endpoint, so a step
   finished by CLI/another admin ticks itself and no step can disagree with its Settings page. The only
   state it owns is `settings: setup_state` (dismissal + per-step "not now" — intent isn't derivable).

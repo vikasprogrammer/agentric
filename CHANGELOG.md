@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.384.0] - 2026-08-24
+
+### Added
+- **The setup wizard now covers GitHub and the memory layer** — the two things every install ended up
+  configuring later, after the first PR came out authored by a bot nobody recognised and after agents had
+  spent a month re-learning the same facts. Two new steps (`#/setup`, `GET /api/setup`), both optional and
+  skippable, sitting between the chat channel and the team:
+  - **Connect GitHub** — drives the one-click App-manifest flow (now shared with Settings → Integrations
+    via `web/src/lib/github-app.ts`, so one callback URL and one permission set), surfaces the
+    install-on-your-repos link (a GitHub App can only touch repos it is installed on — the step people
+    miss, and it looks exactly like a broken token), and shows the two halves separately: the OAuth pair
+    that lets each member link their own account so a run-as session authors as the human, and the
+    App id + private key that mint the company-bot token every other session pushes with. Either half
+    counts as configured; the step's detail names the one still missing.
+  - **Set up the memory layer** — the default recall is keyword-only, so an agent misses its own past work
+    whenever it words it differently. The step offers the two real upgrades: an OpenAI key for hybrid
+    (keyword + vector) recall on the built-in store with no new service to run, or AutoMem — the
+    recommended option — with a Test button before the save, since a wrong endpoint fails closed and every
+    recall comes back empty. It carries the backend-independent settings (ranking, maintenance, preload,
+    shared-write policy) through the save, because `PUT /api/settings/memory` REPLACES the config.
+
+  Both stay read-side only like every other step: status is re-derived from the store that owns the
+  setting (`GithubIdentity`, `settings.memoryConfig()`), so an App or backend configured anywhere else
+  ticks itself, and neither step ever echoes a secret. Pinned by `scripts/setup-wizard-test.cjs`.
+
 ## [0.383.0] - 2026-08-24
 
 ### Changed

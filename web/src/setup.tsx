@@ -26,8 +26,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   api, type Member, type Role, type SetupStatus, type SetupStep, type SetupStepId,
-  type RuntimeLogin, type IntegrationsResp, type CatalogAgent,
+  type RuntimeLogin, type IntegrationsResp, type CatalogAgent, type MemorySettings, type MemorySettingsReq,
 } from '@/lib/api'
+import { createGithubApp } from '@/lib/github-app'
 
 // ── shared bits ──────────────────────────────────────────────────────────────────
 function Hint({ children }: { children: ReactNode }) {
@@ -103,8 +104,8 @@ export function SetupPage({ me, step, onStep, onDone }: {
         <div>
           <h2 className="flex items-center gap-2 text-lg font-semibold"><Sparkles className="h-4 w-4" /> Set up your workspace</h2>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Six things decide whether this install is useful. Each one links to the setting that owns it — finish
-            them here, or anywhere else, and this page notices either way.
+            {status.total} things decide whether this install is useful. Each one links to the setting that owns it —
+            finish them here, or anywhere else, and this page notices either way.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -153,6 +154,8 @@ export function SetupPage({ me, step, onStep, onDone }: {
             {current.id === 'company' && <CompanyStep onChanged={load} />}
             {current.id === 'composio' && <ComposioStep onChanged={load} />}
             {current.id === 'chat' && <ChatStep onChanged={load} />}
+            {current.id === 'github' && <GithubStep onChanged={load} />}
+            {current.id === 'memory' && <MemoryStep onChanged={load} />}
             {current.id === 'team' && <TeamStep onChanged={load} />}
             {current.id === 'agents' && <AgentsStep onChanged={() => { load(); onDone?.() }} />}
 
@@ -409,7 +412,217 @@ function ChatStep({ onChanged }: { onChanged: () => void }) {
   )
 }
 
-// ── 5. team ──────────────────────────────────────────────────────────────────────
+// ── 5. GitHub ────────────────────────────────────────────────────────────────────
+/**
+ * The App is two credentials that do different jobs, and an install wants both: the OAuth pair lets a
+ * member link their own account (so a PR is authored by the human the session runs as), and the App
+ * id + private key mint the company-bot token every OTHER session pushes with. The one-click manifest
+ * flow creates an App with both halves already correct — the manual fields exist for an App that
+ * already exists.
+ */
+function GithubStep({ onChanged }: { onChanged: () => void }) {
+  const [resp, setResp] = useState<IntegrationsResp | null>(null)
+  const [org, setOrg] = useState('')
+  const [id, setId] = useState('')
+  const [secret, setSecret] = useState('')
+  const [busy, setBusy] = useState(false)
+  const { hint, say } = useSaveHint()
+  const load = () => api.integrations().then((r) => { if (!r.error) setResp(r) }).catch(() => {})
+  useEffect(() => { load() }, [])
+  const gh = resp?.github
+
+  const create = async () => {
+    setBusy(true)
+    const err = await createGithubApp(org)   // on success the browser leaves for GitHub
+    if (err) { setBusy(false); say('⚠ ' + err, 8000) }
+  }
+  const saveManual = async () => {
+    setBusy(true)
+    const r = await api.saveIntegrations({
+      ...(id.trim() ? { githubClientId: id.trim() } : {}),
+      ...(secret.trim() ? { githubClientSecret: secret.trim() } : {}),
+    })
+    setBusy(false)
+    if (r.error) return say('⚠ ' + r.error, 8000)
+    setId(''); setSecret(''); say('saved'); load(); onChanged()
+  }
+
+  return (
+    <div className="space-y-3">
+      {!gh?.configured && (
+        <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input value={org} onChange={(e) => setOrg(e.target.value.trim())} placeholder="your-org (optional)" className="h-8 w-56 font-mono text-xs" />
+            <Button onClick={create} disabled={busy}>{busy ? 'Opening GitHub…' : 'Create GitHub App'}</Button>
+          </div>
+          <Hint>
+            GitHub opens a confirmation with everything pre-filled — name, this server's callback URL, and least-privilege
+            permissions (Contents + Pull requests, no webhook) — then hands the credentials straight back here. Nothing to
+            copy. Leave the org blank to create it under your personal account; you must be signed in to GitHub in this browser.
+          </Hint>
+        </div>
+      )}
+
+      {gh?.installUrl && (
+        <div className="space-y-1 rounded-md border bg-muted/20 p-3">
+          <div className="text-xs font-medium">Install it on your repositories</div>
+          <Hint>A GitHub App can only touch repos it is installed on — this is the step people miss, and it looks exactly like a broken token.</Hint>
+          <Link href={gh.installUrl}>Install “{gh.slug}” on your repos</Link>
+        </div>
+      )}
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="rounded-md border p-2">
+          <div className="text-xs font-medium">
+            Per-member sign-in{' '}
+            {gh?.configured
+              ? <Badge variant="outline" className="ml-1 border-emerald-500/40 text-[10px] text-emerald-600 dark:text-emerald-400">ready</Badge>
+              : <Badge variant="outline" className="ml-1 text-[10px]">not set</Badge>}
+          </div>
+          <Hint>Each teammate connects their own account from <a className="underline" href="#/connectors">Connections</a>; a session running as them then commits and opens PRs under their name.</Hint>
+        </div>
+        <div className="rounded-md border p-2">
+          <div className="text-xs font-medium">
+            Company bot{' '}
+            {gh?.botReady
+              ? <Badge variant="outline" className="ml-1 border-emerald-500/40 text-[10px] text-emerald-600 dark:text-emerald-400">active</Badge>
+              : <Badge variant="outline" className="ml-1 text-[10px]">not set</Badge>}
+          </div>
+          <Hint>The fallback: an App id + private key mint a short-lived installation token so an unattended run with no linked human can still push. Add them in <a className="underline" href="#/settings/integrations">Settings → Integrations</a>.</Hint>
+        </div>
+      </div>
+
+      <details className="rounded-md border" open={!gh?.configured}>
+        <summary className="cursor-pointer select-none px-3 py-2 text-xs text-muted-foreground hover:text-foreground">
+          {gh?.configured ? 'Replace the credentials manually' : 'Already have an App? Paste its credentials'}
+        </summary>
+        <div className="space-y-2 border-t p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input value={id} onChange={(e) => setId(e.target.value.trim())} placeholder={gh?.clientId ? 'client id saved — type to replace' : 'client id'} className="h-8 w-64 font-mono text-xs" />
+            <Input value={secret} onChange={(e) => setSecret(e.target.value)} type="password" placeholder={gh?.clientSecret ? '•••• saved — type to replace' : 'client secret'} className="h-8 w-64 font-mono text-xs" />
+            <Button onClick={saveManual} disabled={busy || (!id.trim() && !secret.trim())}>Save</Button>
+          </div>
+          <Hint>Set the app's authorization callback URL to this server's <span className="font-mono">/api/github/callback</span>.</Hint>
+        </div>
+      </details>
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  )
+}
+
+// ── 6. memory layer ──────────────────────────────────────────────────────────────
+/**
+ * Two upgrades over the keyword-only default, and the choice is genuinely a trade: an embedder on the
+ * built-in sqlite store is one API key and no new infrastructure; AutoMem is a real graph + vector
+ * service — better recall, at the cost of running (or paying for) it. Everything else on Settings →
+ * Memory (ranking, maintenance, preload, shared-write policy) is carried through untouched, because
+ * `PUT /api/settings/memory` REPLACES the config: sending a bare backend would silently wipe them.
+ */
+function MemoryStep({ onChanged }: { onChanged: () => void }) {
+  const [view, setView] = useState<MemorySettings | null>(null)
+  const [choice, setChoice] = useState<'sqlite' | 'automem'>('sqlite')
+  const [key, setKey] = useState('')
+  const [endpoint, setEndpoint] = useState('')
+  const [token, setToken] = useState('')
+  const [busy, setBusy] = useState(false)
+  const { hint, say } = useSaveHint()
+
+  const load = () => api.memorySettings().then((r) => {
+    if (r.error) return
+    setView(r)
+    if (r.backend === 'automem') { setChoice('automem'); setEndpoint(r.automem?.endpoint ?? '') }
+  }).catch(() => {})
+  useEffect(() => { load() }, [])
+
+  /** Carry the backend-independent settings forward — see the note above. */
+  const carry = (): Partial<MemorySettingsReq> => ({
+    ...(view?.ranking ? { ranking: view.ranking } : {}),
+    ...(view?.maintenance ? { maintenance: view.maintenance } : {}),
+    ...(view?.sharedWrites ? { sharedWrites: view.sharedWrites } : {}),
+    ...(view?.preload ? { preload: view.preload } : {}),
+  })
+  const body = (): MemorySettingsReq => choice === 'automem'
+    ? { backend: 'automem', automem: { endpoint: endpoint.trim(), ...(token.trim() ? { token: token.trim() } : {}) }, ...carry() }
+    : {
+        backend: 'sqlite',
+        sqlite: { embeddings: { enabled: true, provider: 'openai', url: 'https://api.openai.com/v1', model: 'text-embedding-3-small', dimensions: 1536, ...(key.trim() ? { apiKey: key.trim() } : {}) } },
+        ...carry(),
+      }
+
+  const test = async () => {
+    setBusy(true)
+    const r = await api.testMemorySettings(body())
+    setBusy(false)
+    say(r.error ? '⚠ ' + r.error : `reachable — ${r.health?.backend ?? 'ok'}`, 8000)
+  }
+  const save = async () => {
+    setBusy(true)
+    const r = await api.saveMemorySettings(body())
+    setBusy(false)
+    if (r.error) return say('⚠ ' + r.error, 8000)
+    setKey(''); setToken(''); say('saved — recall switches over immediately, no restart'); load(); onChanged()
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        {([
+          { id: 'sqlite' as const, title: 'Built-in store + embeddings', blurb: 'One OpenAI key. Hybrid keyword + vector recall in the workspace DB — no new service to run.' },
+          { id: 'automem' as const, title: 'AutoMem (recommended)', blurb: 'A real memory service (graph + vectors): better recall, consolidation, and relationships between memories.' },
+        ]).map((o) => (
+          <button
+            key={o.id}
+            onClick={() => setChoice(o.id)}
+            className={`rounded-md border p-3 text-left text-xs transition-colors ${choice === o.id ? 'border-foreground/30 bg-muted' : 'hover:bg-muted/50'}`}
+          >
+            <div className="font-medium">
+              {o.title}
+              {view?.backend === o.id && <Badge variant="outline" className="ml-2 border-emerald-500/40 text-[10px] text-emerald-600 dark:text-emerald-400">active</Badge>}
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground">{o.blurb}</div>
+          </button>
+        ))}
+      </div>
+
+      {choice === 'sqlite' ? (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input value={key} onChange={(e) => setKey(e.target.value)} type="password" placeholder={view?.sqlite?.embeddings?.apiKeySet ? 'key set — paste to replace' : 'sk-… (OpenAI API key)'} className="h-8 w-96 font-mono text-xs" />
+            <Button onClick={save} disabled={busy || (!key.trim() && !view?.sqlite?.embeddings?.apiKeySet)}>{busy ? 'Saving…' : 'Turn on hybrid recall'}</Button>
+          </div>
+          <Hint>
+            Embeds every memory with <span className="font-mono">text-embedding-3-small</span> (1536 dims) and ranks recall by
+            keywords AND meaning. Vectors live in a column of this workspace's own database, so there is nothing else to run —
+            embedding calls are billed by OpenAI and are cheap. Prefer a local embedder? Ollama is on{' '}
+            <a className="underline" href="#/settings/memory">Settings → Memory</a>.
+          </Hint>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://automem.internal:8001" className="h-8 w-72 font-mono text-xs" />
+            <Input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder={view?.automem?.tokenSet ? 'token set — paste to replace' : 'token'} className="h-8 w-52 font-mono text-xs" />
+            <Button variant="outline" onClick={test} disabled={busy || !endpoint.trim()}>Test</Button>
+            <Button onClick={save} disabled={busy || !endpoint.trim()}>{busy ? 'Saving…' : 'Use AutoMem'}</Button>
+          </div>
+          <Hint>
+            AutoMem is a self-hostable REST service (FalkorDB graph + Qdrant vectors) —{' '}
+            <Link href="https://github.com/verygoodplugins/mcp-automem">deploy it</Link>, then paste its base URL and token here.
+            Test before you save: a wrong endpoint fails closed and every recall comes back empty. Existing memories stay in the
+            local ledger — <a className="underline" href="#/settings/memory">Settings → Memory</a> migrates them up afterwards.
+          </Hint>
+        </div>
+      )}
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      <Hint>
+        Either way the memories themselves are written by agents (<span className="font-mono">remember</span>) and by the nightly
+        reflect pass — this only decides how well they are found again.
+      </Hint>
+    </div>
+  )
+}
+
+// ── 7. team ──────────────────────────────────────────────────────────────────────
 function TeamStep({ onChanged }: { onChanged: () => void }) {
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('member')
@@ -456,7 +669,7 @@ function TeamStep({ onChanged }: { onChanged: () => void }) {
   )
 }
 
-// ── 6. agents ────────────────────────────────────────────────────────────────────
+// ── 8. agents ────────────────────────────────────────────────────────────────────
 function AgentsStep({ onChanged }: { onChanged: () => void }) {
   const [catalog, setCatalog] = useState<CatalogAgent[]>([])
   const [busy, setBusy] = useState('')

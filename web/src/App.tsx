@@ -18,6 +18,7 @@ import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type 
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
+import { createGithubApp } from '@/lib/github-app'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
 import { SetupPage, SetupBanner } from '@/setup'
 import { docPages } from '@/docs'
@@ -8103,19 +8104,9 @@ function GithubSetupGuide() {
   const [err, setErr] = useState('')
   const create = async () => {
     setBusy(true); setErr('')
-    const r = await api.githubManifest(org.trim() || undefined)
-    if (r.error || !r.postUrl || !r.manifest) { setBusy(false); return setErr(r.error || 'Could not prepare the manifest.') }
-    // Hand GitHub the manifest via a real form POST (it's too large for a query string); this navigates
-    // to GitHub's "Create this GitHub App?" confirmation, after which it redirects back with the creds.
-    const form = document.createElement('form')
-    form.method = 'POST'
-    form.action = r.postUrl
-    form.style.display = 'none'
-    const input = document.createElement('input')
-    input.type = 'hidden'; input.name = 'manifest'; input.value = r.manifest
-    form.appendChild(input)
-    document.body.appendChild(form)
-    form.submit()
+    // Shared with the setup wizard — see lib/github-app.ts. On success the browser navigates to GitHub.
+    const e = await createGithubApp(org)
+    if (e) { setBusy(false); setErr(e) }
   }
   return (
     <div className="rounded-md border">

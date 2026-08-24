@@ -34,6 +34,7 @@ const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${
 const { TenantRegistry } = require(path.join(ROOT, 'dist/tenant-registry.js'));
 const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
 const { buildSetupStatus, skipSetupStep, dismissSetup, claudeAuthEvidence, SETUP_STEP_IDS } = require(path.join(ROOT, 'dist/edge/setup.js'));
+const { GithubIdentity } = require(path.join(ROOT, 'dist/edge/github-identity.js'));
 
 const registry = new TenantRegistry(ROOT, 0);
 registry.bootAll();
@@ -77,6 +78,37 @@ aos.settings.setDiscordBotToken('Bot abc.def', owner.email);
 assert(step('chat').status === 'done' && step('chat').detail.includes('Discord'), 'any one chat channel satisfies the chat step and is named');
 aos.settings.setDiscordBotToken('', owner.email);
 
+// GitHub: either half of the App is evidence — the OAuth pair (members commit as themselves) or the
+// App id + key (the bot token every other session pushes with). Both are read from the stores that own
+// them, so an App configured from Settings → Integrations ticks here with no wizard-side write.
+assert(step('github').status === 'todo', 'a fresh install has no GitHub App');
+const gh = new GithubIdentity(aos);
+gh.setClientSecret('ghs_secret', owner.email);
+assert(step('github').status === 'todo', 'half the OAuth pair is not a connected App');
+aos.settings.setGithubClientId('Iv1.clientid', owner.email);
+assert(step('github').status === 'done', 'client id + secret completes it (per-member sign-in works)');
+assert(!JSON.stringify(step('github')).includes('ghs_secret'), 'the step never echoes the client secret');
+assert(step('github').detail.includes('no bot fallback'), 'and it says the company-bot half is still missing');
+aos.settings.setGithubAppSlug('acme-agent-os', owner.email);
+assert(step('github').detail.includes('acme-agent-os'), 'the App slug is named, so a wrong App is visible');
+gh.setClientSecret('', owner.email);
+aos.settings.setGithubClientId('', owner.email);
+assert(step('github').status === 'todo', 'removing the credentials re-opens it');
+
+// Memory: the default sqlite backend is keyword-only, which is the thing this step exists to fix — so
+// "configured" means an embedder or a real vector store, and each is read back from the saved config.
+assert(step('memory').status === 'todo', 'keyword-only recall (the default) leaves the memory step open');
+aos.settings.setMemoryConfig({ backend: 'sqlite' }, owner.email);
+assert(step('memory').status === 'todo', 'an explicit sqlite config with no embedder is still keyword-only');
+aos.settings.setMemoryConfig({ backend: 'sqlite', sqlite: { embeddings: { provider: 'openai', url: 'https://api.openai.com/v1', model: 'text-embedding-3-small', apiKey: 'sk-secret-key' } } }, owner.email);
+assert(step('memory').status === 'done', 'adding an embedder to the built-in store completes it');
+assert(!JSON.stringify(step('memory')).includes('sk-secret-key'), 'the step never echoes the embedding API key');
+aos.settings.setMemoryConfig({ backend: 'automem', automem: { endpoint: '', token: 'tok-secret' } }, owner.email);
+assert(step('memory').status === 'todo', 'automem selected with no endpoint is not configured');
+aos.settings.setMemoryConfig({ backend: 'automem', automem: { endpoint: 'https://automem.example.com:8001', token: 'tok-secret' } }, owner.email);
+assert(step('memory').status === 'done' && step('memory').detail.includes('automem.example.com'), 'an automem endpoint completes it and is named');
+assert(!JSON.stringify(step('memory')).includes('tok-secret'), 'the step never echoes the automem token');
+
 assert(step('team').status === 'todo', 'a one-person install has the team step open');
 const plain = mkMember('mem@testco.dev', 'member');
 assert(step('team').status === 'done', 'inviting a teammate completes it');
@@ -115,7 +147,7 @@ assert(!step('chat').skipped, 'un-skip restores it');
 assert(!status(0).complete, 'an install with required work left is not complete');
 
 console.log('\n\x1b[1m5) Completion + dismissal are separate facts\x1b[0m');
-for (const id of ['composio', 'chat', 'team']) skipSetupStep(aos, id, true, owner.email);
+for (const id of ['composio', 'chat', 'github', 'team']) skipSetupStep(aos, id, true, owner.email);
 fs.writeFileSync(path.join(FAKE_CLAUDE, '.credentials.json'), '{}');
 assert(status(1).complete, 'every step done or skipped = complete');
 dismissSetup(aos, true, owner.email);
