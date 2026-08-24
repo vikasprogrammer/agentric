@@ -3094,7 +3094,14 @@ async function listCapabilities(): Promise<string> {
   if (data.error) return `Could not list capabilities: ${data.error}`;
   const caps = data.capabilities ?? [];
   if (!caps.length) return 'No governed capabilities are registered.';
-  return caps.map((c) => `- ${c.id} — ${verdict(c.effect, c.level)}${c.description ? `: ${c.description}` : ''}`).join('\n');
+  const lines = caps.map((c) => `- ${c.id} — ${verdict(c.effect, c.level)}${c.description ? `: ${c.description}` : ''}`);
+  return [
+    'Governed capabilities (what your tool calls classify into). The verdict shown is the base outcome',
+    'with no risky arguments; the same action can still be gated or denied once the gate parses the actual',
+    'command/host/path. Use policy_check with a concrete capability + args to preview the exact verdict.',
+    '',
+    ...lines,
+  ].join('\n');
 }
 
 async function policyCheck(args: Record<string, unknown>): Promise<string> {
