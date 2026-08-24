@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.385.0] - 2026-08-24
+
+### Changed
+- **Agents are now steered to publish deliverables to the Library, not to a claude.ai Artifact.** The
+  operating notes told agents to `publish` real deliverables but were silent on the built-in claude.ai
+  Artifact tool, so an agent deciding "the human should see this" could reach for an Artifact — which
+  lives on external cloud hosting outside the tenant, with no inbox card, no `library_list` listing, and
+  no audit trail, so the operator never sees it in the console. Added an explicit steer next to the
+  existing publish rule (`AGENT_OS_OPERATING_NOTES`), matching the "native-first / don't use the external
+  alternative" pattern the same prompt already applies to messaging (native over Composio Slack) and code
+  review (never a cloud-billed review). Prompt-only change — takes effect on the next session launch.
+
 ## [0.384.0] - 2026-08-24
 
 ### Added
