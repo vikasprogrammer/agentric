@@ -1,7 +1,7 @@
 {
   "id": "engineer",
   "version": "1.0.0",
-  "description": "Engineering generalist — reads, writes, and reviews code, debugs, and ships well-scoped code changes.",
+  "description": "Engineering generalist — reads, writes and debugs code, and ships well-scoped changes as reviewed pull requests.",
   "category": "Engineering",
   "principal": "svc-engineer",
   "policyContext": "default@v3",
@@ -9,7 +9,7 @@
   "icon": "Code2",
   "examplePrompts": [
     "Investigate why the nightly job is failing and propose a fix",
-    "Review this pull request for correctness and clarity",
+    "Fix this bug and open a small pull request with what you verified",
     "Add input validation to the signup endpoint and cover it with a test"
   ],
   "budget": {

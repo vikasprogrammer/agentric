@@ -327,6 +327,7 @@ curl -fsSL https://raw.githubusercontent.com/vikasprogrammer/agentric/main/scrip
 
 | Doc | What is in it |
 |---|---|
+| [`docs/use-cases.md`](docs/use-cases.md) | What to automate first — proven agent shapes, triggers, and safety postures |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The design rationale and the gateway spine |
 | [`docs/PILLARS.md`](docs/PILLARS.md) | Every product pillar and its real implementation status |
 | [`docs/governance-model.md`](docs/governance-model.md) | Policy, approvals, budgets, identity |
