@@ -8,7 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.382.0] - 2026-08-24
+## [0.383.0] - 2026-08-24
+
+### Changed
+- **A denied action now tells the agent WHY and WHICH capability fired, instead of an opaque "this action
+  is blocked".** The classifier already computed a human reason (`describeMatch` for a JSON rule,
+  `hostGovernanceDecision`/`fileGovernanceDecision` for the engine-level guards — e.g. `ssh.exec: host
+  could not be identified`, `any action: destructive`) and rode it on the audit trail and approval cards,
+  but `TerminalManager.gate()` dropped it on the floor before the wire (`GateResult` had no field for it).
+  It now carries `reason` + the classified `capability` back through `/api/gate` to the PreToolUse hook,
+  which surfaces them: `Agentric policy: denied [ssh.exec] — ssh.exec: host could not be identified. …use
+  policy_check to see the governing rule, then policy_propose or ask a human to change it — do not attempt
+  to route around the gate.` An agent that can see which rule blocked it can comply or take the sanctioned
+  path; a guess at an opaque deny is indistinguishable from probing for a way around the gate. Diagnosability,
+  not permissiveness — no decision changed, and a bare `{decision:'deny'}` from an older server still renders
+  cleanly (the hook can outlive a server upgrade). Covers the kill-switch, email-identity, and policy denies.
+
+- **`list_capabilities` now reports the REAL governed surface, not the demo plugin registry.** It was
+  sourcing `/api/agent/policy` from `os.registry.list()` — which only ever holds the five zero-dependency
+  demo capabilities (`echo.run`, `slack.post`, `stripe.refund`, `prod.restart`, `paid.action`), none of
+  which a live agent can act on — so on every real tenant the tool returned pure noise. The endpoint now
+  builds its capability list from `governedCapabilities()` (new, in `src/capabilities/normalize.ts`): the
+  structural capabilities the gate hook classifies tool calls into (`shell.exec`, `file.write`,
+  `connector.connect`/`call`, `email.send`, `net.connect`, `ssh.exec`) plus the canonical provider-independent
+  ones the normalizer resolves connector calls to (`payments.refund`, `repo.pr.create`, …). Each still carries
+  its dry-run policy verdict; the tool output notes that host-egress and file-write guards apply additional
+  arg/host-dependent tightening at gate time, and points to `policy_check` for an exact preview.
+
+## [0.382.0] - 2026-08-22
 
 ### Added
 - **The Agentric status line now installs into any claude session on any machine, with one command.**

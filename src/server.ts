@@ -19,6 +19,7 @@ import { pruneAuditMirror } from './governance/audit';
 import { requestMetrics } from './edge/request-metrics';
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
+import { governedCapabilities } from './capabilities/normalize';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
@@ -750,12 +751,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const agent = tm.sessionAgent(session);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
-    const capabilities = os.registry.list().map((c) => {
+    // The REAL governed surface (structural + canonical capabilities), NOT os.registry — that only holds
+    // the demo execution plugins (echo.run/stripe.refund/…) so the zero-dep demo runs, and surfacing them
+    // to a live agent as its "capabilities" was pure noise it couldn't act on. Each verdict is the dry-run
+    // of the JSON policy for empty args (the base outcome); host-egress + file-write guards apply ADDITIONAL
+    // engine-level tightening at gate time (args/host dependent), so this is a floor, not the last word.
+    const capabilities = governedCapabilities().map((c) => {
       const d = tm.policyCheck(session, agent, c.id, {});
       return {
         id: c.id,
         description: c.description,
-        defaultRisk: c.defaultRisk,
         effect: d.effect,
         level: d.effect === 'approve' ? d.level : undefined,
       };

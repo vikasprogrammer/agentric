@@ -518,7 +518,11 @@ export interface FeedMessage {
 }
 
 type GateStatus = 'pending' | 'allow' | 'deny';
-type GateResult = { decision: 'allow' | 'deny' | 'pending'; gateId?: string; note?: string };
+// On a deny, `reason` (the classifier's human account — see describeMatch/hostGovernanceDecision) and the
+// classified `capability` ride back to the hook so the agent is told WHY it was blocked and WHICH rule
+// fired, instead of an opaque "this action is blocked". The rich reason already existed (audit trail +
+// approval cards); it was just dropped before the wire. Diagnosability, not permissiveness.
+type GateResult = { decision: 'allow' | 'deny' | 'pending'; gateId?: string; note?: string; reason?: string; capability?: string };
 
 /** The automation columns the per-row label/source/authz helpers read — see `TerminalManager.withRowCache`. */
 interface AutomationLookup {
@@ -4307,7 +4311,7 @@ export class TerminalManager {
     // Workspace emergency stop — deny every action before classifying anything.
     if (this.os.settings.killSwitch().engaged) {
       this.audit(sessionId, agent, 'gate.killswitch', { capability });
-      return { decision: 'deny' };
+      return { decision: 'deny', reason: 'workspace emergency stop (kill switch) is engaged — every action is blocked until an owner disengages it', capability };
     }
     // Host-egress governance (Phase 2b): OFF unless the workspace switch is on. When on, pass the
     // agent's granted host matchers (org + shared + the session's run-as member's personal) so the
@@ -4329,7 +4333,7 @@ export class TerminalManager {
       if (emailDenial) {
         this.audit(sessionId, agent, 'gate.email.blocked', { capability, reason: emailDenial, recipients: args.emailRecipients ?? [] });
         this.audit(sessionId, agent, 'gate.decision', { capability, decision: { effect: 'deny', riskClass: 'deny', reason: emailDenial } });
-        return { decision: 'deny' };
+        return { decision: 'deny', reason: emailDenial, capability };
       }
     }
     // Host egress reclassification (Phase 2b): shell.exec → net.connect / ssh.exec when this command
@@ -4425,7 +4429,7 @@ export class TerminalManager {
       }
       return { decision: 'allow' };
     }
-    if (decision.effect === 'deny') return { decision: 'deny' };
+    if (decision.effect === 'deny') return { decision: 'deny', reason: decision.reason, capability };
 
     // Auto-approval list: an owner has said "always approve THIS action" for this exact brief signature,
     // so clear it without a card or notification. Only reachable for an `approve` (the deny/never tier
