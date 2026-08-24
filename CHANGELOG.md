@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.386.0] - 2026-08-24
+### Fixed
+- **Runtime-account quota snapshots now refresh on their own.** `refreshStaleUsage` was reachable
+  only from `GET /api/runtime-accounts`, so the usage reading was refreshed *only when a human
+  opened Settings → Runtime accounts*. On an unattended box the snapshot froze — `last_checked_at`
+  days old — while `pick()` kept dispatching live work to an account that had already hit its
+  weekly wall. The teardown limit-detector was no backstop: the tmux pane is too volatile, and it
+  fires on roughly 3 of 31 real quota deaths. So the pool learned an account was spent by burning
+  a real customer ticket on it. `Automations.tick` now sweeps too, using a longer
+  `BACKGROUND_USAGE_STALE_MS` (30 min) than the read path's 10 min. Self-throttling: only
+  snapshots past the window are probed, in-flight probes are de-duped and the batch is capped, so
+  the ~20s tick costs nothing until a reading actually ages out.
+  Measured on the instawp tenant before the fix: **~20% of inbound support tickets silently
+  dropped over three days** (including a cancellation and a billing request), every drop on an
+  account whose displayed quota was stale. Pinned by `scripts/runtime-usage-refresh-test.cjs` §6.
+
 ## [0.385.0] - 2026-08-24
 
 ### Changed

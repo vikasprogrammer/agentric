@@ -8,12 +8,18 @@
  * a human last clicked — and an account that hit its wall in a run the teardown detector missed (or under
  * a different process) kept showing a comfortable percentage.
  *
- * This module closes that gap without a new scheduler tick: whoever READS the pool (the owner-only
+ * This module closes that gap from two directions. Whoever READS the pool (the owner-only
  * `GET /api/runtime-accounts`) kicks a background probe of every enabled Claude account whose snapshot is
  * older than {@link USAGE_STALE_MS}, and the response says which accounts are refreshing so the console can
- * re-read once they land. Reads are rare (an owner opening Settings), the probe is one 1-token Haiku call
- * per account (see `runtime-account-check.ts`), and in-flight probes are de-duped — so the cost is bounded
- * by the staleness window, not by how often the page is polled.
+ * re-read once they land. The probe is one 1-token Haiku call per account (see `runtime-account-check.ts`)
+ * and in-flight probes are de-duped, so the cost is bounded by the staleness window, not by how often the
+ * page is polled.
+ *
+ * ⚠ The read path ALONE was not enough, because it is driven by a human opening Settings. On a box nobody
+ * is watching, the snapshot simply froze: `last_checked_at` sat days old while the pool kept dispatching to
+ * an account that had already hit its wall. So `Automations.tick` ALSO calls {@link refreshStaleUsage},
+ * with the longer {@link BACKGROUND_USAGE_STALE_MS} window — the pool now learns an account is spent from a
+ * cheap probe instead of from a dropped customer ticket.
  *
  * Deliberately NOT done here: re-enabling a DISABLED account. `enabled = 0` means either a human removed it
  * from rotation or a live 401 auto-disabled it; a background probe silently putting either back into
@@ -26,6 +32,20 @@ import { checkClaudeToken, readConfigDirToken, RuntimeCheckResult } from './runt
 /** A snapshot older than this is re-probed on the next read. Long enough that opening Settings twice in a
  *  row costs nothing, short enough that the number on screen is about the current quota window. */
 export const USAGE_STALE_MS = 10 * 60_000;
+/**
+ * The same, for the BACKGROUND sweep on the scheduler tick (see {@link refreshStaleUsage}'s caller in
+ * `Automations.tick`). Longer than the read-path window because nobody is looking at a screen: this only
+ * has to be short relative to how fast an account can burn through its quota unnoticed.
+ *
+ * 30 minutes, from the live failure it exists to prevent: on 2026-08-23 the `vikasprogrammer` account went
+ * from 58% to 100% of its weekly window across an evening (~4 runs at $7–13 each). Between the read-path
+ * refresh — which only fires when a human opens Settings → Runtime accounts — and the teardown limit
+ * detector, which the pane is too volatile to make reliable (it caught 3 of 31 real quota deaths; see
+ * `TerminalManager.detectUsageLimit`), a spent account kept advertising a comfortable percentage and
+ * `pick()` kept handing it live work. On the instawp tenant that silently dropped ~20% of inbound support
+ * tickets over three days, each one discovered only by burning a real customer ticket on it.
+ */
+export const BACKGROUND_USAGE_STALE_MS = 30 * 60_000;
 /** Most accounts probed per sweep — a bound on the cost of one page load, not a pool size limit. The rest
  *  are picked up by the next read (they stay stale, so nothing is skipped permanently). */
 export const MAX_PER_SWEEP = 8;
