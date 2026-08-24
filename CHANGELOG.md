@@ -8,7 +8,39 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-<<<<<<< HEAD
+## [0.390.0] - 2026-08-24
+### Added
+- **Slack automations can filter on the message, and watch a channel that nobody @mentions.** A slack
+  filter was a scope and nothing else — an event type or a channel id — so *whether this particular
+  message was the one the automation is about* could only be decided inside the spawned session. That
+  is a whole Claude run bought to conclude "not mine", and an instruction in the agent's prompt cannot
+  prevent it: the prompt runs after the spawn. The filter is now
+  `<scope> [when …] [unless …]`, reusing the predicate grammar `webhook-ingress.ts` already owns
+  (`==`, `!=`, `~`, `!~`, joined by `and`; `when` requires, `unless` rejects). `evaluateFilter` was
+  split so the chat triggers get the payload half without webhook's event-list half —
+  `C0ABUSE1 when text ~ "abuse report"`. Predicates read the Slack event with `text` replaced by the
+  mention-stripped body (what a human reads, not `<@B1> …`) and the resolved sender on `actor`, which
+  has no path in the raw event. `dropped` names the refusing predicate in the `trigger.slack` audit
+  row, so "why didn't it fire" is answerable without re-reading the filter. Slack filters are now
+  validated at save time like webhook's — the predicate layer fails open at runtime, so that is the
+  only place a typo is ever caught.
+- **A channel-scoped slack automation is a channel WATCH.** Non-mention channel messages were dropped
+  in `slack-socket.ts` before reaching `fireSlack`, so a standing watch on a channel could not fire:
+  it depended on whoever pasted the report remembering to summon the bot. Reports get pasted,
+  forwarded and relayed — they are not addressed to anybody. A message in a channel some enabled
+  automation names now goes to `fireSlack` with `channelWatch`, acked in a thread under the report
+  itself. Deliberately narrow, because the failure mode is spend: only an automation whose scope is
+  exactly that channel id is woken (a blank / `*` / event-type scope keeps its mention-and-DM
+  behaviour, so this cannot change what an existing fleet's automations do), and the `/agent` chat
+  router never runs on this path — its help list would otherwise land in the channel on every
+  message. Messages from other bots and apps are still ignored on every Slack path; an integration
+  that posts reports should use a webhook automation instead.
+  Pinned by `scripts/slack-content-filter-test.cjs` (39 assertions, incl. the socket gate end to end).
+
+### Fixed
+- **`CHANGELOG.md` had a merge conflict committed into it** (`<<<<<<< HEAD` at the 0.389.1/0.389.0
+  boundary). Both sides were real releases; resolved by keeping both in order.
+
 ## [0.389.1] - 2026-08-24
 ### Fixed
 - **An expired Claude access token is no longer branded a dead credential.** A revoked token and one
@@ -23,7 +55,7 @@ new version heading in the same commit.
   Live cost of the old behaviour: the `tools` account sat mislabelled as broken for days, which also
   masked the real state underneath — it was simply at its weekly cap.
   Pinned by `scripts/runtime-usage-refresh-test.cjs` §7.
-=======
+
 ## [0.389.0]
 ### Changed
 - **`verbositySavings()` is retired; the console now reports terse ADOPTION, not savings.** The flag
@@ -81,7 +113,6 @@ new version heading in the same commit.
   holding its results was cleaned; recovering it meant rebuilding the arm labels from claude's own
   transcripts. The raw rows now ship as `scripts/verbosity-turns-result.json` so the evidence outlives
   the run that produced it.
->>>>>>> origin/main
 
 ## [0.387.0] - 2026-08-24
 

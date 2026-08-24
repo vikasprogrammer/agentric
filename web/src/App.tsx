@@ -12062,8 +12062,8 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                     </Field>
                   </>
                 ) : type === 'slack' ? (
-                  <Field label="Trigger filter" help="Scope to an event type (app_mention / message) or a channel id (e.g. C0123…). Blank = any Slack message the app receives. Needs Slack tokens in Connections → Creds.">
-                    <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="app_mention  ·  or a channel id  (blank = any)" />
+                  <Field label="Trigger filter" help="Scope to an event type (app_mention / message) or a channel id (e.g. C0123…). Blank = any Slack message the app receives. Naming a CHANNEL ID also makes it a watch: messages there fire this automation without anyone @mentioning the bot — for reports that get pasted or forwarded into a channel rather than addressed to you. (Only a channel-scoped filter behaves that way; blank / * keeps the mention-and-DM behaviour.) Add `when <path> == <value>` (fire only if ALL hold) and/or `unless …` (drop if ALL hold) to test the message itself — ops are == != ~ (contains) !~, joined by `and`. `text` is the message with any bot mention stripped; `actor` is the sender's resolved name. Do this rather than telling the agent to ignore the wrong messages: a prompt instruction runs after the session it was meant to prevent. Messages from other bots/apps are ignored on every Slack path — for those, use a webhook automation. Needs Slack tokens in Connections → Creds.">
+                    <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder={'C0ABUSE1 when text ~ "abuse report"   ·   app_mention   ·   (blank = any)'} />
                   </Field>
                 ) : type === 'discord' ? (
                   <Field label="Trigger filter" help="Scope to an event type (mention / direct_message) or a channel id. Blank = any Discord message the bot receives. Needs a bot token in Connections → Creds.">
