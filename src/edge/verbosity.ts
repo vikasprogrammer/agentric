@@ -60,6 +60,41 @@
 // `additionalContext`, which is the only channel that reaches the model mid-turn), not a third
 // rewording. Do not spend another rewrite without that.
 //
+// THAT MECHANISM WAS THEN MEASURED (v0.388.0), and it is REAL BUT NOT WORTH WIRING FOR COST.
+// `npm run bench:verbosity-turns` walks five six-turn threads through three arms — no brief, the
+// brief in the system prompt, and the brief PLUS a 61-token reminder re-injected every turn via a
+// `UserPromptSubmit` hook. 270 turns, sonnet, 3 reps, the live ~13k company prompt underneath
+// (raw rows kept in `scripts/verbosity-turns-result.json`; re-read them with `--analyze`):
+//
+//     system     vs control    +1.0%  [-7.1, +7.8]   still nothing, now confirmed multi-turn
+//     reinforced vs system     +6.8%  [+0.5, +13.3]  CI EXCLUDES ZERO — the mechanism works
+//     reinforced vs control    +8.4%  [-0.4, +16.6]  end to end, still inside the noise
+//
+// Three things follow, and the second and third are why nothing was wired:
+//
+//  1. **The decay hypothesis was WRONG.** Every arm gets MORE verbose across turns (slopes +4.2,
+//     +6.9, +8.1 tokens/turn) and `reinforced` grows fastest of the three. There is no decay for a
+//     reminder to prevent. The gain is roughly flat across turn index — 4.2% on turn ONE — so what
+//     the hook actually buys is PROXIMITY: an instruction next to the user's message outweighs the
+//     same instruction 13k tokens up, from the very first turn. Worth knowing for any future steer,
+//     not just this one.
+//  2. **The money is not there.** 26.4 output tokens saved per turn against 61 input tokens spent on
+//     the reminder nets ~$0.00017/turn — about **$0.13/month** across instapods' 780 terse turns.
+//     That is the whole prize, and it is consistent with the ceiling established earlier: narration
+//     is ~15% of output tokens and this moves ~7% of that, i.e. ~1% of spend.
+//  3. **It was tested on the wrong lane for the fleet's spend.** `UserPromptSubmit` fires on a USER
+//     message, so this result covers chat / resident / thread-continuation sessions. The unattended
+//     lane — which is where most fleet spend lives — has almost no user prompts; its turns are driven
+//     by tool calls, and the analogous channel there is PreToolUse `additionalContext`, which this
+//     did NOT test. Do not generalise the +6.8% to unattended runs.
+//
+// One genuine non-cost finding, and the only reason to revisit any of this: the reinforced arm was
+// also MORE COMPLETE — it answered with the required facts on 60/90 turns against control's 48/90
+// (paired, discordant 20 vs 8, exact binomial p=0.036). Against the system-prompt arm it is a trend
+// only (17 vs 7, p=0.064). So the reminder makes answers shorter AND better, which is a quality
+// argument rather than a cost one. If terse is ever revisited, revisit it as an answer-shape feature
+// and measure completeness, not tokens.
+//
 // The carve-out has a failure mode of its own, and it showed up live: a terse `engineer` run answered a
 // console question at essay length, and the owner had to reply "explain to me in 1 liner". Nothing was
 // broken — the answer landed in the exempt lane, and "write them in full, ordinary prose" reads as a
