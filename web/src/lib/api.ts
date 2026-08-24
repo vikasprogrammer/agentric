@@ -61,26 +61,14 @@ export type RuntimeTuningPatch = {
   verbosity?: Verbosity | ''
 }
 
-/** One arm of the terse-vs-normal comparison, normalised per TURN (a longer run costs more because it
- *  did more, not because it was wordy). */
-export interface VerbosityArm {
-  sessions: number
-  turns: number
-  outputPerTurn: number
-  usdPerTurn: number
-}
-export interface VerbosityComparison {
-  normal: VerbosityArm
-  terse: VerbosityArm
-  /** Percent reduction terse vs normal (positive = cheaper). Null until both arms have enough runs. */
-  outputDelta: number | null
-  usdDelta: number | null
-  comparable: boolean
-}
-/** `byAgent` holds the agent fixed and is the number to trust; the top-line pair mixes different work. */
-export interface VerbositySavings extends VerbosityComparison {
+/** How far the terse flag has spread — counts only. The predecessor (`VerbositySavings`) carried
+ *  cost-per-turn deltas and was retired in v0.389.0: `output_tokens` is ~85% tool-call arguments, so
+ *  it never measured the narration the brief acts on. Whether terse WORKS is answered by
+ *  `npm run bench:verbosity` / `bench:verbosity-turns`, not by a query over live traffic. */
+export interface VerbosityAdoption {
   windowDays: number
-  byAgent: Array<{ agent: string } & VerbosityComparison>
+  sessions: { normal: number; terse: number; unstamped: number }
+  byAgent: Array<{ agent: string; normal: number; terse: number }>
   error?: string
 }
 
@@ -2028,7 +2016,7 @@ export const api = {
   agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
-  verbositySavings: (days = 30) => call<VerbositySavings>('GET', `/api/settings/verbosity-savings?days=${days}`),
+  verbosityAdoption: (days = 30) => call<VerbosityAdoption>('GET', `/api/settings/verbosity-adoption?days=${days}`),
   subagentDefault: () => call<{ mode: 'all' | 'none'; error?: string }>('GET', '/api/settings/subagent-default'),
   saveSubagentDefault: (mode: 'all' | 'none') => call<{ ok: boolean; mode?: 'all' | 'none'; error?: string }>('PUT', '/api/settings/subagent-default', { mode }),
   agentProposalTrust: () => call<{ trust: AgentProposalTrust; error?: string }>('GET', '/api/settings/agent-proposal-trust'),

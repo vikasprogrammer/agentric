@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbosityAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -16481,52 +16481,51 @@ function KillSwitchCard({ me }: { me: Member }) {
   )
 }
 
-/** Did terse output actually cost less, on THIS workspace's traffic? Terse is a prompt instruction, not
- *  an enforced transform — the model can ignore it and compliance drifts by model and task — so the flag
- *  ships next to the number that can contradict it. Renders nothing until both arms have real runs. */
-function VerbositySavingsPanel() {
-  const [data, setData] = useState<VerbositySavings | null>(null)
-  useEffect(() => { api.verbositySavings().then((r) => { if (!r.error) setData(r) }).catch(() => {}) }, [])
+/** How far the terse flag has spread across this workspace — counts, not savings.
+ *
+ *  This panel used to render cost-per-turn and USD-per-turn deltas in green and amber. Those were
+ *  removed in v0.389.0 rather than caveated: `output_tokens` is ~85% tool-call arguments, so the
+ *  number never contained the narration the brief acts on, and against real traffic it swung ±50-90%
+ *  on tool-use volume alone — reading as a confident verdict either way. Whether terse WORKS is a
+ *  question for `npm run bench:verbosity` / `bench:verbosity-turns` (paired, controlled, CI that
+ *  refuses a verdict inside the noise), which measured its ceiling at ~1% of spend. What a console
+ *  can honestly show is who is running it. */
+function VerbosityAdoptionPanel() {
+  const [data, setData] = useState<VerbosityAdoption | null>(null)
+  useEffect(() => { api.verbosityAdoption().then((r) => { if (!r.error) setData(r) }).catch(() => {}) }, [])
   if (!data) return null
-  const { normal, terse } = data
-  if (!normal.sessions && !terse.sessions) return null // nothing has run under the flag yet
-
-  const pct = (v: number | null) => (v == null ? '—' : `${v > 0 ? '−' : '+'}${Math.abs(v)}%`)
-  const tone = (v: number | null) => (v == null ? 'text-muted-foreground' : v > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400')
+  const { normal, terse } = data.sessions
+  if (!normal && !terse) return null // nothing has run under the flag yet
 
   return (
     <div className="space-y-2 border-t pt-4">
-      <label className="text-sm font-medium">Terse output — measured, last {data.windowDays} days</label>
-      {!data.comparable ? (
-        <p className="text-sm text-muted-foreground">
-          {terse.sessions} terse and {normal.sessions} normal costed sessions so far — not enough of both to compare yet.
-          Numbers appear once each side has a handful of runs.
-        </p>
-      ) : (
-        <>
-          <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
-            <span className="text-muted-foreground">Output tokens / turn: <span className="font-mono">{normal.outputPerTurn.toLocaleString()} → {terse.outputPerTurn.toLocaleString()}</span> <span className={tone(data.outputDelta)}>{pct(data.outputDelta)}</span></span>
-            <span className="text-muted-foreground">USD / turn: <span className="font-mono">${normal.usdPerTurn.toFixed(3)} → ${terse.usdPerTurn.toFixed(3)}</span> <span className={tone(data.usdDelta)}>{pct(data.usdDelta)}</span></span>
-          </div>
-          <p className="text-[11px] text-muted-foreground">
-            Fleet-wide, this pair is <strong>confounded</strong>: if you flipped particular agents to terse, the two sides
-            are made of different work. The per-agent rows below hold the agent fixed — trust those.
-          </p>
-        </>
-      )}
+      <label className="text-sm font-medium">Terse output — where it is running, last {data.windowDays} days</label>
+      <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
+        <span>Terse runs: <span className="font-mono text-foreground">{terse.toLocaleString()}</span></span>
+        <span>Normal runs: <span className="font-mono text-foreground">{normal.toLocaleString()}</span></span>
+        {data.sessions.unstamped > 0 && (
+          <span>Unstamped: <span className="font-mono">{data.sessions.unstamped.toLocaleString()}</span></span>
+        )}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Counts only. Terse is an output-style preference, not a cost control — measured against a
+        controlled benchmark its effect on spend is around <strong>1%</strong>, because narration is a
+        small share of what an agent emits. Run <code className="font-mono">npm run bench:verbosity</code> to
+        re-measure it; a comparison of live terse and normal runs cannot answer it, which is why the
+        old savings figures were removed.
+      </p>
       {data.byAgent.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="text-muted-foreground">
-              <tr className="text-left"><th className="py-1 pr-4 font-medium">Agent</th><th className="py-1 pr-4 font-medium">Runs (normal/terse)</th><th className="py-1 pr-4 font-medium">Output / turn</th><th className="py-1 font-medium">USD / turn</th></tr>
+              <tr className="text-left"><th className="py-1 pr-4 font-medium">Agent</th><th className="py-1 pr-4 font-medium">Terse runs</th><th className="py-1 font-medium">Normal runs</th></tr>
             </thead>
             <tbody>
               {data.byAgent.map((a) => (
                 <tr key={a.agent} className="border-t">
                   <td className="py-1 pr-4 font-mono">{a.agent}</td>
-                  <td className="py-1 pr-4 text-muted-foreground">{a.normal.sessions}/{a.terse.sessions}</td>
-                  <td className="py-1 pr-4"><span className="font-mono">{a.normal.outputPerTurn.toLocaleString()} → {a.terse.outputPerTurn.toLocaleString()}</span> <span className={tone(a.outputDelta)}>{pct(a.outputDelta)}</span></td>
-                  <td className="py-1"><span className="font-mono">${a.normal.usdPerTurn.toFixed(3)} → ${a.terse.usdPerTurn.toFixed(3)}</span> <span className={tone(a.usdDelta)}>{pct(a.usdDelta)}</span></td>
+                  <td className="py-1 pr-4 font-mono">{a.terse.toLocaleString()}</td>
+                  <td className="py-1 font-mono">{a.normal.toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -16593,7 +16592,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
         </div>
-        <VerbositySavingsPanel />
+        <VerbosityAdoptionPanel />
         <div className="space-y-1 border-t pt-4">
           <label className="text-sm font-medium">Sub-agents</label>
           <p className="text-sm text-muted-foreground">
