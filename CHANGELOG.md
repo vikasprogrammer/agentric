@@ -8,6 +8,41 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.388.0]
+### Added
+- **`npm run bench:verbosity-turns` — the multi-turn harness, and the answer on per-turn
+  reinforcement: the mechanism is real and not worth wiring.** The single-turn benchmark had shown
+  `TERSE_OUTPUT_BRIEF` to be indistinguishable from no brief, and a rewrite with a much better prior
+  failed too — two very different texts inside the noise, which is a mechanism problem, not a wording
+  one. The suspected mechanism was attention decay, which a single-turn harness structurally cannot
+  test. So: five six-turn threads, tool-free, mixed registers, walked through three arms — no brief,
+  the brief in the system prompt, and the brief plus a 61-token reminder re-injected every turn via a
+  `UserPromptSubmit` hook (the channel `caveman` uses; verified beforehand that it fires on every
+  `--resume` turn and reaches the model). 270 turns, claude-sonnet-5, 3 reps, the live ~13k company
+  prompt underneath.
+  **`reinforced` vs `system`: +6.8%, 95% CI [+0.5%, +13.3%] — the first interval in this whole line of
+  work to exclude zero.** But `system` vs `control` is still +1.0% [-7.1%, +7.8%] (the appended brief
+  does nothing, now confirmed multi-turn), and end-to-end `reinforced` vs `control` is +8.4%
+  [-0.4%, +16.6%], still inside the noise.
+  Nothing was wired, for three reasons recorded on `TERSE_OUTPUT_BRIEF`. **The decay hypothesis was
+  wrong** — every arm gets *more* verbose across turns (slopes +4.2/+6.9/+8.1 tokens per turn) and the
+  reinforced arm grows fastest; the gain is flat across turn index (4.2% on turn *one*), so the hook
+  buys PROXIMITY, not decay resistance. **The money is not there** — 26.4 output tokens saved against
+  61 input tokens spent nets ~$0.13/month across instapods' 780 terse turns, consistent with the
+  ceiling already established (narration is ~15% of output tokens; this moves ~7% of that). And **it
+  is the wrong lane** — `UserPromptSubmit` fires on user messages, so the result covers chat/resident
+  sessions, while most fleet spend is unattended runs whose turns are driven by tool calls; the
+  analogous channel there is PreToolUse `additionalContext`, which this did not test.
+  One non-cost finding worth keeping: the reinforced arm was also **more complete** — required facts
+  present on 60/90 turns against control's 48/90 (paired, discordant 20 vs 8, exact binomial
+  p=0.036). Shorter *and* better. If terse is revisited it should be as an answer-shape feature
+  measured on completeness, not as a cost lever.
+- **`--analyze <file>` on the turns benchmark** — re-report a finished run without re-running it. A
+  270-turn run costs ~$19 and an hour, and the first one nearly went to waste when the scratchpad
+  holding its results was cleaned; recovering it meant rebuilding the arm labels from claude's own
+  transcripts. The raw rows now ship as `scripts/verbosity-turns-result.json` so the evidence outlives
+  the run that produced it.
+
 ## [0.387.0] - 2026-08-24
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "agent-os",
-  "version": "0.387.0",
+  "version": "0.388.0",
   "description": "A generic, governed operating system for running autonomous agents safely across brands. Ships with a local web console.",
   "license": "MIT",
   "type": "commonjs",
@@ -46,7 +46,8 @@
     "test:review": "node scripts/review-notify-test.cjs",
     "test:outcome-vocab": "node scripts/outcome-vocabulary-test.cjs",
     "test:skill-edit": "node scripts/skill-edit-proposal-test.cjs",
-    "bench:verbosity": "node scripts/verbosity-benchmark.cjs"
+    "bench:verbosity": "node scripts/verbosity-benchmark.cjs",
+    "bench:verbosity-turns": "node scripts/verbosity-turns-benchmark.cjs"
   },
   "keywords": [
     "agents",
