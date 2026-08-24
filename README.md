@@ -298,6 +298,31 @@ first:
 
 ---
 
+## The status line, on any machine
+
+Agentric renders a status line at the bottom of every governed agent TUI: branch or agent id, folder,
+model and effort, a context-window meter, weekly usage, cost, diff churn — and the two things only
+Agentric knows, the human identity the run acts as and how many approvals it is blocked on.
+
+The same renderer works in a plain `claude` session that Agentric never launched. One command, no
+checkout and no npm install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vikasprogrammer/agentric/main/scripts/install-statusline.sh | bash
+```
+
+It copies the renderer into your claude config dir (`$CLAUDE_CONFIG_DIR`, default `~/.claude`) and
+points `settings.json` → `statusLine` at it, leaving every other key alone and backing the file up
+first. Outside Agentric there is no session to ask about, so the governance half stays silent and the
+head of the bar carries the git branch instead. To undo — it restores whatever status line you had
+before:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vikasprogrammer/agentric/main/scripts/install-statusline.sh | bash -s -- --uninstall
+```
+
+---
+
 ## Documentation
 
 | Doc | What is in it |

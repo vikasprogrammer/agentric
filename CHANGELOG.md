@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.382.0] - 2026-08-24
+
+### Added
+- **The Agentric status line now installs into any claude session on any machine, with one command.**
+  `curl -fsSL .../scripts/install-statusline.sh | bash` copies `terminal/statusline.js` into the claude
+  config dir (`$CLAUDE_CONFIG_DIR`, default `~/.claude`) and points `settings.json` → `statusLine` at
+  it. It is the SAME renderer the governed fleet TUIs run — one source of truth, no forked copy to
+  drift. Every settings edit goes through `node`, never `sed`, because that file also holds the user's
+  hooks, permissions and MCP servers; the file is backed up, unrelated keys are preserved, and any
+  status line already configured is snapshotted so `--uninstall` puts it back verbatim (a re-run
+  deliberately does not re-snapshot — recording our own line as "previous" would turn a reversible
+  install into a one-way door).
+
+### Changed
+- **`terminal/statusline.js` grew a standalone lane.** A session Agentric launched exports
+  `AOS_URL`/`SESSION`/`AOS_SECRET`; a plain `claude` on a laptop exports none. When they are absent the
+  renderer skips the loopback governance fetch entirely and heads the bar with the git branch (one
+  `git status -b --porcelain --untracked-files=no`, hard-capped at 300ms) instead of an agent id it
+  does not have. Governed rendering is untouched — every governed-only field sits behind the flag.
+  Pinned by `scripts/statusline-install-test.cjs`, now in `npm run test:governance`.
+
 ## [0.381.0] - 2026-08-22
 
 ### Added
