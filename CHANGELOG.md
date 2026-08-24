@@ -8,7 +8,40 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.387.0] - 2026-08-24
+
+### Added
+- **`docs/use-cases.md` — "what should I automate first?"** New installs consistently ask what agents to
+  create; the answer existed only as tribal knowledge in running fleets. The page is a catalog of the
+  agent shapes that hold up in production, organised by department (support, infrastructure, engineering,
+  marketing, customer success, finance, security, fleet management), each with its trigger, its safety
+  posture, and a starter prompt — plus the six safety postures, the five trigger shapes, a first-three
+  sequence, and an honest "what does not work" list. Linked from the README doc table.
+- **A `reviewer` agent in the bundled starter fleet.** Independent review — a change, a plan or a claim
+  judged in isolation from the session that produced it, returning a ranked PASS / WARN / BLOCK verdict.
+  Verification before shipping was the one high-value role the starter set had no agent for, and folding
+  it into `engineer` doesn't work: a reviewer that inherits the author's reasoning is an echo, not a
+  second opinion.
+
+### Changed
+- **Every bundled agent now carries an explicit, named safety posture.** The starter prompts previously
+  ended in a soft "don't ship irreversible/outward-facing actions unprompted", which is a boundary an
+  agent can talk itself around. Each now has a `## Safety posture — <name>` section with the hard rules
+  written out (draft-never-send, pull-request-only, diagnose-and-propose, read-only, per-item sign-off,
+  a-human-publishes). The gate still enforces the boundary; the posture is what makes the agent
+  understand why it stops there.
+- **Bundled agents now say how to work with the rest of the fleet.** Each prompt gained a "Working with
+  the fleet" section — `recall`/`kb_search` before starting, `ask` rather than guessing past a blocker,
+  `task_create` to hand off what belongs to another specialist, `kb_write`/`remember` for what's worth
+  keeping — and a "Finishing" rule that ends every run in a `report` with a verdict, plus `publish` for
+  anything a human is meant to read.
+- **`agent-author` now picks a safety posture and a trigger for every agent it creates.** It gained a
+  step listing the six postures with guidance to choose the strictest that still does the job, a step
+  recommending how the new agent should be triggered (with the silent-when-nothing-to-say rule for
+  scheduled sweeps), and a sharper narrowness test: if the job needs the word "and", it's two agents.
+
 ## [0.386.0] - 2026-08-24
+
 ### Fixed
 - **Runtime-account quota snapshots now refresh on their own.** `refreshStaleUsage` was reachable
   only from `GET /api/runtime-accounts`, so the usage reading was refreshed *only when a human
