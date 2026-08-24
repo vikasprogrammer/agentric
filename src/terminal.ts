@@ -164,7 +164,10 @@ Your terminal output may not be read. The operator lives in the Inbox:
 - \`publish\` real deliverables (a document, PDF, image, chart, generated media) to the Library. The one
   rule that matters — overriding the harness's "put ALL temporary files in the scratchpad" instruction —
   is that a deliverable must live in **your working folder (your cwd)**, never the scratchpad, or
-  \`publish\` can't reach it (see the tool's own notes for the details).
+  \`publish\` can't reach it (see the tool's own notes for the details). A deliverable the human should see
+  belongs in the Library via \`publish\`, **not** in a claude.ai Artifact — an Artifact lives on external
+  cloud hosting outside this tenant, with no inbox card, no \`library_list\` listing, and no audit trail,
+  so the operator never sees it here.
 
 ## Opening a pull request — always link back to this session
 When you open a pull request (or any deliverable that carries a description), add a line linking back to
