@@ -3,7 +3,8 @@
  *
  * A fresh `agent-os serve` boots into a console that WORKS but can do nothing interesting: no company
  * context (so every agent runs context-free), possibly no runtime credential (so a session hangs on a
- * login picker), no Composio key (so no connectors), no chat channel, no teammates, one seeded agent.
+ * login picker), no Composio key (so no connectors), no chat channel, no GitHub App (so every push is
+ * authored by whatever credential the box carries), keyword-only memory, no teammates, one seeded agent.
  * Every one of those is already settable somewhere in Settings — the problem is that a new operator has
  * no idea WHICH of them matter or in what order, and nothing tells them when they're done.
  *
@@ -21,10 +22,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { AgentOS } from '../kernel.js';
+import { GithubIdentity } from './github-identity.js';
 
 /** Steps, in the order the wizard walks them. Order is the recommendation: credentials first (nothing
- *  runs without them), then context (every run is worse without it), then the optional reach. */
-export const SETUP_STEP_IDS = ['claude', 'company', 'composio', 'chat', 'team', 'agents'] as const;
+ *  runs without them), then context (every run is worse without it), then reach (connectors, chat,
+ *  GitHub), then memory (how much of a run survives it), then the people and the fleet. */
+export const SETUP_STEP_IDS = ['claude', 'company', 'composio', 'chat', 'github', 'memory', 'team', 'agents'] as const;
 export type SetupStepId = (typeof SETUP_STEP_IDS)[number];
 
 export interface SetupStep {
@@ -123,6 +126,63 @@ function keychainHasClaude(): boolean {
   } catch { return false; }
 }
 
+/**
+ * GitHub: is there an App this workspace can act through?
+ *
+ * Two independent halves, and a workspace usefully has either:
+ *   • the OAuth pair (client id + secret) — lets each MEMBER link their own account, so a run-as session
+ *     commits and opens PRs as the actual human (`injectMemberGithub`);
+ *   • the App credentials (App id + private key) — mint installation tokens so the company BOT can push
+ *     on every installed repo when the run-as human hasn't linked (or there is none).
+ * Neither present → the box's ambient git credential is whatever happens to be lying around, which is
+ * how "the bot authored it" and "git push: permission denied" both happen.
+ */
+export function githubEvidence(agentOs: AgentOS): { status: 'done' | 'todo'; detail: string } {
+  const gh = new GithubIdentity(agentOs);
+  const oauth = gh.configured();
+  const bot = gh.botConfigured();
+  if (!oauth && !bot) return { status: 'todo', detail: 'no GitHub App — agents push with whatever credential the box happens to have' };
+  const slug = gh.appSlug();
+  const parts = [
+    oauth ? 'per-member sign-in ready' : 'no OAuth pair — members cannot link their own account',
+    bot ? 'company-bot token available' : 'no bot fallback — a session with no linked human cannot push',
+  ];
+  return { status: 'done', detail: `${slug ? `App “${slug}”` : 'App credentials set'} · ${parts.join(' · ')}` };
+}
+
+/**
+ * Memory: can agents recall anything they didn't just do?
+ *
+ * The default sqlite backend is keyword-only (FTS5 bm25) — it finds a memory when the words match and
+ * misses it when they don't, which is most of the time. So this step is satisfied by either upgrade:
+ * add an embedder to sqlite (hybrid keyword + cosine, one API key, zero new services), or point the
+ * plane at a real vector store (automem — graph + vectors, and the one we recommend — or libSQL).
+ * Read from the SAME setting Settings → Memory writes; a config-file default is deliberately not
+ * counted, because the wizard's job is to get the DB layer configured.
+ */
+export function memoryEvidence(agentOs: AgentOS): { status: 'done' | 'todo'; detail: string } {
+  const cfg = agentOs.settings.memoryConfig();
+  const backend = cfg?.backend ?? 'sqlite';
+  if (backend === 'automem') {
+    const ep = cfg?.automem?.endpoint ?? '';
+    return ep
+      ? { status: 'done', detail: `AutoMem at ${hostOf(ep)} — graph + vector recall` }
+      : { status: 'todo', detail: 'AutoMem selected but no endpoint set — recall falls back to keywords' };
+  }
+  if (backend === 'libsql') {
+    const emb = cfg?.libsql?.embeddings;
+    return { status: 'done', detail: emb ? `libSQL vectors + ${emb.provider} embeddings (${emb.model})` : 'libSQL store — lexical only, no embedder set' };
+  }
+  const emb = cfg?.sqlite?.embeddings;
+  if (emb?.url && emb?.model) return { status: 'done', detail: `hybrid recall — sqlite + ${emb.provider} embeddings (${emb.model})` };
+  return { status: 'todo', detail: 'keyword-only recall — an agent misses its own past work whenever it words it differently' };
+}
+
+/** Host of a URL for display, or the raw string when it isn't parseable. Never shows a token. */
+function hostOf(u: string): string {
+  try { return new URL(u).host; } catch { return u; }
+}
+
 export interface SetupInputs {
   /** Agents in the fleet, excluding the ones every install is seeded with — a seeded `agent-author`
    *  is not evidence that anybody built a team. */
@@ -144,6 +204,8 @@ export function buildSetupStatus(agentOs: AgentOS, inputs: SetupInputs): SetupSt
   const telegram = agentOs.settings.telegramConfigured();
   const members = agentOs.team.listMembers();
   const claude = claudeAuthEvidence(agentOs, inputs.probes);
+  const github = githubEvidence(agentOs);
+  const memory = memoryEvidence(agentOs);
 
   const chatOn = [slack && 'Slack', discord && 'Discord', telegram && 'Telegram'].filter(Boolean) as string[];
 
@@ -183,6 +245,24 @@ export function buildSetupStatus(agentOs: AgentOS, inputs: SetupInputs): SetupSt
       status: chatOn.length ? 'done' : 'todo',
       detail: chatOn.length ? `${chatOn.join(' + ')} connected` : 'none connected — the console is the only way in',
       skipped: skipped.has('chat'),
+    },
+    {
+      id: 'github',
+      title: 'Connect GitHub',
+      why: 'Coding agents live on git. The App lets each member link their own account — so a PR is authored by the human the run acts as — and gives every other session a company-bot token to push with.',
+      required: false,
+      status: github.status,
+      detail: github.detail,
+      skipped: skipped.has('github'),
+    },
+    {
+      id: 'memory',
+      title: 'Set up the memory layer',
+      why: 'Out of the box recall is keyword-only, so agents re-learn the same things forever. Add an OpenAI key for hybrid recall on the built-in store, or point it at AutoMem for real graph + vector memory.',
+      required: false,
+      status: memory.status,
+      detail: memory.detail,
+      skipped: skipped.has('memory'),
     },
     {
       id: 'team',
