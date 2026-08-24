@@ -4795,7 +4795,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // right after adding (non-blocking: a bad dir is just badged, not rejected — the operator set the path).
       if (!check && kind === 'oauth' && runtime === 'claude-code' && acct.configDir) {
         const dirTok = readConfigDirToken(acct.configDir);
-        if (dirTok) check = await checkClaudeToken(dirTok);
+        if (dirTok) check = await checkClaudeToken(dirTok, undefined, { configDir: acct.configDir });
       }
       // Persist the validation snapshot (health + weekly/session usage) so the console can show it right away;
       // if usage says a window is already exhausted, park the account limited until it resets.
@@ -4867,7 +4867,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
             : 'no .credentials.json found in the credential dir',
         });
       }
-      const check = await checkClaudeToken(token);
+      // Pass the credential dir so an EXPIRED-but-refreshable access token is reported as such rather than
+      // as a dead credential (see configDirCanRefresh) — the manual Refresh button must not tell an operator
+      // to re-run `claude setup-token` for an account that fixes itself on its next launch.
+      const check = await checkClaudeToken(token, undefined, { configDir: acct.configDir });
       os.runtimeAccounts.recordCheck(runtime, name, { ok: check.ok, note: check.note, usage: check.usage });
       // A now-valid token re-enables a previously auto-disabled account; usage-exhaustion re-parks it limited.
       if (check.ok === true && !acct.enabled && acct.checkOk === false) os.runtimeAccounts.setEnabled(runtime, name, true);
