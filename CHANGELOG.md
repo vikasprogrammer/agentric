@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.387.1] - 2026-08-24
+### Fixed
+- **An expired Claude access token is no longer branded a dead credential.** A revoked token and one
+  that has merely aged out return the same `401`, so the pool probe reported both as
+  `not a valid Claude subscription token; re-run \`claude setup-token\`` — telling an operator to do a
+  full re-auth for an account that fixes itself. `claude` swaps the stored `refreshToken` for a new
+  access token on its next launch; the credential file already carries everything needed.
+  `checkClaudeToken` now takes the account's `configDir` and, on a 401, checks
+  `configDirCanRefresh()`: a live refresh token yields `ok: null` ("couldn't verify — refreshes on next
+  run"), which keeps the account enabled and its previous health, and retries on the next sweep. A
+  missing or expired refresh token is still a hard `ok: false` — those genuinely need a human.
+  Live cost of the old behaviour: the `tools` account sat mislabelled as broken for days, which also
+  masked the real state underneath — it was simply at its weekly cap.
+  Pinned by `scripts/runtime-usage-refresh-test.cjs` §7.
+
 ## [0.387.0] - 2026-08-24
 
 ### Added

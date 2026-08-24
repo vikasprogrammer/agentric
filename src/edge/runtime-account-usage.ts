@@ -51,7 +51,7 @@ export const BACKGROUND_USAGE_STALE_MS = 30 * 60_000;
 export const MAX_PER_SWEEP = 8;
 
 /** The probe used to read an account's usage — injectable so the sweep is testable without network. */
-export type UsageProbe = (token: string) => Promise<RuntimeCheckResult>;
+export type UsageProbe = (token: string, configDir?: string) => Promise<RuntimeCheckResult>;
 
 /** In-flight probes across every tenant, keyed `<tenant>:<runtime>/<name>`. Module-level on purpose: the
  *  same account must not be probed twice concurrently no matter which request kicked it. */
@@ -108,7 +108,9 @@ export function refreshStaleUsage(
   opts: { now?: number; staleMs?: number; probe?: UsageProbe; max?: number } = {},
 ): { refreshing: string[]; done: Promise<void> } {
   const now = opts.now ?? Date.now();
-  const probe = opts.probe ?? ((t: string) => checkClaudeToken(t));
+  // `configDir` rides along so a 401 on an expired-but-refreshable access token is classified as
+  // "refreshes on next run" instead of "dead credential" (see configDirCanRefresh).
+  const probe = opts.probe ?? ((t: string, dir?: string) => checkClaudeToken(t, undefined, { configDir: dir }));
   let stale: RuntimeAccount[] = [];
   try { stale = staleUsageAccounts(os.runtimeAccounts.list(now), now, opts.staleMs); } catch { return { refreshing: [], done: Promise.resolve() }; }
 
@@ -125,7 +127,7 @@ export function refreshStaleUsage(
   const done = (async () => {
     for (const { a, token } of todo) {
       try {
-        const check = await probe(token);
+        const check = await probe(token, a.configDir);
         applyUsageCheck(os, a, check);
       } catch { /* a probe failure leaves the previous snapshot; the next read retries */ }
       finally { inflight.delete(keyOf(os.tenant, a)); }

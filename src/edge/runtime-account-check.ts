@@ -135,6 +135,30 @@ export function readConfigDirToken(dir: string): string | undefined {
   } catch { return undefined; }
 }
 
+/**
+ * Can this credential dir REFRESH itself? An `oauth` credential file carries a `refreshToken` alongside the
+ * short-lived `accessToken`, and `claude` swaps one for the other on its next launch — so an access token
+ * that has merely aged out is a self-healing condition, not a dead account.
+ *
+ * This exists because the two are indistinguishable at the API: an expired access token 401s exactly like a
+ * revoked one. Without this check the probe called a healthy account "not a valid Claude subscription token;
+ * re-run `claude setup-token`" — advice that is both wrong and expensive (a full re-auth for a credential
+ * that fixes itself on next use). Live case: the `tools` account sat mislabelled for days, which also masked
+ * the REAL state underneath (it was simply at its weekly cap).
+ *
+ * Returns `false` when there is no refresh token, or when the refresh token itself has expired — those are
+ * genuinely dead and a human does have to re-auth.
+ */
+export function configDirCanRefresh(dir: string, now = Date.now()): boolean {
+  try {
+    const j = JSON.parse(readFileSync(join(dir, '.credentials.json'), 'utf8'));
+    const o = j?.claudeAiOauth ?? j;
+    if (!o?.refreshToken) return false;
+    const exp = o.refreshTokenExpiresAt;
+    return typeof exp === 'number' ? exp > now : true; // no stated expiry → assume usable
+  } catch { return false; }
+}
+
 /** Does this credential DIR actually hold the runtime's login (`.credentials.json` / `auth.json`, per the
  *  runtime's `credentialEnv.configDirFile`)? Runtime-agnostic, unlike {@link readConfigDirToken}, which
  *  parses Claude's file shape. A dir that fails this is not a usable account: pointing a session at it
@@ -150,7 +174,7 @@ export function credentialDirHasLogin(runtime: CodingRuntimeId, dir: string): bo
 
 /** Probe a Claude subscription OAuth token via a 1-token Messages call and read the usage headers. Never
  *  throws — a network/timeout/parse problem returns `ok:null`. Works for setup-tokens AND login tokens. */
-export async function checkClaudeToken(token: string, timeoutMs = 12000): Promise<RuntimeCheckResult> {
+export async function checkClaudeToken(token: string, timeoutMs = 12000, opts: { configDir?: string } = {}): Promise<RuntimeCheckResult> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -166,7 +190,17 @@ export async function checkClaudeToken(token: string, timeoutMs = 12000): Promis
       body: JSON.stringify({ model: PROBE_MODEL, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
       signal: ctrl.signal,
     });
-    if (r.status === 401) return { ok: false, note: 'rejected (401) — not a valid Claude subscription token; re-run `claude setup-token` and paste the full sk-ant-oat01-… value' };
+    if (r.status === 401) {
+      // An EXPIRED access token 401s identically to a revoked one. When the credential dir still holds a
+      // live refreshToken, `claude` swaps it for a new access token on its next launch — so this account is
+      // fine and must not be branded dead (see {@link configDirCanRefresh}). `ok: null` = couldn't verify:
+      // the caller keeps the previous health, leaves the account enabled, and retries on the next sweep,
+      // by which time a launch has usually refreshed it.
+      if (opts.configDir && configDirCanRefresh(opts.configDir)) {
+        return { ok: null, note: 'access token expired — refreshes automatically on this account\'s next run' };
+      }
+      return { ok: false, note: 'rejected (401) — not a valid Claude subscription token; re-run `claude setup-token` and paste the full sk-ant-oat01-… value' };
+    }
     // Usage headers are present on 200 AND on a 429 (at-limit) — parse whenever we can, since an at-limit
     // account is exactly one we want to record + park. A 403/5xx/other with no headers is "couldn't verify".
     const usage = parseUsage(r.headers);
