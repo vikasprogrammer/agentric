@@ -4213,7 +4213,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const claudeMd = String(b.claudeMd ?? '');
     // model/effort are per-agent overrides — each optional (omit → inherit the workspace default at
     // launch). Validate effort against the CLI's value set.
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
+    // The runtime an agent is BORN on. Defaults to claude-code (what every agent got before the picker
+    // existed), but it has to be settable here: it used to be hardcoded, so a Codex/opencode agent could
+    // only be made by creating a Claude one and switching it afterwards.
+    const runtime = (b.runtime === undefined || b.runtime === '') ? 'claude-code' : String(b.runtime) as RuntimeId;
+    if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `runtime must be one of: ${Object.keys(CODING_RUNTIMES).join(', ')}` });
+    // Validate the tuning AGAINST that runtime, so a model belonging to another CLI is refused at
+    // creation rather than at the first launch (`opus` on Codex, a bare `claude-*` on opencode, …).
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(b, runtime);
     if (tErr) return sendJson(res, 400, { error: tErr });
     // No forced model default: a blank field means "inherit the workspace default" (Settings →
     // Runtime defaults), same as effort/permission. The create form pre-fills the `opus` alias (which
@@ -4236,7 +4243,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ...(category ? { category } : {}),
       principal: `svc-${id}`,
       policyContext: 'default@v3',
-      runtime: 'claude-code',
+      runtime,
       ...tuning,
       ...(examplePrompts ? { examplePrompts } : {}),
       ...(shellSecrets ? { shellSecrets } : {}),
@@ -4247,7 +4254,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     fs.writeFileSync(path.join(folder, 'agent.json'), JSON.stringify(manifest, null, 2) + '\n');
     fs.writeFileSync(path.join(folder, 'CLAUDE.md'), claudeMd);
     os.registerAgent({ ...manifest, dir: folder });
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.created', data: { agent: id, runtime: 'claude-code', dir: folder } });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.created', data: { agent: id, runtime, dir: folder } });
     return sendJson(res, 200, { ok: true, id });
   }
 
