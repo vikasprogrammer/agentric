@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.394.0] - 2026-08-25
+### Added
+- **Docs → Use cases: every use case ships a "Create this agent" button.** The page told you which
+  33 agent shapes are worth building and left you to write the prompt yourself — the gap between
+  reading a use case and having that agent was a blank New-agent form. Each entry now carries a
+  ready brief for the bundled `agent-author`: name, job, trigger, and the safety posture that entry
+  argues for, plus an instruction to ask before creating anything it does not know. Click **Create
+  this agent** to open the brief in a textarea, edit it, then **Run now** (spawns `agent-author`
+  and opens its terminal) or **Copy**.
+  The brief opens into an editable box rather than firing on click — the posture is the decision the
+  page exists to teach, and a one-click spawn would skip reading it. `Copy` uses the existing
+  `copyText` fallback, so it still works on a plain-HTTP tenant where `navigator.clipboard` is
+  undefined. Where the viewer cannot run `agent-author` (a member with no assignment), Run is
+  disabled and says why; Copy still works.
+  Scoped to the Docs page on purpose — the ```create-agent fence is intercepted by a DocsPage-local
+  markdown component, NOT the shared `mdComponents` that also renders KB, task and goal markdown.
+  Docs ships with the software; that markdown is written by whoever is in the tenant, and a runnable
+  button rendered from tenant-authored prose invites a member to run something they did not read.
+  (It would not be an authority bypass — the spawn is still `canRun`-gated and every effect still
+  crosses the gateway — but there is no reason to widen the surface.)
+  Pinned by `scripts/docs-create-agent-test.cjs`: fences balanced, every brief names a DNS-safe
+  agent plus a job, trigger and posture, no duplicate ids, none targets `agent-author` itself, and
+  the runnable block stays out of the shared renderer.
+
 ## [0.393.1] - 2026-08-25
 ### Fixed
 - **Docs → Use cases: the Related table no longer lists the same page twice.** The move into the

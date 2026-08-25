@@ -612,6 +612,8 @@ const LAST_AGENT_KEY = 'aos_last_agent'
 const taskDraftKey = (agentId: string) => `aos_task_draft:${agentId}`
 // Which agent-chooser layout the user prefers: a card gallery ('grid') or a list-rail + detail
 // ('split'). Persisted so it sticks across visits; defaults to the compact list-rail split view.
+/** The bundled agent that writes other agents — the target of every Docs `create-agent` brief. */
+const AGENT_AUTHOR = 'agent-author'
 const AGENTS_VIEW_KEY = 'aos_agents_view'
 type AgentsView = 'grid' | 'split'
 
@@ -1842,7 +1844,7 @@ function Console({ me }: { me: Member }) {
           {route === 'files' && <FilesPage initialDir={detail} />}
           {route === 'artifacts' && <ArtifactsPage me={me} permalink={detail} nav={nav} />}
           {route === 'audit' && <AuditPage />}
-          {route === 'docs' && <DocsPage selected={detail} onSelect={(slug) => nav('docs', slug)} />}
+          {route === 'docs' && <DocsPage selected={detail} onSelect={(slug) => nav('docs', slug)} canCreateAgent={(state?.agents ?? []).some((a) => a.id === AGENT_AUTHOR)} onRun={(task) => runAgent(AGENT_AUTHOR, task)} />}
           {route === 'settings' && <SettingsPage me={me} state={state} tab={detail} onTab={(t) => nav('settings', t)} onStateChange={refreshState} />}
           {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} onSaved={refreshState} />}
         </div>
@@ -12343,13 +12345,91 @@ function KindChip({ on, onClick, children }: { on: boolean; onClick: () => void;
   )
 }
 
+/** A ```create-agent fence in the manual: a ready brief for `agent-author`, editable before it runs.
+ *  The point is that reading a use case and HAVING that agent are one click apart — but the brief is a
+ *  starting point, not a spell, so it opens into a textarea rather than firing on click.
+ *
+ *  Deliberately scoped to the Docs page, NOT added to the shared `mdComponents`: Docs markdown ships
+ *  with the software, while KB/task/goal markdown is written by whoever is in the tenant. A runnable
+ *  button rendered from tenant-authored prose is not an authority bypass — the spawn is still gated by
+ *  `canRun` and every effect still crosses the gateway — but it invites a member to run something they
+ *  did not read, and there is no reason to widen the surface for it. */
+function CreateAgentBlock({ prompt, canRun, onRun }: { prompt: string; canRun: boolean; onRun: (task: string) => Promise<string | null> }) {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState(prompt)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [copied, setCopied] = useState<'idle' | 'ok' | 'fail'>('idle')
+
+  if (!open) {
+    return (
+      <div className="my-3">
+        <Button size="sm" variant="outline" className="h-7" onClick={() => setOpen(true)}>
+          <Wand2 className="mr-1 h-3.5 w-3.5" />Create this agent
+        </Button>
+      </div>
+    )
+  }
+  const run = async () => {
+    if (busy) return
+    setBusy(true); setErr('')
+    const e = await onRun(text).catch((x) => String(x?.message ?? x))
+    setBusy(false)
+    if (e) setErr(e)
+  }
+  return (
+    <div className="my-3 rounded-md border bg-muted/30 p-3">
+      <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+        <Wand2 className="h-3.5 w-3.5" />
+        <span>Brief for <span className="font-mono">agent-author</span> — edit it, then run.</span>
+      </div>
+      <textarea
+        className="min-h-[13rem] w-full resize-y rounded-md border bg-background p-2 font-mono text-[11px] leading-relaxed"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        spellCheck={false}
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button size="sm" className="h-7" disabled={busy || !canRun || !text.trim()} onClick={run}>
+          <Play className="mr-1 h-3.5 w-3.5" />{busy ? 'Starting…' : 'Run now'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7"
+          onClick={async () => { const ok = await copyText(text); setCopied(ok ? 'ok' : 'fail'); setTimeout(() => setCopied('idle'), 2000) }}
+        >
+          <Copy className="mr-1 h-3.5 w-3.5" />{copied === 'ok' ? 'Copied' : copied === 'fail' ? 'Select + ⌘C' : 'Copy'}
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7" onClick={() => { setOpen(false); setText(prompt); setErr('') }}>Cancel</Button>
+        {!canRun && <span className="text-[11px] text-muted-foreground">You can copy this, but running <span className="font-mono">agent-author</span> needs it assigned to you.</span>}
+        {err && <span className="text-[11px] text-destructive">{err}</span>}
+      </div>
+    </div>
+  )
+}
+
 /** Product manual bundled into the build (web/src/docs) — read-only, identical for every tenant,
  *  unlike the KB, which is the tenant's own living wiki. Adding a page = drop a .md in web/src/docs
  *  and register it in web/src/docs/index.ts. */
-function DocsPage({ selected, onSelect }: { selected: string; onSelect: (slug: string) => void }) {
+function DocsPage({ selected, onSelect, canCreateAgent, onRun }: { selected: string; onSelect: (slug: string) => void; canCreateAgent: boolean; onRun: (task: string) => Promise<string | null> }) {
   // The selected page is a URL detail (`#/docs/<slug>`) so a refresh / shared link lands on the
   // same page instead of always resetting to the first one.
   const sel = docPages.find((p) => p.slug === selected) ?? docPages[0]
+  // A ```create-agent fence renders as a runnable brief instead of a code block. Intercepted at `pre`
+  // (not `code`) so the result is not nested inside a <pre>; anything else falls through unchanged.
+  const components = useMemo(() => ({
+    ...mdComponents,
+    pre: (props: any) => {
+      const child: any = Array.isArray(props.children) ? props.children[0] : props.children
+      if (String(child?.props?.className ?? '').includes('language-create-agent')) {
+        const kids = child.props.children
+        const raw = (Array.isArray(kids) ? kids.join('') : String(kids ?? '')).replace(/\n$/, '')
+        return <CreateAgentBlock prompt={raw} canRun={canCreateAgent} onRun={onRun} />
+      }
+      return mdComponents.pre(props)
+    },
+  }), [canCreateAgent, onRun])
   return (
     <div className="flex gap-4">
       <div className="w-64 shrink-0 space-y-3">
@@ -12364,7 +12444,7 @@ function DocsPage({ selected, onSelect }: { selected: string; onSelect: (slug: s
         </div>
       </div>
       <div className="min-w-0 max-w-3xl flex-1">
-        <Card><CardContent className="p-6 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{sel.body}</ReactMarkdown></CardContent></Card>
+        <Card><CardContent className="p-6 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={components}>{sel.body}</ReactMarkdown></CardContent></Card>
       </div>
     </div>
   )
