@@ -15,7 +15,7 @@
  *    real, persistent change to the host, not a per-session effect.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { accessSync, constants } from 'node:fs';
+import { accessSync, constants, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { CODING_RUNTIMES, CodingRuntimeId, RuntimeId, isCodingRuntime } from '../types';
 
@@ -34,8 +34,25 @@ export interface RuntimePresence {
 /** The PATH a launched session gets (see the launch scripts) — probe with the SAME one, or the
  *  console reports "missing" for a CLI the agent would in fact find, and vice versa. */
 function probePath(): string {
-  const extra = [`${process.env.HOME}/.local/bin`, '/opt/homebrew/bin', '/usr/local/bin'];
-  return [...extra, process.env.PATH || ''].filter(Boolean).join(':');
+  return [`${installPrefix()}/bin`, '/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || '']
+    .filter(Boolean).join(':');
+}
+
+/**
+ * Where a console-driven install puts the CLI.
+ *
+ * NOT npm's own global prefix. On the common NodeSource/apt layout that is `/usr`, which the server
+ * cannot write: it runs as a non-root user, usually under `ProtectSystem=strict`, so `npm install -g`
+ * dies with `ENOENT … mkdir '/usr/lib/node_modules/<pkg>'` and the Install button is simply broken on
+ * every such box (seen live on a tenant box, 2026-08-25).
+ *
+ * `~/.local` is writable by the service user, is already inside the hardened unit's
+ * `ReadWritePaths=/home/<svc>`, and — the part that makes it correct rather than merely convenient —
+ * `~/.local/bin` is the FIRST entry of both {@link probePath} and the PATH every launch script
+ * exports. So a CLI installed here is the one the probe reports AND the one a session actually runs.
+ */
+function installPrefix(): string {
+  return join(process.env.HOME || '/tmp', '.local');
 }
 
 /** Resolve `bin` against a PATH string the way execvp does — first directory holding an executable
@@ -94,8 +111,12 @@ export function installRuntime(id: string, timeoutMs = 300_000): Promise<Install
     let out = '';
     let done = false;
     const finish = (r: InstallResult) => { if (!done) { done = true; resolve(r); } };
+    const prefix = installPrefix();
+    // npm reads every flag from `npm_config_*` too, so the prefix rides the ENV rather than being
+    // spliced into a constant argv — one mechanism that works for any npm-shaped install command.
+    try { mkdirSync(join(prefix, 'bin'), { recursive: true }); } catch (_) { /* npm will report it */ }
     const child = spawn(cmd, args, {
-      env: { ...process.env, PATH: probePath() },
+      env: { ...process.env, PATH: probePath(), npm_config_prefix: prefix },
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -112,7 +133,7 @@ export function installRuntime(id: string, timeoutMs = 300_000): Promise<Install
       // session immediately contradicts.
       const after = probe(spec.bin);
       if (after.installed) finish({ ok: true, version: after.version });
-      else finish({ ok: false, error: out.trim() || `${spec.bin} is still not on PATH after \`${spec.install.join(' ')}\`` });
+      else finish({ ok: false, error: out.trim() || `${spec.bin} is still not on PATH after \`${spec.install.join(' ')}\` (prefix ${prefix})` });
     });
   });
 }

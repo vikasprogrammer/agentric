@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.391.2] - 2026-08-25
+### Fixed
+- **Runtime install failed on any box with a root-owned npm prefix**, which is the standard
+  NodeSource/apt layout: `npm install -g` targeted `/usr`, and the server — a non-root user, usually
+  under `ProtectSystem=strict` — cannot write there, so Install died with
+  `ENOENT … mkdir '/usr/lib/node_modules/<pkg>'`. Installs now go to `~/.local`, which the service user
+  can write, which is inside the hardened unit's `ReadWritePaths`, and whose `bin` is already the FIRST
+  entry of both the presence probe and the PATH every launch script exports — so the installed CLI is
+  the one the console reports AND the one a session runs.
+
 ## [0.391.1] - 2026-08-25
 ### Fixed
 - Runtime presence probing spawned `command -v` through a shell, so every Settings → Runtimes load
