@@ -46,6 +46,24 @@ root cause, and add a draft reply in our support voice. Do not send anything. Es
 anything that needs a code change or a production action by filing a task.
 ```
 
+```create-agent
+Create an agent called "ticket-diagnostician".
+
+Job: read each incoming support ticket, work out who the customer is, investigate the reported
+problem read-only across our systems (application database, logs, their account state), then post an
+internal note with the root cause and a draft reply for a human to send.
+
+Trigger: a webhook from our helpdesk on a new ticket, plus a scheduled sweep every few hours to catch
+anything the webhook missed.
+
+Safety posture: Draft, never send. It must never send a customer-facing message, and must escalate
+anything needing a code change or a production action by filing a task.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Support quality reviewer
 
 Reads yesterday's resolved conversations and reports what they say about the product — recurring
@@ -56,6 +74,22 @@ confusion, undocumented behaviour, questions that should have been answered by a
 - **Why it works:** it converts support volume, which everyone already has, into a product backlog,
   which most teams lack the time to write.
 
+```create-agent
+Create an agent called "support-quality-reviewer".
+
+Job: read yesterday's resolved support conversations and report what they say about the product —
+recurring confusion, undocumented behaviour, and questions that should have been answered by a docs
+page.
+
+Trigger: a daily schedule.
+
+Safety posture: Read-only analyst. It writes nothing anywhere; the output is a report.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Backlog groomer
 
 Weekly pass over tickets that have gone quiet — stale, waiting-on-customer, or silently abandoned.
@@ -63,6 +97,22 @@ Proposes a disposition for each; a human confirms in bulk.
 
 - **Trigger:** weekly schedule, start of the week.
 - **Posture:** Draft, never send.
+
+```create-agent
+Create an agent called "backlog-groomer".
+
+Job: a weekly pass over support tickets that have gone quiet — stale, waiting-on-customer, or
+silently abandoned — proposing a disposition for each so a human can confirm them in bulk.
+
+Trigger: a weekly schedule at the start of the week.
+
+Safety posture: Draft, never send. It proposes dispositions; it never closes a ticket or messages a
+customer itself.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ---
 
@@ -90,6 +140,23 @@ what CHANGED, ranked by severity. For each finding, give the exact command that 
 — do not run it. If nothing changed, say so in one line.
 ```
 
+```create-agent
+Create an agent called "fleet-health-monitor".
+
+Job: sweep our servers and services — disk, memory, service liveness, certificate expiry, error-log
+deltas, queue depth, capacity headroom — and report what CHANGED since the last sweep as a
+severity-ranked findings list. Deltas, not absolute state.
+
+Trigger: a schedule, every few hours.
+
+Safety posture: Diagnose and propose. For anything broken it gives the exact remediation command and
+does not run it; a human runs the fix.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Incident diagnostician
 
 Given one failing thing — a server, a site, a customer environment, a stuck job — pins the root cause
@@ -99,6 +166,21 @@ from logs and state, then reports a plain-English explanation plus the fix.
 - **Posture:** Read-first. Any write to a production system pauses for approval.
 - **Why it works:** it is the single best "first agent" for an ops team, because you invoke it exactly
   when you are already stressed and it costs nothing when idle.
+
+```create-agent
+Create an agent called "incident-diagnostician".
+
+Job: given one failing thing — a server, a site, a customer environment, a stuck job — pin the root
+cause from logs and state, then report a plain-English explanation plus the fix.
+
+Trigger: a person, from chat or the console, when something breaks.
+
+Safety posture: Read-first. Any write to a production system pauses for approval.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ### Cleanup / reclamation agent
 
@@ -111,6 +193,23 @@ one at a time and verifies the capacity came back.
 - **Why it works:** deletion is the most dangerous thing an agent can do, so it gets the strictest
   posture. Evidence first, approval per item, verification after — never a batch delete.
 
+```create-agent
+Create an agent called "cleanup-agent".
+
+Job: build an evidence-backed list of things that should no longer exist — orphaned resources,
+records with no matching object, expired temporary environments — then, after sign-off, delete them
+one at a time and verify the capacity came back.
+
+Trigger: a person, monthly or when we are short on capacity.
+
+Safety posture: Per-item explicit sign-off. Evidence first, approval for EACH item, verification
+after — never a batch delete.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Migration / cutover runner
 
 Runs a scripted move of a workload from one place to another inside a maintenance window: read-only
@@ -120,6 +219,23 @@ human to send.
 - **Trigger:** a person, scheduled into a window.
 - **Posture:** Per-item explicit sign-off, with a mandatory dry-run first.
 
+```create-agent
+Create an agent called "cutover-runner".
+
+Job: run a scripted move of a workload from one place to another inside a maintenance window —
+read-only preflight, wait for a human OK, execute the cutover, verify it, then draft the customer
+comms for a human to send.
+
+Trigger: a person, scheduled into a window.
+
+Safety posture: Per-item explicit sign-off, with a mandatory dry-run first. It never sends the
+customer comms itself.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### New-host onboarder
 
 Takes a freshly provisioned machine from bare to serving: verifies the hardware, hardens it, runs the
@@ -127,6 +243,22 @@ full bootstrap, registers it, and proves it serves real traffic before it is put
 
 - **Trigger:** a person, when a new machine arrives.
 - **Posture:** Diagnose and propose for anything destructive; execute the additive bootstrap.
+
+```create-agent
+Create an agent called "host-onboarder".
+
+Job: take a freshly provisioned machine from bare to serving — verify the hardware, harden it, run
+the full bootstrap, register it, and prove it serves real traffic before it goes into rotation.
+
+Trigger: a person, when a new machine arrives.
+
+Safety posture: Diagnose and propose for anything destructive; execute the additive bootstrap
+itself.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ---
 
@@ -153,6 +285,23 @@ the stack trace and your reasoning in the PR body. File a tracking task and link
 not touch production and do not merge.
 ```
 
+```create-agent
+Create an agent called "bug-fixer".
+
+Job: turn a production exception from our monitoring tool into a minimal, reviewed fix — diagnose the
+root cause from the stack trace and the source, ship ONE small pull request per bug, file a tracking
+task, and close the loop on the monitoring issue.
+
+Trigger: a webhook when a new exception is opened, plus a scheduled backlog triage pass.
+
+Safety posture: Pull request only. One small PR per bug is load-bearing — it must not fix three things
+at once. It never touches production and never merges.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Independent code reviewer
 
 Reviews a diff or pull request **in isolation** — only the work product, never the author's session —
@@ -162,6 +311,22 @@ with a correctness-and-security pass and a spec-adherence pass, returning a seve
 - **Posture:** Advisory only. It gates the decision; a human merges.
 - **Why it works:** isolation is the whole point. A reviewer that can see how the code was written
   inherits the author's assumptions and stops being a second opinion.
+
+```create-agent
+Create an agent called "code-reviewer".
+
+Job: review a diff or pull request in isolation — only the work product, never the author's session —
+with a correctness-and-security pass and a spec-adherence pass, returning a severity-tiered verdict.
+
+Trigger: a webhook on pull request opened, or a person asking.
+
+Safety posture: Advisory only. It gates the decision; a human merges. Isolation is the point — it must
+never read how the code was written.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ### End-to-end QA agent
 
@@ -174,6 +339,23 @@ verdict with evidence.
 - **Why it works:** this is the agent that converts "the tests pass" into "the feature works", and it is
   safe by construction because everything it touches is thrown away afterwards.
 
+```create-agent
+Create an agent called "qa-agent".
+
+Job: validate a fix or a feature for real — check out the code under test, spin up a THROWAWAY
+environment, drive the actual user flow in a real browser, capture screenshots, and post a pass/fail
+verdict with evidence.
+
+Trigger: a webhook on pull request ready for review, or a person.
+
+Safety posture: Sandbox first. It never touches production, and every environment it creates is
+disposable.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Release shepherd
 
 Verifies a change is promotion-ready, cherry-picks the exact commits onto a fresh branch off the
@@ -182,6 +364,22 @@ post-deploy health plus the rollback path.
 
 - **Trigger:** a person, at release time.
 - **Posture:** Pull request only. It never merges, never deploys, never touches production.
+
+```create-agent
+Create an agent called "release-shepherd".
+
+Job: verify a change is promotion-ready, cherry-pick the exact commits onto a fresh branch off the
+production branch, open a correctly-scoped promotion pull request as a draft, watch CI, and report
+post-deploy health plus the rollback path.
+
+Trigger: a person, at release time.
+
+Safety posture: Pull request only. It never merges, never deploys, never touches production.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ### Documentation writer
 
@@ -193,6 +391,22 @@ user-facing gaps, and opens a documentation pull request. Optionally drafts the 
 - **Posture:** Pull request only.
 - **Why it works:** documentation drift is the classic never-urgent task. An agent that opens a draft
   PR converts it from "write the docs" to "review this doc PR", which people will actually do.
+
+```create-agent
+Create an agent called "docs-writer".
+
+Job: read what actually shipped since the last sync — merged pull requests, changelog entries — find
+the user-facing gaps, and open a documentation pull request. Optionally draft the customer-facing
+"what's new" entry.
+
+Trigger: a daily schedule, or a webhook on merge to the main branch.
+
+Safety posture: Pull request only. It never publishes and never merges.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ---
 
@@ -218,6 +432,23 @@ say why each moved. Then post a short briefing to the marketing channel — numb
 changed, and the single highest-leverage action for today.
 ```
 
+```create-agent
+Create an agent called "marketing-operator".
+
+Job: pull yesterday's traffic, search performance and ranking changes, compare against the trailing
+7-day and 28-day averages, identify the three biggest movers and why each moved, then post a short
+briefing to our marketing channel with the single highest-leverage action for today.
+
+Trigger: a daily schedule, weekday mornings.
+
+Safety posture: Draft, never send for outbound email and ads. It may post the internal briefing to our
+own chat channel.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Content optimiser
 
 Takes an existing published page, audits the pages currently outranking it, rewrites for search intent
@@ -226,6 +457,22 @@ and answer-engine retrieval while preserving every existing link, and pushes a p
 - **Trigger:** a person, or a weekly schedule over a prioritised page list.
 - **Posture:** Draft, never publish.
 
+```create-agent
+Create an agent called "content-optimiser".
+
+Job: take an existing published page, audit the pages currently outranking it, and rewrite for search
+intent and answer-engine retrieval while preserving every existing link — then push a publish-ready
+draft.
+
+Trigger: a person, or a weekly schedule over a prioritised page list.
+
+Safety posture: Draft, never publish.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Search performance analyst
 
 Pulls search-console data and returns a **ranked, specific** list of the highest-leverage actions to
@@ -233,6 +480,21 @@ grow clicks and click-through rate — not a dashboard, a to-do list.
 
 - **Trigger:** weekly schedule.
 - **Posture:** Read-only analyst.
+
+```create-agent
+Create an agent called "search-analyst".
+
+Job: pull search-console data and return a ranked, specific list of the highest-leverage actions to
+grow clicks and click-through rate. Not a dashboard — a to-do list.
+
+Trigger: a weekly schedule.
+
+Safety posture: Read-only analyst.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ### Audience listener
 
@@ -244,6 +506,22 @@ what they ask and complain about into evidence-backed themes, and files content 
 - **Why it works:** the "never posts" rule is what makes it deployable. Listening is pure upside;
   automated posting is a brand risk nobody needs.
 
+```create-agent
+Create an agent called "audience-listener".
+
+Job: sweep the public places where our users actually talk — forums, communities, review sites —
+cluster what they ask and complain about into evidence-backed themes, and file content briefs.
+
+Trigger: a weekly schedule.
+
+Safety posture: Read-only. It listens; it NEVER posts anywhere public. That rule is what makes it
+deployable.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Newsletter and campaign drafter
 
 Researches what genuinely shipped, writes the copy, and stages a **draft** campaign in your email tool
@@ -251,6 +529,21 @@ with a test send for QA.
 
 - **Trigger:** schedule matching your send cadence.
 - **Posture:** Draft, never send. The agent must not be able to reach the real list.
+
+```create-agent
+Create an agent called "campaign-drafter".
+
+Job: research what genuinely shipped, write the copy, and stage a draft campaign in our email tool
+with a test send for QA.
+
+Trigger: a schedule matching our send cadence.
+
+Safety posture: Draft, never send. It must not be able to reach the real list at all.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ### Asset producers
 
@@ -261,6 +554,23 @@ scripts.
 - **Trigger:** a person, or a task filed by another agent.
 - **Posture:** Sandbox first for anything that records a live product; output is files, a human places
   them.
+
+```create-agent
+Create an agent called "asset-producer".
+
+Job: one narrow, high-repetition production job — pick ONE of: header images, product screenshots and
+mockups, short feature videos, screencast tutorials recorded in a disposable demo environment, or
+video scripts. One agent per job, not a generalist.
+
+Trigger: a person, or a task filed by another agent.
+
+Safety posture: Sandbox first for anything that records a live product. The output is files; a human
+places them.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ---
 
@@ -289,6 +599,24 @@ seriously. For the rest, draft a short, specific first email that references wha
 No template language. Draft only; do not send. Skip anyone already contacted.
 ```
 
+```create-agent
+Create an agent called "onboarding-first-touch".
+
+Job: each day, find users who signed up a few days ago and verified, triage them by what they have
+actually DONE in the product, and draft a short, specific first email to the ones worth a real
+conversation — referencing what they built, with no template language. Then a small number of
+follow-ups if there is no reply.
+
+Trigger: a daily schedule.
+
+Safety posture: Draft, never send. Three non-negotiable rules: never mass-mail, never email the same
+person twice for the same reason, and stop the instant they reply and hand off to a human.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Churn investigator
 
 Finds accounts that just cancelled or removed their last active resource, reconstructs *why* from the
@@ -300,6 +628,22 @@ valuably — surfaces the recurring failure patterns worth fixing in the product
 - **Why it works:** the per-customer email is the visible output; the pattern report is the one that
   changes the roadmap.
 
+```create-agent
+Create an agent called "churn-investigator".
+
+Job: find accounts that just cancelled or removed their last active resource, reconstruct WHY from
+the event trail and their account state, draft a personal "what happened?" note for review, and —
+more valuably — report the recurring failure patterns worth fixing in the product.
+
+Trigger: a daily schedule.
+
+Safety posture: Draft, never send.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Trial and credit lifecycle
 
 Finds users who exhausted a trial or free allowance, works out what they were trying to do, and drafts
@@ -307,6 +651,21 @@ a genuine question about their use case rather than a discount blast.
 
 - **Trigger:** daily schedule.
 - **Posture:** Draft, never send.
+
+```create-agent
+Create an agent called "trial-lifecycle".
+
+Job: find users who exhausted a trial or free allowance, work out what they were trying to do, and
+draft a genuine question about their use case — not a discount blast.
+
+Trigger: a daily schedule.
+
+Safety posture: Draft, never send.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ### Sales research analyst
 
@@ -316,6 +675,22 @@ them against your ideal customer profile, and drafts personalised outreach.
 
 - **Trigger:** a person, from chat.
 - **Posture:** Read-only analyst; drafts only for anything outbound.
+
+```create-agent
+Create an agent called "sales-research-analyst".
+
+Job: answer customer and segment questions from our production data read-only, and build targeted
+lead lists to a specification. Given one lead, research their account context and public presence,
+score them against our ideal customer profile, and draft personalised outreach.
+
+Trigger: a person, from chat.
+
+Safety posture: Read-only analyst; drafts only for anything outbound.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ---
 
@@ -334,6 +709,22 @@ webhooks, failed credit applications, and worker output errors.
 - **Why it works:** reconciliation is high-value, purely analytical, and something no one does often
   enough by hand. Ranking by dollars at risk is what makes the report actionable in five minutes.
 
+```create-agent
+Create an agent called "billing-reconciler".
+
+Job: compare our ledgers against each other — what was served, what was invoiced, what was actually
+collected — and report every disagreement RANKED BY DOLLARS AT RISK. Find unbilled usage, missed
+webhooks, failed credit applications, and worker output errors.
+
+Trigger: a weekly schedule.
+
+Safety posture: Read-only on money. It never voids, refunds, charges, or writes to a billing table.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Spend analyst
 
 Reads your corporate card and bank accounts to answer where the money went: spend by vendor, category
@@ -342,6 +733,21 @@ and person, burn and runway, unusual charges, month-over-month drift.
 - **Trigger:** monthly schedule, plus a person asking.
 - **Posture:** Read-only on money; a human moves it.
 
+```create-agent
+Create an agent called "spend-analyst".
+
+Job: read our corporate card and bank accounts to answer where the money went — spend by vendor,
+category and person, burn and runway, unusual charges, month-over-month drift.
+
+Trigger: a monthly schedule, plus a person asking.
+
+Safety posture: Read-only on money; a human moves it.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Subscription investigator
 
 Audits subscriptions, reconciles invoices against usage, investigates charge disputes, and explains in
@@ -349,6 +755,21 @@ plain English what a given customer is paying and why.
 
 - **Trigger:** a person, usually from a support escalation.
 - **Posture:** Read-only. Prepares money movement; a human executes it.
+
+```create-agent
+Create an agent called "subscription-investigator".
+
+Job: audit subscriptions, reconcile invoices against usage, investigate charge disputes, and explain
+in plain English what a given customer is paying and why.
+
+Trigger: a person, usually from a support escalation.
+
+Safety posture: Read-only. It prepares money movement; a human executes it.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ---
 
@@ -365,6 +786,23 @@ report.
 - **Why it works:** the silent-unless-something-lands rule is what keeps the weekly digest credible.
   A daily "nothing to report" email trains people to filter the channel.
 
+```create-agent
+Create an agent called "vulnerability-watch".
+
+Job: sweep authoritative feeds for new vulnerabilities affecting our stack, assess how exposed we
+ACTUALLY are, map each to a concrete mitigation we can apply, and submit a prioritised go/no-go
+report.
+
+Trigger: a daily sweep that stays SILENT unless something lands, plus a weekly digest.
+
+Safety posture: Read-only and advisory. It never remediates on its own. The silent-unless-something-
+lands rule is what keeps the digest credible.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Abuse and phishing triage
 
 Triages inbound abuse reports, confirms the resource is yours, checks reputation against public threat
@@ -374,6 +812,22 @@ feeds, and suspends what is confirmed malicious.
 - **Posture:** Per-item explicit sign-off — suspension is destructive and pauses for approval. It
   documents and notifies either way.
 
+```create-agent
+Create an agent called "abuse-triage".
+
+Job: triage inbound abuse reports, confirm the resource is ours, check reputation against public
+threat feeds, and suspend what is confirmed malicious.
+
+Trigger: a webhook from our abuse mailbox, or a person.
+
+Safety posture: Per-item explicit sign-off — suspension is destructive and pauses for approval. It
+documents and notifies either way.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Fraud detection
 
 Detects fraudulent and abusive accounts — duplicate identities, resource mining, stolen payment
@@ -382,6 +836,22 @@ cleanup for a human.
 
 - **Trigger:** daily schedule.
 - **Posture:** Per-item explicit sign-off for anything irreversible.
+
+```create-agent
+Create an agent called "fraud-detection".
+
+Job: detect fraudulent and abusive accounts — duplicate identities, resource mining, stolen payment
+instruments — contain what it can reversibly, document the evidence, and STAGE the irreversible
+cleanup for a human.
+
+Trigger: a daily schedule.
+
+Safety posture: Per-item explicit sign-off for anything irreversible.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ---
 
@@ -409,6 +879,24 @@ via the shared task queue. Handles trivial asks itself; never does the specialis
   it once you have enough specialists that people cannot remember which to call. Before that it is a
   layer of indirection that spends tokens deciding to do nothing.
 
+```create-agent
+Create an agent called "router".
+
+Job: read an incoming request from a shared channel, work out which specialist should own it, and
+delegate via the shared task queue. Handle trivial asks itself; never do the specialist work.
+
+Trigger: a chat message or an inbound webhook.
+
+Safety posture: Delegate only.
+
+Only worth creating once we have enough specialists that people cannot remember which to call — if we
+do not, tell me so instead of creating it.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Attention digest
 
 Scans your project tracker and delivers a short, prioritised "needs your attention" digest — decisions
@@ -417,12 +905,41 @@ waiting, blockers, at-risk deadlines, unowned work.
 - **Trigger:** weekday-morning schedule.
 - **Posture:** Read-only analyst.
 
+```create-agent
+Create an agent called "attention-digest".
+
+Job: scan our project tracker and deliver a short, prioritised "needs your attention" digest —
+decisions waiting, blockers, at-risk deadlines, unowned work.
+
+Trigger: a weekday-morning schedule.
+
+Safety posture: Read-only analyst.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Goal planner
 
 Turns a stated company goal into a reviewable plan of tasks assigned across the fleet.
 
 - **Trigger:** a person, at planning time.
 - **Posture:** Proposes a plan; a human approves before anything dispatches.
+
+```create-agent
+Create an agent called "goal-planner".
+
+Job: turn a stated company goal into a reviewable plan of tasks assigned across the fleet.
+
+Trigger: a person, at planning time.
+
+Safety posture: Proposes a plan; a human approves before anything dispatches.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
 
 ---
 
