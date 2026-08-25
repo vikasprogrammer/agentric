@@ -1164,7 +1164,7 @@ export interface RuntimeTuning {
 
 /** Every runtime an agent manifest may declare. `mock` is the in-process demo adapter (no CLI, no
  *  tmux); the others are real coding CLIs. */
-export type RuntimeId = 'mock' | 'claude-code' | 'codex';
+export type RuntimeId = 'mock' | 'claude-code' | 'codex' | 'opencode';
 /** The runtimes that spawn a real CLI in a governed tmux pane — everything except `mock`. */
 export type CodingRuntimeId = Exclude<RuntimeId, 'mock'>;
 
@@ -1231,9 +1231,17 @@ export interface CodingRuntimeSpec {
   label: string;
   /** The executable that must be on PATH for a session to launch. */
   bin: string;
+  /** argv that installs {@link bin} globally, for the console's "install this runtime" action
+   *  (Settings → Runtimes, and the prompt shown when an agent is switched to a runtime this box does
+   *  not have). An argv array, never a shell string — it is spawned WITHOUT a shell, so nothing here
+   *  is word-split or expanded and a package name can never become a command. */
+  install: readonly string[];
   /** Basename of the launcher under `terminal/`. */
   launchScript: string;
-  /** Basename of the PreToolUse gate hook under `terminal/`. */
+  /** Basename of the gate artifact under `terminal/`. Usually the shared PreToolUse shell hook
+   *  (`gate-hook.sh`); a runtime whose CLI has no command-hook mechanism names its own bridge
+   *  instead (opencode: a JS plugin). Exported to the launcher as `$HOOK`, so this field is
+   *  load-bearing — the launcher wires whatever it names. */
   gateHook: string;
   /** How to point a session at a SPECIFIC account's credentials, for launch-time account rotation across a
    *  pool (see `RuntimeAccountStore`). `configDirVar` is the env var that relocates the runtime's credential
@@ -1284,6 +1292,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     id: 'claude-code',
     label: 'Claude Code',
     bin: 'claude',
+    install: ['npm', 'install', '-g', '@anthropic-ai/claude-code'],
     launchScript: 'claude-launch.sh',
     gateHook: 'gate-hook.sh',
     credentialEnv: { configDirVar: 'CLAUDE_CONFIG_DIR', apiKeyVar: 'ANTHROPIC_API_KEY', tokenVar: 'CLAUDE_CODE_OAUTH_TOKEN', configDirFile: '.credentials.json' },
@@ -1305,6 +1314,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     id: 'codex',
     label: 'Codex',
     bin: 'codex',
+    install: ['npm', 'install', '-g', '@openai/codex'],
     launchScript: 'codex-launch.sh',
     // Same hook binary as Claude Code: Codex 0.145 uses identical PreToolUse stdin fields
     // (`tool_name`/`tool_input`/`agent_type`) and an identical decision wire, so only the
@@ -1352,12 +1362,64 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
       steerOnAllow: true,
     },
   },
+  opencode: {
+    id: 'opencode',
+    label: 'opencode',
+    bin: 'opencode',
+    install: ['npm', 'install', '-g', 'opencode-ai'],
+    launchScript: 'opencode-launch.sh',
+    // NOT the shared shell hook. opencode has no command-hook mechanism at all: its extension point is a
+    // JS/TS PLUGIN (`.opencode/plugin/*.js`) whose `tool.execute.before(input, output)` runs before every
+    // tool call and BLOCKS BY THROWING. So the gate is re-expressed in JS against the same
+    // `POST /api/gate` contract (classify → allow / deny / block-until-approved / fail-closed) rather
+    // than duplicated as a second shell hook. The launcher copies this file into the session's plugin dir.
+    gateHook: 'opencode-gate-plugin.js',
+    // opencode keeps credentials at `$XDG_DATA_HOME/opencode/auth.json` (default `~/.local/share`), so the
+    // dir we relocate is XDG_DATA_HOME and the file to look for sits one level in. `OPENCODE_API_KEY` is
+    // the usage-billed key for its own `opencode/…` gateway (zen). Per-provider keys (ANTHROPIC_API_KEY,
+    // OPENAI_API_KEY, …) still work when injected as shell secrets — they are simply not the rotation var.
+    credentialEnv: { configDirVar: 'XDG_DATA_HOME', apiKeyVar: 'OPENCODE_API_KEY', configDirFile: 'opencode/auth.json' },
+    // Both verified reachable: a credential dir produced by `opencode auth login`, and the plain API key.
+    // No tokenVar — opencode has no separate long-lived OAuth-token env.
+    liveCredentialKinds: ['oauth', 'apikey'],
+    // `opencode auth login` is an interactive provider/method picker whose prompt sequence nobody has
+    // walked through this flow yet; the console still accepts a credential dir added by path.
+    guidedLogin: false,
+    // opencode addresses models as `provider/model`; a bare id is not resolvable.
+    suggestedModels: ['anthropic/claude-opus-4-8', 'anthropic/claude-sonnet-4-8', 'openai/gpt-5-codex'],
+    // A Claude/GPT id WITHOUT a provider prefix belongs to another runtime — `claude-opus-4-8` is what
+    // claude-code pins, and opencode answers "model not found" for it. Anything containing a `/` is a
+    // well-formed opencode id and passes, which is why the negative lookahead comes first.
+    foreignModel: /^(?![^/]*\/)(claude|opus|sonnet|haiku|fable|gpt|o[0-9]|codex)\b/i,
+    capabilities: {
+      // opencode mints its own session id; the launcher captures it and reports it back, exactly like
+      // Codex's rollout id. `--session <id>` resumes and `--fork` branches.
+      pinnedSessionId: false, resume: true, fork: true,
+      // The unattended lane is `opencode run`, a one-shot process that exits at turn end — nothing to
+      // attach to, so no take-over and no resident chat (same shape as Codex's old `exec` lane).
+      attachableUnattended: false, residentChat: false,
+      // No transcript parser yet — cost, engaged time and the friendly timeline are therefore unknown for
+      // an opencode run. `opencode export <sessionID>` is the intended source; until that parser exists and
+      // has been validated against a real export, claiming the capability would surface invented numbers.
+      transcript: false,
+      // Skills/sub-agents are materialised as `.claude/skills` + `.claude/agents`, which opencode does not
+      // discover. It has its own agent mechanism; not wired.
+      nativeSkills: false, nativeSubagents: false,
+      statusLine: false, permissionMode: false,
+      // `tool.execute.before` fires for EVERY tool — `write`/`edit`/`patch` and MCP calls included — and a
+      // throw blocks the call, so both gates are real here (unlike Codex, where writes lean on the sandbox).
+      fileWriteGate: true, mcpGate: true,
+      // A throw is the only channel the plugin has, and it ABORTS the call. There is no field that carries
+      // an advisory note alongside an allow, so the gate's `instruct` verb degrades to a plain allow.
+      steerOnAllow: false,
+    },
+  },
 };
 
 /** Is this a real CLI-backed agent (as opposed to the `mock` demo adapter)? This is what almost every
  *  former `runtime === 'claude-code'` check actually meant. */
 export function isCodingRuntime(runtime: RuntimeId | undefined): runtime is CodingRuntimeId {
-  return runtime === 'claude-code' || runtime === 'codex';
+  return runtime === 'claude-code' || runtime === 'codex' || runtime === 'opencode';
 }
 
 /** The spec for a runtime, or undefined for `mock`/unknown. */
@@ -1377,7 +1439,10 @@ export function validateModelForRuntime(runtime: RuntimeId | undefined, model: s
   const spec = codingRuntime(runtime);
   if (!spec || !model) return undefined;
   if (!spec.foreignModel.test(model)) return undefined;
-  return `"${model}" is not a ${spec.label} model. Try one of: ${spec.suggestedModels.join(', ')} — or clear the field to inherit the workspace default.`;
+  // "a Codex model" but "an opencode model" — the label is runtime data, so pick the article from it
+  // rather than baking in the one that happened to fit the runtimes that existed first.
+  const article = /^[aeiou]/i.test(spec.label) ? 'an' : 'a';
+  return `"${model}" is not ${article} ${spec.label} model. Try one of: ${spec.suggestedModels.join(', ')} — or clear the field to inherit the workspace default.`;
 }
 
 export interface AgentManifest extends RuntimeTuning {

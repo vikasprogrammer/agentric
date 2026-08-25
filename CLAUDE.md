@@ -167,12 +167,23 @@ Key modules:
 - `src/gateway/gateway.ts` — the 7-step mediated effect boundary. The heart of the trust layer.
 - `src/server.ts` — zero-dependency Node `http` server: JSON API + serves `web/dist` + terminal sessions.
 - `src/terminal.ts` — tmux-backed agent sessions; routes every effect through the same gateway via the
-  PreToolUse gate hook (`terminal/gate-hook.sh`). **Two real runtimes** — `claude-code` and `codex`
+  PreToolUse gate hook (`terminal/gate-hook.sh`). **Three real runtimes** — `claude-code`, `codex` and `opencode`
   (`AgentManifest.runtime`; `CODING_RUNTIMES` in `src/types.ts` declares what each supports, probed via
   `runtimeSupports()` / `isCodingRuntime()` — never compare runtime ids). `launchAgentRuntime` picks
-  `terminal/<runtime>-launch.sh`; the gate hook is SHARED and switches its tool→capability routing table
-  on `$AOS_RUNTIME`. Codex holds the invariant differently (shell via the hook, writes via an OS sandbox,
-  MCP server-side) and degrades on attach/resident-chat/cost/skills — see `docs/codex-runtime.md`. At launch it resolves each claude-code agent's
+  `terminal/<runtime>-launch.sh` and `$HOOK` = `terminal/<spec.gateHook>`. claude-code + codex SHARE
+  `gate-hook.sh`, which switches its tool→capability routing table on `$AOS_RUNTIME`. Codex holds the
+  invariant differently (shell via the hook, writes via an OS sandbox, MCP server-side) and degrades on
+  attach/resident-chat/cost/skills — see `docs/codex-runtime.md`. **opencode has no command-hook facility
+  at all**, so its gate is a JS PLUGIN (`terminal/opencode-gate-plugin.js`, a second implementation of the
+  same `/api/gate` contract — fix one, re-read the other) that the launcher copies into
+  `.opencode/plugin/`. Two traps there: opencode loads **`.js` only** and ignores `.mjs`/`.ts` SILENTLY, and
+  `--pure` disables plugins outright — either would yield an ungoverned agent, so the generated config
+  writes every permission as `"ask"` and the PLUGIN relaxes it, making a non-loading gate fail closed
+  rather than silent. Sub-agents are disabled there (opencode#6396: hooks may not fire for a sub-agent's
+  calls). Runtime CLIs are installed from **Settings → Runtime → Runtimes** (owner-only, audited
+  `runtime.install.*`); the agent runtime picker offers the same install when the box lacks the binary.
+  See `docs/opencode-runtime.md`. Only claude-code auto-loads `CLAUDE.md`: codex and opencode both get the
+  agent's persona + Company context composed into **`AGENTS.md`** by their launcher. At launch it resolves each claude-code agent's
   **runtime tuning** (`resolveRuntimeTuning` in `src/types.ts`: agent manifest → workspace default → CLI
   default) and exports `CLAUDE_MODEL`/`CLAUDE_EFFORT`/`CLAUDE_PERMISSION_MODE`, which `claude-launch.sh`
   maps onto `--model`/`--effort`/`--permission-mode` (model+effort both lanes; permission-mode interactive

@@ -41,6 +41,7 @@ import { answerAsk } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
 import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, keychainHasLogin, RuntimeCheckResult } from './edge/runtime-account-check';
 import { refreshStaleUsage } from './edge/runtime-account-usage';
+import { runtimePresence, installRuntime } from './edge/runtime-install';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { TelegramSocket } from './edge/telegram-socket';
@@ -77,7 +78,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -4473,9 +4474,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isCodingRuntime(ag.runtime)) return sendJson(res, 400, { error: 'runtime tuning applies to CLI-backed agents only' });
     if (method === 'GET') {
       // `runtimes` lets the console render the picker (and its per-runtime model suggestions +
-      // capability flags) without hardcoding the registry client-side.
+      // capability flags) without hardcoding the registry client-side. `installed` rides along so the
+      // picker can offer to INSTALL a runtime this box lacks, instead of saving a choice whose every
+      // session would park on "the 'x' CLI is not on PATH".
+      const present = new Map(runtimePresence().map((r) => [r.id, r]));
       const runtimes = Object.values(CODING_RUNTIMES).map((r) => ({
         id: r.id, label: r.label, suggestedModels: r.suggestedModels, capabilities: r.capabilities,
+        bin: r.bin, install: r.install.join(' '),
+        installed: present.get(r.id)?.installed ?? false, version: present.get(r.id)?.version,
       }));
       return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
@@ -4733,6 +4739,31 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       guidedLogin: tm.logins.supported(s.id).ok,
     }));
     return sendJson(res, 200, { accounts, runtimes, logins: tm.logins.list(), refreshing });
+  }
+  // ── runtime presence + install ──────────────────────────────────────────────────────────────────
+  // Which coding CLIs this box actually HAS. Read by Settings → Runtimes and by the agent runtime
+  // picker, so switching an agent to a runtime that isn't installed offers to install it instead of
+  // producing a session that parks on "the 'x' CLI is not on PATH".
+  // Admin-readable (any admin manages agents, and this only reports presence + a version string).
+  if (method === 'GET' && p === '/api/runtimes') {
+    if (me.role !== 'owner' && me.role !== 'admin') return sendJson(res, 403, { error: 'admin required' });
+    return sendJson(res, 200, { runtimes: runtimePresence() });
+  }
+  if (method === 'POST' && /^\/api\/runtimes\/[^/]+\/install$/.test(p)) {
+    // Owner only: this installs a global npm package on the HOST. It is a persistent change to the
+    // box (not a per-session effect), so it sits at the same bar as managing the credential pool.
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const id = decodeURIComponent(p.split('/')[3] ?? '');
+    if (!isCodingRuntime(id as RuntimeId)) return sendJson(res, 400, { error: `unknown runtime: ${id}` });
+    const spec = CODING_RUNTIMES[id as CodingRuntimeId];
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.install.started', data: { runtime: id, command: spec.install.join(' ') } });
+    const result = await installRuntime(id);
+    os.audit.append({
+      ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email,
+      type: result.ok ? 'runtime.install.succeeded' : 'runtime.install.failed',
+      data: { runtime: id, version: result.version, error: result.error },
+    });
+    return sendJson(res, result.ok ? 200 : 500, result);
   }
   if (method === 'POST' && p === '/api/runtime-accounts') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });

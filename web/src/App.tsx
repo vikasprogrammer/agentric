@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbosityAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbosityAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -631,11 +631,19 @@ function groupByCategory(agents: AgentInfo[]): [string, AgentInfo[]][] {
   })
 }
 
+/** True for a real CLI-backed runtime (anything but the in-process `mock` demo adapter) — the client
+ *  mirror of `isCodingRuntime` in src/types.ts. Gate on THIS, not on `=== 'claude-code'`: that
+ *  shorthand meant "a real agent" back when Claude Code was the only one, and every place it survived
+ *  silently drops support for the other runtimes. */
+function isCodingRuntime(runtime?: AgentInfo['runtime']) { return !!runtime && runtime !== 'mock' }
+
 function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
-  const claude = runtime === 'claude-code'
+  // Name the runtime the agent actually runs on. This used to print 'claude' or 'mock', so every
+  // codex agent was badged 'mock' — a real agent labelled as the demo adapter.
+  const label = runtime === 'claude-code' ? 'claude' : (runtime || 'mock')
   return (
-    <Badge variant={claude ? 'default' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
-      {claude ? 'claude' : 'mock'}
+    <Badge variant={runtime === 'claude-code' ? 'default' : isCodingRuntime(runtime) ? 'outline' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
+      {label}
     </Badge>
   )
 }
@@ -748,7 +756,7 @@ function IconPicker({ value, onChange }: { value?: string; onChange: (v: string 
 /** What the agent-config route tells the console about a runtime: its label, the model ids worth
  *  suggesting, and which knobs it honours. Mirrors CODING_RUNTIMES server-side so the picker never
  *  hardcodes the registry. */
-type RuntimeInfo = { id: string; label: string; suggestedModels: string[]; capabilities: Record<string, boolean> }
+type RuntimeInfo = { id: string; label: string; suggestedModels: string[]; capabilities: Record<string, boolean>; bin?: string; install?: string; installed?: boolean; version?: string }
 
 function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritLabel = 'inherit', permInheritLabel, runtime }: {
   tuning: RuntimeTuning
@@ -12964,6 +12972,8 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
   const [runtime, setRuntime] = useState('')
   const [savedRuntime, setSavedRuntime] = useState('')
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([])
+  const [installing, setInstalling] = useState('')
+  const [installError, setInstallError] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
@@ -13028,10 +13038,19 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
                 // safe landing spot; the operator can set a runtime-appropriate model right after.
                 const info = runtimes.find((x) => x.id === next)
                 if (tuning.model && info && !info.suggestedModels.includes(tuning.model)) {
-                  const foreign = next === 'codex' ? /^claude/i.test(tuning.model) : /^(gpt|o[0-9]|codex)/i.test(tuning.model)
+                  // Mirrors CodingRuntimeSpec.foreignModel server-side. opencode addresses models as
+                  // `provider/model`, so for it "foreign" is any id with no provider prefix; for the
+                  // others it is an id that clearly belongs to another family.
+                  const m = tuning.model
+                  const foreign = next === 'opencode' ? !m.includes('/')
+                    : next === 'codex' ? /^(claude|opus|sonnet|haiku|fable)\b/i.test(m)
+                    : /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i.test(m)
                   if (foreign) setTuning({ ...tuning, model: undefined })
                 }
-                if (next === 'codex') setTuning((t) => ({ ...t, permissionMode: undefined }))
+                // permission-mode is a Claude Code flag; every other runtime holds the invariant
+                // differently and would silently ignore it, so drop it rather than store a dead knob.
+                if (info && !info.capabilities.permissionMode) setTuning((t) => ({ ...t, permissionMode: undefined }))
+                setInstallError('')
               }}
               className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
             >
@@ -13040,6 +13059,38 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
             {runtime !== savedRuntime && (
               <p className="text-[11px] text-amber-600 dark:text-amber-500">Changes on the next session — the current conversation isn't portable between runtimes.</p>
             )}
+            {(() => {
+              // A runtime whose CLI is missing would let the operator save a choice that parks every
+              // future session on "the 'x' CLI is not on PATH". Offer the install here instead.
+              const info = runtimes.find((x) => x.id === runtime)
+              if (!info || info.installed !== false) return null
+              return (
+                <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+                  <p className="text-[11px] text-amber-700 dark:text-amber-500">
+                    <b>{info.label}</b> is not installed on this box, so sessions on it cannot start.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm" variant="outline" className="h-6 text-[11px]"
+                      disabled={!!installing}
+                      onClick={async () => {
+                        setInstalling(info.id); setInstallError('')
+                        const r = await api.installRuntime(info.id)
+                        setInstalling('')
+                        if (r.error || !r.ok) { setInstallError(r.error || 'install failed'); return }
+                        // Re-read config so `installed` (and the version) reflect the box, rather than
+                        // optimistically flipping a flag the next session would disagree with.
+                        const cfg = await api.agentConfig(agentId)
+                        setRuntimes(cfg.runtimes ?? [])
+                      }}
+                    >{installing === info.id ? 'Installing…' : `Install ${info.label}`}</Button>
+                    <code className="text-[10px] text-muted-foreground">{info.install}</code>
+                  </div>
+                  {installing === info.id && <p className="text-[11px] text-muted-foreground">Running the installer — this can take a minute.</p>}
+                  {installError && <p className="text-[11px] text-red-600 dark:text-red-400">{installError}</p>}
+                </div>
+              )
+            })()}
             {(() => {
               const info = runtimes.find((x) => x.id === runtime)
               if (!info) return null
@@ -13255,7 +13306,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
       </div>
       {/* Pending cross-agent edit proposals sit at the TOP so an owner arriving from the inbox deep-link
           sees the review queue first (mirrors the PolicyEditor's atop-the-editor review pattern). */}
-      {info?.runtime === 'claude-code' && <AgentUpdateProposalsCard agentId={agentId} onApplied={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
+      {isCodingRuntime(info?.runtime) && <AgentUpdateProposalsCard agentId={agentId} onApplied={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
       <p className="text-sm text-muted-foreground">
         <span className="font-medium text-foreground">{agentId}</span>
         {info && <RuntimeBadge runtime={info.runtime} />} — this agent's <span className="font-mono text-xs">CLAUDE.md</span> is its
@@ -13263,7 +13314,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
         <span className="font-mono text-xs"> recall</span>/<span className="font-mono text-xs">remember</span>). Applied on the agent's next session.
       </p>
       <AgentTrustCard agentId={agentId} />
-      {info?.runtime === 'claude-code' && <AgentTuningCard key={revBump} agentId={agentId} agents={agents} onSaved={onSaved} />}
+      {isCodingRuntime(info?.runtime) && <AgentTuningCard key={revBump} agentId={agentId} agents={agents} onSaved={onSaved} />}
       <Card>
         <CardContent className="space-y-3 p-4">
           {!loaded && !hint ? (
@@ -13284,7 +13335,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
           )}
         </CardContent>
       </Card>
-      {info?.runtime === 'claude-code' && <AgentRevisionsCard agentId={agentId} onReverted={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
+      {isCodingRuntime(info?.runtime) && <AgentRevisionsCard agentId={agentId} onReverted={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
     </div>
   )
 }
@@ -15436,7 +15487,7 @@ function SettingsPage({ me, state, tab: tabParam, onTab, onStateChange }: { me: 
       </div>
       <div className="min-w-0 flex-1">
         {tab === 'company' ? <CompanySettings me={me} />
-          : tab === 'runtime' ? <div className="space-y-4"><RuntimeDefaultsSettings me={me} /><ConcurrencySettings me={me} /><RuntimeAccountsSettings me={me} /></div>
+          : tab === 'runtime' ? <div className="space-y-4"><RuntimeDefaultsSettings me={me} /><ConcurrencySettings me={me} /><RuntimeInstallSettings me={me} /><RuntimeAccountsSettings me={me} /></div>
           : tab === 'theme' ? <ThemeSettings me={me} state={state} onStateChange={onStateChange} />
           : tab === 'secrets' ? <SecretsSettings me={me} agents={state?.agents ?? []} />
           : tab === 'memory' ? <MemorySettings me={me} />
@@ -16861,6 +16912,72 @@ function runtimeUsageCell(a: RuntimeAccount, refreshing = false) {
   )
   if (refreshing) return <span className="font-mono text-muted-foreground">checking…</span>
   return <span className="text-muted-foreground" title={age}>{a.kind === 'token' && a.checkNote && a.checkOk !== true ? a.checkNote : '—'}</span>
+}
+
+/** Settings → Runtime → Runtimes. Which coding CLIs this box HAS, and a one-click install for the ones
+ *  it doesn't. Presence is upstream of everything else on this page: an agent can be pointed at a
+ *  runtime whose binary is missing, and every session on it then parks on "the 'x' CLI is not on PATH"
+ *  — a dead end an operator could previously only fix by ssh-ing into the box. Install is owner-only
+ *  (it writes a global package to the host) and audited (`runtime.install.*`). */
+function RuntimeInstallSettings({ me }: { me: Member }) {
+  const [rows, setRows] = useState<RuntimePresence[] | null>(null)
+  const [installing, setInstalling] = useState('')
+  const [hint, setHint] = useState('')
+  const load = () => api.runtimes().then((r) => { if (!r.error) setRows(r.runtimes ?? []) }).catch(() => {})
+  useEffect(() => { load() }, [])
+  const install = async (id: string, label: string) => {
+    setInstalling(id); setHint('')
+    const r = await api.installRuntime(id)
+    setInstalling('')
+    setHint(r.error || !r.ok ? `⚠ ${label}: ${r.error || 'install failed'}` : `${label} installed${r.version ? ` — ${r.version}` : ''}`)
+    // Re-read rather than flip a flag optimistically: npm can exit 0 with the shim off PATH.
+    load()
+    if (!r.error && r.ok) setTimeout(() => setHint(''), 4000)
+  }
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div>
+          <h3 className="text-sm font-medium">Runtimes</h3>
+          <p className="text-xs text-muted-foreground">The coding CLIs agents run on. A runtime that isn't installed can be selected on an agent, but its sessions cannot start.</p>
+        </div>
+        {rows === null ? <p className="text-xs text-muted-foreground">Loading…</p> : (
+          <table className="w-full text-xs">
+            <thead className="text-muted-foreground">
+              <tr className="border-b text-left">
+                <th className="py-1.5 pr-3 font-medium">Runtime</th>
+                <th className="py-1.5 pr-3 font-medium">Binary</th>
+                <th className="py-1.5 pr-3 font-medium">Status</th>
+                <th className="py-1.5 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-b last:border-0">
+                  <td className="py-1.5 pr-3">{r.label}</td>
+                  <td className="py-1.5 pr-3 font-mono text-muted-foreground">{r.bin}</td>
+                  <td className="py-1.5 pr-3">
+                    {r.installed
+                      ? <span className="text-emerald-600 dark:text-emerald-400" title={r.version}>installed{r.version ? ` — ${r.version}` : ''}</span>
+                      : <span className="text-amber-600 dark:text-amber-500">not installed</span>}
+                  </td>
+                  <td className="py-1.5 text-right">
+                    {!r.installed && me.role === 'owner' && (
+                      <Button size="sm" variant="outline" className="h-6 text-[11px]" disabled={!!installing} onClick={() => install(r.id, r.label)}>
+                        {installing === r.id ? 'Installing…' : 'Install'}
+                      </Button>
+                    )}
+                    {!r.installed && me.role !== 'owner' && <span className="text-[11px] text-muted-foreground" title={r.install}>owner can install</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      </CardContent>
+    </Card>
+  )
 }
 
 function RuntimeAccountsSettings({ me }: { me: Member }) {

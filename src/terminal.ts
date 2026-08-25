@@ -761,8 +761,15 @@ export class TerminalManager {
   private launchScriptFor(runtime: CodingRuntimeId): string {
     return path.resolve(__dirname, '..', 'terminal', CODING_RUNTIMES[runtime].launchScript);
   }
-  /** PreToolUse gate hook every runtime is wired to (shared; $AOS_RUNTIME picks its routing table). */
+  /** PreToolUse gate hook for the runtimes that share it (claude-code + codex; $AOS_RUNTIME picks
+   *  the routing table). Kept as a named field because the uid-isolation launcher references it. */
   private readonly hook = path.resolve(__dirname, '../terminal/gate-hook.sh');
+  /** The gate artifact for a given runtime (`terminal/<spec.gateHook>`), exported to the launcher as
+   *  $HOOK. Usually the shared shell hook above; opencode has no command-hook facility at all, so its
+   *  gate is a JS plugin the launcher copies into the session's plugin dir instead. */
+  private gateHookFor(runtime: CodingRuntimeId): string {
+    return path.resolve(__dirname, '..', 'terminal', CODING_RUNTIMES[runtime].gateHook);
+  }
   /** OS-owned memory MCP server (compiled JS), injected into every CLI-backed session. */
   private readonly memoryMcp = path.resolve(__dirname, 'memory/memory-mcp.js');
   private readonly db: Db;
@@ -2555,7 +2562,7 @@ export class TerminalManager {
     // thread follow-ups are delivered by send-keys (see deliverToResident / reviveResident).
     if (o.resident) env.RESIDENT = '1';
     env.AGENT_DIR = manifest.dir;
-    env.HOOK = this.hook;
+    env.HOOK = this.gateHookFor(runtime);
     // Tells the shared gate hook which tool→capability routing table to use.
     env.AOS_RUNTIME = runtime;
     // No OS sandbox env: the gate hook (PreToolUse) is the sole authority for governed side effects, so
@@ -2569,6 +2576,11 @@ export class TerminalManager {
       // permissionMode is deliberately not forwarded.
       if (tuning.model) env.CODEX_MODEL = tuning.model;
       if (tuning.effort) env.CODEX_EFFORT = tuning.effort;
+    } else if (runtime === 'opencode') {
+      // opencode takes `provider/model` on --model. Effort is a per-provider `--variant` rather than
+      // a portable scale, and permission-mode has no analogue (Agentric is the sole authority via the
+      // generated config's `permission: allow`), so neither is forwarded.
+      if (tuning.model) env.OPENCODE_MODEL = tuning.model;
     } else {
       if (tuning.model) env.CLAUDE_MODEL = tuning.model;
       if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
@@ -2594,7 +2606,9 @@ export class TerminalManager {
       // per-session CODEX_HOME and POSTs it to /api/runtime-session. On a resume we hand back whatever
       // it reported (persisted in the same column) so it can continue that transcript.
       if (o.resume && o.claudeSessionId) env.RUNTIME_SESSION_ID = o.claudeSessionId;
-      env.AOS_CODEX_HOME = this.ensureCodexHome(o.id);
+      // The per-session CODEX_HOME is how the CODEX launcher discovers that id. opencode reports its
+      // own from the gate plugin (every hook carries `sessionID`), so it needs no such dir.
+      if (runtime === 'codex') env.AOS_CODEX_HOME = this.ensureCodexHome(o.id);
     }
     if (o.resume) env.RESUME = '1';
     // Fork: on FIRST launch, branch off the parent conversation. RESUME is never set alongside forkFrom
@@ -2681,11 +2695,16 @@ export class TerminalManager {
    * agnostic. `null` = no transcript yet / unreadable, exactly as before.
    */
   private readCostFor(sessionId: string, agent: string, runtimeSessionId: string) {
-    if (this.os.agents.get(agent)?.runtime === 'codex') {
+    const runtime = this.os.agents.get(agent)?.runtime;
+    if (runtime === 'codex') {
       const home = this.codexHomePath(sessionId);
       const file = home ? findCodexRollout(home) : undefined;
       return file ? readCodexCost(file) : null;
     }
+    // A runtime with no transcript reader (opencode) must report "unknown", NOT fall through to the
+    // Claude reader — that one resolves an id against `~/.claude/projects`, where a foreign session id
+    // simply is not, so the honest `null` would arrive as a confidently wrong zero.
+    if (!runtimeSupports(runtime, 'transcript')) return null;
     return readSessionCost(runtimeSessionId);
   }
 
@@ -2697,11 +2716,14 @@ export class TerminalManager {
     const row = this.db.prepare('SELECT agent, claude_session_id FROM term_sessions WHERE id = ?')
       .get<{ agent: string; claude_session_id: string | null }>(sessionId);
     if (!row) return { turns: [], found: false };
-    if (this.os.agents.get(row.agent)?.runtime === 'codex') {
+    const runtime = this.os.agents.get(row.agent)?.runtime;
+    if (runtime === 'codex') {
       const home = this.codexHomePath(sessionId);
       const file = home ? findCodexRollout(home) : undefined;
       return file ? readCodexConversation(file) : { turns: [], found: false };
     }
+    // Same reasoning as readCostFor: no reader → an empty timeline, never the Claude tree.
+    if (!runtimeSupports(runtime, 'transcript')) return { turns: [], found: false };
     this.refreshTranscriptRoots(); // an account added since boot writes somewhere the reader doesn't know yet
     return row.claude_session_id ? readConversation(row.claude_session_id) : { turns: [], found: false };
   }
