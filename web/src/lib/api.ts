@@ -2017,7 +2017,7 @@ export const api = {
   taskReconcilePreview: () => call<{ ok: boolean; plan?: TaskReconcilePlan; error?: string }>('GET', '/api/insights/tasks/reconcile'),
   taskReconcileApply: () => call<{ ok: boolean; closed?: number; error?: string }>('POST', '/api/insights/tasks/reconcile'),
 
-  createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
+  createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string; runtime?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
   duplicateAgent: (id: string, newId: string) => call<{ ok: boolean; id?: string; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/duplicate`, { newId }),
   agentCatalog: () => call<AgentCatalogResp>('GET', '/api/agents/catalog'),

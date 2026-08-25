@@ -12867,6 +12867,12 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
   const [prompts, setPrompts] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  // The runtime the agent is BORN on. This used to be hardcoded server-side, so the only way to get a
+  // Codex/opencode agent was to create a Claude one and switch it afterwards.
+  const [runtime, setRuntime] = useState('claude-code')
+  const [runtimes, setRuntimes] = useState<RuntimePresence[]>([])
+  const [installing, setInstalling] = useState('')
+  useEffect(() => { api.runtimes().then((r) => { if (!r.error) setRuntimes(r.runtimes ?? []) }).catch(() => {}) }, [])
 
   if (me.role !== 'owner' && me.role !== 'admin') {
     return <div className="text-sm text-muted-foreground">Creating agents requires owner or admin.</div>
@@ -12879,7 +12885,7 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
   const create = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
-    const r = await api.createAgent({ id: slug, description: description.trim(), category: category.trim(), icon, claudeMd, examplePrompts, ...tuning })
+    const r = await api.createAgent({ id: slug, description: description.trim(), category: category.trim(), icon, claudeMd, examplePrompts, runtime, ...tuning })
     setBusy(false)
     if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed to create agent'))
     onCreated(r.id || slug)
@@ -12924,7 +12930,60 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
             <p className="text-[11px] text-muted-foreground">Optional. The first becomes the spawn box’s prefill; the rest are one-click chips. Up to 6.</p>
           </div>
           <div className="space-y-1">
-            <TuningFields tuning={tuning} onChange={setTuning} modelPlaceholder="opus" />
+            {runtimes.length > 1 && (
+              <div className="space-y-1">
+                <label className="text-xs font-medium">Runtime</label>
+                <select
+                  value={runtime}
+                  onChange={(e) => {
+                    const next = e.target.value
+                    setRuntime(next)
+                    // The form pre-fills the Claude `opus` alias, which every other runtime rejects —
+                    // so clear a model that belongs to the runtime being left rather than letting the
+                    // server 400 on submit. Blank = inherit the workspace default.
+                    const m = tuning.model
+                    if (m) {
+                      const foreign = next === 'opencode' ? !m.includes('/')
+                        : next === 'codex' ? /^(claude|opus|sonnet|haiku|fable)\b/i.test(m)
+                        : /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i.test(m)
+                      if (foreign) setTuning((t) => ({ ...t, model: undefined }))
+                    }
+                    if (next !== 'claude-code') setTuning((t) => ({ ...t, permissionMode: undefined }))
+                  }}
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                >
+                  {runtimes.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                </select>
+                {(() => {
+                  const info = runtimes.find((x) => x.id === runtime)
+                  if (!info || info.installed) return null
+                  // Creating an agent on a runtime this box lacks would produce an agent whose every
+                  // session parks on "the CLI is not on PATH". Offer the install here, as the edit
+                  // page does.
+                  return (
+                    <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+                      <p className="text-[11px] text-amber-700 dark:text-amber-500"><b>{info.label}</b> is not installed on this box, so sessions on it cannot start.</p>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm" variant="outline" className="h-6 text-[11px]" disabled={!!installing || me.role !== 'owner'}
+                          onClick={async () => {
+                            setInstalling(info.id); setHint('')
+                            const r = await api.installRuntime(info.id)
+                            setInstalling('')
+                            if (r.error || !r.ok) { setHint('⚠ ' + (r.error || 'install failed')); return }
+                            const list = await api.runtimes()
+                            setRuntimes(list.runtimes ?? [])
+                          }}
+                        >{installing === info.id ? 'Installing…' : `Install ${info.label}`}</Button>
+                        <code className="text-[10px] text-muted-foreground">{info.install}</code>
+                      </div>
+                      {me.role !== 'owner' && <p className="text-[11px] text-muted-foreground">An owner can install it.</p>}
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
+            <TuningFields tuning={tuning} onChange={setTuning} modelPlaceholder={runtime === 'claude-code' ? 'opus' : 'inherit'} />
             <p className="text-[11px] text-muted-foreground">Per-agent overrides. Leave effort/permission on <span className="font-mono">inherit</span> to follow the workspace default (Settings → Runtime defaults). The gate-hook governs regardless of permission mode.</p>
           </div>
           <div className="space-y-1">

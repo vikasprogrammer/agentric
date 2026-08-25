@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.392.0] - 2026-08-25
+### Added
+- **Pick the runtime when creating an agent** (New agent → Runtime). `POST /api/agents` hardcoded
+  `runtime: 'claude-code'` and the create form had no picker, so the only way to get a Codex or
+  opencode agent was to create a Claude one and switch it afterwards. The field is optional and still
+  defaults to `claude-code`, so existing callers are unaffected. Tuning is validated against the chosen
+  runtime, so a cross-family model (the form's `opus` pre-fill on opencode) is refused at creation
+  instead of at the first launch, and the form clears it on switch. The create page shows the same
+  install prompt as the edit page when the box lacks that runtime's CLI.
+
 ## [0.391.2] - 2026-08-25
 ### Fixed
 - **Runtime install failed on any box with a root-owned npm prefix**, which is the standard
