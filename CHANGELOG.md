@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.393.0] - 2026-08-25
+### Added
+- **Use cases are in the console manual** (Docs → Use cases, second in the list, right after Getting
+  started). The catalog shipped in v0.386.0 as `docs/use-cases.md` — a repo file reachable only from
+  the README's docs table — so the one page written to answer "what do I automate first?" was
+  invisible to the people asking it, who are in the console, not the GitHub tree. The console Docs
+  nav is a hand-maintained list (`web/src/docs/index.ts`); the page had no entry in it.
+
+### Changed
+- **`docs/use-cases.md` moved to `web/src/docs/use-cases.md`** rather than being copied, so there is
+  one source of truth instead of two 500-line files free to drift. The README's docs table points at
+  the new path. Body text is unchanged; only the five cross-doc links were retargeted from repo-relative
+  paths (`governance-model.md`) to in-console routes (`#/docs/governance`) — `mdComponents.a` opens any
+  non-`#` href in a NEW TAB, so left as they were those links would have opened a blank tab on a
+  nonexistent relative URL.
+
 ## [0.392.0] - 2026-08-25
 ### Added
 - **Pick the runtime when creating an agent** (New agent → Runtime). `POST /api/agents` hardcoded
