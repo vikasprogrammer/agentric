@@ -139,6 +139,22 @@ export interface RuntimeLogin {
 /** `refreshing` = `<runtime>/<name>` for each account whose usage snapshot is being re-probed in the
  *  background right now (the read kicked it — see src/edge/runtime-account-usage.ts). The `accounts` in
  *  THIS response are the pre-probe reading, so a non-empty list means "read again shortly for fresh %". */
+/** A runtime as the agent picker sees it: what it supports, and whether this box actually HAS its
+ *  CLI — `installed:false` means every session on it would park, so the picker offers to install. */
+export interface RuntimePickerInfo {
+  id: string
+  label: string
+  suggestedModels: string[]
+  capabilities: Record<string, boolean>
+  bin: string
+  /** Display form of the install command, e.g. `npm install -g opencode-ai`. */
+  install: string
+  installed: boolean
+  version?: string
+}
+/** Presence of every coding runtime on this box (Settings → Runtimes). */
+export interface RuntimePresence { id: string; label: string; bin: string; installed: boolean; version?: string; install: string }
+
 export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; logins?: RuntimeLogin[]; refreshing?: string[]; error?: string }
 
 export interface AgentInfo {
@@ -2012,7 +2028,9 @@ export const api = {
   presence: () => call<{ now: number; lastSeen: Record<string, number> }>('GET', '/api/presence'),
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
-  agentConfig: (id: string) => call<{ agent: string; error?: string; runtime?: string; runtimes?: { id: string; label: string; suggestedModels: string[]; capabilities: Record<string, boolean> }[]; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
+  runtimes: () => call<{ runtimes?: RuntimePresence[]; error?: string }>('GET', '/api/runtimes'),
+  installRuntime: (id: string) => call<{ ok?: boolean; version?: string; error?: string }>('POST', `/api/runtimes/${encodeURIComponent(id)}/install`),
+  agentConfig: (id: string) => call<{ agent: string; error?: string; runtime?: string; runtimes?: RuntimePickerInfo[]; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
   saveAgentConfig: (id: string, patch: RuntimeTuningPatch & { runtime?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string; runtime?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
   agentRevisions: (id: string) => call<{ agent: string; revisions: AgentRevision[]; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/revisions`),
   agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),

@@ -8,6 +8,45 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.391.0] - 2026-08-25
+### Added
+- **Third coding runtime: `opencode`.** Selectable per agent (Agents → Runtime tuning → Runtime),
+  applied on the next session. opencode has no command-hook facility, so its gate is a JS plugin
+  (`terminal/opencode-gate-plugin.js`) implementing the same `/api/gate` contract as the shared shell
+  hook: route tool → capability, allow / throw on deny / block-until-approved / fail closed when
+  unreachable. New `terminal/opencode-launch.sh` composes `AGENTS.md` from the agent's `CLAUDE.md` +
+  Company context (only Claude Code auto-loads `CLAUDE.md`), translates the session MCP config to
+  opencode's schema, and refuses to start unauthenticated rather than parking on the provider picker.
+  Pinned by `scripts/opencode-gate-test.cjs`. See `docs/opencode-runtime.md`.
+- **Runtime install management.** Settings → Runtime → **Runtimes** lists every coding runtime, whether
+  its CLI is on this box, and installs a missing one in a click (owner-only, audited
+  `runtime.install.*`). The agent runtime picker shows the same prompt when the selected runtime is not
+  installed, so a choice whose every session would park on "the CLI is not on PATH" can't be saved
+  blind. Presence is probed with the same PATH a session gets; install trusts a re-probe rather than
+  npm's exit code. New `GET /api/runtimes` + `POST /api/runtimes/:id/install`.
+
+### Security
+- **opencode sessions fail closed if the gate plugin does not load.** opencode discovers
+  `.opencode/plugin/*.js` and silently ignores any other extension, so a renamed plugin would have
+  produced a fully ungoverned agent with no warning. The generated config now writes every permission
+  as `"ask"` and the plugin relaxes it at runtime — plugin missing ⇒ opencode prompts (an unattended
+  run blocks) instead of acting ungoverned. `--pure` (which disables plugins) is likewise banned.
+- **opencode sub-agents are disabled** (`tools.task = false` plus a refusal in the plugin).
+  anomalyco/opencode#6396 reports plugin hooks and config `deny` rules being bypassed for
+  sub-agent/SDK invocations; an un-hooked sub-agent would reach the world with no gate, no audit and no
+  run-as identity. Governed delegation via `task_create` is unaffected.
+
+### Fixed
+- A non-Claude agent could not be switched back: the runtime picker lives in the tuning card, which
+  rendered only for `runtime === 'claude-code'` — so moving an agent to Codex was a one-way door. The
+  tuning, revisions and cross-agent-proposal cards now render for any CLI-backed runtime, matching the
+  server (`applyAgentEdit` already gated on `isCodingRuntime`).
+- `RuntimeBadge` labelled every non-Claude runtime **"mock"**, so a real Codex agent was badged as the
+  in-process demo adapter. It now names the runtime it actually runs on.
+- Cost and the chat timeline for a runtime with no transcript reader fell through to the Claude reader,
+  which resolves an id against `~/.claude/projects` — a foreign session id simply is not there, so an
+  honest "unknown" arrived as a confidently wrong zero. Both now probe the `transcript` capability.
+
 ## [0.390.0] - 2026-08-24
 ### Added
 - **Slack automations can filter on the message, and watch a channel that nobody @mentions.** A slack
