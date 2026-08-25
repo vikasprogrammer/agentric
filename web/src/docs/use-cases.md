@@ -443,7 +443,7 @@ loosen it after the agent has a track record you have personally reviewed.
 The postures are conventions you write into the agent's prompt. What **enforces** them is the policy
 layer — capabilities the agent may use, which ones stop for a human, and at what approval level. Write
 the posture into the prompt so the agent understands its job, and into policy so the boundary holds even
-if the prompt is ignored. See [`docs/governance-model.md`](governance-model.md).
+if the prompt is ignored. See [Governance & approvals](#/docs/governance).
 
 ---
 
@@ -532,10 +532,10 @@ Honest failure modes, so you can skip them:
 
 ## Related
 
-| Document | What it covers |
+| Page | What it covers |
 |---|---|
-| [`docs/governance-model.md`](governance-model.md) | Policy, approvals, budgets, identity — what enforces a posture |
-| [`docs/agent-mcp-tools.md`](agent-mcp-tools.md) | Every tool an agent can call, and its governance notes |
-| [`docs/connectors-and-triggers.md`](connectors-and-triggers.md) | Wiring schedules, webhooks and chat triggers |
-| [`docs/tasks-plan.md`](tasks-plan.md) | The task queue and the delegation model |
-| [`docs/memory-model.md`](memory-model.md) | How an agent gets better at its job over time |
+| [Governance & approvals](#/docs/governance) | Policy, approvals, budgets, identity — what enforces a posture |
+| [Working with agents](#/docs/working-with-agents) | Every tool an agent can call, and its governance notes |
+| [Automations](#/docs/automations) | Wiring schedules, webhooks and chat triggers |
+| [Memory, Knowledge & Tasks](#/docs/shared-planes) | The task queue and the delegation model |
+| [Memory, Knowledge & Tasks](#/docs/shared-planes) | How an agent gets better at its job over time |
