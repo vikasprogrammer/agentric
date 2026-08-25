@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.391.1] - 2026-08-25
+### Fixed
+- Runtime presence probing spawned `command -v` through a shell, so every Settings → Runtimes load
+  and every agent-config read logged Node's `DEP0190` shell-argument warning (and spawned one shell
+  per runtime). Resolution is now an in-process PATH walk — same answer, no child process, no warning.
+
 ## [0.391.0] - 2026-08-25
 ### Added
 - **Third coding runtime: `opencode`.** Selectable per agent (Agents → Runtime tuning → Runtime),
