@@ -15,6 +15,8 @@
  *    real, persistent change to the host, not a per-session effect.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { accessSync, constants } from 'node:fs';
+import { join } from 'node:path';
 import { CODING_RUNTIMES, CodingRuntimeId, RuntimeId, isCodingRuntime } from '../types';
 
 export interface RuntimePresence {
@@ -36,11 +38,26 @@ function probePath(): string {
   return [...extra, process.env.PATH || ''].filter(Boolean).join(':');
 }
 
+/** Resolve `bin` against a PATH string the way execvp does — first directory holding an executable
+ *  file of that name wins. Done in-process on purpose: shelling out to `command -v` needs
+ *  `shell: true`, which Node now warns about (DEP0190) on every call, and spawning a shell to answer
+ *  "does this file exist" is a process per probe on a page the console loads often. */
+function which(bin: string, path: string): boolean {
+  for (const dir of path.split(':')) {
+    if (!dir) continue;
+    try {
+      accessSync(join(dir, bin), constants.X_OK);
+      return true;
+    } catch (_) { /* not here — keep looking */ }
+  }
+  return false;
+}
+
 /** Is `bin` on PATH, and at what version? Never throws. */
 function probe(bin: string): { installed: boolean; version?: string } {
-  const env = { ...process.env, PATH: probePath() };
-  const found = spawnSync('command', ['-v', bin], { env, shell: '/bin/bash', timeout: 5000, encoding: 'utf8' });
-  if (found.status !== 0) return { installed: false };
+  const path = probePath();
+  const env = { ...process.env, PATH: path };
+  if (!which(bin, path)) return { installed: false };
   const v = spawnSync(bin, ['--version'], { env, timeout: 10000, encoding: 'utf8' });
   const line = String(v.stdout || '').split('\n').map((s) => s.trim()).filter(Boolean)[0];
   return { installed: true, version: line || undefined };
