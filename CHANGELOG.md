@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.393.1] - 2026-08-25
+### Fixed
+- **Docs → Use cases: the Related table no longer lists the same page twice.** The move into the
+  console collapsed five repo docs onto four manual pages, so `tasks-plan.md` and `memory-model.md`
+  both resolved to Memory, Knowledge & Tasks and the table shipped two rows with one destination.
+  Merged into a single row carrying both descriptions.
+
 ## [0.393.0] - 2026-08-25
 ### Added
 - **Use cases are in the console manual** (Docs → Use cases, second in the list, right after Getting

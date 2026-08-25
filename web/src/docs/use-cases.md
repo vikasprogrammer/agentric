@@ -537,5 +537,4 @@ Honest failure modes, so you can skip them:
 | [Governance & approvals](#/docs/governance) | Policy, approvals, budgets, identity — what enforces a posture |
 | [Working with agents](#/docs/working-with-agents) | Every tool an agent can call, and its governance notes |
 | [Automations](#/docs/automations) | Wiring schedules, webhooks and chat triggers |
-| [Memory, Knowledge & Tasks](#/docs/shared-planes) | The task queue and the delegation model |
-| [Memory, Knowledge & Tasks](#/docs/shared-planes) | How an agent gets better at its job over time |
+| [Memory, Knowledge & Tasks](#/docs/shared-planes) | The task queue and the delegation model, and how an agent gets better at its job over time |
