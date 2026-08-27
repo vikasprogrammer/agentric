@@ -533,7 +533,7 @@ Closes most of "consolidation/decay": the store now keeps itself healthy. All op
 
 - **Usage tracking (`db.ts`).** `memories` gains `recall_count` + `last_recalled_at`. A recall **with a query**
   bumps the rows it surfaced (a blank recency listing does not), so "never recalled" is a trustworthy signal.
-- **`MemoryProvider.maintain(opts)`** (optional). sqlite + libsql implement it; automem omits it (self-maintains).
+- **`MemoryProvider.maintain(opts)`** (optional). sqlite + libsql implement it; automem omits it, and an external backend is maintained THROUGH the mirror — see §17.1.
   - **Prune:** `DELETE … WHERE created_at < cutoff AND recall_count = 0 AND (importance IS NULL OR importance <
     keepImportance)`. Old **and** unused **and** unimportant — three guards, so it can't eat live memory.
   - **Consolidate:** a pure, shared planner (`planConsolidation` in `embedding.ts`) clusters an agent's memories
@@ -558,6 +558,36 @@ two near-duplicates (distinct wording, same vector) merge while an unrelated mem
 automem ops doc. The automem `associate` graph path remains the richer alternative to this in-provider upkeep.
 
 ---
+
+### 17.1 Upkeep under an external backend (2026-08-27)
+
+`automem self-maintains` was an assumption, and reading the live stores disproved it: instapods carried
+the **same episode 177 times** (one 2h cron's identical output over a month — 7% of that tenant's whole
+memory, one string) and it ranked in live recall probes. automem's enrichment/consolidation rewrites and
+relates memories; it does not remove exact duplicates.
+
+Worse, `MirroredMemoryProvider.maintain` used to prune the local mirror while returning the BACKEND's
+result — so enabling upkeep on an automem tenant reported `pruned: 0` while mirror rows really did
+vanish, and the two stores **diverged**: Dreaming, consolidation and the Memory-hub counts (which read
+the mirror) lost rows that agents could still recall.
+
+Now the mirror is the DECIDER and the backend follows:
+
+1. `SqliteMemoryProvider.maintain` selects before it deletes and returns `removed: {id, tenant, agentId}[]`
+   alongside its counts — the mirror is the only side holding the signals prune and dedupe key off (age,
+   `recall_count`, importance, exact-content grouping).
+2. `MirroredMemoryProvider.maintain` replays each removal onto the backend as an **admin-scoped**
+   `delete` (housekeeping, not one agent reaching into another's memories).
+3. The result reports the MIRROR's real counts, plus **`backendFailures`** — removals the backend refused,
+   surfaced rather than swallowed, so an operator can see the mirror has run ahead of the backend.
+
+Order is mirror-first, backend-second on purpose: the backend delete is per-id over the network and can
+fail, and the worse failure is the opposite one — a mirror row left behind for a backend row that is gone
+would make the local ledger claim memories recall can never return. Pinned by
+`scripts/memory-upkeep-test.cjs`.
+
+**Note for existing automem tenants:** upkeep is still opt-in and no tenant has it enabled, so the
+historical duplicates are not removed by this change — it only makes the knob safe to turn on.
 
 ## 18. Shared-scope memory — Phase 0 toward a KB (2026-06-23)
 

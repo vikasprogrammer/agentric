@@ -36,6 +36,13 @@ The pass folds the window into a structured cumulative object (persisted via
 - `totals` — running tallies (sessions, success/failure/partial/stopped, episodes, rejected, budgetStops, errors).
 - `topics` — `{ keyword → { count, lastSeen } }`, built from episode task-lines (deduped per episode,
   stop-worded). Counts **merge across passes** — the recurring-topic understanding sharpens over time.
+  ⚠ **Regression fixed 2026-08-27:** `normalizeState` dropped `topicsVersion` on load, so the
+  extractor-version check in `dream()` was true EVERY pass and wiped the map before anything read it.
+  The merge never actually happened in production — instapods reset on **29 of 46** passes and instawp on
+  **31 of 41**, discarding **666** and **1760** topic counts, so `topics` only ever held one day of
+  episodes. With `MIN_TOPIC_COUNT = 3` the smaller tenant stayed permanently below the bar: its "the
+  fleet frequently works on …" guidance line never fired once in two months, and the fleet Insight every
+  agent recalls read `Recurring topics: —`. Pinned by `scripts/memory-upkeep-test.cjs`.
 - `recent` — a rolling log of the last ~12 passes.
 - `firstPass`, `passes`.
 

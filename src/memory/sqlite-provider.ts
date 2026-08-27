@@ -183,14 +183,19 @@ export class SqliteMemoryProvider implements MemoryProvider {
   async maintain(opts: MemoryMaintenance): Promise<MemoryMaintenanceResult> {
     let pruned = 0;
     let merged = 0;
+    const removed: MemoryMaintenanceResult['removed'] = [];
 
-    // Prune: old AND never recalled AND not important. Conservative by construction.
+    // Prune: old AND never recalled AND not important. Conservative by construction. Selected BEFORE the
+    // delete so the caller learns which ids went — a mirrored setup replays them onto the external backend.
     if (opts.pruneAfterDays && opts.pruneAfterDays > 0) {
       const cutoff = Date.now() - opts.pruneAfterDays * 86_400_000;
       const keep = opts.keepImportance ?? 0.5;
-      pruned = this.db
-        .prepare('DELETE FROM memories WHERE created_at < ? AND recall_count = 0 AND (importance IS NULL OR importance < ?)')
-        .run(cutoff, keep).changes;
+      const doomed = this.db
+        .prepare('SELECT id, tenant, agent_id FROM memories WHERE created_at < ? AND recall_count = 0 AND (importance IS NULL OR importance < ?)')
+        .all<{ id: string; tenant: string; agent_id: string }>(cutoff, keep);
+      for (const r of doomed) this.db.prepare('DELETE FROM memories WHERE id = ?').run(r.id);
+      pruned = doomed.length;
+      removed.push(...doomed.map((r) => ({ id: r.id, tenant: r.tenant, agentId: r.agent_id })));
     }
 
     // Consolidate duplicates per (tenant, agent_id). Only when opted in via a dedupe threshold.
@@ -209,17 +214,19 @@ export class SqliteMemoryProvider implements MemoryProvider {
           vec: r.embedding ? unpackF32(r.embedding) : undefined,
         });
       }
-      for (const arr of groups.values()) {
+      for (const [key, arr] of groups) {
+        const [gTenant, gAgent] = key.split('\0');
         for (const op of planConsolidation(arr, opts.dedupeThreshold)) {
           this.db.prepare('UPDATE memories SET importance = ?, recall_count = ? WHERE id = ?')
             .run(op.importance ?? null, op.recallCount, op.keepId);
           merged += this.db
             .prepare(`DELETE FROM memories WHERE id IN (${op.dropIds.map(() => '?').join(',')})`)
             .run(...op.dropIds).changes;
+          for (const id of op.dropIds) removed.push({ id, tenant: gTenant, agentId: gAgent });
         }
       }
     }
-    return { pruned, merged };
+    return { pruned, merged, removed };
   }
 
   async update(input: UpdateInput): Promise<MemoryRecord | null> {

@@ -285,7 +285,7 @@ export class DreamingEngine {
 /** L1: repair a partial / schema-drifted / corrupt `dreaming_state` into a well-formed shape, so the
  *  fold's `state.totals[k] += win[k]` can never hit an `undefined` field and spew `NaN` into every
  *  downstream number (rate, guidance, the page). Non-numeric fields fall back to safe defaults. */
-function normalizeState(raw: Record<string, unknown>): DreamState {
+export function normalizeState(raw: Record<string, unknown>): DreamState {
   const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
   const rt = (raw.totals ?? {}) as Record<string, unknown>;
   const totals = zeroTally();
@@ -297,7 +297,15 @@ function normalizeState(raw: Record<string, unknown>): DreamState {
   }
   const recent = Array.isArray(raw.recent) ? (raw.recent as RecentEntry[]) : [];
   const watermark = Number.isFinite(Number(raw.watermark)) ? Number(raw.watermark) : undefined;
-  return { firstPass: num(raw.firstPass, Date.now()), passes: num(raw.passes, 0), totals, topics, recent, watermark };
+  // `topicsVersion` MUST survive the round-trip. Dropping it here made the extractor-version check in
+  // `dream()` true on EVERY load, so the cumulative topic map was wiped at the start of every pass — the
+  // exact opposite of the 21-day half-life it is documented to have. Live proof before the fix: instapods
+  // reset on 29 of 46 passes and instawp on 31 of 41, discarding 666 and 1760 topic counts respectively,
+  // so `topics` only ever held ONE day of episodes. With MIN_TOPIC_COUNT = 3 that left the smaller tenant
+  // permanently below the bar — its "the fleet frequently works on …" guidance line never fired once, and
+  // the fleet Insight every agent recalls read "Recurring topics: —".
+  const topicsVersion = Number.isFinite(Number(raw.topicsVersion)) ? Number(raw.topicsVersion) : undefined;
+  return { firstPass: num(raw.firstPass, Date.now()), passes: num(raw.passes, 0), totals, topics, recent, watermark, topicsVersion };
 }
 
 function zeroTally(): Tally {

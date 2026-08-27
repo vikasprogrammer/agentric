@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.397.0] - 2026-08-27
+### Fixed
+- **Memory upkeep on an external backend pruned only half the store.** `MirroredMemoryProvider.maintain`
+  assumed "the backend self-maintains (automem)" and pruned the local mirror alongside it. Reading the
+  live stores disproved the assumption — automem's enrichment rewrites and relates memories but does not
+  remove exact duplicates, and one instapods cron's identical episode sat there **177 times** (7% of that
+  tenant's whole memory, one string, ranking in live recall probes). Because the result came from the
+  backend, the API also reported `pruned: 0` while mirror rows really did vanish. So turning upkeep on
+  made the two stores **diverge**: Dreaming, consolidation and the Memory-hub counts (which read the
+  mirror) lost rows agents could still recall. Now the mirror decides and the backend follows —
+  `SqliteMemoryProvider.maintain` returns `removed: {id, tenant, agentId}[]`, the mirror replays each
+  removal onto the backend as an admin-scoped delete, and the result reports the mirror's real counts plus
+  **`backendFailures`** for removals the backend refused. Upkeep stays opt-in; this makes the knob safe to
+  turn on, it does not enable it.
+- **The self-learning pass wiped its own topic accumulator on every run.** `normalizeState` dropped
+  `topicsVersion` on load, so the extractor-version check in `dream()` was true every pass and emptied the
+  cumulative topic map before anything read it. The documented "counts merge across passes … sharpens over
+  time" never happened in production: instapods reset on **29 of 46** passes and instawp on **31 of 41**,
+  discarding **666** and **1760** topic counts, leaving `topics` holding a single day of episodes. With
+  `MIN_TOPIC_COUNT = 3` that kept the smaller tenant permanently under the bar — its "the fleet frequently
+  works on …" guidance line never fired once in two months, and the fleet Insight every agent recalls read
+  `Recurring topics: —`. Both pinned by `scripts/memory-upkeep-test.cjs`.
+
 ## [0.396.0] - 2026-08-27
 ### Changed
 - **Session episodes stop polluting the memory they are supposed to teach.** Every finished session

@@ -573,6 +573,13 @@ export interface MemoryProvider {
 export interface MemoryMaintenanceResult {
   pruned: number;
   merged: number;
+  /** What this pass removed. A mirrored setup needs it: the local mirror decides WHAT to drop (it holds
+   *  the SQL-level signals), then the external backend is told to drop the same records, so the two
+   *  stores stay in step instead of one silently keeping what the other pruned. */
+  removed?: { id: string; tenant: string; agentId: string }[];
+  /** Ids the local pass removed that the external backend REFUSED to delete — the divergence, reported
+   *  rather than swallowed, so an operator can see the mirror is now ahead of the backend. */
+  backendFailures?: number;
 }
 
 /**
@@ -602,7 +609,12 @@ export interface MemoryConfig {
   libsql?: LibsqlMemoryConfig;
   /** Optional recall re-ranking (recency decay + importance weighting). Applies to sqlite/libsql. */
   ranking?: MemoryRanking;
-  /** Optional upkeep policy (prune + consolidate). Applies to sqlite/libsql; automem self-maintains. */
+  /**
+   * Optional upkeep policy (prune + consolidate). Opt-in on every backend. On an EXTERNAL backend
+   * (automem/libsql) the local mirror selects what to drop and the backend is then deleted by id —
+   * automem's own enrichment/consolidation does NOT remove exact duplicates (a live tenant carried the
+   * same episode 177 times), so "the backend self-maintains" was never true for it.
+   */
   maintenance?: MemoryMaintenance;
   /**
    * Who may publish tenant-shared memories. 'open' (default) — any agent via `remember(shared)`.

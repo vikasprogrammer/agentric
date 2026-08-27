@@ -1,0 +1,124 @@
+#!/usr/bin/env node
+/* Memory upkeep + learning-state round-trip test.
+ *
+ * Two defects found by reading the live instapods + instawp stores on 2026-08-27, each pinned here:
+ *
+ *  A. Upkeep on an EXTERNAL backend pruned only the local mirror. `MirroredMemoryProvider.maintain`
+ *     assumed "the backend self-maintains (automem)" — it does not remove exact duplicates (one live
+ *     tenant carried the SAME episode 177 times, 7% of its whole store, and it ranked in recall probes)
+ *     — and it returned the BACKEND's counts, so the API reported `pruned: 0` while rows really did
+ *     vanish from the mirror. Enabling upkeep therefore made the two stores diverge: agents kept
+ *     recalling exactly what the console had been told was pruned.
+ *
+ *  B. `normalizeState` dropped `topicsVersion`, so dreaming's extractor-version check was true on every
+ *     load and the CUMULATIVE topic map was wiped at the start of every pass (instapods reset on 29 of
+ *     46 passes, instawp on 31 of 41; 666 and 1760 topic counts discarded). With MIN_TOPIC_COUNT = 3 the
+ *     smaller tenant never once emitted its "the fleet frequently works on …" guidance line.
+ *
+ * Pure over an isolated home + a fake backend; no network, no tmux, no claude. */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const ROOT = path.resolve(__dirname, '..');
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-upkeep-test-'));
+process.env.AGENT_OS_HOME = HOME;
+process.env.AGENT_OS_TENANT = 'testco';
+process.env.AOS_NO_TTYD = '1';
+delete process.env.AGENT_OS_SECRET_KEY;
+
+let pass = 0, fail = 0;
+const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
+
+const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
+const { SqliteMemoryProvider } = require(path.join(ROOT, 'dist/memory/sqlite-provider.js'));
+const { MirroredMemoryProvider } = require(path.join(ROOT, 'dist/memory/mirror.js'));
+const { normalizeState } = require(path.join(ROOT, 'dist/edge/dreaming.js'));
+
+const aos = loadAgentOS();
+
+/** Stands in for automem: stores what it is given, has NO maintain() of its own, and records deletes. */
+class FakeBackend {
+  constructor() { this.rows = new Map(); this.deletes = []; this.failOn = new Set(); }
+  async store(input) {
+    const rec = { id: `bk_${this.rows.size + 1}`, tenant: input.tenant, agentId: input.agentId, content: input.content, tags: input.tags ?? [], type: input.type, importance: input.importance, ts: Date.now(), scope: input.scope ?? 'agent' };
+    this.rows.set(rec.id, rec);
+    return rec;
+  }
+  async recall() { return []; }
+  async update() { return null; }
+  async delete(input) {
+    this.deletes.push(input);
+    if (this.failOn.has(input.id)) return false;
+    return this.rows.delete(input.id);
+  }
+  async health() { return { ok: true, backend: 'fake' }; }
+}
+
+const mirrorTable = () => aos.db.prepare('SELECT id, content FROM memories ORDER BY created_at').all();
+const setAge = (id, days) => aos.db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(Date.now() - days * 86_400_000, id);
+
+(async () => {
+  console.log('\nmemory upkeep — the mirror and the backend prune together\n');
+
+  const backend = new FakeBackend();
+  const mirror = new SqliteMemoryProvider(aos.db, aos.tenant);
+  const provider = new MirroredMemoryProvider(backend, mirror);
+
+  // three stale, never-recalled, low-importance memories + one that must survive on each ground
+  const stale = [];
+  for (let i = 0; i < 3; i++) {
+    stale.push(await provider.store({ tenant: aos.tenant, agentId: 'engineer', content: `disposable note ${i}`, tags: [], type: 'Insight', importance: 0.3 }));
+  }
+  const important = await provider.store({ tenant: aos.tenant, agentId: 'engineer', content: 'load-bearing runbook', tags: [], type: 'Pattern', importance: 0.9 });
+  const fresh = await provider.store({ tenant: aos.tenant, agentId: 'engineer', content: 'stored today', tags: [], type: 'Insight', importance: 0.3 });
+  for (const r of [...stale, important]) setAge(r.id, 90);
+
+  assert(mirrorTable().length === 5 && backend.rows.size === 5, 'a write lands in BOTH the backend and the mirror');
+
+  const res = await provider.maintain({ pruneAfterDays: 30, keepImportance: 0.5 });
+  const left = mirrorTable().map((r) => r.id);
+
+  assert(res.pruned === 3, 'the result reports what the MIRROR pruned, not the backend\'s zero', `got ${res.pruned}`);
+  assert(left.length === 2, 'the three stale, never-recalled, unimportant rows leave the mirror');
+  assert(left.includes(important.id), 'an important memory survives the age cutoff');
+  assert(left.includes(fresh.id), 'a recent memory survives');
+  assert(backend.rows.size === 2, 'the BACKEND lost the same three — the two stores stay in step', `backend has ${backend.rows.size}`);
+  assert(backend.deletes.every((d) => d.admin === true), 'backend deletes are admin-scoped (housekeeping, not one agent reaching into another)');
+  assert(backend.deletes.every((d) => d.tenant === aos.tenant && d.agentId === 'engineer'), 'each delete carries the record\'s own tenant + author');
+  assert((res.removed ?? []).length === 3, 'the result names what it removed');
+  assert(res.backendFailures === 0, 'a clean run reports no divergence');
+
+  // ── a backend that refuses a delete is REPORTED, not swallowed ──────────────────────────────────
+  const b2 = new FakeBackend();
+  const p2 = new MirroredMemoryProvider(b2, mirror);
+  const doomed = await p2.store({ tenant: aos.tenant, agentId: 'qa', content: 'backend will refuse this', tags: [], type: 'Insight', importance: 0.2 });
+  setAge(doomed.id, 90);
+  b2.failOn.add(doomed.id);
+  const res2 = await p2.maintain({ pruneAfterDays: 30, keepImportance: 0.5 });
+  assert(res2.backendFailures === 1, 'a refused backend delete is counted as divergence', `got ${res2.backendFailures}`);
+
+  // ── exact duplicates are consolidated on both grounds ───────────────────────────────────────────
+  const b3 = new FakeBackend();
+  const p3 = new MirroredMemoryProvider(b3, mirror);
+  const dupA = await p3.store({ tenant: aos.tenant, agentId: 'cronbot', content: 'the identical nightly episode', tags: [], type: 'Insight', importance: 0.7 });
+  const dupB = await p3.store({ tenant: aos.tenant, agentId: 'cronbot', content: 'the identical nightly episode', tags: [], type: 'Insight', importance: 0.7 });
+  const res3 = await p3.maintain({ dedupeThreshold: 0.95 });
+  const cronRows = aos.db.prepare("SELECT id FROM memories WHERE agent_id = 'cronbot'").all();
+  assert(cronRows.length === 1, 'an exact-content duplicate is merged away in the mirror', `got ${cronRows.length}`);
+  assert(res3.merged >= 1, 'the merge is reported');
+  assert(b3.rows.size === 1, 'the duplicate is deleted from the backend too — automem does NOT dedupe these itself');
+  void dupA; void dupB;
+
+  // ── B. the learning state's extractor version survives a load ───────────────────────────────────
+  console.log('\ndreaming — the topic accumulator is not wiped on every load\n');
+  const roundTripped = normalizeState({ firstPass: 1, passes: 9, totals: {}, topics: { freescout: { count: 30, lastSeen: 2 } }, recent: [], watermark: 5, topicsVersion: 3 });
+  assert(roundTripped.topicsVersion === 3, 'topicsVersion survives normalizeState — the version check no longer fires every pass', `got ${roundTripped.topicsVersion}`);
+  assert(roundTripped.topics.freescout.count === 30, 'the cumulative topic counts come back intact');
+  const legacy = normalizeState({ firstPass: 1, passes: 2, totals: {}, topics: { old: { count: 4, lastSeen: 1 } }, recent: [] });
+  assert(legacy.topicsVersion === undefined, 'a state written before the field still reports no version, so its stale map IS retired once');
+
+  console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m\n`);
+  try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
+  process.exit(fail ? 1 : 0);
+})();
