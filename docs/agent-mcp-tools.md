@@ -12,6 +12,38 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 > still governs every effect. See `docs/per-agent-context.md`.
 
 
+## Measuring a tool's latency
+
+Every loopback call carries **`x-aos-tool: <tool>`** (set in `memory-mcp.ts` via an `AsyncLocalStorage`, so
+concurrent tool calls can't mislabel each other). The server records it as a second dimension in
+`src/edge/request-metrics.ts` — in-memory, no DB write — surfaced as `tools[]` on
+`GET /api/metrics/requests` (owner/admin) and as the "Agent tool calls (MCP)" table under
+**Settings → Endpoint timings**. It answers a different question from the route table: a route is what the
+SERVER spends time on, a tool is what an AGENT waits on, and they don't map 1:1.
+
+The header is **telemetry only** — authority is the session secret; the tool map is capped like the route
+map, so a forged header grants nothing and can't unbound the table. Tools that block on a human or a
+delegate by design (`ask_human`, `ask_agent`, `task_wait`) are flagged `blocking` and sorted below real
+work: their clock is a person, not code.
+
+Reference numbers from a 2026-08-27 sweep of all 64 tools against a scrubbed copy of a live 1k-session,
+500-task, 2.2k-memory tenant (p50, end-to-end from the MCP process, ~1.5ms of which is stdio + loopback):
+
+| tool | p50 | note |
+|---|---|---|
+| `recall` | **260ms** | remote automem backend (2 parallel `/recall` calls); **4ms** on the built-in `sqlite` backend |
+| `remember` | **169ms** | one automem write; **2ms** on `sqlite` |
+| `task_list` | 5.9ms | board query + `attachDeps` |
+| `goal_get` | 4.7ms | goal + events + derived progress + linked tasks |
+| `skill_find` | 3.8ms | library + bundled catalog off disk |
+| `session_history` / `session_open` | 3.5ms / 3.1ms | after v0.404.0; 21ms / 19ms before it |
+| everything else | ≤3ms | |
+
+The lesson the sweep encoded: the memory plane's cost is **network geography**, not indexing — a remote
+automem is 60–100× every local tool — while the two local outliers were both "the index exists, the query
+didn't use it". Re-run the sweep after touching a store: `scripts/agent-history-scope-test.cjs` pins the
+scope/parity properties, but not the cost.
+
 ## Tools ↔ routes ↔ stores
 
 | Tool | Route | Server-side | Read/Write | Notes |

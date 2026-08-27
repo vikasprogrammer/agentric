@@ -301,6 +301,13 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
       const ms = Number(process.hrtime.bigint() - startedNs) / 1e6;
       const pathname = (req.url || '/').split('?')[0];
       requestMetrics.observe(req.method || 'GET', pathname, res.statusCode, ms, arrivalStall);
+      // The same request, keyed by the agent-facing MCP TOOL that made it (`x-aos-tool`, set by
+      // src/memory/memory-mcp.ts). Route timings answer "which endpoint costs the most"; an agent waits
+      // on TOOLS, and the two don't map 1:1 — so this is a second dimension, recorded here because this
+      // is the one place every request already passes through. Loopback-only in practice; the header is
+      // advisory (it buys no authority), and the tool map is capped like the route map.
+      const tool = String(req.headers['x-aos-tool'] || '').trim();
+      if (tool) requestMetrics.observeTool(tool, res.statusCode, ms, arrivalStall);
     });
     // Superadmin control plane — host-independent (bearer-gated), so it sits before tenant routing.
     if ((req.url || '').split('?')[0].startsWith('/api/admin/')) {
@@ -1079,9 +1086,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);
     const q = (url.searchParams.get('query') || '').trim().toLowerCase();
-    let mine = tm.sessionsForAgent(agent).filter((s) => s.id !== session); // exclude the current run
-    if (q) mine = mine.filter((s) => `${s.title} ${s.task}`.toLowerCase().includes(q));
-    const sessions = mine.slice(0, limit).map((s) => ({
+    // Filters + limit are pushed into the store: it selects this agent's ids in SQL and derives only
+    // those rows (see sessionsForAgent) instead of building the whole tenant's list to discard it here.
+    const mine = tm.sessionsForAgent(agent, { query: q, excludeId: session, limit });
+    const sessions = mine.map((s) => ({
       id: s.id, title: s.title, task: s.task, status: s.status,
       createdAt: s.createdAt, updatedAt: s.updatedAt, rating: s.rating, headless: s.headless, source: s.sourceKind,
     }));
@@ -1097,7 +1105,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const id = url.searchParams.get('id') || '';
-    const target = tm.sessionsForAgent(agent).find((s) => s.id === id);
+    // Ownership is one indexed row-test; the shape then comes from the by-id list path — instead of
+    // building this agent's whole history to `.find()` one id in it.
+    if (!tm.sessionBelongsToAgent(id, agent)) return sendJson(res, 403, { error: 'not one of your sessions' });
+    const target = tm.listSessions(undefined, undefined, [id])[0];
     if (!target) return sendJson(res, 403, { error: 'not one of your sessions' });
     const meta = { id: target.id, title: target.title, task: target.task, status: target.status, createdAt: target.createdAt, updatedAt: target.updatedAt, rating: target.rating };
     const convo = tm.sessionConversation(id);

@@ -30,6 +30,11 @@ const BUCKETS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000
 /** How many distinct route templates to track before lumping the rest into `other`. */
 const MAX_ROUTES = 300;
 
+/** Tools whose duration is a WAIT for a human or a delegate, not work this process is doing. They are
+ *  measured like everything else — hiding them would hide a wait that never ends — but flagged, so the
+ *  table is never read as "`ask_human` is the slowest endpoint in the system". */
+const BLOCKING_TOOLS = new Set(['ask', 'ask_human', 'ask_agent', 'task_wait']);
+
 export interface RouteStat {
   /** `GET /api/sessions/:id` — method + normalized path template. */
   route: string;
@@ -48,12 +53,22 @@ export interface RouteStat {
   errors: number;
 }
 
+export interface ToolStat extends RouteStat {
+  /** The tool BLOCKS by design (`ask_human`, `task_wait`, …): its clock is a human/delegate, not code.
+   *  Reported so a 40-minute `ask_human` is never read as a slow endpoint. */
+  blocking: boolean;
+}
+
 export interface RequestMetricsSnapshot {
   /** When collection started (ms epoch) — every total is "since here". */
   since: number;
   requests: number;
   /** Routes ordered by the metric that answers the question: total time spent. */
   routes: RouteStat[];
+  /** The same measurement keyed by the MCP TOOL an agent called, when the caller named one
+   *  (`x-aos-tool`). One tool can span several routes and one route serves several tools, so this is a
+   *  separate dimension, not a re-slice of `routes`. */
+  tools: ToolStat[];
   /** Event-loop lag sampled on a fixed interval, independent of any request. */
   loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number };
 }
@@ -123,6 +138,7 @@ export function normalizePath(pathname: string): string {
 export class RequestMetrics {
   private since = Date.now();
   private routes = new Map<string, Bucketed>();
+  private tools = new Map<string, Bucketed>();
   private other = emptyBucketed();
   private total = 0;
   private loopSamples = 0;
@@ -176,6 +192,23 @@ export class RequestMetrics {
     record(b, ms, stallMs, status);
   }
 
+  /**
+   * Record one finished MCP tool call. The agent-facing tools are the surface an AGENT waits on, and a
+   * tool is not the same unit as a route (`recall` is one route; `skill_find` fans out to a second
+   * service), so they get their own map rather than a slice of `routes`. Same cost model: `ms` is
+   * handler time, `stallMs` is context.
+   */
+  observeTool(tool: string, status: number, ms: number, stallMs: number): void {
+    const key = tool.slice(0, 64);
+    let b = this.tools.get(key);
+    if (!b) {
+      if (this.tools.size >= MAX_ROUTES) return; // a forged header can't grow the map without bound
+      b = emptyBucketed();
+      this.tools.set(key, b);
+    }
+    record(b, ms, stallMs, status);
+  }
+
   /** Ordered by total time spent — a 20ms route called 10k times outranks a 2s route called once. */
   snapshot(limit = 40): RequestMetricsSnapshot {
     const rows: RouteStat[] = [];
@@ -196,10 +229,20 @@ export class RequestMetrics {
     for (const [route, b] of this.routes) push(route, b);
     push('other (over route cap)', this.other);
     rows.sort((a, z) => z.totalMs - a.totalMs);
+    const tools: ToolStat[] = [];
+    for (const [tool, b] of this.tools) {
+      const before = rows.length;
+      push(tool, b);
+      // `push` appends to `rows`; move it across rather than duplicating the stats math.
+      if (rows.length > before) tools.push({ ...rows.pop()!, blocking: BLOCKING_TOOLS.has(tool) });
+    }
+    // Blocking tools last: their clock is a human, so they would otherwise head a table about code.
+    tools.sort((a, z) => (Number(a.blocking) - Number(z.blocking)) || (z.totalMs - a.totalMs));
     return {
       since: this.since,
       requests: this.total,
       routes: rows.slice(0, limit),
+      tools: tools.slice(0, limit),
       loop: {
         samples: this.loopSamples,
         maxMs: Math.round(this.loopMax),
@@ -212,6 +255,7 @@ export class RequestMetrics {
   /** Clear all counters (an operator starting a fresh measurement window). */
   reset(): void {
     this.routes.clear();
+    this.tools.clear();
     this.other = emptyBucketed();
     this.total = 0;
     this.loopSamples = 0;
