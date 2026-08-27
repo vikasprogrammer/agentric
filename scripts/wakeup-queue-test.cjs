@@ -262,6 +262,43 @@ console.log('\n\x1b[1m9) a HAND-BACK still resumes — and carries any completio
   assert(s.ok && s.via === 'resume' && spawned.length === n2 + 1, 'a stranding wakes the caller too', s);
 }
 
+console.log('\n\x1b[1m10) a FINISHED run is not a delivery target for good news\x1b[0m');
+{
+  idleAgent();
+  // `report` is the agent saying it is done. Its pane stays reachable (that is the attachable lane), which
+  // is why 55% of live injects landed in one — a resurrection in place of a run that had already finished.
+  const reported = (id) => aos.audit.append({ ts: Date.now(), runId: id, tenant: aos.tenant, principal: 'caller', type: 'session.reported', data: {} });
+
+  const fin = mkSession('cs-fin');
+  reported(fin);
+  const r = q.enqueue({ agent: 'caller', transcript: 'cs-fin', runAs: alice.id, source: 'tsk_fin', message: '✅ done', title: 'p', kind: 'poke-done' });
+  assert(!r.ok, 'good news is NOT injected into a run that already reported', r);
+  const row = aos.db.prepare("SELECT * FROM agent_wakeups WHERE source = 'tsk_fin'").get();
+  assert(row.status === 'dropped', 'it drops, exactly as it would for a cold caller', row);
+  assert(aos.db.prepare("SELECT COUNT(*) n FROM audit_events WHERE run_id = ? AND type = 'session.inject'").get(fin).n === 0, 'the finished pane was never typed into');
+
+  // …but a STRANDING still reaches it: somebody is stuck, and an inject beats spending a resume.
+  const r2 = q.enqueue({ agent: 'caller', transcript: 'cs-fin', runAs: alice.id, source: 'tsk_str', message: '⛔ handed back', title: 'p', kind: 'poke-stranded' });
+  assert(r2.ok && r2.via === 'inject' && r2.sessionId === fin, 'a hand-back still injects into the finished pane', r2);
+  assert(spawned.filter((x) => x.spawnedBy === 'poke:tsk_str').length === 0, 'and costs no resume');
+}
+
+console.log('\n\x1b[1m11) a still-working session is preferred over a finished one\x1b[0m');
+{
+  idleAgent();
+  const reported = (id) => aos.audit.append({ ts: Date.now(), runId: id, tenant: aos.tenant, principal: 'caller', type: 'session.reported', data: {} });
+  const older = mkSession('cs-old');           // finished, but NEWER in creation order below
+  reported(older);
+  const working = mkSession('cs-work');        // still running, no report
+  // The sibling lane picks the newest live session; `working` is newest here, so prove the preference by
+  // making the FINISHED one newest instead.
+  const newestFinished = mkSession('cs-new-fin');
+  reported(newestFinished);
+  const r = q.enqueue({ agent: 'caller', transcript: 'cs-absent', runAs: alice.id, source: 'tsk_sib', message: '⛔ handed back', title: 'p', kind: 'poke-stranded' });
+  assert(r.ok && r.via === 'inject-sibling', 'delivered to a sibling', r);
+  assert(r.sessionId === working, 'the STILL-WORKING sibling wins over two finished ones', { got: r.sessionId, working, older, newestFinished });
+}
+
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m`);
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch { /* best effort */ }
 process.exit(fail === 0 ? 0 : 1);

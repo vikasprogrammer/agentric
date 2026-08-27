@@ -65,6 +65,30 @@
  * A `poke-done` still injects into a live pane — cheap, in-context, exactly what it was built for. What
  * goes away is resurrecting an agent to tell it good news. Any other `kind` (the legacy `poke`, a future
  * `approval`) keeps the full ladder: this narrows on an explicit declaration, never by default.
+ *
+ * ## "A live pane is free" is only true while the run is unfinished (2026-08-27)
+ *
+ * The resume lane was suppressed successfully — 14 of 289 deliveries on live instawp over 7 days. But the
+ * cost moved rather than vanished. Sessions that received an inject ran **78 API calls against 42**, at
+ * **381k context per call against 277k**, costing **93% more per run** ($24.62 vs $12.74) — 14% of runs
+ * consuming 24% of spend. The per-CALL price is identical; injects simply cause many more calls, on a
+ * transcript that keeps growing, and each call re-reads all of it. That is the latency, not the gate
+ * (measured at 1ms p50 over 32,515 samples).
+ *
+ * And 55% of injects landed in a run that had ALREADY reported. `reachable` is the pane, not the run:
+ * `report` is the agent saying it is finished, and injecting good news there resurrects it in place —
+ * precisely what {@link dropDone} refuses to spawn a claude for. The archetype was a support-ops run that
+ * reported success at +152 SECONDS and was then held open 6.5 hours by ten injects.
+ *
+ * So {@link WakeupQueue.deliver} now reads `session.reported` as well as `reachable`:
+ *  - a **done-only** batch treats a finished run as no target at all (it drops, as it would for a cold
+ *    caller — the result is durable in the task and the human already has the card);
+ *  - any other batch merely PREFERS a still-working session, because when somebody is stuck an inject
+ *    into a finished pane still beats spending a resume.
+ *
+ * Measured against the same week: 131 of 275 injects were `poke-done` into a finished run and stop
+ * happening; the 21 stranded/blocked ones that also targeted a finished run still deliver, so this costs
+ * no extra resumes.
  */
 import { newId } from '../id';
 import { AgentOS } from '../kernel';
@@ -173,8 +197,28 @@ export class WakeupQueue {
       .prepare('SELECT id, tmux, claude_session_id AS cs FROM term_sessions WHERE agent = ? ORDER BY created_at DESC LIMIT 50')
       .all<{ id: string; tmux: string; cs: string | null }>(agentId)
       .filter((r) => this.tm.reachable(r.id));
-    const own = live.find((r) => r.cs && transcripts.has(r.cs));
-    const dest = own ?? live[0];
+    // A run that has REPORTED is finished — it said so. Its pane is still reachable (that is the whole
+    // point of the attachable lane), which made it look like a free delivery target, and 55% of injects
+    // measured on live instawp landed in one. For GOOD NEWS that is a resurrection in place: the same
+    // thing `dropDone` already refuses to spawn a claude for, done to a run that merely hasn't been torn
+    // down yet. It is not free either — an injected session ran 78 API calls against 42, at 381k context
+    // per call against 277k, costing 93% more per run, because the message lands in a transcript that
+    // then keeps growing. So a done-only batch treats a finished run as no target at all, and every
+    // batch prefers a still-working session over a finished one.
+    const finished = new Set<string>(
+      live.length
+        ? this.db
+            .prepare(`SELECT DISTINCT run_id FROM audit_events WHERE type = 'session.reported' AND run_id IN (${live.map(() => '?').join(',')})`)
+            .all<{ run_id: string }>(...live.map((r) => r.id))
+            .map((r) => r.run_id)
+        : [],
+    );
+    // Ordering, not exclusion, for anything that isn't good news: when somebody is STUCK, injecting into a
+    // finished-but-live pane still beats spending a resume — it just goes to the bottom of the list.
+    const pool = live.filter((r) => !finished.has(r.id));
+    if (!doneOnly) pool.push(...live.filter((r) => finished.has(r.id)));
+    const own = pool.find((r) => r.cs && transcripts.has(r.cs));
+    const dest = own ?? pool[0];
     if (dest) {
       const via = own ? 'inject' : 'inject-sibling';
       const injected = this.tm.injectToSession(dest.id, message, true, principal);
