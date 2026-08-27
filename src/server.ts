@@ -4918,12 +4918,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         ? (acct.apiKeyRef ? os.secrets.getSync(os.tenant, '*', acct.apiKeyRef) : undefined)
         : (acct.configDir ? readConfigDirToken(acct.configDir) : undefined);
       if (!token) {
-        // On macOS the login is a Keychain item whose ACL only claude holds, so there is no token for us
-        // to probe with. The account still LAUNCHES fine — say that, instead of implying it is broken.
+        // A Keychain-stored login with no readable value means this process is in a Background security
+        // session with the login keychain locked (an ssh shell, a LaunchDaemon) — NOT that the credential is
+        // missing. `claude` reads it through the same locked keychain, so a session launched from here would
+        // also come up "Not logged in": say the actual cause rather than badging the account broken.
         const keychained = acct.kind === 'oauth' && !!acct.configDir && keychainHasLogin(acct.configDir);
         return sendJson(res, 400, {
           error: acct.kind === 'token' ? 'token value not found in the vault'
-            : keychained ? 'this account is signed in via the macOS Keychain, which only claude can read — it launches normally, but its usage can’t be probed from here'
+            : keychained ? 'this account’s login is in the macOS Keychain, but this process cannot read it — the login keychain is locked for its security session. Run the server as a LaunchAgent in the GUI (Aqua) session; a run launched from here would fail to authenticate too'
             : 'no .credentials.json found in the credential dir',
         });
       }

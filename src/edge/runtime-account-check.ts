@@ -95,10 +95,20 @@ const describe = (u: RuntimeUsage): string => {
  * that is perfectly signed in. That mismatch stranded the guided login: the sign-in succeeded, the pane
  * said "Logged in as …", and the poll waited out its grace for a file the platform never writes.
  *
- * Existence is all we check. Reading the VALUE needs the item's ACL, which only claude itself holds
- * (`security -w` exits 36), and prompting a human for their Keychain password from inside a web request
- * is not a thing we will ever do — so a Keychain-stored account can be detected and launched, but not
- * usage-probed. {@link readConfigDirToken} says so by returning undefined.
+ * The VALUE is readable too — see {@link readKeychainCredentials}. We long believed it wasn't, because
+ * `security find-generic-password -w` exits **36** and 36 was read as "the item's ACL only trusts claude".
+ * It isn't an ACL refusal: 36 is `errSecInteractionRequired`, which is what EVERY keychain read gets from a
+ * **Background** security session — an ssh shell, a LaunchDaemon — where the login keychain is still locked.
+ * The same command in the **Aqua** session (`launchctl managername` = `Aqua`, which is where a LaunchAgent
+ * like `com.agentos.<tenant>` runs) returns the credential JSON with exit 0. So the pool's usage probe works
+ * on a Mac after all, and the "signed in via the Keychain, can't be probed from here" badge was describing
+ * the developer's ssh session, not the server's.
+ *
+ * ⚠ The same 36 is what `claude` itself gets, and it treats it as "not logged in" (its keychain read maps
+ * exit 36 → null, then falls back to a plaintext `.credentials.json` that a Keychain-stored account has no
+ * reason to own). So a credential dir that is perfectly signed in reports `Not logged in · Please run
+ * /login` from an ssh shell and authenticates normally from the server — worth knowing before concluding a
+ * pooled account is dead.
  */
 export function keychainServiceFor(dir: string): string {
   return `Claude Code-credentials-${createHash('sha256').update(dir).digest('hex').slice(0, 8)}`;
@@ -124,15 +134,49 @@ export function keychainForget(dir: string): boolean {
   } catch { return false; }
 }
 
-/** Best-effort read of the OAuth access token from a `claude login` credential dir's `.credentials.json`
- *  (the `oauth` account kind). `claude` keeps this token fresh on disk, so a live read is current.
- *  Returns undefined when the dir/file/shape isn't present — INCLUDING on macOS, where the login lives in
- *  the Keychain behind an ACL only claude holds. Such an account launches fine; it just can't be probed. */
-export function readConfigDirToken(dir: string): string | undefined {
+/** The stored OAuth credential record, in whichever of the two places `claude` put it — the shape is the
+ *  same either way (`{ claudeAiOauth: { accessToken, refreshToken, expiresAt, refreshTokenExpiresAt, … } }`).
+ *  Undefined when neither source yields one. Never throws: a caller is always inside a request handler. */
+export interface StoredCredential {
+  claudeAiOauth?: { accessToken?: string; refreshToken?: string; expiresAt?: number; refreshTokenExpiresAt?: number };
+  accessToken?: string;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: number;
+}
+
+/** Read a config dir's login out of the macOS Keychain (see {@link keychainServiceFor}). Exit 36 —
+ *  `errSecInteractionRequired`, i.e. a Background security session with a locked login keychain — is a
+ *  plain miss, not an error to surface. `security` prints the secret as text when it is printable and as
+ *  hex when it is not, so both are accepted. Always undefined off darwin. */
+export function readKeychainCredentials(dir: string): StoredCredential | undefined {
+  if (process.platform !== 'darwin') return undefined;
   try {
-    const j = JSON.parse(readFileSync(join(dir, '.credentials.json'), 'utf8'));
-    return j?.claudeAiOauth?.accessToken ?? j?.accessToken ?? undefined;
+    const r = spawnSync('security', ['find-generic-password', '-w', '-s', keychainServiceFor(dir)],
+      { timeout: 4000, encoding: 'utf8' });
+    if (r.status !== 0 || !r.stdout) return undefined;
+    const raw = r.stdout.trim();
+    const text = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0 ? Buffer.from(raw, 'hex').toString('utf8') : raw;
+    return JSON.parse(text) as StoredCredential;
   } catch { return undefined; }
+}
+
+/** The credential record for a `claude login` dir: the plaintext `.credentials.json` claude writes on Linux
+ *  (and as its macOS fallback), else the macOS Keychain item. File first — when both exist the file is the
+ *  one claude's own fallback chain wrote most recently. */
+export function readCredentialRecord(dir: string): StoredCredential | undefined {
+  try {
+    const j = JSON.parse(readFileSync(join(dir, '.credentials.json'), 'utf8')) as StoredCredential;
+    if (j) return j;
+  } catch { /* no plaintext file — on macOS the login is normally in the Keychain instead */ }
+  return readKeychainCredentials(dir);
+}
+
+/** Best-effort read of the OAuth access token from a `claude login` credential dir (the `oauth` account
+ *  kind). `claude` keeps this token fresh at rest, so a live read is current. Undefined when the dir holds
+ *  no readable login — which on macOS also covers "the keychain is locked in this security session". */
+export function readConfigDirToken(dir: string): string | undefined {
+  const j = readCredentialRecord(dir);
+  return j?.claudeAiOauth?.accessToken ?? j?.accessToken ?? undefined;
 }
 
 /**
@@ -150,13 +194,11 @@ export function readConfigDirToken(dir: string): string | undefined {
  * genuinely dead and a human does have to re-auth.
  */
 export function configDirCanRefresh(dir: string, now = Date.now()): boolean {
-  try {
-    const j = JSON.parse(readFileSync(join(dir, '.credentials.json'), 'utf8'));
-    const o = j?.claudeAiOauth ?? j;
-    if (!o?.refreshToken) return false;
-    const exp = o.refreshTokenExpiresAt;
-    return typeof exp === 'number' ? exp > now : true; // no stated expiry → assume usable
-  } catch { return false; }
+  const j = readCredentialRecord(dir);
+  const o = j?.claudeAiOauth ?? j;
+  if (!o?.refreshToken) return false;
+  const exp = o.refreshTokenExpiresAt;
+  return typeof exp === 'number' ? exp > now : true; // no stated expiry → assume usable
 }
 
 /** Does this credential DIR actually hold the runtime's login (`.credentials.json` / `auth.json`, per the
