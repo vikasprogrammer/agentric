@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.403.0] - 2026-08-27
+### Added
+- **Per-agent context allowlists — `AgentManifest.skills` and `AgentManifest.tools`.** Every
+  claude-code agent was handed the entire skills library and every agentos MCP tool, whether it used
+  them or not. On the live instawp fleet that is 50–59 skills materialised per agent out of a 60-skill
+  library (a *site-monitoring* agent carrying `pptx`, `xlsx`, `marketing-plan` and `aso`) plus all 68
+  tool schemas. Both a skill's description and a tool's schema are pinned in the system prompt and
+  re-read on **every turn**: measured on one 103-call watchdog run, ~32k of an 85k-token baseline was
+  skills and tools it never touched, and the run re-read 12.7M tokens of context in 17 minutes. Under a
+  fixed-price subscription that is not a bill, it is quota and wall-clock — the same tenant hit
+  `runtime.account.limited` / `runtime.usage_limited` 256 times in 30 days.
+  - `skills` is ANDed with the existing skill-side audience (`skill_assignments`), so a skill owner
+    scoping their skill and an agent owner keeping their agent lean never override each other. Same
+    dual-control shape as `shellSecrets` ↔ `secret_assignments`.
+  - `tools` narrows what the OS-owned MCP server lists, over a core set (`report`, `update`,
+    `ask_human`, `check_inbox`, `notify`, `recall`, `remember`) that is always kept — a manifest typo
+    must cost the context saving, never the agent's ability to report or ask for help.
+  - **Absent/empty means everything**, so every currently-uncurated agent is unchanged on upgrade.
+  - Settable from the agent's console settings card, `PUT /api/agents/:id/config`, the manifest, or the
+    agent's own `agent_update` (self-narrowing only ever reduces its own offer).
+  - Both are **context shaping, not permission**: `tools/call` stays unfiltered and the gateway still
+    governs every effect. To withhold a capability, write a policy rule.
+  - Snapshotted into `agent_revisions` (new `skills`/`tools` columns), so an agent revert restores the
+    offer alongside the prompt. Docs: `docs/per-agent-context.md`. Pinned by
+    `scripts/per-agent-context-test.cjs`.
+
 ## [0.402.2] - 2026-08-27
 ### Fixed
 - **A `claude login` credential dir stored in the macOS Keychain can be READ after all — the pool's usage

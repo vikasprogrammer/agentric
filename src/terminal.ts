@@ -4245,6 +4245,7 @@ export class TerminalManager {
 
     // The OS-owned tool server: recall/remember (memory) + ask (ask-human) + report (completion)
     // + list_capabilities/policy_check (policy preview).
+    const toolAllow = this.os.agents.get(agent)?.tools?.join(',') || undefined;
     config.mcpServers.agentos = {
       command: 'node',
       args: [this.memoryMcp],
@@ -4269,6 +4270,10 @@ export class TerminalManager {
         // ASK_ANSWER: '1' exposes the `answer` tool — only on an ask_agent delegate, so it can return its
         // result to the agent that asked. Other sessions never see it.
         ...(askAnswer ? { ASK_ANSWER: '1' } : {}),
+        // AOS_TOOLS: the agent's `tools` allowlist, narrowing what the agentos server OFFERS (its
+        // schemas are re-read from the prompt on every turn). Context shaping only — the gateway is
+        // still what governs whether an effect may happen. Unset ⇒ the full always-on set.
+        ...(toolAllow ? { AOS_TOOLS: toolAllow } : {}),
         ...(this.os.settings.slackConfigured() ? { SLACK_EGRESS: '1' } : {}),
         ...(this.os.settings.discordConfigured() ? { DISCORD_EGRESS: '1' } : {}),
         // IMAGE_GEN: '1' exposes `image_generate` when a backend key (OpenRouter/Atlas) is configured.
@@ -4317,8 +4322,17 @@ export class TerminalManager {
    */
   private materializeSkills(sessionId: string, agent: string, agentDir: string): void {
     try {
-      const names = this.os.skills.materialize(path.join(agentDir, '.claude'), agent);
-      if (names.length) this.audit(sessionId, agent, 'skills.materialized', { count: names.length, skills: names });
+      // The agent's own opt-in list (`AgentManifest.skills`) is ANDed with each skill's audience — see
+      // SkillsStore.materialize. Audit the fact that a list was in play, so "why did my skill not show
+      // up" is answerable from the trail rather than by reading two tables.
+      const allow = this.os.agents.get(agent)?.skills;
+      const names = this.os.skills.materialize(path.join(agentDir, '.claude'), agent, allow);
+      if (names.length)
+        this.audit(sessionId, agent, 'skills.materialized', {
+          count: names.length,
+          skills: names,
+          ...(allow?.length ? { allowlist: allow.length } : {}),
+        });
     } catch (e) {
       this.audit(sessionId, agent, 'skills.error', { error: String(e) });
     }

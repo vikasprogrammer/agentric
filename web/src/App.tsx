@@ -13255,6 +13255,12 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
   const [icon, setIcon] = useState<string | undefined>(undefined)
   const [savedIcon, setSavedIcon] = useState<string | undefined>(undefined)
   const [secrets, setSecrets] = useState('')
+  // Context-shaping allowlists (AgentManifest.skills / .tools). Empty = "everything", which is what
+  // every uncurated agent reads as — so a blank field must never be sent as "none".
+  const [skillList, setSkillList] = useState('')
+  const [savedSkillList, setSavedSkillList] = useState('')
+  const [toolList, setToolList] = useState('')
+  const [savedToolList, setSavedToolList] = useState('')
   const [savedSecrets, setSavedSecrets] = useState('')
   const [subagents, setSubagents] = useState<string[]>([])
   const [savedSubagents, setSavedSubagents] = useState<string[]>([])
@@ -13280,26 +13286,29 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
       const p = (r.examplePrompts ?? []).join('\n')
       const c = r.category ?? ''
       const s = (r.shellSecrets ?? []).join(' ')
+      const sk = (r.skills ?? []).join(' '); const tl = (r.tools ?? []).join(' ')
       const sub = r.usableSubagents ?? []
       const sp = r.spawnableAsSubagent !== false; const cr = r.chatReachable !== false
       const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
       const rt = r.runtime ?? ''
       setRuntime(rt); setSavedRuntime(rt); setRuntimes(r.runtimes ?? [])
-      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm)
+      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSkillList(sk); setSavedSkillList(sk); setToolList(tl); setSavedToolList(tl); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || spawnable !== savedSpawnable || chatReachable !== savedChatReachable || netMode !== savedNetMode || runtime !== savedRuntime
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || skillList !== savedSkillList || toolList !== savedToolList || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || spawnable !== savedSpawnable || chatReachable !== savedChatReachable || netMode !== savedNetMode || runtime !== savedRuntime
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
     const shellSecrets = secrets.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+    const skills = skillList.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+    const tools = toolList.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     // Always send `icon` (empty string clears it → server drops the manifest key).
     // Same for every tuning knob: the server now PATCHES tuning (an absent key keeps its current value),
     // and `JSON.stringify` drops `undefined` — so spreading a tuning with cleared fields would transmit
     // no key and silently fail to clear. This card owns all four knobs, so it states all four.
     const t0: RuntimeTuningPatch = { model: tuning.model ?? '', effort: tuning.effort ?? '', permissionMode: tuning.permissionMode ?? '', verbosity: tuning.verbosity ?? '' }
-    const r = await api.saveAgentConfig(agentId, { runtime, ...t0, description: description.trim(), examplePrompts, shellSecrets, usableSubagents: subagents, spawnableAsSubagent: spawnable, chatReachable, netMode, category: category.trim(), icon: icon ?? '' })
+    const r = await api.saveAgentConfig(agentId, { runtime, ...t0, description: description.trim(), examplePrompts, shellSecrets, skills, tools, usableSubagents: subagents, spawnableAsSubagent: spawnable, chatReachable, netMode, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     // Mirror back every knob the server echoes — a partial copy blanks the rest of the form until reload.
@@ -13308,10 +13317,11 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
     const p = (r.examplePrompts ?? []).join('\n')
     const c = r.category ?? ''
     const s = (r.shellSecrets ?? []).join(' ')
+    const sk = (r.skills ?? []).join(' '); const tl = (r.tools ?? []).join(' ')
     const sub = r.usableSubagents ?? []
     const sp = r.spawnableAsSubagent !== false; const cr = r.chatReachable !== false
     const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
-    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm); setRuntime(r.runtime ?? runtime); setSavedRuntime(r.runtime ?? runtime); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSkillList(sk); setSavedSkillList(sk); setToolList(tl); setSavedToolList(tl); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm); setRuntime(r.runtime ?? runtime); setSavedRuntime(r.runtime ?? runtime); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
     onSaved?.()
   }
 
@@ -13418,6 +13428,16 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
           <label className="text-xs font-medium">Shell secrets</label>
           <Input value={secrets} onChange={(e) => setSecrets(e.target.value)} className="font-mono text-sm" placeholder="e.g. GH_TOKEN  (space/comma separated env-var names)" />
           <p className="text-[11px] text-muted-foreground">Vault keys exported as env vars into this agent's shell (so CLIs like <span className="font-mono">gh</span> authenticate). Store the value in <span className="font-medium">Settings → Secrets</span> (key = the name here; set its principal to <span className="font-mono">{agentId}</span> for a per-agent value, or leave tenant-wide). Resolved at launch, audited per key.</p>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Skills it carries</label>
+          <Input value={skillList} onChange={(e) => setSkillList(e.target.value)} className="font-mono text-sm" placeholder="leave blank for every skill  ·  or e.g. site-health-check sheet-reporting" />
+          <p className="text-[11px] text-muted-foreground">Blank = every skill this agent is eligible for, which is the default. Naming skills here trims the list to those, and is ANDed with each skill's own audience in <span className="font-medium">Settings → Skills</span> — neither overrides the other. Only a skill's name and description reach the model, but that index sits in the prompt and is re-read every turn, so a long library is a per-turn tax on an agent that uses a handful.</p>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Agentric tools it is offered</label>
+          <Input value={toolList} onChange={(e) => setToolList(e.target.value)} className="font-mono text-sm" placeholder="leave blank for all tools  ·  or e.g. kb_search kb_write task_create" />
+          <p className="text-[11px] text-muted-foreground">Blank = the full set, which is the default. Naming tools here trims what this agent is offered; <span className="font-mono">report</span>, <span className="font-mono">ask_human</span>, <span className="font-mono">check_inbox</span>, <span className="font-mono">update</span>, <span className="font-mono">notify</span>, <span className="font-mono">recall</span> and <span className="font-mono">remember</span> are always kept. Chat-reply, egress and media tools keep their own gating. <span className="font-medium">This shapes context, it does not grant or withhold permission</span> — every effect is still governed by policy. To stop an agent doing something, write a policy rule.</p>
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium">Sub-agents it can spawn</label>

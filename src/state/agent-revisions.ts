@@ -25,6 +25,11 @@ export interface AgentConfigSnapshot {
   verbosity?: Verbosity;
   examplePrompts: string[];
   shellSecrets: string[];
+  /** Context-shaping allowlists. Snapshotted so a revert restores the agent's offer, not just its
+   *  prompt — an edit that trimmed the wrong skill is undone by the same rollback as everything else.
+   *  Empty ⇒ "everything", which is how an agent that never declared one reads. */
+  skills: string[];
+  tools: string[];
   claudeMd: string;
 }
 
@@ -41,7 +46,7 @@ interface RevRow {
   id: string; tenant: string; agent_id: string; rev: number;
   description: string; category: string | null; icon: string | null;
   model: string | null; effort: string | null; permission_mode: string | null; verbosity: string | null;
-  example_prompts: string; shell_secrets: string; claude_md: string;
+  example_prompts: string; shell_secrets: string; skills: string; tools: string; claude_md: string;
   summary: string | null; author: string; created_at: number;
 }
 
@@ -57,6 +62,8 @@ function toRevision(r: RevRow): AgentRevision {
     verbosity: (r.verbosity as Verbosity) ?? undefined,
     examplePrompts: safeArray(r.example_prompts),
     shellSecrets: safeArray(r.shell_secrets),
+    skills: safeArray(r.skills),
+    tools: safeArray(r.tools),
     claudeMd: r.claude_md,
     summary: r.summary, author: r.author, createdAt: r.created_at,
   };
@@ -127,13 +134,14 @@ export class AgentRevisions {
   private insert(tenant: string, agentId: string, rev: number, s: AgentConfigSnapshot, summary: string, author: string, ts: number): void {
     this.db
       .prepare(`INSERT INTO agent_revisions
-        (id, tenant, agent_id, rev, description, category, icon, model, effort, permission_mode, verbosity, example_prompts, shell_secrets, claude_md, summary, author, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (id, tenant, agent_id, rev, description, category, icon, model, effort, permission_mode, verbosity, example_prompts, shell_secrets, skills, tools, claude_md, summary, author, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         newId('agentRevision'), tenant, agentId, rev,
         s.description, s.category ?? null, s.icon ?? null,
         s.model ?? null, s.effort ?? null, s.permissionMode ?? null, s.verbosity ?? null,
-        JSON.stringify(s.examplePrompts ?? []), JSON.stringify(s.shellSecrets ?? []), s.claudeMd,
+        JSON.stringify(s.examplePrompts ?? []), JSON.stringify(s.shellSecrets ?? []),
+        JSON.stringify(s.skills ?? []), JSON.stringify(s.tools ?? []), s.claudeMd,
         summary || null, author, ts,
       );
   }

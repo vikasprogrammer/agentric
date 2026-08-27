@@ -78,7 +78,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -225,6 +225,11 @@ function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSna
     model: snap.model, effort: snap.effort, permissionMode: snap.permissionMode, verbosity: snap.verbosity,
     examplePrompts: snap.examplePrompts.length ? snap.examplePrompts : undefined,
     shellSecrets: snap.shellSecrets.length ? snap.shellSecrets : undefined,
+    // Empty ⇒ drop the key ⇒ "everything", which is exactly how a revision predating these fields
+    // reads back. So reverting to an old rev restores the pre-curation offer rather than stranding
+    // the agent on an empty list.
+    skills: snap.skills?.length ? snap.skills : undefined,
+    tools: snap.tools?.length ? snap.tools : undefined,
   };
   const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
   fs.writeFileSync(path.join(ag.dir!, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
@@ -2007,6 +2012,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = sanitizeCategory(b.category);
     const icon = sanitizeIcon(b.icon);
     const shellSecrets = sanitizeShellSecrets(b.shellSecrets);
+    const skills = sanitizeAgentSkills(b.skills);
+    const tools = sanitizeAgentTools(b.tools);
     const manifest: AgentManifest = {
       id, version: '1.0.0', description,
       ...(category ? { category } : {}),
@@ -2014,6 +2021,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ...tuning,
       ...(examplePrompts ? { examplePrompts } : {}),
       ...(shellSecrets ? { shellSecrets } : {}),
+      ...(skills ? { skills } : {}),
+      ...(tools ? { tools } : {}),
       ...(icon ? { icon } : {}),
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
     };
@@ -2084,7 +2093,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!resolved.ok) return sendJson(res, 200, { ok: false, outcome: 'refused', error: resolved.error });
     const risk = resolved.text !== undefined ? assessClaudeMdEdit(before.claudeMd, resolved.text) : undefined;
     const fields: Record<string, unknown> = {};
-    for (const k of ['description', 'category', 'model', 'effort', 'icon', 'verbosity', 'examplePrompts', 'shellSecrets'] as const) {
+    for (const k of ['description', 'category', 'model', 'effort', 'icon', 'verbosity', 'examplePrompts', 'shellSecrets', 'skills', 'tools'] as const) {
       if (k in b) fields[k] = b[k];
     }
     if (resolved.text !== undefined) fields.claudeMd = resolved.text;
@@ -4236,6 +4245,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = sanitizeCategory(b.category);
     const icon = sanitizeIcon(b.icon);
     const shellSecrets = sanitizeShellSecrets(b.shellSecrets);
+    const skills = sanitizeAgentSkills(b.skills);
+    const tools = sanitizeAgentTools(b.tools);
     const manifest: AgentManifest = {
       id,
       version: '1.0.0',
@@ -4247,6 +4258,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ...tuning,
       ...(examplePrompts ? { examplePrompts } : {}),
       ...(shellSecrets ? { shellSecrets } : {}),
+      ...(skills ? { skills } : {}),
+      ...(tools ? { tools } : {}),
       ...(icon ? { icon } : {}),
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
     };
@@ -4303,6 +4316,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = sanitizeCategory((m as { category?: unknown }).category);
     const icon = sanitizeIcon((m as { icon?: unknown }).icon);
     const shellSecrets = sanitizeShellSecrets((m as { shellSecrets?: unknown }).shellSecrets);
+    const skills = sanitizeAgentSkills((m as { skills?: unknown }).skills);
+    const tools = sanitizeAgentTools((m as { tools?: unknown }).tools);
     const manifest: AgentManifest = {
       id,
       version: typeof m.version === 'string' && m.version ? m.version : '1.0.0',
@@ -4314,6 +4329,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ...(tErr ? {} : tuning),
       ...(examplePrompts ? { examplePrompts } : {}),
       ...(shellSecrets ? { shellSecrets } : {}),
+      ...(skills ? { skills } : {}),
+      ...(tools ? { tools } : {}),
       ...(icon ? { icon } : {}),
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
     };
@@ -4490,7 +4507,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         bin: r.bin, install: r.install.join(' '),
         installed: present.get(r.id)?.installed ?? false, version: present.get(r.id)?.version,
       }));
-      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, skills: ag.skills ?? [], tools: ag.tools ?? [], usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     // Runtime change (owner/admin). Validate BEFORE the tuning, so the tuning is checked against the
@@ -4515,6 +4532,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // (a tuning-only save from the runtime card leaves them as-is). Preserve everything else.
     const prompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
     const shellSecrets = 'shellSecrets' in b ? sanitizeShellSecrets(b.shellSecrets) : ag.shellSecrets;
+    // Context-shaping allowlists: which library skills this agent carries, and which agentos MCP tools
+    // it is offered. Both default to "everything" when absent, so an untouched agent is unchanged. They
+    // trim what the model READS, never what an effect is allowed to DO — the gateway is untouched.
+    const skills = 'skills' in b ? sanitizeAgentSkills(b.skills) : ag.skills;
+    const tools = 'tools' in b ? sanitizeAgentTools(b.tools) : ag.tools;
     // Which fleet teammates this agent may spawn as native sub-agents. Amplification-sensitive but not a
     // governance bypass (every sub-agent effect is still gated), so it rides the owner/admin config route
     // like shellSecrets. A self-editing agent can't reach here to widen its own reach.
@@ -4535,13 +4557,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, skills, tools, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
     const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, before.claudeMd), 'edited config', me.email);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, category, shellSecrets: shellSecrets ?? [], netMode: netMode ?? 'open', rev } });
-    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, netMode: netMode ?? 'open', category, icon });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, category, shellSecrets: shellSecrets ?? [], skills: skills ?? [], tools: tools ?? [], netMode: netMode ?? 'open', rev } });
+    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, skills, tools, netMode: netMode ?? 'open', category, icon });
   }
 
   // ── agent config revision history + revert (owner/admin) — the human rollback for a self-editing agent ──

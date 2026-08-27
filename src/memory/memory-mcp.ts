@@ -306,6 +306,35 @@ const VIDEO_UNDERSTAND_TOOL = {
   },
 };
 
+// ── Per-agent tool allowlist (AgentManifest.tools) ───────────────────────────────────────────────
+// AOS_TOOLS is a comma-separated allowlist exported by the launcher when the agent's manifest declares
+// one. Unset (the default) ⇒ every tool below is offered, which is the historical behaviour.
+//
+// Why this exists: a tool's full JSON schema is pinned in the system prompt and re-read on EVERY turn.
+// Measured on the live instawp fleet, the always-on set is ~19k tokens of prompt per turn, and a
+// typical run calls a dozen of them. Trimming the offer is the cheapest context win there is.
+//
+// It is NOT a permission boundary — it only changes what the model is OFFERED. `tools/call` is
+// deliberately left unfiltered: the gateway (policy → approvals → budget → audit) is the thing that
+// decides whether an effect may happen, and narrowing the offer must never be mistaken for governing
+// it. A stale client that calls an unlisted tool still gets the same governed treatment it always did.
+const TOOL_ALLOW: Set<string> | null = (() => {
+  const raw = (process.env.AOS_TOOLS || '').split(',').map((x) => x.trim()).filter(Boolean);
+  return raw.length ? new Set(raw) : null;
+})();
+
+// Never filtered away, whatever the allowlist says. These are how a run reports, asks for help, reads
+// its inbox and records what it learned — strand an agent without them and the governance surface goes
+// dark (no completion, no blocking question, no lesson) while the run still burns quota. A manifest
+// typo must degrade the context saving, never the agent.
+const AGENT_CORE_TOOLS = ['report', 'update', 'ask_human', 'check_inbox', 'notify', 'recall', 'remember'];
+
+/** Apply the per-agent allowlist to a tool list. Core tools always survive. */
+function offered<T extends { name: string }>(tools: T[]): T[] {
+  if (!TOOL_ALLOW) return tools;
+  return tools.filter((t) => TOOL_ALLOW.has(t.name) || AGENT_CORE_TOOLS.includes(t.name));
+}
+
 const TOOLS = [
   {
     name: 'recall',
@@ -3178,8 +3207,11 @@ async function handle(req: JsonRpc): Promise<void> {
   if (method && method.startsWith('notifications/')) return;
 
   if (method === 'tools/list') {
+    // The conditional tools below are already gated by a CAPABILITY (a bound chat thread, a configured
+    // platform, a media backend). `offered()` narrows only the always-on set — withholding a chat
+    // session's own reply tool would break the path it was launched for.
     send({ jsonrpc: '2.0', id, result: { tools: [
-      ...TOOLS,
+      ...offered(TOOLS),
       ...(SLACK_REPLY ? [SLACK_REPLY_TOOL] : []),
       ...(DISCORD_REPLY ? [DISCORD_REPLY_TOOL] : []),
       ...(TELEGRAM_REPLY ? [TELEGRAM_REPLY_TOOL] : []),

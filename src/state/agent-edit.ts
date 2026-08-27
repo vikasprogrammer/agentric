@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentOS } from '../kernel';
-import { AgentManifest, isCodingRuntime, runtimeTuningPatch, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets } from '../types';
+import { AgentManifest, isCodingRuntime, runtimeTuningPatch, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools } from '../types';
 import { AgentConfigSnapshot } from './agent-revisions';
 
 /** The full editable state of an agent, from its manifest + on-disk CLAUDE.md — the unit revisions snapshot. */
@@ -30,6 +30,7 @@ export function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentCo
     category: ag.category, icon: ag.icon,
     model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity,
     examplePrompts: ag.examplePrompts ?? [], shellSecrets: ag.shellSecrets ?? [],
+    skills: ag.skills ?? [], tools: ag.tools ?? [],
     claudeMd,
   };
 }
@@ -194,7 +195,12 @@ export function applyAgentEdit(
   const icon = 'icon' in fields ? sanitizeIcon(fields.icon) : ag.icon;
   const examplePrompts = 'examplePrompts' in fields ? sanitizeExamplePrompts(fields.examplePrompts) : ag.examplePrompts;
   const shellSecrets = 'shellSecrets' in fields ? sanitizeShellSecrets(fields.shellSecrets) : ag.shellSecrets;
-  const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, verbosity: tuning.verbosity, category, icon, examplePrompts, shellSecrets };
+  // Context-shaping allowlists. Self-editable on purpose: an agent trimming its OWN skill/tool offer is
+  // the cheapest thing it can do for its own run cost, and it cannot widen a capability this way — the
+  // lists only narrow what it is offered, and the gateway governs every effect regardless.
+  const skills = 'skills' in fields ? sanitizeAgentSkills(fields.skills) : ag.skills;
+  const tools = 'tools' in fields ? sanitizeAgentTools(fields.tools) : ag.tools;
+  const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, verbosity: tuning.verbosity, category, icon, examplePrompts, shellSecrets, skills, tools };
   const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
   fs.writeFileSync(path.join(ag.dir!, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
   if ('claudeMd' in fields) fs.writeFileSync(path.join(ag.dir!, 'CLAUDE.md'), String(fields.claudeMd ?? ''));
