@@ -6901,6 +6901,25 @@ export class TerminalManager {
    *  for one session. */
   private readonly episoded = new Set<string>();
 
+  /** How far back an episode is compared for an exact duplicate. Long enough to cover a slow-cadence
+   *  automation (a daily/weekly sweep that keeps producing the same summary), short enough that a fact
+   *  worth re-learning a season later still lands. */
+  private static readonly EPISODE_DEDUPE_WINDOW_MS = 30 * 86_400_000;
+
+  /** True when this agent already stored a byte-identical episode inside the dedupe window. Reads the
+   *  local `memories` table directly — it is the store for the built-in backend and the mirror for an
+   *  external one (see src/memory/mirror.ts), so this holds whichever backend is configured. */
+  private recentDuplicateEpisode(agent: string, content: string): boolean {
+    try {
+      const since = Date.now() - TerminalManager.EPISODE_DEDUPE_WINDOW_MS;
+      return !!this.db
+        .prepare('SELECT 1 FROM memories WHERE tenant = ? AND agent_id = ? AND content = ? AND created_at >= ? LIMIT 1')
+        .get(this.os.tenant, agent, content, since);
+    } catch {
+      return false; // never let a dedupe read cost us the episode
+    }
+  }
+
   /**
    * Write one end-of-session **episode** — a durable `Insight` memory for the agent — so a future
    * session can `recall` what this one did. Prefers the agent's own `report` summary; failing that,
@@ -6917,6 +6936,14 @@ export class TerminalManager {
     const ep = composeEpisode(task, report, events, outcomeOverride);
     if (!ep) return; // nothing worth remembering
     this.episoded.add(sessionId);
+    // A repeat run that produced a byte-identical episode teaches nothing the agent hasn't already stored,
+    // and every copy competes for the same top-k recall slot. The live case: one support agent's 2h cron
+    // wrote the SAME 1979-char episode 177 times in a month — 7% of that tenant's entire memory, one string.
+    // Exact-content match within the recency window, so a genuinely different run is never suppressed.
+    if (this.recentDuplicateEpisode(agent, ep.content)) {
+      this.audit(sessionId, agent, 'episode.duplicate', { outcome: ep.outcome, source: ep.source });
+      return;
+    }
     void this.os.memory
       .store({
         tenant: this.os.tenant,
@@ -7485,7 +7512,30 @@ const EPISODE_NOISE = new Set([
   'connector.secret.unresolved', 'shell.secret.injected', 'shell.secret.unresolved',
   'gate.attempt', 'gate.killswitch', 'approval.resolved',
   'approval.auto_approved', 'episode.stored', 'episode.error',
+  // Launch plumbing — every run emits these before the agent has done anything at all, so on their own
+  // they described a session that did NOTHING. Live fleet proof: 72 stored episodes across instapods +
+  // instawp whose whole body was "Activity: 1 github.token.injected." ("Task: cred check - stop",
+  // "Task: teste"). They were recalled 22 times between them, i.e. they displaced real lessons in a
+  // top-k recall for nothing.
+  'github.token.injected', 'github.bot_token.injected', 'github.token.refreshed', 'github.token.withheld',
+  'runtime.account.selected', 'runtime.account.rotated', 'automation.fired', 'claude.config.isolated',
 ]);
+
+/** Longest `Task:` line an episode keeps. The task is CONTEXT for the episode, not its content — but it
+ *  is stored verbatim, so an unattended run's multi-paragraph cron prompt became the whole memory (automem
+ *  caps a memory at 2000 chars, and one live 1979-char support-sweep prompt filled it edge to edge, 177
+ *  times over). Keep enough to identify the run, drop the standing-order boilerplate. */
+const EPISODE_TASK_MAX = 200;
+
+/** Condense a session's task into one identifying line: first non-empty line, whitespace collapsed,
+ *  capped. Empty in → empty out (the caller then omits the line entirely). Pure. */
+function episodeTaskLine(task: string): string {
+  const firstLine = (task || '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+  const collapsed = firstLine.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '';
+  const body = collapsed.length > EPISODE_TASK_MAX ? `${collapsed.slice(0, EPISODE_TASK_MAX - 1).trimEnd()}\u2026` : collapsed;
+  return `Task: ${body}`;
+}
 
 /** Friendlier names for the common activity events when summarising a session with no report. */
 const EPISODE_LABELS: Record<string, string> = {
@@ -7545,7 +7595,7 @@ function composeEpisode(
   events: { type: string; data?: string }[],
   outcomeOverride?: string,
 ): { content: string; outcome: string; source: 'report' | 'audit'; importance: number; signals: SalienceSignals } | null {
-  const taskLine = task.trim() ? `Task: ${task.trim()}` : '';
+  const taskLine = episodeTaskLine(task);
   const body = (report?.body ?? '').trim();
   // A real agent summary vs the launcher's generic end card ("The session ended." / "…unexpectedly (the
   // process died)." / "(no summary)") — the latter carries no signal, so fall through to the audit summary.
