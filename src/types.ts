@@ -1502,6 +1502,34 @@ export interface AgentManifest extends RuntimeTuning {
    *  vault secret reaches the interactive shell — connectors get theirs via the MCP bag — so it's
    *  deliberately explicit per agent. Undefined/empty → nothing is exported. */
   shellSecrets?: string[];
+  /** Opt-in allowlist of GLOBAL SKILL names this agent is given at launch. Undefined/empty ⇒ every
+   *  skill whose own audience admits this agent (today's behaviour: the library defaults to "all
+   *  agents", so an uncurated fleet hands every agent the whole library).
+   *
+   *  This is the agent-side inverse of the skill-side `skill_assignments` audience, exactly as
+   *  {@link shellSecrets} is the agent-side inverse of `secret_assignments`. Both are consulted and
+   *  the INTERSECTION wins: a skill is materialised only if its audience admits the agent AND (this
+   *  list is empty OR names it). So a skill owner can still scope their skill, and an agent owner can
+   *  still keep their agent lean, without either overriding the other.
+   *
+   *  Why it matters: only a skill's NAME + DESCRIPTION reach the model, but that index is pinned in
+   *  the system prompt and re-read on every turn. Measured on the live instawp fleet, a 60-skill
+   *  library costs ~8k tokens of prompt on every turn of every run, for agents that use a handful.
+   *  Hand-authored per-agent skills under `.claude/skills/` are NOT affected — they always apply. */
+  skills?: string[];
+  /** Opt-in allowlist of AGENTOS MCP TOOL names offered to this agent (`recall`, `kb_write`,
+   *  `task_create`, …). Undefined/empty ⇒ the full always-on set, which is today's behaviour.
+   *
+   *  A small core set (`AGENT_CORE_TOOLS` in `src/memory/memory-mcp.ts`, which owns the tool
+   *  definitions) is always added back, so a bad list can never strand an agent without
+   *  `report`/`ask_human`/`check_inbox` — and the capability-gated conditional tools (chat replies, egress,
+   *  media) keep their own env gating either way.
+   *
+   *  This is a CONTEXT-SHAPING knob, not a permission boundary. It trims what the model is offered;
+   *  it does not gate what an effect is allowed to do. The gateway is still the only thing that
+   *  decides that, and it is unchanged by this list. Do not reach for `tools` to withhold a
+   *  capability from an agent — write a policy rule. */
+  tools?: string[];
   /** Host-egress governance posture (Phase 2b — docs/host-connections-plan.md). Only takes effect when
    *  workspace host governance is enabled. `'open'` (default): public-internet egress stays plain
    *  shell.exec; only internal-looking or explicitly-listed hosts are governed. `'allowlist'` (lockdown):
@@ -1793,6 +1821,39 @@ export function sanitizeShellSecrets(input: unknown): string[] | undefined {
     seen.add(k);
     out.push(k);
     if (out.length >= 32) break;
+  }
+  return out.length ? out : undefined;
+}
+
+/** Normalize an agent-side `skills` allowlist (API body or config file) into well-formed library skill
+ *  names, deduped order-preserving, capped at 64. Existence is NOT checked here — a name that has left
+ *  the library simply matches nothing at materialisation time, which is the same no-op as never having
+ *  been listed. Undefined when empty → no manifest key → "every skill whose audience admits me". */
+export function sanitizeAgentSkills(input: unknown): string[] | undefined {
+  return nameList(input, /^[a-z0-9][a-z0-9-]{0,63}$/, 64, (x) => x.trim().toLowerCase());
+}
+
+/** Normalize an agent-side `tools` allowlist into well-formed agentos MCP tool names (snake_case),
+ *  deduped order-preserving, capped at 96. Unknown names are harmless — they match no tool. Undefined
+ *  when empty → no manifest key → the full always-on set. */
+export function sanitizeAgentTools(input: unknown): string[] | undefined {
+  return nameList(input, /^[a-z][a-z0-9_]{0,63}$/, 96, (x) => x.trim().toLowerCase());
+}
+
+/** Shared shape-normalizer for the manifest's allowlist fields: accept an array OR a comma/space/
+ *  newline-separated string (so a plain UI textarea works), normalize, drop anything malformed,
+ *  dedupe order-preserving, cap the length. Empty → undefined, so the key is omitted entirely. */
+function nameList(input: unknown, re: RegExp, cap: number, norm: (x: string) => string): string[] | undefined {
+  const raw = Array.isArray(input) ? input : typeof input === 'string' ? input.split(/[\s,]+/) : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of raw) {
+    if (typeof x !== 'string') continue;
+    const v = norm(x);
+    if (!re.test(v) || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+    if (out.length >= cap) break;
   }
   return out.length ? out : undefined;
 }

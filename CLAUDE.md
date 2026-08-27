@@ -219,7 +219,11 @@ Key modules:
   /api/approvals/:id/always`, audited `policy.rule.added`), `approvals.ts`, `audit.ts`, `team.ts`,
   `settings.ts` (Company context **+ workspace runtime defaults**: the fleet-wide model/effort/permission
   fallback, `runtimeDefaults`/`setRuntimeDefaults`), `skills.ts` (global `.claude/skills` library,
-  materialised into every claude-code agent at launch by `TerminalManager`), budget, identity.
+  materialised into every claude-code agent at launch by `TerminalManager` — narrowed by the agent's
+  own `skills` allowlist ANDed with each skill's audience; see `docs/per-agent-context.md`, which also
+  covers the sibling `tools` allowlist over the agentos MCP tool list. Both default to "everything" and
+  shape CONTEXT only — neither grants or withholds a capability, the gateway still governs every
+  effect), budget, identity.
   The Inbox surface itself — its data model, the notifier/chat-mirror sinks, per-member read/dismiss, and
   the gap roadmap — is documented in `docs/inbox-plan.md`.
 - `src/edge/automations.ts` — Automations: cron/webhook/composio/**slack**/**discord** triggers that spawn

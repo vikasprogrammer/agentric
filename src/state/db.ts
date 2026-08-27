@@ -1112,6 +1112,11 @@ function migrate(db: Db): void {
   // …and on the revision snapshot, so reverting an agent restores the verbosity it was saved with
   // rather than silently leaving the current one in place.
   addColumn(db, 'agent_revisions', 'verbosity', 'TEXT');
+  // Context-shaping allowlists (AgentManifest.skills / .tools) — snapshotted so a revert restores the
+  // agent's offer alongside its prompt. JSON arrays; '[]' reads as "everything", matching a manifest
+  // that never declared one, so every pre-existing revision stays correct without a backfill.
+  addColumn(db, 'agent_revisions', 'skills', "TEXT NOT NULL DEFAULT '[]'");
+  addColumn(db, 'agent_revisions', 'tools', "TEXT NOT NULL DEFAULT '[]'");
 
   // WHEN the current turn started (epoch ms), NULL between turns. For a WARM chat session the pane stays
   // alive across turns, so `alive` stops meaning "working" — this is the honest replacement: set when a

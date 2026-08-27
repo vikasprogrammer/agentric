@@ -5,6 +5,13 @@ The OS injects one stdio MCP server (`agent-os`) into every claude-code session,
 (session-secret + tenant gated, sitting *before* the member-auth gate in `src/server.ts`). The agent
 can only ever act as its own session; the namespace/tenant/policy are enforced server-side.
 
+> **Per-agent tool allowlist.** An agent's manifest may carry a `tools` list, in which case the OS-owned
+> MCP server offers only those tools plus a small always-kept core (`report`, `update`, `ask_human`,
+> `check_inbox`, `notify`, `recall`, `remember`). Absent/empty ⇒ the full set below, which is the
+> default everywhere. It shapes context, not permission — `tools/call` is unfiltered and the gateway
+> still governs every effect. See `docs/per-agent-context.md`.
+
+
 ## Tools ↔ routes ↔ stores
 
 | Tool | Route | Server-side | Read/Write | Notes |
