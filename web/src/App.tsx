@@ -299,8 +299,10 @@ function SessionInsights({ s, chain = 0, className = '' }: { s: Session; chain?:
 /** A stopped/ended/crashed interactive session that can be resurrected in place: re-opening its
  *  terminal runs `claude --resume` (via terminal/attach.sh), picking the conversation back up. Shown
  *  as a Resume affordance. Requires a persisted launch env (`resumable`) and no live pane — a live
- *  session is just "open", not "resume". */
-const canResume = (s: Session): boolean => Boolean(s.resumable) && !isLive(s)
+ *  session is just "open", not "resume". Attended runs only: an unattended run also carries an env now,
+ *  but its human entry point is Take over (which resurrects it AND claims it), not a bare Resume that
+ *  would hand it straight back to the turn-end reaper. */
+const canResume = (s: Session): boolean => Boolean(s.resumable) && !s.headless && !isLive(s)
 
 /** Resume a stopped session from the console: lift the server-side stop-block, THEN open/focus its
  *  terminal. A plain stop leaves the block in place so ttyd's silent auto-reconnect can't revive the
@@ -314,11 +316,13 @@ const resumeAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void
  *  interactive TUI a human watches and steers. Two flavours, one affordance:
  *   • LIVE  → claim the still-streaming pane and attach (nothing interrupted).
  *   • ENDED headless run → resurrect it in place (`claude --resume` the same transcript) and attach.
- *  Offered whenever the run is unattended (`!resumable` — an interactive run already has its own
+ *  Offered whenever the run is unattended (`headless` — an interactive run already has its own
  *  live/Resume path), not already claimed, and either still live OR has a conversation to resume
- *  (`forkable` ⇒ a pinned claude session id exists). */
+ *  (`forkable` ⇒ a pinned claude session id exists). Keyed on the `headless` FLAG, not on `!resumable`:
+ *  every claude-code run persists a launch env now, so the old proxy would have hidden Take over from
+ *  the unattended runs it exists for. A claim flips `headless → 0`, so this self-clears either way. */
 const canGoInteractive = (s: Session): boolean =>
-  !s.resumable && !s.claimedBy && (isLive(s) || Boolean(s.forkable))
+  Boolean(s.headless) && !s.claimedBy && (isLive(s) || Boolean(s.forkable))
 
 /** Tooltip for the take-over affordance — states which flavour applies for THIS run. */
 const takeOverTip = (s: Session): string =>
@@ -2957,10 +2961,11 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
     return n >= TERM_FONT_MIN && n <= TERM_FONT_MAX ? n : 14
   })
   useEffect(() => { localStorage.setItem('aos_terminal_font', String(fontSize)) }, [fontSize])
-  // A finished/crashed unattended run has no live pane — never resumable and no longer live — so attaching
-  // would show a dead terminal. Show its captured transcript instead. Interactive ended sessions stay
-  // resumable and keep the normal attach/resume path untouched.
-  const ended = Boolean(session) && !isLive(session!) && !session!.resumable && !overrideAttach
+  // A finished/crashed unattended run has no live pane and nobody has claimed it, so attaching would show
+  // a dead terminal (or silently resurrect a reaped run). Show its captured transcript instead. Attended
+  // sessions — including one that was taken over, which flips `headless → 0` — keep the normal
+  // attach/resume path untouched.
+  const ended = Boolean(session) && !isLive(session!) && Boolean(session!.headless) && !overrideAttach
   // A LIVE unattended run can be taken over — attach to its streaming pane (see canGoInteractive). Hidden
   // once claimed (overrideAttach flips it off immediately; the prop's claimedBy follows on the next poll).
   const showTakeover = Boolean(session) && !overrideAttach && canGoInteractive(session!)

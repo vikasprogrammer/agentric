@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.403.1] - 2026-08-27
+### Fixed
+- **A taken-over unattended run can be reloaded.** `resumable` is derived from a file — the persisted
+  launch env `<home>/connectors/session-<id>.env` — and that file was written only for interactive
+  launches, so the flag quietly doubled as "this run is attended". Consequence: taking over an unattended
+  run whose pane was still LIVE left it permanently non-resumable (`claimSession` marks the row and
+  relaunches nothing, so nothing ever wrote the env), and the terminal's Operations menu hid **Reload**
+  and **Reload on another account** for it forever — the two items you actually want on a claimed run
+  (pick up a newly-connected MCP server; move off an account that hit its usage limit). Seen live on
+  instawp: a claimed run, `headless=0`, a pinned `claude_session_id`, and no Reload.
+  - Every claude-code launch now persists the env, unattended included; the lanes are told apart by the
+    `headless` column, never by the presence of a file.
+  - Taking a live run over strips the env's `UNATTENDED` marker, so a later reattach/Reload resurrects it
+    on the attended lane instead of handing it back to the turn-end reaper (the dead-run take-over path
+    already got this by relaunching).
+  - Console gates that used `!resumable` as a proxy for "unattended" now read the `headless` flag: Take
+    over, the ended-run transcript view, and Resume (attended runs only — Take over is the human entry
+    point for an unattended one).
+  - Teardown is unchanged and now actually effective for these runs: `markEnded` → `blockResume` drops the
+    stay-stopped sentinel, so ttyd's silent auto-reconnect can't resurrect a run the reaper just closed.
+  - Pinned by `scripts/headless-resumable-test.cjs`.
+
 ## [0.403.0] - 2026-08-27
 ### Added
 - **Per-agent context allowlists — `AgentManifest.skills` and `AgentManifest.tools`.** Every
