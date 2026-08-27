@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbosityAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbosityAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -9895,6 +9895,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   /** taskId → its PR rollup, for the board/list cards. Server-computed in the list payload (no per-card
    *  fetch); absent for a task that mentions no PR. */
   const [prCounts, setPrCounts] = useState<Record<string, TaskPrSummary>>({})
+  /** taskId → which agents have actually RUN it, for the cards. Server-computed in the list payload and
+   *  present only for MULTI-agent tasks (a support agent files it, an engineer takes it — the assignee
+   *  badge names one of them and the card used to imply that was the whole story). */
+  const [workers, setWorkers] = useState<Record<string, TaskWorkers>>({})
   const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
   // Live sessions, cross-referenced against a task's lastSessionId to know which cards are running right now.
   const [sessions, setSessions] = useState<Session[]>([])
@@ -10034,6 +10038,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     setTasks(r.tasks ?? [])
     setDiscussions(r.discussions ?? {})
     setPrCounts(r.prCounts ?? {})
+    setWorkers(r.workers ?? {})
     if (r.counts) setCounts(r.counts)
     // Only the sessions a visible task points at (its `lastSessionId`) are needed here — to light up a
     // "doing" card as live via `liveOf`. Fetch exactly those instead of the whole ~950-row list on a 5 s
@@ -10198,6 +10203,18 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
           {t.assignee
             ? <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[10px]">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</Badge>
             : <span className="font-mono text-[10px] text-muted-foreground/60">unassigned</span>}
+          {/* The assignee is who the task was HANDED to; this is who has actually run it. Present only
+              when they differ in number — a task worked by two agents used to render exactly like one
+              worked by its assignee alone, so a hand-off was invisible from the board. */}
+          {workers[t.id] && (
+            <span
+              className="inline-flex items-center gap-1"
+              title={`worked by ${workers[t.id].agents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')}`}
+            >
+              <AgentStack agents={workers[t.id].agents} />
+              <span className="text-[10px] text-muted-foreground">{workers[t.id].agents.length} ran</span>
+            </span>
+          )}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
           {/* What a blocked task waits on, as its delegate declared it. The column header says "Needs you",
               which is only true for `human` — this says which of the three it actually is, and `human` is
@@ -10476,6 +10493,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     // task that crashed twice can be read attempt by attempt without leaving the room.
     const picked = runSel ? detail.runs.find((r) => r.id === runSel) : undefined
     const sessId = picked?.id || live?.id || t.lastSessionId || ''
+    // Who has actually worked this task. More than one agent = a HAND-OFF, and until now the only place
+    // that said so was the run history in the 320px sidebar — which collapses (`roomSide`, sticky), so a
+    // second agent on the task could be invisible from every tab. It's named in the header, counted on
+    // the tab, and switchable above the terminal below.
+    const runAgents = agentsOfRuns(detail.runs)
+    const handoff = runAgents.length > 1
     // Hand TerminalFrame the session ROW even for a finished run — that's what lets it show the captured
     // transcript instead of attaching to a tmux session that no longer exists. A headless task run (the
     // common case here) leaves no resumable pane, so without the row every ended task run rendered
@@ -10506,6 +10529,18 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
             ><Pencil className="h-3.5 w-3.5" /></button>
             <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{t.id}</span>
           </div>
+          {handoff && (
+            <button
+              onClick={() => openTaskTab(t.id, 'session')}
+              title={`worked by ${runAgents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')} — open the sessions`}
+              className="hidden shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground sm:flex"
+            >
+              {/* An avatar stack here would sit right next to the Discussion's own stack and read as one
+                  eight-tile row — the glyph says "sessions", the tooltip names the agents. */}
+              <TerminalSquare className="h-3.5 w-3.5" />{runAgents.length} agents
+              {runAgents.some((a) => a.alive) && <span className={`h-1.5 w-1.5 rounded-full ${STATE_META.working.dot}`} />}
+            </button>
+          )}
           {parts.length > 0 && <span className="hidden items-center gap-1.5 text-[11px] text-muted-foreground sm:flex"><DiscussionAvatars participants={parts} members={members} />{parts.filter((p) => p !== 'system').length} in discussion</span>}
           {/* Collapse the details sidebar (lg+ only — below that the grid stacks and the sidebar is just
               the next block down, so there's nothing to reclaim and no toggle to offer). */}
@@ -10525,7 +10560,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
             <div className="flex shrink-0 items-center gap-0.5 border-b px-2">
               {roomTab_btn('discussion', <><MessageSquare className="h-3.5 w-3.5" />Discussion{detail.unread > 0 && <span className="ml-0.5 rounded-full bg-sky-500 px-1.5 text-[10px] font-semibold text-white">{detail.unread}</span>}</>)}
               {roomTab_btn('description', <><FileText className="h-3.5 w-3.5" />Description</>)}
-              {sessTmux && roomTab_btn('session', <><TerminalSquare className="h-3.5 w-3.5" />Session{live && <span className={`ml-0.5 h-1.5 w-1.5 rounded-full ${STATE_META.working.dot}`} />}</>)}
+              {/* Plural + count the moment the task has more than one run: the tab used to say "Session",
+                  which stated the one-to-one relation the data has never had. */}
+              {sessTmux && roomTab_btn('session', <><TerminalSquare className="h-3.5 w-3.5" />{detail.runs.length > 1 ? <>Sessions<span className="text-muted-foreground"> · {detail.runs.length}</span></> : 'Session'}{detail.runs.some((r) => r.alive) && <span className={`ml-0.5 h-1.5 w-1.5 rounded-full ${STATE_META.working.dot}`} />}</>)}
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
               {activeTab === 'discussion' && (
@@ -10580,6 +10617,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
               )}
               {activeTab === 'session' && sessTmux && (
                 <div className="flex h-full min-h-0 flex-col">
+                  {detail.runs.length > 1 && (
+                    <RunChips runs={detail.runs} selected={sessId} handoff={handoff} onPick={(id) => setRunSel(id)} />
+                  )}
                   {sessPending
                     ? <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening session…</div>
                     : <TerminalFrame key={sessTmux} session={sessRow} tmux={sessTmux} standalone />}
@@ -10588,7 +10628,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
             </div>
           </div>
           <div className={`overflow-y-auto bg-muted/20 p-4 ${roomSide ? '' : 'lg:hidden'}`}>
-            {detailBody({ withDiscussion: false, editInline: false, selectedRun: runSel || undefined, onRun: (id) => { setRunSel(id); openTaskTab(t.id, 'session') } })}
+            {/* `sessId`, not `runSel` — the room is already SHOWING a run before you pick one (the live
+                one, else the last), and the history highlighted nothing until you clicked. */}
+            {detailBody({ withDiscussion: false, editInline: false, selectedRun: sessId || undefined, onRun: (id) => { setRunSel(id); openTaskTab(t.id, 'session') } })}
           </div>
         </div>
       </div>
@@ -10867,7 +10909,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
                           {live && <span className={`inline-flex shrink-0 items-center gap-1 font-mono text-[10px] ${statusTone(live)}`}><SessionStatus s={live} iconClass="h-3 w-3" />{statusLabel(live)} · {fmtElapsed(now - live.createdAt)}</span>}
                           {t.labels.map((l) => <Badge key={l} variant="outline" className="hidden shrink-0 px-1 py-0 text-[10px] md:inline-flex">{l}</Badge>)}
                         </div>
-                        <div className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</div>
+                        <div className="hidden w-32 shrink-0 items-center gap-1.5 truncate text-xs text-muted-foreground sm:flex">
+                          <span className="min-w-0 truncate">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</span>
+                          {workers[t.id] && (
+                            <span title={`worked by ${workers[t.id].agents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')}`}><AgentStack agents={workers[t.id].agents} /></span>
+                          )}
+                        </div>
                         <div className="hidden w-16 shrink-0 text-xs sm:block">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</div>
                         <PriorityPips p={t.priority} />
                         <div className="w-20 shrink-0 text-right">
@@ -11161,6 +11208,47 @@ function DiscussionAvatars({ participants, members }: { participants: string[]; 
   )
 }
 
+/**
+ * The agents that have RUN a task, oldest-first, folded from its run history.
+ *
+ * A task's runs are one-to-many in two different shapes and the console used to render only the first:
+ * the SAME agent retrying (attempt #1, #2 — a retry), and DIFFERENT agents working it in turn (support
+ * files it, engineering takes it — a hand-off). Which one it is decides how the history should read, so
+ * every surface that shows runs asks this rather than counting rows.
+ */
+function agentsOfRuns(runs: TaskRun[]): { id: string; runs: number; alive: boolean }[] {
+  const by = new Map<string, { id: string; runs: number; alive: boolean }>()
+  for (const r of runs) {
+    const e = by.get(r.agent) ?? { id: r.agent, runs: 0, alive: false }
+    e.runs++
+    if (r.alive) e.alive = true
+    by.set(r.agent, e)
+  }
+  return [...by.values()]
+}
+
+/** An overlapping avatar stack of AGENTS (by id), with a live pip on any that is running right now.
+ *  The agent-side counterpart of {@link DiscussionAvatars}: who worked this, not who talked about it. */
+function AgentStack({ agents, className = '' }: { agents: { id: string; alive?: boolean }[]; className?: string }) {
+  if (!agents.length) return null
+  const shown = agents.slice(0, 4)
+  return (
+    <span className={`flex shrink-0 -space-x-1.5 ${className}`}>
+      {shown.map((a) => (
+        <span
+          key={a.id}
+          title={a.alive ? `${a.id} — running now` : a.id}
+          className={`relative flex h-4 w-4 items-center justify-center rounded-[4px] bg-sky-500/20 text-[8px] font-semibold text-sky-600 ring-2 ring-background`}
+        >
+          {a.id.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase()}
+          {a.alive && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-500 ring-1 ring-background motion-safe:animate-pulse" />}
+        </span>
+      ))}
+      {agents.length > shown.length && <span className="flex h-4 items-center rounded-[4px] bg-muted px-1 text-[8px] font-semibold text-muted-foreground ring-2 ring-background">+{agents.length - shown.length}</span>}
+    </span>
+  )
+}
+
 /** Render a Discussion body as markdown (agents author markdown), with @mentions highlighted — agent
  *  mentions get the sky accent — and `[[wiki]]`/entity refs linked like every other markdown surface. */
 function DiscussionBody({ text, agents }: { text: string; agents: AgentInfo[] }) {
@@ -11417,55 +11505,123 @@ function runVerdict(r: TaskRun): { label: string; cls: string; role: StatusRole 
 }
 
 /**
+ * The run SWITCHER, pinned above the task room's terminal — one chip per session that worked the task.
+ *
+ * The room's Session tab shows one run at a time and the only way to pick another was the run history in
+ * the 320px sidebar, which collapses (and stays collapsed — the toggle is sticky). So on a task two
+ * agents worked, the second agent's session was reachable from nowhere on screen. The chips live in the
+ * wide column, next to the thing they switch.
+ *
+ * `handoff` (more than one agent ran it) changes the label: agents are named, because WHO is the story.
+ * With a single agent it's a retry history, so the chips number the attempts instead.
+ */
+function RunChips({ runs, selected, handoff, onPick }: {
+  runs: TaskRun[]; selected?: string; handoff?: boolean; onPick: (id: string) => void
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b bg-muted/20 px-2 py-1.5">
+      {runs.map((r, i) => {
+        const v = runVerdict(r)
+        const on = selected === r.id
+        return (
+          <button
+            key={r.id}
+            onClick={() => onPick(r.id)}
+            title={r.summary || `${r.agent} · ${r.id}`}
+            className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ${on ? 'border-primary bg-primary/10 text-foreground' : 'border-transparent bg-muted/40 text-muted-foreground hover:bg-muted'}`}
+          >
+            <RoleIcon role={v.role} label={v.label} className="h-3 w-3" />
+            <span className="max-w-[10rem] truncate font-medium">{handoff ? r.agent : `attempt ${i + 1}`}</span>
+            {handoff && runs.filter((x) => x.agent === r.agent).length > 1 && (
+              <span className="font-mono text-[10px] opacity-60">#{runs.filter((x, j) => x.agent === r.agent && j <= i).length}</span>
+            )}
+            <span className={`font-mono text-[10px] uppercase tracking-wide ${v.cls}`}>{v.label}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
  * Run history of a task — every session that worked it, oldest-first, not just the newest.
  *
  * A task is the unit of work and a session is one ATTEMPT at it, so "crashed, re-dispatched, then
  * succeeded" is the normal shape. The console only ever linked `lastSessionId`, which made that story
  * read as a single clean run; each attempt is now openable, with its own verdict, duration and cost.
  * Long histories collapse to the last three so a much-retried task doesn't push the rest of the drawer
- * off screen.
+ * off screen. When the runs span MORE THAN ONE AGENT the list groups by agent instead of numbering the
+ * runs flat: `#1 #2` reads as "it failed and retried", which is the wrong story for a hand-off (support
+ * files a fix, engineering takes it) — there the agent is the unit, and attempts number inside it.
  */
 function TaskRuns({ runs, selected, onOpen }: { runs: TaskRun[]; selected?: string; onOpen: (id: string) => void }) {
   const [all, setAll] = useState(false)
   const hidden = all ? 0 : Math.max(0, runs.length - 3)
   const shown = hidden ? runs.slice(hidden) : runs
+  const byAgent = agentsOfRuns(runs)
+  // Two agents on one task is a HAND-OFF, not a retry — so the flat `#1 #2 #3` numbering (which reads
+  // "it failed twice") gives way to one block per agent, with attempts numbered inside it.
+  const handoff = byAgent.length > 1
+  // Attempt number WITHIN that run's agent, so a grouped list still says which try of that agent's it is.
+  const nth = (r: TaskRun) => runs.filter((x, i) => x.agent === r.agent && i <= runs.indexOf(r)).length
+  const row = (r: TaskRun, label: string) => {
+    const v = runVerdict(r)
+    const ms = (r.endedAt ?? Date.now()) - r.createdAt
+    return (
+      <button
+        key={r.id}
+        onClick={() => onOpen(r.id)}
+        title={r.summary || `${r.agent} · ${r.id}`}
+        className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-muted/50 ${selected === r.id ? 'border-primary bg-primary/5' : r.current ? 'bg-muted/20' : 'border-dashed'}`}
+      >
+        <span className="w-5 shrink-0 font-mono text-[10px] text-muted-foreground/70">{label}</span>
+        <RoleIcon role={v.role} label={v.label} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5">
+            {/* In a grouped list the agent name is the block header — repeating it on every row would
+                spend the width that the verdict + summary need. */}
+            {!handoff && <span className="truncate text-xs font-medium">{r.agent}</span>}
+            <span className={`font-mono text-[10px] uppercase tracking-wide ${v.cls}`}>{v.label}</span>
+            {r.link === 'linked' && <span className="font-mono text-[10px] text-muted-foreground/70" title="a session that touched this task from elsewhere (claim / discussion), not one dispatched for it">linked</span>}
+            {r.archived && <span className="font-mono text-[10px] text-muted-foreground/70" title="archived out of the Sessions list — still part of this task's history">archived</span>}
+          </span>
+          {r.summary && <span className="block truncate text-[10px] text-muted-foreground">{r.summary}</span>}
+        </span>
+        <span className="shrink-0 text-right font-mono text-[10px] leading-tight text-muted-foreground">
+          <span className="block tabular-nums">{fmtElapsed(ms)}</span>
+          <span className="block">{r.costUsd != null ? fmtCost(r.costUsd) : timeAgo(r.createdAt)}</span>
+        </span>
+      </button>
+    )
+  }
   return (
     <div>
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Runs · {runs.length}</div>
+        <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          Runs · {runs.length}{handoff && <span className="normal-case tracking-normal"> · {byAgent.length} agents</span>}
+        </div>
         {hidden > 0 && <button onClick={() => setAll(true)} className="text-[11px] text-muted-foreground hover:text-foreground">show {hidden} earlier</button>}
       </div>
-      <div className="space-y-1">
-        {shown.map((r, i) => {
-          const n = hidden + i + 1
-          const v = runVerdict(r)
-          const ms = (r.endedAt ?? Date.now()) - r.createdAt
-          return (
-            <button
-              key={r.id}
-              onClick={() => onOpen(r.id)}
-              title={r.summary || `${r.agent} · ${r.id}`}
-              className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-muted/50 ${selected === r.id ? 'border-primary bg-primary/5' : r.current ? 'bg-muted/20' : 'border-dashed'}`}
-            >
-              <span className="w-5 shrink-0 font-mono text-[10px] text-muted-foreground/70">#{n}</span>
-              <RoleIcon role={v.role} label={v.label} />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className="truncate text-xs font-medium">{r.agent}</span>
-                  <span className={`font-mono text-[10px] uppercase tracking-wide ${v.cls}`}>{v.label}</span>
-                  {r.link === 'linked' && <span className="font-mono text-[10px] text-muted-foreground/70" title="a session that touched this task from elsewhere (claim / discussion), not one dispatched for it">linked</span>}
-                  {r.archived && <span className="font-mono text-[10px] text-muted-foreground/70" title="archived out of the Sessions list — still part of this task's history">archived</span>}
-                </span>
-                {r.summary && <span className="block truncate text-[10px] text-muted-foreground">{r.summary}</span>}
-              </span>
-              <span className="shrink-0 text-right font-mono text-[10px] leading-tight text-muted-foreground">
-                <span className="block tabular-nums">{fmtElapsed(ms)}</span>
-                <span className="block">{r.costUsd != null ? fmtCost(r.costUsd) : timeAgo(r.createdAt)}</span>
-              </span>
-            </button>
-          )
-        })}
-      </div>
+      {handoff ? (
+        <div className="space-y-2">
+          {byAgent
+            .filter((a) => shown.some((r) => r.agent === a.id))
+            .map((a) => (
+              <div key={a.id}>
+                <div className="mb-1 flex items-center gap-1.5 text-[11px]">
+                  <AgentStack agents={[a]} />
+                  <span className="truncate font-medium text-foreground">{a.id}</span>
+                  <span className="font-mono text-[10px] text-muted-foreground/70">{a.runs} run{a.runs === 1 ? '' : 's'}</span>
+                </div>
+                <div className="space-y-1 border-l border-dashed pl-2">
+                  {shown.filter((r) => r.agent === a.id).map((r) => row(r, `#${nth(r)}`))}
+                </div>
+              </div>
+            ))}
+        </div>
+      ) : (
+        <div className="space-y-1">{shown.map((r, i) => row(r, `#${hidden + i + 1}`))}</div>
+      )}
     </div>
   )
 }
