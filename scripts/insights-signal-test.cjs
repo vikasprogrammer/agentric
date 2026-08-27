@@ -24,7 +24,8 @@ delete process.env.AGENT_OS_SECRET_KEY;
 let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
-const { deriveGuidance, deriveRecommendations, recommendationResolved, topicCounts } = require(path.join(ROOT, 'dist/edge/dreaming.js'));
+const { deriveGuidance, deriveRecommendations, recommendationResolved, topicCounts, TOPICS_VERSION } = require(path.join(ROOT, 'dist/edge/dreaming.js'));
+const crypto = require('crypto');
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
 const { detectAlerts } = require(path.join(ROOT, 'dist/edge/alerts.js'));
 
@@ -152,6 +153,59 @@ console.log('\n\x1b[1mInsights signal — no prompt-injected or DM\'d number off
   assert(has('php8') && has('dev3') && has('oauth2'), 'php8 / dev3 / oauth2 survive');
   assert(has('log4j'), 'a short name with an interior digit is below the length bound and survives');
   assert(has('freescout'), 'a plain product name survives');
+}
+
+// ── the extractor and TOPICS_VERSION must move together ─────────────────────────────────────────────
+// `topics` is a CUMULATIVE map that decays only on a 21-day half-life, so changing what the extractor
+// ADMITS does nothing about what it already admitted — the old words keep their counts and keep
+// headlining the guidance line. TOPICS_VERSION exists to clear the map when the extractor's meaning
+// changes, and a comment saying "bump this" has now failed to enforce it TWICE:
+//   v0.281.3  tightened isEntity for opaque hex ids, no bump — the ids stayed.
+//   v0.401.0  stopped extracting `wait`, `c05cl830mnd`, `d3cby9k`, `already-contacted-in-90-days`,
+//             no bump — all four stayed in the live maps, and `wait:3` sat exactly on MIN_TOPIC_COUNT,
+//             so it was still in the guidance line every agent read.
+// So this fingerprints the extractor instead of trusting anyone to remember. When it fails, do BOTH
+// things it tells you to; the hash is not a rubber stamp to update on its own.
+{
+  console.log('\n\x1b[1m5) the extractor cannot change without clearing the maps it poisoned\x1b[0m');
+  const src = fs.readFileSync(path.join(ROOT, 'dist/edge/dreaming.js'), 'utf8');
+  // Slice the extractor's own regions out of the compiled module: the stop-list literal and the three
+  // functions that decide what counts as a topic. Compiled from the same TS, so a semantic change to any
+  // of them moves the hash; edits ELSEWHERE in the file do not.
+  // Each region must be FOUND and non-trivial. The first cut of this used '\n]);' to end the stop-list,
+  // but tsc emits the array literal on ONE line, so the marker never matched, the slice silently became a
+  // constant, and the whole stop-list contributed NOTHING to the hash — a fingerprint with a hole in it,
+  // which would have passed the very change that prompted this test. Hence the length floors: a broken
+  // anchor now fails here instead of quietly weakening the guard.
+  const region = (startMark, endMark, minLen) => {
+    const a = src.indexOf(startMark);
+    const b = a >= 0 ? src.indexOf(endMark, a + startMark.length) : -1;
+    const slice = a >= 0 && b > a ? src.slice(a, b) : '';
+    assert(slice.length >= minLen,
+      `fingerprint region "${startMark}" is intact`,
+      slice.length ? `only ${slice.length} chars, expected >= ${minLen}` : 'anchor or end marker not found in dist/edge/dreaming.js');
+    return slice;
+  };
+  const extractor = [
+    region('STOP = new Set', ']);', 2000),         // the stop-list literal, one line after compilation
+    region('function topicCounts', '\n}', 400),
+    region('function properNouns', '\n}', 1500),
+    region('function isEntity', '\n}', 400),
+  ].join('\u0000');
+  const hash = crypto.createHash('sha256').update(extractor).digest('hex').slice(0, 16);
+
+  // ⚠ When this fails: the extractor changed. Bump TOPICS_VERSION in src/edge/dreaming.ts so every live
+  // tenant rebuilds its topic map from the current corpus, THEN paste the new hash here.
+  const PINNED = { version: 4, hash: 'bc0f006a6d11ecf2' };
+
+  assert(hash === PINNED.hash,
+    'the extractor is unchanged since TOPICS_VERSION was last bumped',
+    `\n    extractor hash is ${hash}, pinned ${PINNED.hash}\n` +
+    `    → the topic extractor changed. Bump TOPICS_VERSION (currently ${TOPICS_VERSION}) so live tenants\n` +
+    `      clear the stale words it no longer admits, then set hash: '${hash}' here.`);
+  assert(TOPICS_VERSION === PINNED.version,
+    'TOPICS_VERSION matches the version this fingerprint was taken at',
+    `TOPICS_VERSION=${TOPICS_VERSION}, fingerprint pinned at ${PINNED.version}`);
 }
 
 fs.rmSync(HOME, { recursive: true, force: true });
