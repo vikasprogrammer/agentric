@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# "Make it live" — deploy origin/main to this macOS box's tenant services.
+# "Make it live" — deploy origin/main to this deployment's tenant services, local and remote.
 #
 # A live service runs from a DEDICATED checkout (never the shared primary that several sessions edit
 # concurrently) and is supervised by launchd (com.agentos.<tenant> → scripts/run-tenant.sh <tenant> …
@@ -19,6 +19,18 @@
 #   AOS_LIVE_TENANT / AOS_LIVE_CHECKOUT / AOS_LIVE_LABEL / AOS_LIVE_PORT / AOS_LIVE_LOG
 #       the older single-tenant form, still honoured when AOS_LIVE_TARGETS is unset.
 #
+# A tenant on ANOTHER box (Linux/systemd, reached over ssh) goes in a second list — the mechanics differ
+# enough (ssh, systemctl instead of launchctl, the box's own node on a non-login PATH) that mixing them
+# into one loop would obscure both:
+#   AOS_LIVE_REMOTE_TARGETS="acme:user@your-remote-box.example.com:/home/agent-os/tools/agent-os:3012:agent-os-acme"
+#       one entry per tenant, `tenant:ssh:checkout:port[:unit]` (unit defaults to agent-os-<tenant>,
+#       and is restarted with `sudo systemctl restart <unit>`).
+#   AOS_LIVE_REMOTE_NODE_BIN   node/npm dir prepended to PATH on the remote box (nvm installs are not on
+#       a non-login PATH). Default: $HOME/.nvm/versions/node/v22.22.0/bin on the REMOTE side.
+#
+# Remote targets obey the same ordering guarantee as local ones: every checkout — local and remote —
+# is synced, built and tested before ANY service is restarted.
+#
 # Two tenants may share one checkout (each still has its own home, DB, port and launchd job). The
 # checkout is then synced/built ONCE and each service restarted — which is also why the phases below
 # are ordered build-everything-then-restart-everything.
@@ -31,6 +43,8 @@
 #  - A failed health check prints the exact rollback command rather than guessing.
 #  - Restarts happen one tenant at a time and stop at the first failure, so a bad deploy takes down at
 #    most one service; the report at the end says which tenants moved and which never got there.
+#  - A remote box is only ever reached with `ssh -o BatchMode=yes` — a deploy that would sit waiting on a
+#    password prompt fails fast in preflight instead of hanging.
 set -euo pipefail
 
 ENV_FILE="${AOS_LIVE_ENV:-$HOME/.agentric-live.env}"
@@ -47,7 +61,7 @@ while [ $# -gt 0 ]; do
     --force)      FORCE=1 ;;
     --only)       shift; ONLY="${1:?--only needs a tenant slug}" ;;
     --only=*)     ONLY="${1#--only=}" ;;
-    -h|--help)    sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,48p' "$0"; exit 0 ;;
     *)            echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -71,20 +85,52 @@ if [ -n "${AOS_LIVE_TARGETS:-}" ]; then
     TARGETS="$TARGETS$t:$c:$p:$l
 "
   done
-else
+elif [ -z "${AOS_LIVE_REMOTE_TARGETS:-}" ]; then
+  # Only fall back to the single-tenant form when NOTHING else is configured — a deployment whose only
+  # tenants are remote must not have a phantom local `acme` invented for it.
   t="${AOS_LIVE_TENANT:-acme}"
   TARGETS="$t:${AOS_LIVE_CHECKOUT:-$HOME/agent-os-live}:${AOS_LIVE_PORT:-3010}:${AOS_LIVE_LABEL:-com.agentos.$t}
 "
 fi
 
+# Remote tenants: `tenant:ssh:checkout:port[:unit]`, normalised the same way.
+REMOTES=""
+for spec in ${AOS_LIVE_REMOTE_TARGETS:-}; do
+  t="${spec%%:*}"; rest="${spec#*:}"
+  h="${rest%%:*}"; rest="${rest#*:}"
+  c="${rest%%:*}"; rest="${rest#*:}"
+  p="${rest%%:*}"
+  u="${rest#*:}"; [ "$u" = "$p" ] && u="agent-os-$t"
+  [ -n "$t" ] && [ -n "$h" ] && [ -n "$c" ] && [ -n "$p" ] \
+    || fail "bad AOS_LIVE_REMOTE_TARGETS entry: $spec (want tenant:ssh:checkout:port[:unit])"
+  REMOTES="$REMOTES$t:$h:$c:$p:$u
+"
+done
+
+REMOTE_NODE_BIN="${AOS_LIVE_REMOTE_NODE_BIN:-\$HOME/.nvm/versions/node/v22.22.0/bin}"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=10"
+# Every remote command runs through one wrapper so the node PATH and `set -e` are never forgotten.
+on_remote() { # <ssh-target> <command…>
+  local host="$1"; shift
+  # shellcheck disable=SC2029  # the PATH expansion is deliberately remote-side
+  $SSH "$host" "export PATH=\"$REMOTE_NODE_BIN:\$PATH\"; set -e; $*"
+}
+
 if [ -n "$ONLY" ]; then
   PICKED="$(printf '%s' "$TARGETS" | grep "^$ONLY:" || true)"
-  [ -n "$PICKED" ] || fail "--only $ONLY: not in the configured targets ($(printf '%s' "$TARGETS" | cut -d: -f1 | tr '\n' ' '))"
-  TARGETS="$PICKED
+  PICKED_R="$(printf '%s' "$REMOTES" | grep "^$ONLY:" || true)"
+  [ -n "$PICKED" ] || [ -n "$PICKED_R" ] \
+    || fail "--only $ONLY: not in the configured targets ($(printf '%s%s' "$TARGETS" "$REMOTES" | cut -d: -f1 | tr '\n' ' '))"
+  TARGETS="$PICKED"; [ -n "$TARGETS" ] && TARGETS="$TARGETS
+"
+  REMOTES="$PICKED_R"; [ -n "$REMOTES" ] && REMOTES="$REMOTES
 "
 fi
 
-command -v launchctl >/dev/null || fail "launchctl not found — this script is for the macOS box"
+# launchctl is only needed for LOCAL tenants — a box that deploys nothing but remotes doesn't need it.
+if [ -n "$TARGETS" ]; then
+  command -v launchctl >/dev/null || fail "launchctl not found — local targets need the macOS box"
+fi
 
 # Per-checkout scratch state (bash 3.2 on macOS has no associative arrays): one file per checkout,
 # named after its path, holding the commit it was on before the sync — that's what a rollback needs.
@@ -109,7 +155,23 @@ done <<EOF
 $TARGETS
 EOF
 
-say "targets: $(printf '%s' "$TARGETS" | cut -d: -f1 | tr '\n' ' ')"
+# Remote preflight: reachable without a prompt, checkout present, unit known. Done before ANY build so
+# an unreachable box costs nothing.
+while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
+  [ -n "$TENANT" ] || continue
+  $SSH "$SSHT" true 2>/dev/null \
+    || fail "$TENANT: cannot ssh to $SSHT without a prompt (BatchMode) — check your key/agent"
+  on_remote "$SSHT" "[ -d '$CHECKOUT/.git' ]" \
+    || fail "$TENANT: no checkout at $CHECKOUT on $SSHT"
+  on_remote "$SSHT" "systemctl cat '$UNIT' >/dev/null 2>&1" \
+    || fail "$TENANT: systemd unit $UNIT not found on $SSHT"
+  on_remote "$SSHT" "command -v node >/dev/null" \
+    || fail "$TENANT: no node on $SSHT at PATH $REMOTE_NODE_BIN (set AOS_LIVE_REMOTE_NODE_BIN)"
+done <<EOF
+$REMOTES
+EOF
+
+say "targets: $(printf '%s%s' "$TARGETS" "$REMOTES" | cut -d: -f1 | tr '\n' ' ')"
 
 # ── phase 1: sync + build every checkout (no service is restarted in here) ───────
 for CHECKOUT in $CHECKOUTS; do
@@ -171,6 +233,63 @@ for CHECKOUT in $CHECKOUTS; do
   fi
 done
 
+# ── phase 1b: sync + build every remote checkout (still nothing restarted) ───────
+while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
+  [ -n "$TENANT" ] || continue
+  OLD="$(on_remote "$SSHT" "git -C '$CHECKOUT' rev-parse HEAD")"
+  on_remote "$SSHT" "git -C '$CHECKOUT' fetch -q origin"
+  NEW="$(on_remote "$SSHT" "git -C '$CHECKOUT' rev-parse '$REF'")"
+  echo "$OLD" >"$STATE/$(key_for "$SSHT$CHECKOUT").old"
+
+  if [ "$OLD" = "$NEW" ]; then
+    say "$SSHT:$CHECKOUT: already at ${NEW:0:7} — rebuilding + restarting anyway"
+  else
+    say "$SSHT:$CHECKOUT: deploying ${OLD:0:7} → ${NEW:0:7}"
+    on_remote "$SSHT" "git -C '$CHECKOUT' --no-pager log --oneline '$OLD..$NEW'" | sed 's/^/  /'
+  fi
+
+  DIRTY="$(on_remote "$SSHT" "git -C '$CHECKOUT' status --porcelain")"
+  if [ -n "$DIRTY" ] && [ "$FORCE" -ne 1 ]; then
+    echo "$DIRTY" | sed 's/^/  /'
+    fail "$SSHT:$CHECKOUT has local changes (above) — rerun with --force to discard them"
+  fi
+
+  [ "$DRY" -eq 1 ] && continue
+
+  on_remote "$SSHT" "git -C '$CHECKOUT' reset --hard -q '$NEW'"
+
+  if [ "$OLD" != "$NEW" ]; then
+    if ! on_remote "$SSHT" "git -C '$CHECKOUT' diff --quiet '$OLD' '$NEW' -- package-lock.json package.json"; then
+      say "$TENANT: root deps changed → npm install"
+      on_remote "$SSHT" "cd '$CHECKOUT' && npm install --no-audit --no-fund >/dev/null"
+    fi
+    if ! on_remote "$SSHT" "git -C '$CHECKOUT' diff --quiet '$OLD' '$NEW' -- web/package-lock.json web/package.json"; then
+      say "$TENANT: web deps changed → npm install"
+      on_remote "$SSHT" "cd '$CHECKOUT/web' && npm install --no-audit --no-fund >/dev/null"
+    fi
+  fi
+
+  say "$TENANT: building server"
+  on_remote "$SSHT" "cd '$CHECKOUT' && npm run build >/tmp/aos-make-live-build.log 2>&1" \
+    || { on_remote "$SSHT" "tail -30 /tmp/aos-make-live-build.log" >&2 || true; fail "$TENANT: server build failed on $SSHT — every live server untouched"; }
+  say "$TENANT: building console"
+  on_remote "$SSHT" "cd '$CHECKOUT/web' && npm run build >/tmp/aos-make-live-build.log 2>&1" \
+    || { on_remote "$SSHT" "tail -30 /tmp/aos-make-live-build.log" >&2 || true; fail "$TENANT: web build failed on $SSHT — every live server untouched"; }
+
+  if [ "$SKIP_TESTS" -eq 1 ]; then
+    say "$TENANT: skipping governance suite (--skip-tests)"
+  else
+    say "$TENANT: running governance suite"
+    # AOS_NO_TTYD: a suite run that builds a TenantRegistry spawns a ttyd per tenant and only
+    # startServer's stopAll reaps it — on a live box those leak and pin every core.
+    on_remote "$SSHT" "cd '$CHECKOUT' && AOS_NO_TTYD=1 npm run test:governance >/tmp/aos-make-live-tests.log 2>&1" \
+      || { on_remote "$SSHT" "tail -20 /tmp/aos-make-live-tests.log" >&2 || true; fail "$TENANT: governance suite failed on $SSHT — NOTHING restarted"; }
+    on_remote "$SSHT" "tail -1 /tmp/aos-make-live-tests.log"
+  fi
+done <<EOF
+$REMOTES
+EOF
+
 if [ "$DRY" -eq 1 ]; then say "dry run — nothing changed"; exit 0; fi
 
 # ── phase 2: restart + verify each service ───────────────────────────────────────
@@ -210,6 +329,41 @@ Roll back with:
   esac
 done <<EOF
 $TARGETS
+EOF
+
+while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
+  [ -n "$TENANT" ] || continue
+  OLD="$(cat "$STATE/$(key_for "$SSHT$CHECKOUT").old")"
+  VERSION="$(on_remote "$SSHT" "node -p \"require('$CHECKOUT/package.json').version\"")"
+
+  say "restarting $UNIT on $SSHT (:$PORT)"
+  on_remote "$SSHT" "sudo systemctl restart '$UNIT'"
+
+  # Same check as the local lane: the RUNNING process must report the version we just built, else a
+  # long-running server is still holding its old code in memory.
+  LIVE=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    LIVE="$(on_remote "$SSHT" "curl -fsS --max-time 2 http://127.0.0.1:$PORT/health" 2>/dev/null || true)"
+    case "$LIVE" in *"\"version\":\"$VERSION\""*) break ;; esac
+  done
+
+  case "$LIVE" in
+    *"\"version\":\"$VERSION\""*)
+      say "live: $LIVE"
+      DEPLOYED="$DEPLOYED $TENANT"
+      ;;
+    *)
+      echo "--- last 30 journal lines for $UNIT on $SSHT ---" >&2
+      on_remote "$SSHT" "journalctl -u '$UNIT' -n 30 --no-pager" >&2 || true
+      [ -n "$DEPLOYED" ] && warn "already deployed before this failure:$DEPLOYED"
+      fail "$TENANT: health check never reported v$VERSION (last response: ${LIVE:-none}).
+Roll back with:
+  ssh $SSHT \"git -C $CHECKOUT reset --hard $OLD && cd $CHECKOUT && npm run build && (cd web && npm run build) && sudo systemctl restart $UNIT\""
+      ;;
+  esac
+done <<EOF
+$REMOTES
 EOF
 
 say "done in $(( $(date +%s) - START ))s —$DEPLOYED"

@@ -589,6 +589,37 @@ would make the local ledger claim memories recall can never return. Pinned by
 **Note for existing automem tenants:** upkeep is still opt-in and no tenant has it enabled, so the
 historical duplicates are not removed by this change — it only makes the knob safe to turn on.
 
+### 17.2 Recall fidelity — the backend ranks, the mirror is the record (2026-08-27)
+
+A recall backend is free to transform the text it is handed, and automem does. Over
+`MEMORY_CONTENT_SOFT_LIMIT` (**500 chars** by default) with an LLM configured, `MEMORY_AUTO_SUMMARIZE`
+replaces `content` with a ~300-char LLM summary and **discards the original**
+(`automem/api/memory.py`). instawp's average memory is **1305 chars**, so most of that store was being
+rewritten at ingest — **81%** of sampled recall hits existed nowhere in the mirror. What an agent stored as
+
+> Bunny edge-rule QA cannot be done on a `*.instawp.site` sandbox — it resolves to the PPU/OVH origin and
+> never traverses Bunny's edge, so every probe returns 200 …
+
+came back from recall as *"Bunny edge-rule QA limitations. Testing on `*.instawp.site` fails…"* — same id,
+same ranking, none of the specifics that made it worth storing. And the two stores then disagreed:
+Dreaming, the consolidation gardener and the Memory-hub read the mirror's original while agents recalled
+the paraphrase.
+
+instapods was unaffected: no OpenAI client is configured there (local 384-dim embedder), so the
+summarizer returns `None` and content is kept verbatim — 2% divergence against instawp's 81%.
+
+`MirroredMemoryProvider.recall` now overlays each returned record's `content` from the mirror when the
+mirror holds that id (`SqliteMemoryProvider.contentByIds`). **Ranking, ordering and score stay entirely
+the backend's** — the embedding is computed over whatever the backend holds either way, so retrieval
+quality is untouched and only the text handed to the agent is restored. A record the mirror has never
+seen (stored before mirroring, or written straight to the backend) passes through unchanged, so this can
+only add fidelity, never drop a result. Best-effort: a mirror failure returns the backend's records as-is.
+
+Backend-agnostic on purpose — it holds for any future store that rewrites, not just this automem setting.
+Turning the setting off (`MEMORY_AUTO_SUMMARIZE=false`, or raising `MEMORY_CONTENT_SOFT_LIMIT` to the hard
+limit) is still worth doing on a rewriting deployment, since it stops paying an LLM call per write.
+Pinned by `scripts/memory-upkeep-test.cjs`.
+
 ## 18. Shared-scope memory — Phase 0 toward a KB (2026-06-23)
 
 Full plan + as-built deviations: [`shared-memory-phase0-plan.md`](./shared-memory-phase0-plan.md) (✅ shipped).

@@ -110,6 +110,35 @@ const setAge = (id, days) => aos.db.prepare('UPDATE memories SET created_at = ? 
   assert(b3.rows.size === 1, 'the duplicate is deleted from the backend too — automem does NOT dedupe these itself');
   void dupA; void dupB;
 
+  // ── C. recall serves the agent's OWN text, whatever the backend did to it ───────────────────────
+  console.log('\nrecall fidelity — the backend ranks, the mirror is the record\n');
+
+  /** A backend that rewrites on ingest, exactly as automem does over MEMORY_CONTENT_SOFT_LIMIT. */
+  class RewritingBackend extends FakeBackend {
+    async store(input) {
+      const rec = await super.store(input);
+      const short = { ...rec, content: `Summary of: ${input.content.slice(0, 20)}…` };
+      this.rows.set(rec.id, short);
+      return rec; // the mirror is handed the record with the ORIGINAL content, as automem's POST returns
+    }
+    async recall() { return [...this.rows.values()]; }
+  }
+
+  const b4 = new RewritingBackend();
+  const p4 = new MirroredMemoryProvider(b4, mirror);
+  const original = 'Bunny edge-rule QA cannot be done on a *.instawp.site sandbox — it resolves to the PPU/OVH origin and never traverses the edge, so every probe returns 200.';
+  const stored = await p4.store({ tenant: aos.tenant, agentId: 'qa', content: original, tags: [], type: 'Pattern', importance: 0.8 });
+  const got = await p4.recall({ tenant: aos.tenant, agentId: 'qa', query: 'bunny edge rule', limit: 5 });
+  const hit = got.find((r) => r.id === stored.id);
+  assert(!!hit, 'the backend still decides what comes back and in what order');
+  assert(hit.content === original, 'recall returns the agent\'s OWN text, not the backend\'s rewrite', `got: ${hit && hit.content}`);
+  assert(b4.rows.get(stored.id).content.startsWith('Summary of:'), 'the backend really did hold a rewritten copy — the test would pass vacuously otherwise');
+
+  // a row the mirror has never seen keeps whatever the backend holds — this can only add fidelity
+  b4.rows.set('bk_orphan', { id: 'bk_orphan', tenant: aos.tenant, agentId: 'qa', content: 'only the backend knows this', tags: [], type: 'Insight', ts: Date.now(), scope: 'agent' });
+  const got2 = await p4.recall({ tenant: aos.tenant, agentId: 'qa', query: 'orphan', limit: 5 });
+  assert(got2.some((r) => r.id === 'bk_orphan' && r.content === 'only the backend knows this'), 'a record the mirror does not hold is passed through untouched');
+
   // ── B. the learning state's extractor version survives a load ───────────────────────────────────
   console.log('\ndreaming — the topic accumulator is not wiped on every load\n');
   const roundTripped = normalizeState({ firstPass: 1, passes: 9, totals: {}, topics: { freescout: { count: 30, lastSeen: 2 } }, recent: [], watermark: 5, topicsVersion: 3 });

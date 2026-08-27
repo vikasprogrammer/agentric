@@ -180,6 +180,22 @@ export class SqliteMemoryProvider implements MemoryProvider {
       .run(Date.now(), ...ids);
   }
 
+  /**
+   * The stored content for a set of ids, as the agent wrote it. Used by `MirroredMemoryProvider` to serve
+   * canonical text behind an external backend that transforms what it is given (automem summarises any
+   * memory over 500 chars and discards the original). Ids the table doesn't hold are simply absent from
+   * the map, so the caller falls back to whatever the backend returned.
+   */
+  contentByIds(ids: string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (!ids.length) return out;
+    const rows = this.db
+      .prepare(`SELECT id, content FROM memories WHERE id IN (${ids.map(() => '?').join(',')})`)
+      .all<{ id: string; content: string }>(...ids);
+    for (const r of rows) out.set(r.id, r.content);
+    return out;
+  }
+
   async maintain(opts: MemoryMaintenance): Promise<MemoryMaintenanceResult> {
     let pruned = 0;
     let merged = 0;

@@ -8,6 +8,33 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.398.0] - 2026-08-27
+### Fixed
+- **Agents recalled a paraphrase of their own memories.** A recall backend may transform the text it is
+  handed, and automem does: over `MEMORY_CONTENT_SOFT_LIMIT` (500 chars by default) with an LLM
+  configured, it replaces `content` with a ~300-char summary and **discards the original**. instawp's
+  average memory is 1305 chars, so **81%** of sampled recall hits existed nowhere in the mirror — a note
+  reading "Bunny edge-rule QA cannot be done on a `*.instawp.site` sandbox — it resolves to the PPU/OVH
+  origin and never traverses Bunny's edge…" came back as "Bunny edge-rule QA limitations. Testing on
+  `*.instawp.site` fails…", losing every exact command and `.env` name that made it worth storing. The
+  two stores also disagreed: Dreaming, consolidation and the Memory-hub read the mirror's original while
+  agents recalled the summary. `MirroredMemoryProvider.recall` now serves `content` from the mirror
+  whenever it holds that id; **ranking, ordering and score stay entirely the backend's**, and a record
+  the mirror has never seen passes through untouched, so this can only add fidelity. Backend-agnostic —
+  it holds for any store that rewrites, not just this setting. (instapods was unaffected: no LLM
+  configured there, so nothing was ever rewritten.)
+
+### Added
+- **`scripts/make-live.sh` deploys tenants on OTHER boxes.** A tenant reached over ssh (Linux/systemd)
+  now goes in `AOS_LIVE_REMOTE_TARGETS` as `tenant:ssh:checkout:port[:unit]`, alongside the existing
+  local `AOS_LIVE_TARGETS` — it was being deployed by hand, which is how one box sat 5 versions behind
+  while "make it live" reported success. Remote targets keep every guarantee the local lane has: preflight
+  (reachable without a password prompt, checkout present, unit known, node found) before anything is
+  touched; **every** checkout — local and remote — synced, built and tested before **any** service is
+  restarted; the running process must report the version just built; and a failure prints the exact
+  rollback command plus that box's journal. `--only` and `--dry-run` span both lanes, and a deployment
+  whose tenants are all remote no longer has a phantom local target invented for it.
+
 ## [0.397.0] - 2026-08-27
 ### Fixed
 - **Memory upkeep on an external backend pruned only half the store.** `MirroredMemoryProvider.maintain`
