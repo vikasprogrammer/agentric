@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.396.0] - 2026-08-27
+### Changed
+- **Session episodes stop polluting the memory they are supposed to teach.** Every finished session
+  auto-encodes an episode into its agent's memory — nobody decides to store it, so its quality is
+  entirely a property of the code. A read of the live instapods + instawp stores found three ways it
+  was storing noise, all now fixed. (1) The `Task:` line was kept **verbatim**: an unattended run's task
+  is a multi-paragraph standing order, so one 1979-char support-sweep prompt filled an entire memory
+  (automem caps a memory at 2000 chars) leaving no room for what the run actually did — 419 stored
+  episodes carried a task line over 300 chars. It is now condensed to one identifying line, capped at
+  200 chars; the agent's own report body is untouched. (2) **Launch plumbing counted as work**:
+  `github.token.injected` / `runtime.account.selected` / `automation.fired` fire on every run before the
+  agent has done anything, so smoke runs became episodes whose whole body was
+  `Activity: 1 github.token.injected.` — 72 of them across the two tenants, recalled 22 times, each one
+  displacing a real lesson in a top-k recall. Those events are now episode noise, and a run with nothing
+  but plumbing stores no episode at all. (3) **Nothing deduped**: one support agent's 2h cron wrote the
+  same byte-identical episode **177 times in a month** — 7% of that tenant's entire memory, one string,
+  and it ranked in live recall probes. An exact-content repeat from the same agent within 30 days is now
+  suppressed and audited as `episode.duplicate` (a run whose report differs is always stored). Pinned by
+  `scripts/episode-quality-test.cjs`.
+
 ## [0.395.0] - 2026-08-27
 ### Added
 - **A task room shows every agent that worked the task, not just the last one.** A task is one unit of
