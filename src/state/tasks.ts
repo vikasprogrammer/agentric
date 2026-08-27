@@ -154,20 +154,31 @@ export class TaskStore {
   list(q: TaskQuery): Task[] {
     const limit = Math.max(1, Math.min(q.limit ?? 100, 500));
     const match = toFtsQuery(q.query);
-    const fetchN = q.assignee || q.label || q.status ? limit * 5 : limit;
+    // `status`/`assignee` are pushed into SQL (assignee rides `idx_tasks_assignee(tenant, assignee)`), so
+    // the LIMIT applies to rows that already match instead of over-fetching 5× the board and dropping
+    // most of it in JS — the JS pass below stays as the exactness guard. `label` has no column of its own
+    // (labels are a JSON array), so it keeps the over-fetch: a LIKE would match a substring of a
+    // different label, and being wrong is worse than reading 5× rows for the one filter that needs it.
+    const fetchN = q.label ? limit * 5 : limit;
+    const where: string[] = [];
+    const args: unknown[] = [];
+    if (q.status) { where.push('status = ?'); args.push(q.status); }
+    if (q.assignee) { where.push('assignee = ?'); args.push(q.assignee); }
     let rows: TaskRow[];
     if (match) {
+      const extra = where.map((w) => ` AND t.${w}`).join('');
       rows = this.db
         .prepare(`SELECT t.*, bm25(tasks_fts) AS rank FROM tasks_fts JOIN tasks t ON t.rowid = tasks_fts.rowid
-                   WHERE tasks_fts MATCH ? AND t.tenant = ? ORDER BY rank LIMIT ?`)
-        .all<TaskRow>(match, q.tenant, fetchN);
+                   WHERE tasks_fts MATCH ? AND t.tenant = ?${extra} ORDER BY rank LIMIT ?`)
+        .all<TaskRow>(match, q.tenant, ...args, fetchN);
     } else {
       // status collation: todo < doing < blocked < done < cancelled (the natural board order).
+      const extra = where.map((w) => ` AND ${w}`).join('');
       rows = this.db
-        .prepare(`SELECT * FROM tasks WHERE tenant = ?
+        .prepare(`SELECT * FROM tasks WHERE tenant = ?${extra}
                    ORDER BY (CASE status WHEN 'todo' THEN 0 WHEN 'doing' THEN 1 WHEN 'blocked' THEN 2
                              WHEN 'done' THEN 3 ELSE 4 END), priority, updated_at DESC LIMIT ?`)
-        .all<TaskRow>(q.tenant, fetchN);
+        .all<TaskRow>(q.tenant, ...args, fetchN);
     }
     let tasks = rows.map(toTask);
     if (q.status) tasks = tasks.filter((t) => t.status === q.status);

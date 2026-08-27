@@ -11,6 +11,8 @@
  * Zero-dependency: speaks JSON-RPC 2.0 over newline-delimited stdio by hand (Node's MCP stdio
  * transport), and uses the global `fetch`. Spawned by claude with AOS_URL/SESSION/AGENT in env.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 const AOS_URL = (process.env.AOS_URL || 'http://127.0.0.1:3010').replace(/\/$/, '');
 // The base for absolute console deep-links agents hand to a human. Prefer AOS_PUBLIC_URL — the tenant's
 // REAL external origin (its Tailscale/FQDN, from AGENT_OS_PUBLIC_URL/config publicUrl via consoleOrigin,
@@ -41,9 +43,19 @@ const UNATTENDED_ASK_WAIT_S = Number(process.env.AOS_UNATTENDED_ASK_WAIT_S) || 1
 // bounded, so a stuck child can't strand the caller forever (on timeout the tool returns "still running,
 // check back", not a hang). Interactive callers wait longer (a human can steer); headless park at this.
 const TASK_WAIT_S = Number(process.env.AOS_TASK_WAIT_S) || 900;
+/**
+ * Which tool the in-flight loopback call belongs to. Tool calls run CONCURRENTLY (each stdin line is
+ * dispatched without awaiting the last), so a module-level "current tool" variable would mislabel
+ * interleaved calls; an AsyncLocalStorage keeps the name bound to its own async chain.
+ */
+const toolContext = new AsyncLocalStorage<string>();
+
 /** Headers for a loopback agent call: the session bearer + tenant route, plus any extras (e.g. JSON). */
 function H(extra: Record<string, string> = {}): Record<string, string> {
-  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...extra };
+  // `x-aos-tool` is TELEMETRY only — the server buckets per-tool latency by it (request-metrics.ts) and
+  // grants nothing on it. Authority stays with the session secret above.
+  const tool = toolContext.getStore();
+  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...(tool ? { 'x-aos-tool': tool } : {}), ...extra };
 }
 
 interface JsonRpc {
@@ -3229,6 +3241,9 @@ async function handle(req: JsonRpc): Promise<void> {
   if (method === 'tools/call') {
     const name = params?.name as string;
     const args = (params?.arguments as Record<string, unknown>) || {};
+    // Everything this call does downstream runs inside the tool's name, so each loopback request carries
+    // `x-aos-tool` (see H()) and the server can report latency per TOOL, not only per route.
+    return toolContext.run(name ?? 'unknown', async () => {
     try {
       const text =
         name === 'recall' ? await recall(args)
@@ -3315,7 +3330,7 @@ async function handle(req: JsonRpc): Promise<void> {
       // error was reporting itself as a memory failure, sending the agent to the wrong subsystem).
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `${name ?? 'tool'} error: ${e instanceof Error ? e.message : String(e)}` }], isError: true } });
     }
-    return;
+    });
   }
 
   // Unknown method with an id → proper JSON-RPC error; ignore id-less calls.

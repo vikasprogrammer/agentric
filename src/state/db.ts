@@ -1161,6 +1161,9 @@ function migrate(db: Db): void {
   // Indices the feed view leans on: sessions ordered by recency within a state, pending decisions, and the
   // session→task→goal attribution join (tasks.last_session_id). All IF NOT EXISTS, so a no-op on re-run.
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_status_updated ON term_sessions(status, updated_at)');
+  // An agent's OWN run history (`session_history`, `sessionBelongsToAgent`) is a per-agent, newest-first
+  // read; without this it scanned every session row in the tenant.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_agent ON term_sessions(agent, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_last_session ON tasks(last_session_id)');

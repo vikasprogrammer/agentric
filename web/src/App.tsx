@@ -16280,6 +16280,44 @@ function EndpointTimingsPanel() {
                 </tbody>
               </table>
             </div>
+            {/* The same clock, keyed by the MCP TOOL an agent called. Routes answer "which endpoint costs
+                the most"; this answers "what is an AGENT waiting on mid-run" — and the two don't map 1:1.
+                Tools that block on a human/delegate by design are flagged and sorted last, so a 40-minute
+                `ask_human` never reads as the slowest thing in the system. */}
+            {snap.tools && snap.tools.length > 0 && (
+              <div className="overflow-x-auto">
+                <div className="pb-1 pt-2 text-xs font-medium text-muted-foreground">Agent tool calls (MCP)</div>
+                <table className="w-full text-xs">
+                  <thead className="text-muted-foreground">
+                    <tr className="text-left">
+                      <th className="py-1 pr-3 font-medium">tool</th>
+                      <th className="py-1 pr-3 text-right font-medium">calls</th>
+                      <th className="py-1 pr-3 text-right font-medium">total</th>
+                      <th className="py-1 pr-3 text-right font-medium">avg</th>
+                      <th className="py-1 pr-3 text-right font-medium">p95</th>
+                      <th className="py-1 pr-3 text-right font-medium">max</th>
+                      <th className="py-1 text-right font-medium">errors</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snap.tools.map((r) => (
+                      <tr key={r.route} className="border-t">
+                        <td className="py-1 pr-3 font-mono">
+                          {r.route}
+                          {r.blocking && <span className="ml-2 text-muted-foreground" title="blocks on a human or a delegate by design — this is a wait, not a slow endpoint">waits</span>}
+                        </td>
+                        <td className="py-1 pr-3 text-right">{r.count.toLocaleString()}</td>
+                        <td className="py-1 pr-3 text-right font-medium">{ms(r.totalMs)}</td>
+                        <td className="py-1 pr-3 text-right">{r.avgMs < 1 ? '<1ms' : ms(r.avgMs)}</td>
+                        <td className="py-1 pr-3 text-right">≤{ms(r.p95Ms)}</td>
+                        <td className={`py-1 pr-3 text-right ${!r.blocking && r.maxMs >= 1000 ? 'text-amber-500' : ''}`}>{ms(r.maxMs)}</td>
+                        <td className={`py-1 text-right ${r.errors ? 'text-amber-500' : 'text-muted-foreground'}`}>{r.errors || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )}
       </CardContent>

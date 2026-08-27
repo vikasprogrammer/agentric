@@ -8,6 +8,42 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.404.0] - 2026-08-27
+### Added
+- **Per-tool latency for every agent-facing MCP tool.** The request-metrics collector already answered
+  "which endpoint costs the most"; it could not answer "what is an AGENT waiting on mid-run", because one
+  tool can span routes and one route serves several tools. `src/memory/memory-mcp.ts` now tags every
+  loopback call with `x-aos-tool` (bound per call through an `AsyncLocalStorage`, so concurrent tool calls
+  can't mislabel each other), and the server buckets those into a second dimension —
+  `tools[]` on `GET /api/metrics/requests`, and an "Agent tool calls (MCP)" table under Settings →
+  Endpoint timings. The header is telemetry only: authority stays with the session secret, and the tool map
+  is capped like the route map, so a forged header buys nothing and can't grow the table.
+  Tools that block on a human or a delegate by design (`ask_human`, `ask_agent`, `task_wait`) are FLAGGED
+  and sorted below real work — a 40-minute wait on a person is not a slow endpoint and must never rank as one.
+
+### Changed
+- **`session_history` / `session_open` stop building the whole tenant to answer about one agent.**
+  `sessionsForAgent` was `listSessions().filter(...)`: it materialised every session row (full `task`
+  prose), polled tmux liveness, backfilled cost by parsing up to 20 transcripts and stamped insights — then
+  discarded ~99% of it. Measured against a copy of a live 1k-session tenant: **19ms of handler time to
+  return ≤20 rows**, growing with the tenant rather than with the answer, on a tool an agent calls mid-run.
+  It now selects the agent's own ids in SQL (`query`/`excludeId`/`limit` pushed down, new
+  `idx_sessions_agent(agent, created_at)`) and derives only those rows — **19ms → 1.4ms**. `session_open`'s
+  ownership test is one indexed row-lookup (`sessionBelongsToAgent`) instead of resolving the agent's entire
+  history to `.find()` one id — **17.5ms → 1.5ms**.
+- **`task_list` uses the index it already had.** `TaskStore.list` over-fetched 5× the limit and applied
+  `status`/`assignee` in JS while `idx_tasks_assignee(tenant, assignee)` sat unused. Both filters are now in
+  SQL (the JS pass stays as the exactness guard) and the over-fetch is kept only for `label`, which has no
+  column of its own — **6.4ms → 3.0ms** on a 500-task board. Same rows, same order.
+
+### Notes
+- Benchmarking all 64 tools against a scrubbed copy of a live tenant put the memory plane an order of
+  magnitude above everything else: `recall` **260ms**, `remember` **170–480ms**, versus ≤3ms for every
+  local-DB tool. That is not an index — it is the remote automem backend's round trip (TCP connect 155ms,
+  TLS 325ms to an `fr-1` host). Switching the same copy to the built-in `sqlite` backend put recall at 4ms
+  and remember at 2ms. Co-locating automem (or fronting it with the local mirror on the read path) is worth
+  more than every other tool optimisation combined.
+
 ## [0.403.2] - 2026-08-27
 ### Fixed
 - **A stopped session is never a dead end — "Resume & take over" on the read-only view.** A run claimed

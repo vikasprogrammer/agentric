@@ -1595,8 +1595,36 @@ export class TerminalManager {
    * `Member` viewer — the agent-facing routes gate on the CALLER'S own agent id (an agent only ever
    * sees its own sessions, never a sibling's), which the member-visibility rules can't express.
    */
-  sessionsForAgent(agent: string): Session[] {
-    return this.listSessions().filter((s) => s.agent === agent);
+  sessionsForAgent(agent: string, opts: { query?: string; excludeId?: string; limit?: number } = {}): Session[] {
+    // Select the agent's OWN ids first, in SQL, then derive the full shape for only those rows. The old
+    // shape — `listSessions().filter(...)` — materialised every session in the tenant (full `task` prose)
+    // and ran the whole derivation chain (tmux liveness, cost backfill of up to 20 transcripts, insights
+    // stamping) to then throw ~99% of it away: 18ms on a 1k-session tenant, growing with the tenant, for
+    // a tool an agent calls mid-run. The filters live here rather than in the caller so the LIMIT is
+    // applied before that derivation, not after.
+    const limit = Math.min(Math.max(Math.floor(opts.limit ?? 20), 1), 100);
+    const args: unknown[] = [agent];
+    let where = 'agent = ? AND archived_at IS NULL';
+    if (opts.excludeId) { where += ' AND id != ?'; args.push(opts.excludeId); }
+    const q = opts.query?.trim().toLowerCase();
+    if (q) {
+      // Same substring match the route did in JS, moved into SQL so it narrows before the LIMIT.
+      where += ' AND (lower(title) LIKE ? OR lower(task) LIKE ?)';
+      args.push(`%${q}%`, `%${q}%`);
+    }
+    const ids = this.db
+      .prepare(`SELECT id FROM term_sessions WHERE ${where} ORDER BY created_at DESC LIMIT ?`)
+      .all<{ id: string }>(...args, limit)
+      .map((r) => r.id);
+    return this.listSessions(undefined, undefined, ids);
+  }
+
+  /** Does this session belong to that agent (and is it visible — not archived)? The ownership check
+   *  behind `session_open`, which used to resolve the agent's ENTIRE history just to test one id. */
+  sessionBelongsToAgent(sessionId: string, agent: string): boolean {
+    return !!this.db
+      .prepare('SELECT 1 FROM term_sessions WHERE id = ? AND agent = ? AND archived_at IS NULL')
+      .get(sessionId, agent);
   }
 
   /**

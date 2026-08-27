@@ -200,11 +200,19 @@ export interface RouteStat {
   errors: number
 }
 
+/** The same timing, keyed by the agent-facing MCP tool that made the call (`x-aos-tool`). */
+export interface ToolStat extends RouteStat {
+  /** The tool waits on a human or a delegate by design (`ask_human`, `task_wait`) — its clock is not code. */
+  blocking: boolean
+}
+
 /** Per-endpoint timings + independent event-loop lag — see src/edge/request-metrics.ts. */
 export interface RequestMetricsSnapshot {
   since: number
   requests: number
   routes: RouteStat[]
+  /** Per-MCP-tool timings; empty until an agent session has called one since the last restart. */
+  tools?: ToolStat[]
   loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number }
   error?: string
 }
