@@ -3869,6 +3869,10 @@ export class TerminalManager {
    *  procedure; feeding all of it to a semantic search returns the fleet's most generic memories,
    *  because the distinctive words are buried under boilerplate. The first sentences carry the subject. */
   private static readonly PRELOAD_QUERY_MAX = 400;
+  /** Over-fetch factor for the preamble. Episodes are filtered out AFTER retrieval (no backend expresses
+   *  "exclude this tag" — automem's tag_mode is `all`), so ask for more than we need and keep the first
+   *  `count` that survive. */
+  private static readonly PRELOAD_OVERFETCH = 4;
   /** A launch must never wait on the memory store. Past this, fall back to the local ranking and go. */
   private static readonly PRELOAD_TIMEOUT_MS = 2_500;
 
@@ -3893,6 +3897,17 @@ export class TerminalManager {
    * Falls back to the old importance ordering whenever the task-ranked path can't answer — no task text
    * (a bare interactive session), a recall that throws, times out, or returns nothing. So the preamble is
    * never worse than it was, and a slow or unreachable backend costs a launch at most PRELOAD_TIMEOUT_MS.
+   *
+   * **Episodes are excluded.** An episode's text OPENS with the session's task line, so a task-shaped
+   * query matches episodes better than it matches the lessons distilled from them — measuring 8 realistic
+   * agent/task pairs against the live instapods store, **44% of preamble slots (28/64)** came back as raw
+   * past task prompts, and one agent spent 4 of 8 slots on near-identical replays of the same daily sweep
+   * while the reconciliation lesson it has been recalled on 185 times was crowded out. Task-ranking made
+   * that bias systematic, so the retrieval has to correct for it. Episodes exist for Dreaming and the
+   * consolidation gardener, which read them from the ledger directly; "what you already know" should be
+   * the conclusions, not a transcript of past assignments. Same reason near-identical survivors are
+   * collapsed: v0.396.0 stops byte-identical episodes being STORED, but older rows differing by a few
+   * characters would otherwise take several slots to say one thing.
    */
   private async memoryPreamble(selfAgent?: string, task?: string): Promise<string> {
     const preload = this.os.settings.memoryConfig()?.preload;
@@ -3913,10 +3928,18 @@ export class TerminalManager {
           timer = setTimeout(() => rej(new Error('preload recall timed out')), TerminalManager.PRELOAD_TIMEOUT_MS);
         });
         const hits = await Promise.race([
-          this.os.memory.recall({ tenant: this.os.tenant, agentId: selfAgent, query, limit: n, scope: 'all' }),
+          // Over-fetch: episodes and near-duplicates are dropped below, and no backend can express
+          // "exclude this tag" in the query itself (automem's tag_mode is `all`, an AND-filter).
+          this.os.memory.recall({
+            tenant: this.os.tenant,
+            agentId: selfAgent,
+            query,
+            limit: Math.min(n * TerminalManager.PRELOAD_OVERFETCH, 100),
+            scope: 'all',
+          }),
           timeout,
         ]);
-        lines = hits.map((h) => h.content);
+        lines = distinctLines(hits.filter((h) => !isEpisodeRecord(h)).map((h) => h.content), n);
         relevant = lines.length > 0;
       } catch {
         /* fall through to the salience ordering below */
@@ -3927,15 +3950,21 @@ export class TerminalManager {
 
     if (!lines.length) {
       try {
-        lines = this.db
-          .prepare(
-            `SELECT content FROM memories
-             WHERE tenant = ? AND (scope = 'tenant' OR (scope = 'agent' AND agent_id = ?))
-             ORDER BY COALESCE(importance, 0.5) DESC, COALESCE(last_recalled_at, created_at) DESC
-             LIMIT ?`,
-          )
-          .all<{ content: string }>(this.os.tenant, selfAgent, n)
-          .map((r) => r.content);
+        // Same exclusion on the fallback path (`tags` is a JSON array in the ledger), so which path
+        // answered never changes WHAT KIND of memory an agent is seeded with.
+        lines = distinctLines(
+          this.db
+            .prepare(
+              `SELECT content FROM memories
+               WHERE tenant = ? AND (scope = 'tenant' OR (scope = 'agent' AND agent_id = ?))
+                 AND COALESCE(tags, '') NOT LIKE '%"episode"%'
+               ORDER BY COALESCE(importance, 0.5) DESC, COALESCE(last_recalled_at, created_at) DESC
+               LIMIT ?`,
+            )
+            .all<{ content: string }>(this.os.tenant, selfAgent, n * TerminalManager.PRELOAD_OVERFETCH)
+            .map((r) => r.content),
+          n,
+        );
       } catch {
         return ''; // preamble is best-effort; a query failure must never block a session launch
       }
@@ -7686,6 +7715,33 @@ function composeEpisode(
   const content = [taskLine, `Outcome: ${outcome}`, `Activity: ${parts.join(', ')}.`].filter((l) => l !== '').join('\n').trim();
   const { importance, signals } = episodeSalience('audit', outcome, events);
   return { content, outcome, source: 'audit', importance, signals };
+}
+
+/** Is this record a session EPISODE rather than a distilled lesson? Tagged `episode` at write time
+ *  (`writeEpisode`); the `Task:` opening is the belt-and-braces check for rows stored before the tag, or
+ *  by a backend that drops tags on the way back. */
+export function isEpisodeRecord(r: { content?: string; tags?: string[] }): boolean {
+  if (r.tags?.includes('episode')) return true;
+  return /^\s*Task:/.test(r.content ?? '');
+}
+
+/** Collapse near-identical entries and cap at `limit`. Two memories that open the same ~80 characters say
+ *  the same thing for a reader's purposes — several slots for one fact is the failure this prevents (one
+ *  live agent's preamble spent 4 of 8 slots on replays of the same daily sweep). Order is preserved, so
+ *  the best-ranked copy of a repeated fact is the one kept. */
+export function distinctLines(contents: string[], limit: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of contents) {
+    const text = (c ?? '').trim();
+    if (!text) continue;
+    const key = text.replace(/\s+/g, ' ').slice(0, 80).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /** Derive a short, single-line session title from an agent's free-text report summary:

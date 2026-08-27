@@ -641,6 +641,21 @@ bears on THIS work. Going through the provider also reinforces the hits
 (`recall_count`/`last_recalled_at`), so preloaded memories now participate in the usage signal that prune
 and re-ranking read instead of being invisible to it.
 
+**Episodes are excluded.** An episode's text OPENS with the session's task line, so a task-shaped query
+matches episodes better than the lessons distilled from them — task-ranking made that bias systematic.
+Measured over 8 realistic agent/task pairs against the live instapods store: **28 of 64 preamble slots
+(44%) were raw past task prompts**, and `check-resolve-tickets` spent 4 of 8 slots on near-identical
+replays of one daily sweep while the reconciliation lesson it has been recalled on 185 times was crowded
+out. The preamble now over-fetches (`PRELOAD_OVERFETCH` = 4×), drops anything tagged `episode` (or opening
+`Task:`, for rows predating the tag), collapses near-identical survivors on their first 80 chars
+(`distinctLines`), and keeps the first `count`. Same exclusion on the fallback path, so which path answered
+never changes WHAT KIND of memory an agent is seeded with. After: **0 of 64 slots** are episodes, and the
+engineer's deploy task is seeded with five concrete deploy-failure lessons instead. Episodes still exist
+for Dreaming and the consolidation gardener, which read them from the ledger directly — "what you already
+know" should be the conclusions, not a transcript of past assignments. One consequence worth knowing: an
+agent whose store is overwhelmingly episodic gets a SHORTER preamble (2 of 8 slots for
+`check-resolve-tickets`) rather than a padded one.
+
 **It degrades, never blocks.** No task text (a bare interactive session), a recall that throws, one that
 returns nothing, or one that hasn't answered within `PRELOAD_TIMEOUT_MS` = 2.5s → fall back to the old
 importance ordering. So the preamble is never worse than before, and an unreachable backend costs a launch
