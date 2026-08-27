@@ -15386,7 +15386,14 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
             <p className="text-xs text-muted-foreground">Changes the OS suggests from what it’s been seeing. Nothing happens until you decide — <strong>Apply</strong> makes the change (reversible), <strong>Dismiss</strong> hides it.</p>
           </div>
           {recs.length === 0
-            ? <div className="text-xs text-muted-foreground">Nothing to flag right now. If agents start hitting friction — rejected actions, budget limits, low success — suggestions appear here.</div>
+            ? <div className="space-y-1 text-xs text-muted-foreground">
+                <div>Nothing to flag right now. Two conditions are watched, both from the recent window:</div>
+                <ul className="ml-4 list-disc space-y-0.5">
+                  <li><strong>3+ rejected approvals</strong> at a 20%+ rejection rate — a capability may belong on the deny list, or the gate may just be friction.</li>
+                  <li><strong>2+ budget stops</strong> — raise the caps, or tighten what agents are asked to do.</li>
+                </ul>
+                <div>An empty panel means neither has fired, not that nothing could be improved. Suggestions keyed to run <em>quality</em> are deliberately absent until an outcome derived from observable facts replaces the agent’s own grade of its own work.</div>
+              </div>
             : recs.map((r) => (
                 <div key={r.id} className="rounded-md border p-3">
                   <div className="flex items-start justify-between gap-3">

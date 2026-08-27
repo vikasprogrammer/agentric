@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.401.1] - 2026-08-27
+### Fixed
+- **The "Things to consider" panel no longer promises a signal that was deleted.** Its empty state read
+  "if agents start hitting friction — rejected actions, budget limits, *low success* — suggestions appear
+  here", but `low success` was retired in Step 0 (it divided self-reported successes by all sessions) and
+  cannot be produced. An empty panel therefore read as "all clear" when it meant "two narrow conditions
+  are watched and neither fired" — `policy.review` (≥3 rejected approvals at ≥20%) and `budget.review`
+  (≥2 budget stops), neither of which either live tenant crosses. The empty state now names both
+  conditions with their thresholds and says plainly that quality-keyed suggestions stay absent until a
+  derived outcome replaces the agent's own grade of its own work. Documented as §2f of
+  `docs/insights-revisit.md`, including the candidates deliberately rejected rather than invented to fill
+  the panel.
+
 ## [0.401.0] - 2026-08-27
 ### Fixed
 - **"The fleet frequently works on…" no longer names states and handles.** That list rides in every
