@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.402.1] - 2026-08-27
+### Fixed
+- **v0.401.0 changed the topic extractor without bumping `TOPICS_VERSION`, so nothing it stopped
+  extracting was actually removed.** `topics` is a cumulative map that decays only on a 21-day half-life;
+  the version counter exists precisely so a changed extractor clears the words it used to admit. It was
+  not bumped, so `wait`, `c05cl830mnd`, `d3cby9k`, `d2mp41k` and `already-contacted-in-90-days` all
+  survived in the live maps — and `wait:3` sat exactly on `MIN_TOPIC_COUNT`, so the guidance line every
+  instawp agent reads still said "the fleet frequently works on: freescout, apache2, **wait**". Bumped to
+  4; both tenants rebuild their map from the current corpus on the next pass. This is the **second** time
+  the counter was missed (v0.281.3 tightened `isEntity` the same way), and the warning telling you to bump
+  it sits two paragraphs above the constant — so a comment is demonstrably not enough. The insights test
+  now **fingerprints the extractor** (the `STOP` literal plus `topicCounts`/`properNouns`/`isEntity`) and
+  fails the build when it changes without a bump, naming the new hash and the version to move.
+
 ## [0.402.0] - 2026-08-27
 ### Fixed
 - **A finished run is no longer a delivery target for good news.** The wake queue picks a live pane by

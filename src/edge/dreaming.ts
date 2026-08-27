@@ -77,9 +77,14 @@ const MIN_TOPIC_COUNT = 3;
  *
  * **Bump this in the same commit as any change to `isEntity`/`properNouns`/`STOP`.** v0.281.3 tightened
  * `isEntity` (opaque hex ids) without bumping, so the ids already stored stayed in the map — the exact
- * failure this counter exists to prevent.
+ * failure this counter exists to prevent. v0.401.0 then did it AGAIN — it stopped extracting `wait`,
+ * `c05cl830mnd`, `d3cby9k` and `already-contacted-in-90-days`, and every one of them stayed in the live
+ * maps, with `wait:3` sitting exactly on {@link MIN_TOPIC_COUNT} and therefore still headlining the
+ * guidance line every agent reads. A comment is evidently not enough to enforce this, so
+ * `scripts/insights-signal-test.cjs` now fingerprints the extractor and fails the build when it changes
+ * without a bump.
  */
-const TOPICS_VERSION = 3;
+export const TOPICS_VERSION = 4;
 const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none',
   // Procedural / plumbing words — they describe HOW an agent worked, not WHAT the fleet works on, so they
   // drown the real topics ("slack, check, report, completed, summary" is a useless "frequently works on").
