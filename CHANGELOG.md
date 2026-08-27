@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.400.0] - 2026-08-27
+### Changed
+- **The launch preamble carries lessons, not a transcript of past assignments.** An episode's text opens
+  with the session's task line, so ranking the preamble against the task (v0.399.0) matched episodes
+  better than the lessons distilled from them — the bias was systematic, not incidental. Measured over 8
+  realistic agent/task pairs against the live instapods store: **28 of 64 preamble slots (44%) were raw
+  past task prompts**, and `check-resolve-tickets` spent 4 of 8 slots on near-identical replays of one
+  daily sweep while the reconciliation lesson it has been recalled on 185 times was crowded out. The
+  preamble now over-fetches 4×, drops anything tagged `episode` (or opening `Task:`, for rows predating
+  the tag), collapses near-identical survivors, and keeps the first `count` — on the fallback path too, so
+  which path answered never changes what kind of memory an agent is seeded with. After: **0 of 64 slots**
+  are episodes, and an engineer asked about repeated deploy failures is seeded with five concrete
+  deploy-failure lessons. Episodes remain what Dreaming and the consolidation gardener read. An agent
+  whose store is overwhelmingly episodic now gets a shorter preamble rather than a padded one.
+
 ## [0.399.0] - 2026-08-27
 ### Changed
 - **The launch-time memory preamble is ranked against the task, not the agent's all-time top 8.**

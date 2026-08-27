@@ -29,7 +29,7 @@ let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
-const { TerminalManager } = require(path.join(ROOT, 'dist/terminal.js'));
+const { TerminalManager, isEpisodeRecord, distinctLines } = require(path.join(ROOT, 'dist/terminal.js'));
 
 const aos = loadAgentOS();
 const tm = new TerminalManager(aos, 'http://127.0.0.1:0', path.join(HOME, 'tmux.sock'));
@@ -91,6 +91,45 @@ const setPreload = (cfg) => aos.settings.setMemoryConfig({ ...(aos.settings.memo
   // an agent in a workspace with nothing shared and nothing of its own gets no preamble at all
   aos.db.prepare("DELETE FROM memories WHERE scope = 'tenant'").run();
   assert((await tm.memoryPreamble('brand-new-agent', 'anything at all')) === '', 'with nothing to say, the preamble is omitted rather than emitted empty');
+
+  // ── episodes are for Dreaming, not for the prompt ───────────────────────────────────────────────
+  console.log('\nthe preamble carries lessons, not a transcript of past assignments\n');
+  aos.db.prepare('DELETE FROM memories').run();
+  // What the live store looks like: many episodes that OPEN with the task (so a task-shaped query matches
+  // them best), and one distilled lesson that is what the agent actually needs.
+  for (let i = 0; i < 10; i++) {
+    const r = await remember('qa', `Task: Run the nightly Bunny edge-rule sweep on the canary. Outcome: success. Pass ${i}.`, 0.8);
+    aos.db.prepare("UPDATE memories SET tags = '[\"episode\",\"session-end\"]' WHERE id = ?").run(r.id);
+  }
+  await remember('qa', 'Bunny edge-rule QA cannot be done on a *.instawp.site sandbox — it never traverses the edge, so every probe returns a misleading 200. Use the canary pull zone.', 0.7);
+
+  const qa = await tm.memoryPreamble('qa', 'Run the nightly Bunny edge-rule sweep and check the results.');
+  const items = qa.split('\n').filter((l) => l.startsWith('- '));
+  assert(items.length > 0, 'the preamble is still produced when episodes dominate the store');
+  assert(!items.some((l) => l.includes('Task: Run the nightly')), 'raw session episodes are kept OUT of the prompt', items[0]);
+  assert(items.some((l) => /never traverses the edge/.test(l)), 'the distilled lesson is what the agent is seeded with');
+
+  // …and the salience fallback obeys the same rule, so which path answered can't change what kind of
+  // memory an agent gets.
+  const qaFallback = await tm.memoryPreamble('qa', '');
+  assert(!qaFallback.includes('Task: Run the nightly'), 'the salience fallback excludes episodes too');
+
+  console.log('\nunit: the two rules the preamble is built on\n');
+  assert(isEpisodeRecord({ tags: ['episode', 'session-end'], content: 'anything' }), 'an episode is identified by its tag');
+  assert(isEpisodeRecord({ content: 'Task: do the thing\nOutcome: success' }), '…and by its Task: opening when tags are missing');
+  assert(!isEpisodeRecord({ tags: ['lesson'], content: 'A durable fact about the system.' }), 'a lesson is not an episode');
+  assert(!isEpisodeRecord({ content: 'Tasks queue up behind a slow migration.' }), 'a memory merely mentioning tasks is not an episode');
+
+  // The key is the first 80 chars, so the fixture has to share that much — which is the real shape:
+  // two writes of the same lesson that diverge only in a trailing detail.
+  const head = 'Bunny edge-rule QA cannot be done on a *.instawp.site sandbox — it never traverses the edge';
+  const collapsed = distinctLines([`${head}, so probes return 200. (A)`, `${head}, so probes return 200. (B)`, 'A different fact entirely.'], 8);
+  assert(collapsed.length === 2, 'near-identical entries collapse to one slot', JSON.stringify(collapsed));
+  assert(collapsed[0].endsWith('(A)'), 'the best-ranked copy of a repeated fact is the one kept');
+  // Short memories that merely start alike are NOT collapsed — the rule is a duplicate guard, not a topic
+  // filter, so two brief facts on the same subject both survive.
+  assert(distinctLines(['Deploys fail on Node 18.', 'Deploys fail on Go 1.22.'], 8).length === 2, 'two short distinct facts both survive');
+  assert(distinctLines(['a', 'b', 'c', 'd'], 2).length === 2, 'the cap is respected');
 
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m\n`);
   try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
