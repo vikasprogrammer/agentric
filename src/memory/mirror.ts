@@ -78,11 +78,43 @@ export class MirroredMemoryProvider implements MemoryProvider {
     return this.backend.count ? this.backend.count(tenant) : Promise.resolve(null);
   }
 
+  /**
+   * Upkeep across BOTH stores. The local mirror decides what to drop — it is the only side that holds the
+   * SQL-level signals prune and dedupe key off (age, `recall_count`, importance, exact-content grouping)
+   * — and every id it removed is then deleted from the external backend, so the two stay in step.
+   *
+   * This used to trust the backend to look after itself ("automem self-maintains") and prune the mirror
+   * silently alongside. Neither half held: automem's enrichment/consolidation does NOT remove exact
+   * duplicates (a live tenant carried the SAME episode 177 times, 7% of its whole store, and it ranked in
+   * recall probes), and because the result came from the backend, the API reported `pruned: 0` while rows
+   * really did vanish from the mirror. So enabling upkeep on an external backend made the two stores
+   * diverge — agents kept recalling exactly what the console had been told was pruned.
+   *
+   * Order is mirror-first, backend-second: the backend delete is per-id over the network and some of them
+   * can fail, and a mirror row left behind for a backend row that IS gone is the worse failure (the local
+   * ledger, which Dreaming and the hub counts read, would claim memories that recall can never return).
+   * Failures are counted into `backendFailures` rather than swallowed.
+   */
   async maintain(opts: MemoryMaintenance): Promise<MemoryMaintenanceResult> {
-    // The backend self-maintains (automem) or prunes its own store (libsql); either way, keep the
-    // local mirror bounded with the same policy so it doesn't grow forever behind an external store.
-    const res = this.backend.maintain ? await this.backend.maintain(opts) : { pruned: 0, merged: 0 };
-    try { await this.mirror.maintain?.(opts); } catch { /* best-effort */ }
-    return res;
+    const backendRes = this.backend.maintain ? await this.backend.maintain(opts) : { pruned: 0, merged: 0 };
+    let local: MemoryMaintenanceResult = { pruned: 0, merged: 0 };
+    try { local = (await this.mirror.maintain?.(opts)) ?? local; } catch { /* best-effort */ }
+
+    let backendFailures = 0;
+    for (const r of local.removed ?? []) {
+      // `admin` bypasses the author guard: upkeep is the workspace's own housekeeping, not one agent
+      // reaching into another agent's memories.
+      try {
+        const ok = await this.backend.delete({ tenant: r.tenant, agentId: r.agentId, id: r.id, admin: true });
+        if (!ok) backendFailures++;
+      } catch { backendFailures++; }
+    }
+
+    return {
+      pruned: local.pruned + backendRes.pruned,
+      merged: local.merged + backendRes.merged,
+      removed: local.removed,
+      backendFailures,
+    };
   }
 }
