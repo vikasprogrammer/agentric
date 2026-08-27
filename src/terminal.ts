@@ -2545,7 +2545,11 @@ export class TerminalManager {
     // The unattended brief rides the same appended prompt, on exactly the lane `markTurnIdle` tears down
     // at turn-end (headless, non-resident) — a resident chat pane and a member's own session both survive
     // a turn boundary, so telling them "this run ends when your turn ends" would simply be false.
-    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, tuning.verbosity, !!o.headless && !o.resident);
+    // The memory preamble is I/O (a recall against the live store), so it is resolved HERE — in the
+    // async launcher — and handed to `buildCompanyMd`, which stays a pure synchronous assembly of the
+    // prompt. Keeps every other caller (and four governance tests) on the sync signature.
+    const preamble = await this.memoryPreamble(o.agent, o.task);
+    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, tuning.verbosity, !!o.headless && !o.resident, preamble);
     // Skills + sub-agents are materialised as native filesystem conventions (`.claude/skills`,
     // `.claude/agents`), so they only apply to a runtime that discovers them. Codex has its own
     // (differently-shaped) skills mechanism — not wired yet, so we skip rather than write files it
@@ -3861,11 +3865,99 @@ export class TerminalManager {
     return file;
   }
 
+  /** How much of a task is used as the retrieval query. A cron/standing-order task can be 2KB of
+   *  procedure; feeding all of it to a semantic search returns the fleet's most generic memories,
+   *  because the distinctive words are buried under boilerplate. The first sentences carry the subject. */
+  private static readonly PRELOAD_QUERY_MAX = 400;
+  /** A launch must never wait on the memory store. Past this, fall back to the local ranking and go. */
+  private static readonly PRELOAD_TIMEOUT_MS = 2_500;
+
+  /**
+   * The launch-time memory preamble (Settings → Memory `preload`, off by default): seed a cold session
+   * with what this agent already knows, instead of relying on it to call `recall` itself.
+   *
+   * Ranked **against this session's task** when there is one. The first version of this ordered by
+   * `importance DESC, last_recalled_at DESC` with no query at all — the same 8 memories on every launch
+   * regardless of the work. On live instapods that put "Never auto-send email as the marketing agent"
+   * (importance 0.95, tenant-shared) at the top of the ENGINEER's prompt, and spent two of eight slots on
+   * marketing copy rules; below the top ~70 rows the order was decided almost entirely by the tiebreaker,
+   * since 893 memories share importance 0.8 and 912 share 0.7. A head start that ignores the task is a
+   * weak one.
+   *
+   * Now the task text (first `PRELOAD_QUERY_MAX` chars — see the constant) is the recall query, through
+   * the real provider, so the backend's own ranking picks the memories that bear on THIS work. Going
+   * through the provider also means the hits are reinforced (`recall_count`/`last_recalled_at`), so
+   * preloaded memories participate in the usage signal that prune and re-ranking read, rather than being
+   * invisible to it.
+   *
+   * Falls back to the old importance ordering whenever the task-ranked path can't answer — no task text
+   * (a bare interactive session), a recall that throws, times out, or returns nothing. So the preamble is
+   * never worse than it was, and a slow or unreachable backend costs a launch at most PRELOAD_TIMEOUT_MS.
+   */
+  private async memoryPreamble(selfAgent?: string, task?: string): Promise<string> {
+    const preload = this.os.settings.memoryConfig()?.preload;
+    if (!preload?.enabled || !selfAgent) return '';
+    const n = Math.max(1, Math.min(Math.floor(preload.count ?? 8), 25));
+
+    const query = (task ?? '').replace(/\s+/g, ' ').trim().slice(0, TerminalManager.PRELOAD_QUERY_MAX);
+    let lines: string[] = [];
+    let relevant = false;
+
+    if (query) {
+      // The timer is deliberately NOT unref'd: a recall that never settles leaves the event loop with
+      // nothing else pending, so an unref'd timer lets node exit before the timeout can fire — the launch
+      // would die silently rather than fall back. Cleared as soon as the race settles either way.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timeout = new Promise<never>((_, rej) => {
+          timer = setTimeout(() => rej(new Error('preload recall timed out')), TerminalManager.PRELOAD_TIMEOUT_MS);
+        });
+        const hits = await Promise.race([
+          this.os.memory.recall({ tenant: this.os.tenant, agentId: selfAgent, query, limit: n, scope: 'all' }),
+          timeout,
+        ]);
+        lines = hits.map((h) => h.content);
+        relevant = lines.length > 0;
+      } catch {
+        /* fall through to the salience ordering below */
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
+    if (!lines.length) {
+      try {
+        lines = this.db
+          .prepare(
+            `SELECT content FROM memories
+             WHERE tenant = ? AND (scope = 'tenant' OR (scope = 'agent' AND agent_id = ?))
+             ORDER BY COALESCE(importance, 0.5) DESC, COALESCE(last_recalled_at, created_at) DESC
+             LIMIT ?`,
+          )
+          .all<{ content: string }>(this.os.tenant, selfAgent, n)
+          .map((r) => r.content);
+      } catch {
+        return ''; // preamble is best-effort; a query failure must never block a session launch
+      }
+    }
+    if (!lines.length) return '';
+
+    const heading = relevant
+      ? '# What you already know — your memories most relevant to this task'
+      : '# What you already know — your most salient memories';
+    return (
+      `${heading}\n\n` +
+      "Surfaced from your persistent memory so you don't start blind. This is a HEAD START, not the " +
+      'whole picture — `recall` for more on any specific topic before non-trivial work.\n\n' +
+      lines.map((c) => `- ${c.replace(/\s+/g, ' ').trim()}`).join('\n')
+    );
+  }
+
   /** The workspace Company context markdown (or '' if unset) — appended to claude's system prompt.
    *  We tack on OS-owned operating notes after the user's content. The terminal here is a browser
    *  xterm (over ttyd) running the TUI on the alternate screen with mouse reporting on, so embedded
    *  terminal hyperlinks (OSC 8) aren't clickable — the agent must surface raw URLs as plain text. */
-  private buildCompanyMd(selfAgent?: string, actingMember?: string, verbosity?: Verbosity, unattended = false): string {
+  private buildCompanyMd(selfAgent?: string, actingMember?: string, verbosity?: Verbosity, unattended = false, preamble = ''): string {
     const company = this.os.settings.company().companyMd.trim();
     // Per-member personal context: free-text the human you run AS chose to inject into their sessions
     // (their working style, standing preferences, domain notes). Self-service, owner-scoped — set on
@@ -3993,29 +4085,6 @@ export class TerminalManager {
     // agent's most salient memories so a cold session isn't blind, instead of relying on it to call
     // `recall`. Reads the local `memories` ledger directly (node:sqlite is synchronous) — the same
     // store recall ranks over. Best-effort: never let a preamble query block a launch.
-    let preamble = '';
-    const preload = this.os.settings.memoryConfig()?.preload;
-    if (preload?.enabled && selfAgent) {
-      const n = Math.max(1, Math.min(Math.floor(preload.count ?? 8), 25));
-      try {
-        const rows = this.db
-          .prepare(
-            `SELECT content FROM memories
-             WHERE tenant = ? AND (scope = 'tenant' OR (scope = 'agent' AND agent_id = ?))
-             ORDER BY COALESCE(importance, 0.5) DESC, COALESCE(last_recalled_at, created_at) DESC
-             LIMIT ?`,
-          )
-          .all<{ content: string }>(this.os.tenant, selfAgent, n);
-        if (rows.length)
-          preamble =
-            '# What you already know — your most salient memories\n\n' +
-            "Surfaced from your persistent memory so you don't start blind. This is a HEAD START, not the " +
-            'whole picture — `recall` for more on any specific topic before non-trivial work.\n\n' +
-            rows.map((r) => `- ${r.content.replace(/\s+/g, ' ').trim()}`).join('\n');
-      } catch {
-        /* preamble is best-effort; a query failure must never block a session launch */
-      }
-    }
     // The strategic layer — the active company goals this agent's work should ladder up to. Injected so
     // "why am I doing this" is answerable straight from the prompt (goal_list is the live equivalent).
     // Human-owned; toggleable in Settings. Capped so a long goal list can't dominate every prompt.

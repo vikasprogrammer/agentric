@@ -620,6 +620,38 @@ Turning the setting off (`MEMORY_AUTO_SUMMARIZE=false`, or raising `MEMORY_CONTE
 limit) is still worth doing on a rewriting deployment, since it stops paying an LLM call per write.
 Pinned by `scripts/memory-upkeep-test.cjs`.
 
+### 17.3 The launch preamble is ranked against the task (2026-08-27)
+
+`MemoryConfig.preload` seeds a cold session's prompt with what the agent already knows, so it isn't blind
+before it thinks to call `recall`. The first version ran **no query at all** —
+`ORDER BY importance DESC, last_recalled_at DESC` — i.e. the same memories on every launch whatever the
+work. Two things made that weak on live data:
+
+- **Importance barely orders anything.** instapods has **893** memories at 0.8 and **912** at 0.7, so
+  below the top ~70 rows the ranking is decided almost entirely by the tiebreaker.
+- **Tenant-shared memories crowd the top.** The highest-importance row in the workspace rides in EVERY
+  agent's prompt. On instapods that meant the **engineer's** cold prompt opened with *"Never auto-send
+  email as the marketing agent"* (0.95, tenant-shared), and spent two of its eight slots on marketing copy
+  rules.
+
+Now `TerminalManager.memoryPreamble(agent, task)` uses the session's task (first
+`PRELOAD_QUERY_MAX` = 400 chars — a 2KB cron standing order buries the distinctive words under
+boilerplate) as a **recall query through the real provider**, so the backend's own ranking chooses what
+bears on THIS work. Going through the provider also reinforces the hits
+(`recall_count`/`last_recalled_at`), so preloaded memories now participate in the usage signal that prune
+and re-ranking read instead of being invisible to it.
+
+**It degrades, never blocks.** No task text (a bare interactive session), a recall that throws, one that
+returns nothing, or one that hasn't answered within `PRELOAD_TIMEOUT_MS` = 2.5s → fall back to the old
+importance ordering. So the preamble is never worse than before, and an unreachable backend costs a launch
+at most 2.5 seconds. The timeout timer is deliberately **not** `unref`'d: a recall that never settles
+leaves the event loop with nothing else pending, and an unref'd timer would let node exit before the
+timeout fires — the launch would die silently instead of falling back. Pinned by
+`scripts/memory-preload-test.cjs`.
+
+The recall is I/O, so it is resolved in the async launcher (`launchAgentRuntimeNow`) and handed to
+`buildCompanyMd`, which stays a pure synchronous assembly of the prompt.
+
 ## 18. Shared-scope memory — Phase 0 toward a KB (2026-06-23)
 
 Full plan + as-built deviations: [`shared-memory-phase0-plan.md`](./shared-memory-phase0-plan.md) (✅ shipped).
