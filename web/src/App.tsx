@@ -316,13 +316,19 @@ const resumeAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void
  *  interactive TUI a human watches and steers. Two flavours, one affordance:
  *   • LIVE  → claim the still-streaming pane and attach (nothing interrupted).
  *   • ENDED headless run → resurrect it in place (`claude --resume` the same transcript) and attach.
- *  Offered whenever the run is unattended (`headless` — an interactive run already has its own
- *  live/Resume path), not already claimed, and either still live OR has a conversation to resume
- *  (`forkable` ⇒ a pinned claude session id exists). Keyed on the `headless` FLAG, not on `!resumable`:
- *  every claude-code run persists a launch env now, so the old proxy would have hidden Take over from
- *  the unattended runs it exists for. A claim flips `headless → 0`, so this self-clears either way. */
+ *  LIVE  → only an unclaimed unattended run: claim the streaming pane (an attended run is just "open").
+ *  DEAD  → any run with a conversation (`forkable` ⇒ a pinned claude session id) that CANNOT bring itself
+ *          back: an unattended one (a bare Resume would hand it to the turn-end reaper) or one with no
+ *          persisted launch env for attach.sh to replay. `claimedBy` is deliberately NOT consulted here —
+ *          a claim doesn't revive a dead pane, and a run claimed while live and stopped afterwards (no
+ *          env, because claiming relaunches nothing) would otherwise be offered NOTHING: no Resume, no
+ *          Take over, and opening it just plain-attaches to a pane that is gone ("can't find session:
+ *          aos-…", tmux's own error, seen live on instawp 2026-08-27). `takeoverRun` handles exactly this
+ *          case server-side — it resurrects the transcript and writes the env. */
 const canGoInteractive = (s: Session): boolean =>
-  Boolean(s.headless) && !s.claimedBy && (isLive(s) || Boolean(s.forkable))
+  isLive(s)
+    ? Boolean(s.headless) && !s.claimedBy
+    : Boolean(s.forkable) && (Boolean(s.headless) || !s.resumable)
 
 /** Tooltip for the take-over affordance — states which flavour applies for THIS run. */
 const takeOverTip = (s: Session): string =>
@@ -2961,11 +2967,12 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
     return n >= TERM_FONT_MIN && n <= TERM_FONT_MAX ? n : 14
   })
   useEffect(() => { localStorage.setItem('aos_terminal_font', String(fontSize)) }, [fontSize])
-  // A finished/crashed unattended run has no live pane and nobody has claimed it, so attaching would show
-  // a dead terminal (or silently resurrect a reaped run). Show its captured transcript instead. Attended
-  // sessions — including one that was taken over, which flips `headless → 0` — keep the normal
-  // attach/resume path untouched.
-  const ended = Boolean(session) && !isLive(session!) && Boolean(session!.headless) && !overrideAttach
+  // Show the captured transcript instead of attaching whenever there is no live pane AND nothing would
+  // bring one back: an unattended run (reaped at turn-end — attaching would resurrect what the reaper just
+  // closed) or a run with no persisted launch env for attach.sh to replay (attaching lands on tmux's raw
+  // "can't find session: aos-…"). An attended run WITH an env keeps the normal attach/resume path — that
+  // attach is exactly what resurrects it.
+  const ended = Boolean(session) && !isLive(session!) && (Boolean(session!.headless) || !session!.resumable) && !overrideAttach
   // A LIVE unattended run can be taken over — attach to its streaming pane (see canGoInteractive). Hidden
   // once claimed (overrideAttach flips it off immediately; the prop's claimedBy follows on the next poll).
   const showTakeover = Boolean(session) && !overrideAttach && canGoInteractive(session!)
@@ -3005,8 +3012,10 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
     return () => { alive = false }
   }, [session?.id, tmux, ended, nonce])
   // A finished/crashed run is read-only — show its conversation timeline (falling back to the raw pane
-  // log, then to the reported outcome) rather than attaching to a dead terminal.
-  if (ended && session) return <EndedSession session={session} />
+  // log, then to the reported outcome) rather than attaching to a dead terminal. It is not a dead END,
+  // though: if the run can be resurrected (`canGoInteractive`) the transcript header offers it, and taking
+  // it over flips `overrideAttach` so this same frame re-attaches to the freshly resumed pane.
+  if (ended && session) return <EndedSession session={session} onTakeOver={showTakeover ? takeOver : undefined} takingOver={takingOver} />
   if (err) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-red-400">⚠ {err}</div>
   if (!wsUrl) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
   return (
@@ -3039,7 +3048,24 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
  * run that only tee'd a pane log, with no structured transcript). When neither exists, we show what the
  * run REPORTED via {@link RunReport}, so the pane always answers "what came of it".
  */
-function EndedSession({ session }: { session: Session }) {
+/** "Resume & take over" on a read-only run — the ONE affordance that turns a finished/stopped session
+ *  back into a live TUI. Server-side `takeoverRun` relaunches `claude --resume` on the same transcript,
+ *  claims it for the human, and persists the launch env; the frame then re-attaches to the new pane.
+ *  Rendered only when `canGoInteractive` says this run can actually come back (see its note). */
+function ResumeRunButton({ onTakeOver, takingOver }: { onTakeOver: () => void; takingOver?: boolean }) {
+  return (
+    <button
+      onClick={onTakeOver}
+      disabled={takingOver}
+      className="flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-sky-500 hover:bg-muted hover:text-sky-400 disabled:opacity-50"
+      title="resume this conversation (claude --resume) and take it over — you land in a live terminal you can type into"
+    >
+      <Play className="h-3 w-3" /> {takingOver ? 'resuming…' : 'Resume & take over'}
+    </button>
+  )
+}
+
+function EndedSession({ session, onTakeOver, takingOver }: { session: Session; onTakeOver?: () => void; takingOver?: boolean }) {
   type Phase = 'loading' | 'timeline' | 'raw-only' | 'report'
   const [phase, setPhase] = useState<Phase>('loading')
   const [turns, setTurns] = useState<ChatTurn[]>([])
@@ -3081,7 +3107,7 @@ function EndedSession({ session }: { session: Session }) {
 
   if (phase === 'loading')
     return <div className="flex min-h-0 flex-1 items-center justify-center bg-background text-sm text-muted-foreground"><RefreshCw className="mr-2 h-4 w-4 animate-spin" /> loading transcript…</div>
-  if (phase === 'report') return <RunReport session={session} note={note} />
+  if (phase === 'report') return <RunReport session={session} note={note} onTakeOver={onTakeOver} takingOver={takingOver} />
 
   const canToggle = phase === 'timeline' // a raw-only run has nothing friendlier to switch back to
   const showingRaw = raw || phase === 'raw-only'
@@ -3089,6 +3115,8 @@ function EndedSession({ session }: { session: Session }) {
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
         <span>Session ended · read-only{showingRaw && phase === 'timeline' ? ' · raw terminal' : ''}</span>
+        <span className="flex items-center gap-2">
+        {onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />}
         {canToggle && (
           <button
             onClick={() => (showingRaw ? setRaw(false) : void showRaw())}
@@ -3098,6 +3126,7 @@ function EndedSession({ session }: { session: Session }) {
             <Terminal className="h-3 w-3" /> {showingRaw ? 'Timeline' : 'Raw'}
           </button>
         )}
+        </span>
       </div>
       {showingRaw ? (
         rawLoading
@@ -3122,7 +3151,7 @@ function EndedSession({ session }: { session: Session }) {
  * one-line summary live on the session row, so "what came of it" survives even when "what happened"
  * doesn't. Strictly better than the bare error this replaced, which told the reader nothing at all.
  */
-function RunReport({ session: s, note }: { session: Session; note: string }) {
+function RunReport({ session: s, note, onTakeOver, takingOver }: { session: Session; note: string; onTakeOver?: () => void; takingOver?: boolean }) {
   const v = OUTCOME_TONE[verdictOf(s.outcome) ?? 'none']
   const facts = [
     s.agent,
@@ -3135,6 +3164,7 @@ function RunReport({ session: s, note }: { session: Session; note: string }) {
     <div className="flex min-h-0 flex-1 flex-col bg-black">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-800 px-3 py-1.5 text-xs text-neutral-500">
         <span>Session ended · report</span>
+        {onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />}
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
         <div className="mx-auto max-w-2xl space-y-3">

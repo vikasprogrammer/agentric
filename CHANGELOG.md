@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.403.2] - 2026-08-27
+### Fixed
+- **A stopped session is never a dead end — "Resume & take over" on the read-only view.** A run claimed
+  while it was still LIVE and stopped afterwards had no way back: claiming relaunches nothing, so it never
+  got a launch env, which left it non-`resumable` (no Resume) while `claimedBy`/`headless=0` hid Take over
+  as well. Opening it plain-attached to a pane that was gone and surfaced tmux's own
+  `can't find session: aos-…` (live instawp run, 2026-08-27).
+  - `canGoInteractive` now splits by liveness: LIVE → an unclaimed unattended run (claim the pane); DEAD →
+    any run with a conversation that cannot bring itself back (unattended, or no persisted env). `claimedBy`
+    is no longer consulted for a dead run — a claim doesn't revive a dead pane, and `takeoverRun` already
+    handles exactly this case server-side.
+  - The read-only transcript view (`ended`) is shown whenever there is no live pane AND nothing would bring
+    one back, so the console never attaches to a pane that is gone.
+  - That view (timeline, raw log and report alike) now carries a **Resume & take over** button, so the run
+    is revived from where you are reading it and the frame re-attaches to the resumed pane.
+  - Pinned by `scripts/session-revive-gates-test.cjs` (the predicates are lifted from the source and
+    evaluated over every shape a real row takes: exactly one of Resume / Take over for a revivable dead run,
+    and never an attach) plus a `takeoverRun` case in `scripts/headless-resumable-test.cjs`.
+
 ## [0.403.1] - 2026-08-27
 ### Fixed
 - **A taken-over unattended run can be reloaded.** `resumable` is derived from a file — the persisted

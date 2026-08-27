@@ -79,6 +79,23 @@ const settle = () => new Promise((r) => setTimeout(r, 30));
   tm.markEnded(s3.id);
   assert(fs.existsSync(path.join(aos.paths.connectors, `session-${s3.id}.stopped`)), 'blockResume drops the sentinel for a reaped unattended run');
 
+  console.log('\x1b[1m\n5) a run claimed while LIVE and stopped afterwards can still be brought back\x1b[0m');
+  // The shape that had no way back at all: claimed while alive (so nothing relaunched → no env), then
+  // stopped. `takeoverRun` must resurrect it — the console's Take over is wired straight to this.
+  const s4 = tm.createSession(AGENT, 'qa', 'check the build', 'automation:a4', true);
+  await settle();
+  fs.rmSync(envPath(s4.id), { force: true });                 // pre-fix row: claimed live, never got an env
+  tm.claimSession(s4.id, 'boss@example.com');
+  tm.stopSession(s4.id, 'boss@example.com');
+  assert(livePanes.has('aos-' + s4.id) === false, 'pane is gone');
+  assert(listed(s4.id)?.resumable === false, 'no env → not resumable (the dead end)');
+  const to = tm.takeoverRun(s4.id, 'boss@example.com');
+  assert(to.ok === true, 'takeoverRun resurrects it', to.error);
+  await settle();
+  assert(fs.existsSync(envPath(s4.id)), 'and writes the env, so it is resumable from here on');
+  assert(!fs.existsSync(path.join(aos.paths.connectors, `session-${s4.id}.stopped`)), 'the stop sentinel is lifted');
+  assert(aos.db.prepare('SELECT status FROM term_sessions WHERE id = ?').get(s4.id).status === 'running', 'row back to running');
+
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
   try { fs.rmSync(HOME, { recursive: true, force: true }); } catch { /* best-effort */ }
   process.exit(fail ? 1 : 0);
