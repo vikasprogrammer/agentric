@@ -24,7 +24,7 @@ delete process.env.AGENT_OS_SECRET_KEY;
 let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
-const { deriveGuidance, deriveRecommendations, recommendationResolved } = require(path.join(ROOT, 'dist/edge/dreaming.js'));
+const { deriveGuidance, deriveRecommendations, recommendationResolved, topicCounts } = require(path.join(ROOT, 'dist/edge/dreaming.js'));
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
 const { detectAlerts } = require(path.join(ROOT, 'dist/edge/alerts.js'));
 
@@ -118,6 +118,40 @@ console.log('\n\x1b[1mInsights signal — no prompt-injected or DM\'d number off
   const chatty = realistic({ recent: [{ day: 'd1', ts: NOW - DAY, sessions: 40, success: 38, failure: 0, stopped: 0, approved: 0, rejected: 0, budgetStops: 0, errors: 0, topics: [] }] });
   assert(deriveGuidance(quiet) === deriveGuidance(chatty), 'guidance is identical whether 10% or 95% of runs reported', `\n${deriveGuidance(quiet)}\n---\n${deriveGuidance(chatty)}`);
   assert(JSON.stringify(deriveRecommendations(quiet, 'medium', NOW)) === JSON.stringify(deriveRecommendations(chatty, 'medium', NOW)), 'recommendations are identical too');
+}
+
+// ── topics: what "the fleet frequently works on" is allowed to name ──────────────────────────────────
+// This list rides in every agent's system prompt via deriveGuidance, so a junk token there is a junk
+// token in every prompt. The fixtures are the exact shapes instapods and instawp surfaced on their first
+// pass after the topic accumulator was fixed (2026-08-27).
+{
+  console.log('\n\x1b[1m4) topics — subjects, not states or handles\x1b[0m');
+  const ep = (content) => ({ content, created_at: NOW });
+  const got = new Map(topicCounts([
+    ep('Task: WAIT for the FreeScout migration to finish, then verify apache2 is serving.'),
+    ep('Task: WAIT for the queue to drain before restarting apache2.'),
+    ep('Task: WAIT — do not proceed until the apache2 restart lands.'),
+    ep('Task: Post the daily summary to Slack channel c05cl830mnd for the docs bot.'),
+    ep('Task: Investigate site d3cby9k failing to load after the migration.'),
+    ep('Task: Investigate site d2mp41k timing out on checkout.'),
+    ep('Task: Skip anyone already-contacted-in-90-days when building the outreach list.'),
+    ep('Task: Verify the php8 upgrade on dev3 did not break the oauth2 callback.'),
+    ep('Task: Verify php8 handles the log4j scan and dev3 stays green.'),
+  ]));
+  const has = (t) => got.has(t);
+
+  // A shouted imperative reads as an ACRONYM to properNouns (short, all-caps, standing alone), which is
+  // how instawp's first clean pass told every agent the fleet "frequently works on … WAIT".
+  assert(!has('wait'), 'a shouted imperative is not a topic', [...got.keys()].join(','));
+  // Opaque handles the hex rule misses: a digit buried MID-token is an id or a slug, not a name.
+  assert(!has('c05cl830mnd'), 'a Slack channel id is not a topic');
+  assert(!has('d3cby9k') && !has('d2mp41k'), 'site handles are not topics');
+  assert(!has('already-contacted-in-90-days'), 'a task slug is not a topic');
+  // …while real tech names carry their digits at the END, and must survive.
+  assert(has('apache2') && got.get('apache2') === 3, 'apache2 survives, counted once per episode');
+  assert(has('php8') && has('dev3') && has('oauth2'), 'php8 / dev3 / oauth2 survive');
+  assert(has('log4j'), 'a short name with an interior digit is below the length bound and survives');
+  assert(has('freescout'), 'a plain product name survives');
 }
 
 fs.rmSync(HOME, { recursive: true, force: true });
