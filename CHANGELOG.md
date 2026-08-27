@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.402.0] - 2026-08-27
+### Fixed
+- **A finished run is no longer a delivery target for good news.** The wake queue picks a live pane by
+  `reachable` — the PANE — which is deliberate, but `report` is the agent saying the RUN is over, and its
+  pane stays reachable regardless. Measured on live instawp over 7 days: **55% of injects (152 of 275)
+  landed in a session that had already reported**, resurrecting it in place — the very thing `dropDone`
+  refuses to spawn a claude for. The archetype was a `support-ops` run that reported success at **+152
+  seconds** and was then held open **6.5 hours** by ten injects (still `running` 49h later). And the
+  inject lane is not free: sessions that received one ran **78 API calls against 42**, at **381k context
+  per call against 277k**, costing **93% more per run** — 14% of runs consuming 24% of spend, because the
+  message lands in a transcript that then keeps growing and every subsequent call re-reads all of it.
+  (The gate itself is 1ms at p50 over 32,515 samples; it was never the tax.) Now a **done-only** batch
+  treats a finished run as no target at all and drops, exactly as it would for a cold caller — the result
+  is durable in the task and the human already has the card — while any other batch merely **prefers** a
+  still-working session, so a stranding or hand-back still injects rather than spending a resume. Against
+  the same week: 131 of 275 injects stop happening, and the 21 stranded/blocked deliveries into a
+  finished run still land, so this costs **no extra resumes**. Pinned by two new sections in
+  `scripts/wakeup-queue-test.cjs`.
+
 ## [0.401.1] - 2026-08-27
 ### Fixed
 - **The "Things to consider" panel no longer promises a signal that was deleted.** Its empty state read
