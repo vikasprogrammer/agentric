@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.399.0] - 2026-08-27
+### Changed
+- **The launch-time memory preamble is ranked against the task, not the agent's all-time top 8.**
+  `MemoryConfig.preload` seeds a cold session with what the agent already knows; it used to run no query
+  at all (`ORDER BY importance DESC, last_recalled_at DESC`), so every launch got the same memories
+  whatever the work. On live instapods that put a tenant-shared marketing rule ("Never auto-send email as
+  the marketing agent", importance 0.95) at the top of the **engineer's** prompt and spent two of eight
+  slots on copy rules — and below the top ~70 rows the order was decided almost entirely by the
+  tiebreaker, since 893 memories share importance 0.8 and 912 share 0.7. The session's task (first 400
+  chars — a 2KB cron standing order buries the distinctive words under boilerplate) is now the recall
+  query, through the real provider, so the backend's ranking picks what bears on this work; the hits are
+  reinforced too, so preloaded memories finally participate in the `recall_count` signal that prune and
+  re-ranking read. Falls back to the old importance ordering whenever the task-ranked path can't answer —
+  no task text, a recall that throws, returns nothing, or exceeds a 2.5s budget — so the preamble is never
+  worse than before and an unreachable backend costs a launch at most 2.5s. Pinned by
+  `scripts/memory-preload-test.cjs`.
+
 ## [0.398.0] - 2026-08-27
 ### Fixed
 - **Agents recalled a paraphrase of their own memories.** A recall backend may transform the text it is
