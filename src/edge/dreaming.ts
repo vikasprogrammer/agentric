@@ -90,7 +90,12 @@ const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'th
   'lets', 'please', 'want', 'wants', 'wanted', 'like', 'would', 'give', 'tell', 'know', 'here', 'there', 'what', 'which', 'where', 'whether', 'still', 'back', 'next', 'first', 'last', 'good', 'great', 'thing', 'things', 'stuff', 'working', 'work', 'going', 'getting', 'recent', 'recently', 'latest', 'today', 'yesterday', 'tomorrow', 'current', 'currently', 'again', 'once', 'above', 'below', 'help', 'lets', 'able', 'sure', 'okay', 'yeah', 'issue', 'issues', 'problem', 'problems', 'thanks', 'quick', 'quickly',
   // Imperative scaffolding from step-by-step test/QA prompts ("Test the … tools end-to-end, then STOP. Do
   // ONLY these steps … EXACTLY") — describes how a run was scripted, not a subject the fleet works on.
-  'stop', 'exactly', 'step', 'steps', 'only', 'test', 'tests', 'tool', 'tools', 'end', 'ping', 'pls', 'else', 'anything', 'everything', 'something', 'nothing']);
+  'stop', 'exactly', 'step', 'steps', 'only', 'test', 'tests', 'tool', 'tools', 'end', 'ping', 'pls', 'else', 'anything', 'everything', 'something', 'nothing',
+  // Shouted imperatives and status words. A prompt that writes "WAIT for it to finish" reads as an
+  // ACRONYM to `properNouns` (short, all-caps, standing alone), which promoted it to a proper noun —
+  // instawp's first clean pass told every agent "the fleet frequently works on: freescout, apache2,
+  // WAIT". These are states a run passes through, never subjects it works on.
+  'wait', 'waiting', 'block', 'blocked', 'blocking', 'advanced', 'live', 'record', 'records', 'library', 'note', 'notes']);
 
 export class DreamingEngine {
   constructor(private readonly os: AgentOS) {}
@@ -319,7 +324,7 @@ function parse(s: string): Record<string, unknown> {
 /** Count topic keywords across the window's episode task/summary lines. `nameStop` holds team-member
  *  name tokens (built per-pass from the roster) — a person's name describes WHO asked, not WHAT the fleet
  *  works on, so "the fleet frequently works on … vikas, singhal" is noise; drop them alongside STOP. */
-function topicCounts(episodes: EpisodeRow[], nameStop: Set<string> = new Set()): [string, number][] {
+export function topicCounts(episodes: EpisodeRow[], nameStop: Set<string> = new Set()): [string, number][] {
   const proper = properNouns(episodes);
   const counts = new Map<string, number>();
   for (const e of episodes) {
@@ -435,6 +440,13 @@ function isEntity(token: string, proper: Set<string>): boolean {
   // hex ids through — live globex surfaced `f90fc16d7fb9a19` as something "the fleet frequently works
   // on". A long hex/base36 run with no vowel structure is a handle, not a name.
   if (/^[0-9a-f]{8,}$/i.test(token) || /^[a-z]{2,4}_[0-9a-f]{6,}$/i.test(token)) return false;
+  // …and neither is a mixed handle the hex rule misses. A real tech name carries its digits at the END
+  // (`apache2`, `php8`, `dev3`, `oauth2`, `utf-8`) — a digit buried in the MIDDLE of a long token is an
+  // id or a slug. instawp's first clean pass surfaced `d3cby9k`, `d2mp41k` and the Slack channel id
+  // `c05cl830mnd` as fleet topics; instapods surfaced the task slug `already-contacted-in-90-days`.
+  // Bounded by length so short legitimate names (`log4j`, `s3`) are untouched, and a token the corpus
+  // consistently capitalizes is a name whatever its shape, so `proper` still wins.
+  if (!proper.has(token) && token.length >= 7 && /\d/.test(token.replace(/[\d-]+$/, ''))) return false;
   // A FILENAME qualifies on its base name, never its extension — otherwise the dot rule (meant for
   // hostnames and versions) admits every path an agent mentions, including format placeholders like
   // `yyyy-mm-dd.md`. `.com`/`.io` are not code extensions, so real hostnames still pass below.

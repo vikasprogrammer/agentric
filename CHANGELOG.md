@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.401.0] - 2026-08-27
+### Fixed
+- **"The fleet frequently works on…" no longer names states and handles.** That list rides in every
+  agent's system prompt via the learned guidance, so a junk token there is a junk token in every prompt.
+  The first clean pass after the topic accumulator was fixed surfaced exactly two failure shapes. (1) A
+  shouted imperative reads as an **acronym** to `properNouns` (short, all-caps, standing alone), so a
+  prompt writing "WAIT for it to finish" promoted `wait` to a proper noun — instawp told every agent the
+  fleet frequently works on "freescout, apache2, **wait**". Those status words are now stopped. (2)
+  `isEntity` admitted anything containing a digit (the rule that keeps `php8`/`v3`), which let opaque
+  handles through: the Slack channel id `c05cl830mnd`, site ids `d3cby9k`/`d2mp41k`, and the task slug
+  `already-contacted-in-90-days`. A real tech name carries its digits at the **end**; a digit buried
+  mid-token is an id, so those are now rejected above a length bound — `apache2`, `php8`, `dev3`,
+  `oauth2` and `log4j` all still pass, and a token the corpus consistently capitalizes still wins on
+  `proper` whatever its shape. Pinned by a new section in `scripts/insights-signal-test.cjs`.
+
 ## [0.400.0] - 2026-08-27
 ### Changed
 - **The launch preamble carries lessons, not a transcript of past assignments.** An episode's text opens
