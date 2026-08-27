@@ -3620,7 +3620,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // page load would burn the rate limit to render a number. `prCounts` is parsed BEFORE the body clip
     // above would matter — `tasks`, not `slim`, so a link past the clip point still counts.
     const prCounts = new PrCache(os.db, os.tenant).summaries(taskPrRefsBulk(os.db, tasks));
-    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), prCounts, agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me) });
+    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), prCounts, agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me), workers: tm.taskWorkers() });
   }
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);

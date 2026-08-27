@@ -907,6 +907,19 @@ export interface TaskRun {
 }
 
 /**
+ * Which agents have worked a task — the board/list card's version of {@link TaskRun}.
+ *
+ * A card shows `assignee`, which is who the task was HANDED to, not who has actually run it: a support
+ * agent that files a fix and an engineer that takes it both leave runs on the same task, and the card
+ * printed only one of them. Computed tenant-wide in ONE pass and returned only for tasks worked by more
+ * than one agent — the single-agent case is exactly what the assignee badge already says, so shipping it
+ * would be payload for nothing. See {@link TerminalManager.taskWorkers}.
+ */
+export interface TaskWorkers {
+  agents: { id: string; runs: number; alive: boolean }[];
+}
+
+/**
  * What happened to a plain human message posted into a task's Discussion, BEYOND storing it: the room is
  * where work is watched, so a reply there should reach the run doing the work. See
  * `Automations.postTaskDiscussion`.

@@ -17,7 +17,7 @@ import { containedPath, mimeOf } from './state/artifacts';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { isolateClaudeConfig } from './edge/config-isolation';
 import { resolveCapability } from './capabilities/normalize';
@@ -4876,6 +4876,51 @@ export class TerminalManager {
       alive: r.status === 'running' && (alive ? alive.has(r.tmux) : true),
       archived: r.archived_at != null,
     }));
+  }
+
+  /**
+   * Which agents have worked each task, tenant-wide — the board/list card's rollup of {@link taskRuns}.
+   *
+   * The card shows the ASSIGNEE, i.e. who the task was handed to. That is not who ran it: a support agent
+   * that files a fix and an engineer that picks it up both leave runs on the same task, so a card could
+   * name `engineer` while a completely different agent's session was the one live on it. Same two sources
+   * as `taskRuns` (`task:<id>` provenance + `task_events.session_id`), folded per task in ONE pass rather
+   * than one query per card — measured on the instapods tenant that's ~660 rows for the whole board.
+   *
+   * Returns ONLY the multi-agent tasks: with one agent the assignee badge already tells the whole story,
+   * so a per-task entry there would be payload that renders nothing.
+   */
+  taskWorkers(): Record<string, TaskWorkers> {
+    const rows = this.db
+      .prepare(`SELECT task_id, agent, tmux, status FROM (
+                    SELECT substr(spawned_by, 6) AS task_id, id AS sid, agent, tmux, status
+                      FROM term_sessions WHERE spawned_by LIKE 'task:%'
+                    UNION
+                    SELECT e.task_id AS task_id, s.id AS sid, s.agent, s.tmux, s.status
+                      FROM task_events e JOIN term_sessions s ON s.id = e.session_id
+                     WHERE e.session_id IS NOT NULL
+                  )`)
+      .all<{ task_id: string; agent: string; tmux: string; status: string }>();
+    if (!rows.length) return {};
+    // One tmux poll for the whole board (null = unknown liveness on the launcher backend / a failed poll,
+    // in which case we trust the row's own status — same rule as `taskRuns` and `listSessions`).
+    const alive = this.backend.aliveNames();
+    const byTask = new Map<string, Map<string, { runs: number; alive: boolean }>>();
+    for (const r of rows) {
+      if (!r.task_id) continue;
+      const agents = byTask.get(r.task_id) ?? new Map();
+      byTask.set(r.task_id, agents);
+      const e = agents.get(r.agent) ?? { runs: 0, alive: false };
+      e.runs++;
+      if (r.status === 'running' && (alive ? alive.has(r.tmux) : true)) e.alive = true;
+      agents.set(r.agent, e);
+    }
+    const out: Record<string, TaskWorkers> = {};
+    for (const [taskId, agents] of byTask) {
+      if (agents.size < 2) continue;
+      out[taskId] = { agents: [...agents].map(([id, e]) => ({ id, runs: e.runs, alive: e.alive })) };
+    }
+    return out;
   }
 
   /**

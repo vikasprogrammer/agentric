@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.395.0] - 2026-08-27
+### Added
+- **A task room shows every agent that worked the task, not just the last one.** A task is one unit of
+  work and a session is one attempt at it, so the relation has always been one-to-many — but the room
+  said `Session` (singular), showed whichever run was newest, and put the run picker in the 320px
+  details sidebar, which collapses and stays collapsed. On a task a support agent filed and an engineer
+  then took, the second agent's session was reachable from nowhere on screen. Now: the tab reads
+  **Sessions · N** with a live pip when any run is running; a **run switcher** sits directly above the
+  terminal, one chip per session (named by AGENT when several worked it, numbered by attempt when one
+  did); the room header carries a **N agents** button that jumps to them; and the sidebar's run history
+  **groups by agent** when the runs span more than one, because `#1 #2 #3` reads as "it failed twice",
+  which is the wrong story for a hand-off. The history also highlights the run the room is already
+  showing instead of nothing-until-you-click.
+- **The board and list say who actually ran a task.** A card showed `assignee` — who the task was handed
+  to — so a task worked by two agents rendered exactly like one worked by its assignee alone. Multi-agent
+  tasks now carry an agent stack (live pip per agent, full run counts in the tooltip) next to the
+  assignee. Server-computed in the existing list payload (`TerminalManager.taskWorkers`, one pass over
+  the two sources `taskRuns` already uses) and sent ONLY for tasks worked by more than one agent, so the
+  single-agent case — which the assignee badge already states — costs nothing. Pinned by
+  `scripts/task-workers-test.cjs`.
+
 ## [0.394.0] - 2026-08-25
 ### Added
 - **Docs → Use cases: every use case ships a "Create this agent" button.** The page told you which

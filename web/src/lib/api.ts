@@ -765,6 +765,11 @@ export interface TaskRun {
   alive: boolean
   archived: boolean
 }
+/** Which agents have actually WORKED a task — the card's rollup of its runs. Only sent for tasks worked
+ *  by more than one agent (with one, the assignee badge already says it). See TerminalManager.taskWorkers. */
+export interface TaskWorkers {
+  agents: { id: string; runs: number; alive: boolean }[]
+}
 /** What happened to a plain discussion message beyond being stored — whether it REACHED the run working
  *  the task. `choose` = more than one live run, so nothing was delivered until the human picks one. */
 export interface TaskDiscussionDelivery {
@@ -1935,7 +1940,7 @@ export const api = {
   kbRevert: (id: string, rev: number) => call<{ ok: boolean; page?: KbPage; error?: string }>('POST', `/api/kb/page/${id}/revert`, { rev }),
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
 
-  tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; prCounts?: Record<string, TaskPrSummary>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
+  tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; prCounts?: Record<string, TaskPrSummary>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary>; workers?: Record<string, TaskWorkers> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
   task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; children?: TaskChild[]; runs?: TaskRun[]; prs?: TaskPr[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
   /** The task's PRs with their status refreshed from GitHub (stale-only unless `refresh`). Separate from
    *  the detail payload because it makes network calls — the detail's `prs` render instantly from cache. */
