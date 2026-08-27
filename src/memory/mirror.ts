@@ -48,7 +48,45 @@ export class MirroredMemoryProvider implements MemoryProvider {
     if (q.query && out.length) {
       try { this.mirror.reinforce(out.map((r) => r.id)); } catch { /* mirror is best-effort */ }
     }
-    return out;
+    return this.withCanonicalContent(out);
+  }
+
+  /**
+   * The backend RANKS; the mirror is the record of what the agent actually wrote.
+   *
+   * A recall backend is free to transform the text it was handed, and automem does: over
+   * `MEMORY_CONTENT_SOFT_LIMIT` (500 chars by default) with an LLM configured, `MEMORY_AUTO_SUMMARIZE`
+   * replaces `content` with a ~300-char LLM summary and DISCARDS the original. On the live instawp
+   * tenant — average memory 1305 chars — that hit most of the store: 81% of sampled recall hits existed
+   * nowhere in the mirror, and the specifics that made them useful were gone. What an agent stored as
+   *
+   *   "Bunny edge-rule QA cannot be done on a *.instawp.site sandbox — it resolves to the PPU/OVH origin
+   *    and never traverses Bunny's edge, so every probe returns 200 …"
+   *
+   * came back as "Bunny edge-rule QA limitations. Testing on *.instawp.site fails…". Same id, same
+   * ranking, no `.env` names, no exact commands. Worse, the two stores then disagreed: Dreaming, the
+   * consolidation gardener and the Memory-hub all read the mirror's original while agents recalled the
+   * paraphrase.
+   *
+   * So content is served from the mirror whenever the mirror has that id. Ranking, ordering and score
+   * stay entirely the backend's — this restores fidelity without touching retrieval quality (the
+   * embedding is computed over whatever the backend holds either way). A row the mirror doesn't know
+   * (stored before mirroring, or written directly to the backend) keeps the backend's own copy, so this
+   * can only ever add fidelity, never drop a result. Best-effort: a mirror failure returns the backend's
+   * records unchanged.
+   */
+  private withCanonicalContent(out: MemoryRecord[]): MemoryRecord[] {
+    if (!out.length) return out;
+    try {
+      const canonical = this.mirror.contentByIds(out.map((r) => r.id));
+      if (!canonical.size) return out;
+      return out.map((r) => {
+        const content = canonical.get(r.id);
+        return content != null && content !== r.content ? { ...r, content } : r;
+      });
+    } catch {
+      return out; // mirror is best-effort — never fail a recall over it
+    }
   }
 
   async update(input: UpdateInput): Promise<MemoryRecord | null> {
