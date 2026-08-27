@@ -270,10 +270,12 @@ export interface Session {
   working?: boolean;
   /**
    * Whether this session can be resurrected in place via `claude --resume` when its terminal is
-   * re-opened (the ttyd attach wrapper sources its persisted `session-<id>.env`). True only for
-   * interactive claude-code sessions — headless automation runs write no env file, so they're never
-   * resumable. Independent of `status`: a running session is also "resumable", but the console only
-   * offers a Resume affordance once it's no longer live.
+   * re-opened (the ttyd attach wrapper sources its persisted `session-<id>.env`). True for every
+   * claude-code run, unattended ones included — the env is written at launch whatever the lane, which is
+   * what makes Reload / Reload-on-another-account reachable for a taken-over automation run. It says
+   * nothing about WHICH lane the run is on: that's the `headless` flag. Independent of `status` too — a
+   * running session is also "resumable", but the console only offers a Resume affordance once it isn't
+   * live.
    */
   resumable?: boolean;
   /** True when this session can be FORKED — branched into a new independent session that inherits its
@@ -1598,10 +1600,11 @@ export class TerminalManager {
   }
 
   /**
-   * Session ids that have a persisted launch env (`session-<id>.env`) — i.e. an interactive session
-   * the ttyd attach wrapper can resurrect via `claude --resume` (see `writeEnvFile`/`terminal/attach.sh`).
-   * Headless runs write no env file, so they're absent (and correctly report `resumable:false`). One
-   * readdir serves the whole list; no data home (demo/tests) → nothing resumable.
+   * Session ids that have a persisted launch env (`session-<id>.env`) — i.e. a session the ttyd attach
+   * wrapper can resurrect via `claude --resume` (see `writeEnvFile`/`terminal/attach.sh`). Every
+   * claude-code launch writes one, unattended included; runtimes with no resurrect env (and sessions
+   * predating that change) are absent and correctly report `resumable:false`. One readdir serves the
+   * whole list; no data home (demo/tests) → nothing resumable.
    */
   private resumableIds(): Set<string> {
     const ids = new Set<string>();
@@ -2659,7 +2662,7 @@ export class TerminalManager {
       this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', launchScript], files: { mcp: mcpJson || undefined, company: companyMd || undefined, task: o.task || undefined }, agentSrc: manifest.dir });
     } else {
       // Flag off: materialise into the app's connectors dir and persist the launch context so the ttyd
-      // attach wrapper can resurrect a dead session. Headless automation runs write no resurrect env.
+      // attach wrapper can resurrect a dead session.
       const mcpFile = this.writeSessionFile(o.id, 'mcp.json', mcpJson);
       if (mcpFile) env.MCP_CONFIG = mcpFile;
       const companyFile = this.writeSessionFile(o.id, 'company.md', companyMd);
@@ -2673,7 +2676,15 @@ export class TerminalManager {
       // persisted resume envs). Drop TASK_B64 once the file is written so it can't re-inflate the cmdline.
       const taskFile = this.writeSessionFile(o.id, 'task', o.task);
       if (taskFile) { env.TASK_FILE = taskFile; delete env.TASK_B64; }
-      if (!o.headless) this.writeEnvFile(o.id, env);
+      // Persist the launch env for EVERY run, unattended ones included. This used to be interactive-only,
+      // which quietly made `resumable` ("this id has an env file") double as "this run is attended" — so a
+      // headless run taken over while its pane was STILL LIVE stayed non-resumable forever: `claimSession`
+      // relaunches nothing, so nothing ever wrote the env, and the console's Reload / Reload-on-another-
+      // account items were permanently hidden for it (live instawp run, 2026-08-27). The two lanes are told
+      // apart by the `headless` COLUMN now, never by the presence of this file. Safe on the teardown side:
+      // `teardownUnattended` → `markEnded` → `blockResume` drops the stay-stopped sentinel, so a reaped
+      // unattended run can't be resurrected behind our back by ttyd's silent auto-reconnect.
+      this.writeEnvFile(o.id, env);
       this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', launchScript] });
     }
   }
@@ -2986,6 +2997,11 @@ export class TerminalManager {
     // claim was missing.
     this.db.prepare("UPDATE term_sessions SET headless = 0, status = 'running', claimed_by = ?, claimed_at = ?, updated_at = ? WHERE id = ?")
       .run(by, Date.now(), Date.now(), sessionId);
+    // The row now says attended, so the persisted launch env must agree: strip its UNATTENDED marker or a
+    // later reattach/Reload would resurrect this run on the unattended lane the turn-end reaper owns. The
+    // dead-run take-over below gets this for free (it relaunches with `headless:false`); the live path
+    // relaunches nothing, so patch the file in place.
+    this.attendLaunchEnv(sessionId);
     // No kill, no relaunch — the live pane keeps streaming; the caller opens ttyd and attaches to it.
     this.audit(sessionId, by, 'session.claimed', { agent: row.agent });
     return { ok: true };
@@ -4303,7 +4319,8 @@ export class TerminalManager {
   /**
    * Persist a claude-code session's launch env as a sourceable 0600 `session-<id>.env`, so the ttyd
    * attach wrapper (terminal/attach.sh) can resurrect a stopped session and resume the SAME claude
-   * session id without involving the server. Carries the per-session secret → never world-readable.
+   * session id without involving the server. Written for every lane; `attendLaunchEnv` un-marks it when
+   * a human takes an unattended run over. Carries the per-session secret → never world-readable.
    * Auto-removed with the rest of the session's files by `removeSessionFiles`. No data home → skip.
    */
   private writeEnvFile(sessionId: string, env: Record<string, string>): void {
@@ -7224,6 +7241,21 @@ export class TerminalManager {
     }
   }
 
+  /** Drop the `UNATTENDED` marker from a taken-over run's persisted launch env, so the next resurrect
+   *  (a browser reattach, or the Reload that kills the pane and lets attach.sh bring it back) comes up on
+   *  the ATTENDED lane — a human owns this run now, and the unattended lane's server-driven turn-end
+   *  teardown is not what they asked for. Best-effort: a run with no env yet has nothing to patch. */
+  private attendLaunchEnv(sessionId: string): void {
+    if (!this.os.paths) return;
+    const file = path.join(this.os.paths.connectors, `session-${sessionId}.env`);
+    try {
+      const kept = fs.readFileSync(file, 'utf8').split('\n').filter((line) => !/^export UNATTENDED=/.test(line));
+      this.writeSecret(file, kept.filter((l) => l.trim() !== '').join('\n') + '\n');
+    } catch {
+      /* no env (an older run, or a runtime that writes none) — nothing to un-mark */
+    }
+  }
+
   /** Rewrite the persisted `session-<id>.env` so a resurrect authenticates with `vars`. Every credential
    *  var this runtime knows is stripped first — rotating from an api-key account to a credential dir must
    *  not leave the old key behind for the CLI to prefer. */
@@ -7303,8 +7335,10 @@ export class TerminalManager {
 
   /** Mark a session as "do not auto-resurrect" so the ttyd attach wrapper (attach.sh) won't
    *  `claude --resume` it the next time its dead pane triggers a silent reconnect. Only a session with a
-   *  persisted launch env is resurrectable, so there's nothing to block otherwise — skip it (a headless
-   *  run leaves no env and would only litter the dir). A deliberate re-open clears it via `allowResume`. */
+   *  persisted launch env is resurrectable, so there's nothing to block otherwise — skip it (a runtime
+   *  that writes no env would only litter the dir). Unattended runs DO write one now, which is exactly
+   *  what stops ttyd's auto-reconnect resurrecting a run the turn-end reaper just closed. A deliberate
+   *  re-open clears it via `allowResume`. */
   private blockResume(sessionId: string): void {
     const p = this.stopMarkerPath(sessionId);
     if (!p || !this.os.paths) return;
