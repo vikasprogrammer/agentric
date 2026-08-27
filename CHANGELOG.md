@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.402.2] - 2026-08-27
+### Fixed
+- **A `claude login` credential dir stored in the macOS Keychain can be READ after all — the pool's usage
+  probe now does.** `readConfigDirToken` only ever parsed a plaintext `.credentials.json`, on the belief
+  that the Keychain item's ACL trusted claude alone (`security find-generic-password -w` exits 36). That
+  belief was wrong: 36 is `errSecInteractionRequired`, which is what *any* keychain read gets from a
+  **Background** security session — an ssh shell, a LaunchDaemon — where the login keychain is still
+  locked. The same command in the **Aqua** session, which is where a LaunchAgent like
+  `com.agentos.<tenant>` runs, returns the credential JSON with exit 0. So every credential-dir account
+  signed in on a Mac showed `Usage —` forever and a Refresh that said it "can't be probed from here", and
+  the background sweep skipped it — leaving the pool dispatching to accounts whose quota it could not
+  see. `readCredentialRecord` now resolves the plaintext file first and the Keychain second (accepting
+  both `security`'s text and hex output), and `configDirCanRefresh` reads the same record.
+- The Refresh error for an unreadable Keychain login now names the real cause (locked keychain / wrong
+  security session) instead of describing it as normal, since `claude` hits the identical refusal — an
+  ssh-launched run of such an account comes up `Not logged in · Please run /login` while the same account
+  authenticates fine under the server.
+- New falsifier `scripts/keychain-credential-test.cjs` (in `npm run test:governance`) pins the resolution
+  order, the hex form, exit 36 as a miss rather than a throw, and that `security` is never shelled out to
+  off darwin.
+
 ## [0.402.1] - 2026-08-27
 ### Fixed
 - **v0.401.0 changed the topic extractor without bumping `TOPICS_VERSION`, so nothing it stopped
