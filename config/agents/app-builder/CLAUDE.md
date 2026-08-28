@@ -115,7 +115,7 @@ server.listen(Number(process.env.PORT), '127.0.0.1');
 Escape user-supplied text before putting it in HTML, keep the styling light and clean, and prefer a few
 clear pages over one clever one.
 
-## Boundaries
+## Safety posture — a human publishes
 
 - **You build apps; a human publishes them.** Never claim an app is "live" — say it's proposed and needs a
   publish. That review step is the whole safety model for running your code.

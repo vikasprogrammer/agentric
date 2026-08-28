@@ -573,6 +573,13 @@ export interface MemoryProvider {
 export interface MemoryMaintenanceResult {
   pruned: number;
   merged: number;
+  /** What this pass removed. A mirrored setup needs it: the local mirror decides WHAT to drop (it holds
+   *  the SQL-level signals), then the external backend is told to drop the same records, so the two
+   *  stores stay in step instead of one silently keeping what the other pruned. */
+  removed?: { id: string; tenant: string; agentId: string }[];
+  /** Ids the local pass removed that the external backend REFUSED to delete — the divergence, reported
+   *  rather than swallowed, so an operator can see the mirror is now ahead of the backend. */
+  backendFailures?: number;
 }
 
 /**
@@ -602,7 +609,12 @@ export interface MemoryConfig {
   libsql?: LibsqlMemoryConfig;
   /** Optional recall re-ranking (recency decay + importance weighting). Applies to sqlite/libsql. */
   ranking?: MemoryRanking;
-  /** Optional upkeep policy (prune + consolidate). Applies to sqlite/libsql; automem self-maintains. */
+  /**
+   * Optional upkeep policy (prune + consolidate). Opt-in on every backend. On an EXTERNAL backend
+   * (automem/libsql) the local mirror selects what to drop and the backend is then deleted by id —
+   * automem's own enrichment/consolidation does NOT remove exact duplicates (a live tenant carried the
+   * same episode 177 times), so "the backend self-maintains" was never true for it.
+   */
   maintenance?: MemoryMaintenance;
   /**
    * Who may publish tenant-shared memories. 'open' (default) — any agent via `remember(shared)`.
@@ -907,6 +919,19 @@ export interface TaskRun {
 }
 
 /**
+ * Which agents have worked a task — the board/list card's version of {@link TaskRun}.
+ *
+ * A card shows `assignee`, which is who the task was HANDED to, not who has actually run it: a support
+ * agent that files a fix and an engineer that takes it both leave runs on the same task, and the card
+ * printed only one of them. Computed tenant-wide in ONE pass and returned only for tasks worked by more
+ * than one agent — the single-agent case is exactly what the assignee badge already says, so shipping it
+ * would be payload for nothing. See {@link TerminalManager.taskWorkers}.
+ */
+export interface TaskWorkers {
+  agents: { id: string; runs: number; alive: boolean }[];
+}
+
+/**
  * What happened to a plain human message posted into a task's Discussion, BEYOND storing it: the room is
  * where work is watched, so a reply there should reach the run doing the work. See
  * `Automations.postTaskDiscussion`.
@@ -1164,7 +1189,7 @@ export interface RuntimeTuning {
 
 /** Every runtime an agent manifest may declare. `mock` is the in-process demo adapter (no CLI, no
  *  tmux); the others are real coding CLIs. */
-export type RuntimeId = 'mock' | 'claude-code' | 'codex';
+export type RuntimeId = 'mock' | 'claude-code' | 'codex' | 'opencode';
 /** The runtimes that spawn a real CLI in a governed tmux pane — everything except `mock`. */
 export type CodingRuntimeId = Exclude<RuntimeId, 'mock'>;
 
@@ -1231,9 +1256,17 @@ export interface CodingRuntimeSpec {
   label: string;
   /** The executable that must be on PATH for a session to launch. */
   bin: string;
+  /** argv that installs {@link bin} globally, for the console's "install this runtime" action
+   *  (Settings → Runtimes, and the prompt shown when an agent is switched to a runtime this box does
+   *  not have). An argv array, never a shell string — it is spawned WITHOUT a shell, so nothing here
+   *  is word-split or expanded and a package name can never become a command. */
+  install: readonly string[];
   /** Basename of the launcher under `terminal/`. */
   launchScript: string;
-  /** Basename of the PreToolUse gate hook under `terminal/`. */
+  /** Basename of the gate artifact under `terminal/`. Usually the shared PreToolUse shell hook
+   *  (`gate-hook.sh`); a runtime whose CLI has no command-hook mechanism names its own bridge
+   *  instead (opencode: a JS plugin). Exported to the launcher as `$HOOK`, so this field is
+   *  load-bearing — the launcher wires whatever it names. */
   gateHook: string;
   /** How to point a session at a SPECIFIC account's credentials, for launch-time account rotation across a
    *  pool (see `RuntimeAccountStore`). `configDirVar` is the env var that relocates the runtime's credential
@@ -1284,6 +1317,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     id: 'claude-code',
     label: 'Claude Code',
     bin: 'claude',
+    install: ['npm', 'install', '-g', '@anthropic-ai/claude-code'],
     launchScript: 'claude-launch.sh',
     gateHook: 'gate-hook.sh',
     credentialEnv: { configDirVar: 'CLAUDE_CONFIG_DIR', apiKeyVar: 'ANTHROPIC_API_KEY', tokenVar: 'CLAUDE_CODE_OAUTH_TOKEN', configDirFile: '.credentials.json' },
@@ -1305,6 +1339,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     id: 'codex',
     label: 'Codex',
     bin: 'codex',
+    install: ['npm', 'install', '-g', '@openai/codex'],
     launchScript: 'codex-launch.sh',
     // Same hook binary as Claude Code: Codex 0.145 uses identical PreToolUse stdin fields
     // (`tool_name`/`tool_input`/`agent_type`) and an identical decision wire, so only the
@@ -1352,12 +1387,64 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
       steerOnAllow: true,
     },
   },
+  opencode: {
+    id: 'opencode',
+    label: 'opencode',
+    bin: 'opencode',
+    install: ['npm', 'install', '-g', 'opencode-ai'],
+    launchScript: 'opencode-launch.sh',
+    // NOT the shared shell hook. opencode has no command-hook mechanism at all: its extension point is a
+    // JS/TS PLUGIN (`.opencode/plugin/*.js`) whose `tool.execute.before(input, output)` runs before every
+    // tool call and BLOCKS BY THROWING. So the gate is re-expressed in JS against the same
+    // `POST /api/gate` contract (classify → allow / deny / block-until-approved / fail-closed) rather
+    // than duplicated as a second shell hook. The launcher copies this file into the session's plugin dir.
+    gateHook: 'opencode-gate-plugin.js',
+    // opencode keeps credentials at `$XDG_DATA_HOME/opencode/auth.json` (default `~/.local/share`), so the
+    // dir we relocate is XDG_DATA_HOME and the file to look for sits one level in. `OPENCODE_API_KEY` is
+    // the usage-billed key for its own `opencode/…` gateway (zen). Per-provider keys (ANTHROPIC_API_KEY,
+    // OPENAI_API_KEY, …) still work when injected as shell secrets — they are simply not the rotation var.
+    credentialEnv: { configDirVar: 'XDG_DATA_HOME', apiKeyVar: 'OPENCODE_API_KEY', configDirFile: 'opencode/auth.json' },
+    // Both verified reachable: a credential dir produced by `opencode auth login`, and the plain API key.
+    // No tokenVar — opencode has no separate long-lived OAuth-token env.
+    liveCredentialKinds: ['oauth', 'apikey'],
+    // `opencode auth login` is an interactive provider/method picker whose prompt sequence nobody has
+    // walked through this flow yet; the console still accepts a credential dir added by path.
+    guidedLogin: false,
+    // opencode addresses models as `provider/model`; a bare id is not resolvable.
+    suggestedModels: ['anthropic/claude-opus-4-8', 'anthropic/claude-sonnet-4-8', 'openai/gpt-5-codex'],
+    // A Claude/GPT id WITHOUT a provider prefix belongs to another runtime — `claude-opus-4-8` is what
+    // claude-code pins, and opencode answers "model not found" for it. Anything containing a `/` is a
+    // well-formed opencode id and passes, which is why the negative lookahead comes first.
+    foreignModel: /^(?![^/]*\/)(claude|opus|sonnet|haiku|fable|gpt|o[0-9]|codex)\b/i,
+    capabilities: {
+      // opencode mints its own session id; the launcher captures it and reports it back, exactly like
+      // Codex's rollout id. `--session <id>` resumes and `--fork` branches.
+      pinnedSessionId: false, resume: true, fork: true,
+      // The unattended lane is `opencode run`, a one-shot process that exits at turn end — nothing to
+      // attach to, so no take-over and no resident chat (same shape as Codex's old `exec` lane).
+      attachableUnattended: false, residentChat: false,
+      // No transcript parser yet — cost, engaged time and the friendly timeline are therefore unknown for
+      // an opencode run. `opencode export <sessionID>` is the intended source; until that parser exists and
+      // has been validated against a real export, claiming the capability would surface invented numbers.
+      transcript: false,
+      // Skills/sub-agents are materialised as `.claude/skills` + `.claude/agents`, which opencode does not
+      // discover. It has its own agent mechanism; not wired.
+      nativeSkills: false, nativeSubagents: false,
+      statusLine: false, permissionMode: false,
+      // `tool.execute.before` fires for EVERY tool — `write`/`edit`/`patch` and MCP calls included — and a
+      // throw blocks the call, so both gates are real here (unlike Codex, where writes lean on the sandbox).
+      fileWriteGate: true, mcpGate: true,
+      // A throw is the only channel the plugin has, and it ABORTS the call. There is no field that carries
+      // an advisory note alongside an allow, so the gate's `instruct` verb degrades to a plain allow.
+      steerOnAllow: false,
+    },
+  },
 };
 
 /** Is this a real CLI-backed agent (as opposed to the `mock` demo adapter)? This is what almost every
  *  former `runtime === 'claude-code'` check actually meant. */
 export function isCodingRuntime(runtime: RuntimeId | undefined): runtime is CodingRuntimeId {
-  return runtime === 'claude-code' || runtime === 'codex';
+  return runtime === 'claude-code' || runtime === 'codex' || runtime === 'opencode';
 }
 
 /** The spec for a runtime, or undefined for `mock`/unknown. */
@@ -1377,7 +1464,10 @@ export function validateModelForRuntime(runtime: RuntimeId | undefined, model: s
   const spec = codingRuntime(runtime);
   if (!spec || !model) return undefined;
   if (!spec.foreignModel.test(model)) return undefined;
-  return `"${model}" is not a ${spec.label} model. Try one of: ${spec.suggestedModels.join(', ')} — or clear the field to inherit the workspace default.`;
+  // "a Codex model" but "an opencode model" — the label is runtime data, so pick the article from it
+  // rather than baking in the one that happened to fit the runtimes that existed first.
+  const article = /^[aeiou]/i.test(spec.label) ? 'an' : 'a';
+  return `"${model}" is not ${article} ${spec.label} model. Try one of: ${spec.suggestedModels.join(', ')} — or clear the field to inherit the workspace default.`;
 }
 
 export interface AgentManifest extends RuntimeTuning {
@@ -1412,6 +1502,34 @@ export interface AgentManifest extends RuntimeTuning {
    *  vault secret reaches the interactive shell — connectors get theirs via the MCP bag — so it's
    *  deliberately explicit per agent. Undefined/empty → nothing is exported. */
   shellSecrets?: string[];
+  /** Opt-in allowlist of GLOBAL SKILL names this agent is given at launch. Undefined/empty ⇒ every
+   *  skill whose own audience admits this agent (today's behaviour: the library defaults to "all
+   *  agents", so an uncurated fleet hands every agent the whole library).
+   *
+   *  This is the agent-side inverse of the skill-side `skill_assignments` audience, exactly as
+   *  {@link shellSecrets} is the agent-side inverse of `secret_assignments`. Both are consulted and
+   *  the INTERSECTION wins: a skill is materialised only if its audience admits the agent AND (this
+   *  list is empty OR names it). So a skill owner can still scope their skill, and an agent owner can
+   *  still keep their agent lean, without either overriding the other.
+   *
+   *  Why it matters: only a skill's NAME + DESCRIPTION reach the model, but that index is pinned in
+   *  the system prompt and re-read on every turn. Measured on the live instawp fleet, a 60-skill
+   *  library costs ~8k tokens of prompt on every turn of every run, for agents that use a handful.
+   *  Hand-authored per-agent skills under `.claude/skills/` are NOT affected — they always apply. */
+  skills?: string[];
+  /** Opt-in allowlist of AGENTOS MCP TOOL names offered to this agent (`recall`, `kb_write`,
+   *  `task_create`, …). Undefined/empty ⇒ the full always-on set, which is today's behaviour.
+   *
+   *  A small core set (`AGENT_CORE_TOOLS` in `src/memory/memory-mcp.ts`, which owns the tool
+   *  definitions) is always added back, so a bad list can never strand an agent without
+   *  `report`/`ask_human`/`check_inbox` — and the capability-gated conditional tools (chat replies, egress,
+   *  media) keep their own env gating either way.
+   *
+   *  This is a CONTEXT-SHAPING knob, not a permission boundary. It trims what the model is offered;
+   *  it does not gate what an effect is allowed to do. The gateway is still the only thing that
+   *  decides that, and it is unchanged by this list. Do not reach for `tools` to withhold a
+   *  capability from an agent — write a policy rule. */
+  tools?: string[];
   /** Host-egress governance posture (Phase 2b — docs/host-connections-plan.md). Only takes effect when
    *  workspace host governance is enabled. `'open'` (default): public-internet egress stays plain
    *  shell.exec; only internal-looking or explicitly-listed hosts are governed. `'allowlist'` (lockdown):
@@ -1703,6 +1821,39 @@ export function sanitizeShellSecrets(input: unknown): string[] | undefined {
     seen.add(k);
     out.push(k);
     if (out.length >= 32) break;
+  }
+  return out.length ? out : undefined;
+}
+
+/** Normalize an agent-side `skills` allowlist (API body or config file) into well-formed library skill
+ *  names, deduped order-preserving, capped at 64. Existence is NOT checked here — a name that has left
+ *  the library simply matches nothing at materialisation time, which is the same no-op as never having
+ *  been listed. Undefined when empty → no manifest key → "every skill whose audience admits me". */
+export function sanitizeAgentSkills(input: unknown): string[] | undefined {
+  return nameList(input, /^[a-z0-9][a-z0-9-]{0,63}$/, 64, (x) => x.trim().toLowerCase());
+}
+
+/** Normalize an agent-side `tools` allowlist into well-formed agentos MCP tool names (snake_case),
+ *  deduped order-preserving, capped at 96. Unknown names are harmless — they match no tool. Undefined
+ *  when empty → no manifest key → the full always-on set. */
+export function sanitizeAgentTools(input: unknown): string[] | undefined {
+  return nameList(input, /^[a-z][a-z0-9_]{0,63}$/, 96, (x) => x.trim().toLowerCase());
+}
+
+/** Shared shape-normalizer for the manifest's allowlist fields: accept an array OR a comma/space/
+ *  newline-separated string (so a plain UI textarea works), normalize, drop anything malformed,
+ *  dedupe order-preserving, cap the length. Empty → undefined, so the key is omitted entirely. */
+function nameList(input: unknown, re: RegExp, cap: number, norm: (x: string) => string): string[] | undefined {
+  const raw = Array.isArray(input) ? input : typeof input === 'string' ? input.split(/[\s,]+/) : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of raw) {
+    if (typeof x !== 'string') continue;
+    const v = norm(x);
+    if (!re.test(v) || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+    if (out.length >= cap) break;
   }
   return out.length ? out : undefined;
 }

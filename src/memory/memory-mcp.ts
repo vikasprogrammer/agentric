@@ -11,6 +11,8 @@
  * Zero-dependency: speaks JSON-RPC 2.0 over newline-delimited stdio by hand (Node's MCP stdio
  * transport), and uses the global `fetch`. Spawned by claude with AOS_URL/SESSION/AGENT in env.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 const AOS_URL = (process.env.AOS_URL || 'http://127.0.0.1:3010').replace(/\/$/, '');
 // The base for absolute console deep-links agents hand to a human. Prefer AOS_PUBLIC_URL — the tenant's
 // REAL external origin (its Tailscale/FQDN, from AGENT_OS_PUBLIC_URL/config publicUrl via consoleOrigin,
@@ -41,9 +43,19 @@ const UNATTENDED_ASK_WAIT_S = Number(process.env.AOS_UNATTENDED_ASK_WAIT_S) || 1
 // bounded, so a stuck child can't strand the caller forever (on timeout the tool returns "still running,
 // check back", not a hang). Interactive callers wait longer (a human can steer); headless park at this.
 const TASK_WAIT_S = Number(process.env.AOS_TASK_WAIT_S) || 900;
+/**
+ * Which tool the in-flight loopback call belongs to. Tool calls run CONCURRENTLY (each stdin line is
+ * dispatched without awaiting the last), so a module-level "current tool" variable would mislabel
+ * interleaved calls; an AsyncLocalStorage keeps the name bound to its own async chain.
+ */
+const toolContext = new AsyncLocalStorage<string>();
+
 /** Headers for a loopback agent call: the session bearer + tenant route, plus any extras (e.g. JSON). */
 function H(extra: Record<string, string> = {}): Record<string, string> {
-  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...extra };
+  // `x-aos-tool` is TELEMETRY only — the server buckets per-tool latency by it (request-metrics.ts) and
+  // grants nothing on it. Authority stays with the session secret above.
+  const tool = toolContext.getStore();
+  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...(tool ? { 'x-aos-tool': tool } : {}), ...extra };
 }
 
 interface JsonRpc {
@@ -305,6 +317,35 @@ const VIDEO_UNDERSTAND_TOOL = {
     required: ['video'],
   },
 };
+
+// ── Per-agent tool allowlist (AgentManifest.tools) ───────────────────────────────────────────────
+// AOS_TOOLS is a comma-separated allowlist exported by the launcher when the agent's manifest declares
+// one. Unset (the default) ⇒ every tool below is offered, which is the historical behaviour.
+//
+// Why this exists: a tool's full JSON schema is pinned in the system prompt and re-read on EVERY turn.
+// Measured on the live instawp fleet, the always-on set is ~19k tokens of prompt per turn, and a
+// typical run calls a dozen of them. Trimming the offer is the cheapest context win there is.
+//
+// It is NOT a permission boundary — it only changes what the model is OFFERED. `tools/call` is
+// deliberately left unfiltered: the gateway (policy → approvals → budget → audit) is the thing that
+// decides whether an effect may happen, and narrowing the offer must never be mistaken for governing
+// it. A stale client that calls an unlisted tool still gets the same governed treatment it always did.
+const TOOL_ALLOW: Set<string> | null = (() => {
+  const raw = (process.env.AOS_TOOLS || '').split(',').map((x) => x.trim()).filter(Boolean);
+  return raw.length ? new Set(raw) : null;
+})();
+
+// Never filtered away, whatever the allowlist says. These are how a run reports, asks for help, reads
+// its inbox and records what it learned — strand an agent without them and the governance surface goes
+// dark (no completion, no blocking question, no lesson) while the run still burns quota. A manifest
+// typo must degrade the context saving, never the agent.
+const AGENT_CORE_TOOLS = ['report', 'update', 'ask_human', 'check_inbox', 'notify', 'recall', 'remember'];
+
+/** Apply the per-agent allowlist to a tool list. Core tools always survive. */
+function offered<T extends { name: string }>(tools: T[]): T[] {
+  if (!TOOL_ALLOW) return tools;
+  return tools.filter((t) => TOOL_ALLOW.has(t.name) || AGENT_CORE_TOOLS.includes(t.name));
+}
 
 const TOOLS = [
   {
@@ -979,7 +1020,7 @@ const TOOLS = [
         goalId: { type: 'string', description: 'Link this task to a strategic goal it advances (see goal_list for ids). Its progress then counts toward that goal.' },
         goal: { type: 'string', description: 'The single-line objective the delegate must achieve — the definition of done. On a headless auto-dispatched task the worker runs under this as a `/goal` and converges autonomously until it holds (alias for `criteria`). This is what to state when you delegate WITH a goal.' },
         criteria: { type: 'string', description: 'A single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". When set on a headless auto-dispatched task, the worker runs under this as a `/goal` and converges autonomously until it holds. Synonym of `goal`.' },
-        poke_on_done: { type: 'boolean', description: 'Async wake-up on completion: hand off, end your turn, and be woken automatically when the delegate finishes (or blocks) — no polling. The async counterpart to `wait` (which blocks in-line). DEFAULTS ON when you delegate to another agent, so the loop closes itself — set it to false only when you truly want fire-and-forget and do NOT need the result. Ignored on a self-assignment or an open/human task (no separate caller to wake).' },
+        poke_on_done: { type: 'boolean', description: 'Async wake-up: hand off, end your turn, and hear back without polling. The async counterpart to `wait` (which blocks in-line). DEFAULTS ON when you delegate to another agent. What it guarantees: a COMPLETION reaches you if you are still running when it lands, and stays on the task if you are not — it will not start a new run of you just to deliver good news; a HAND-BACK (blocked) or a delegate whose run dies WILL wake you even if you have exited, since only you can move those. So if you need the result to act on, either stay up, use `wait`, or read the task later. Ignored on a self-assignment or an open/human task (no separate caller to wake).' },
         dependsOn: { type: 'array', items: { type: 'string' }, description: 'Task ids this task is BLOCKED BY — it will not dispatch until they are all done. To encode a pipeline: file the earlier steps first, capture their ids from the results, and pass them here so this step waits for them.' },
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
@@ -2475,10 +2516,14 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
     const outcome = await taskWait({ id: d.id, timeoutSeconds: args.timeoutSeconds });
     return `Filed task ${d.id}: "${title}"${who}.\n${outcome}`;
   }
-  // poke_on_done (explicit or the agent→agent default) → don't poll or wait. End your turn; you'll be
-  // woken with the result the moment the delegate finishes (or blocks).
+  // poke_on_done (explicit or the agent→agent default) → don't poll or wait. End your turn; the result
+  // reaches you if you are still up when it lands. It is NOT a promise of a new run: a completion reaching
+  // a caller that has exited is dropped rather than resurrecting it (docs/tasks-plan.md §3.8), because the
+  // result is durable on the task and the owner already has the card. A hand-back or a dead delegate DOES
+  // wake a cold caller — those are the cases where the caller is the only one who can move the work. Say so
+  // plainly here: an agent told "you'll be woken" that then isn't will sit and wait for nothing.
   if (pokeOnDone) {
-    return `Filed task ${d.id}: "${title}"${who}. You'll be woken with the result when it finishes — you can end your turn now; no need to poll.`;
+    return `Filed task ${d.id}: "${title}"${who}. End your turn — no polling. The result comes to you if you're still running when it lands; if your run has ended by then it stays on the task (task_get "${d.id}"), and you'll only be woken back up if it comes back BLOCKED or its run dies.`;
   }
   return `Filed task ${d.id}: "${title}"${who}. Track it with task_get "${d.id}".`;
 }
@@ -3090,7 +3135,14 @@ async function listCapabilities(): Promise<string> {
   if (data.error) return `Could not list capabilities: ${data.error}`;
   const caps = data.capabilities ?? [];
   if (!caps.length) return 'No governed capabilities are registered.';
-  return caps.map((c) => `- ${c.id} — ${verdict(c.effect, c.level)}${c.description ? `: ${c.description}` : ''}`).join('\n');
+  const lines = caps.map((c) => `- ${c.id} — ${verdict(c.effect, c.level)}${c.description ? `: ${c.description}` : ''}`);
+  return [
+    'Governed capabilities (what your tool calls classify into). The verdict shown is the base outcome',
+    'with no risky arguments; the same action can still be gated or denied once the gate parses the actual',
+    'command/host/path. Use policy_check with a concrete capability + args to preview the exact verdict.',
+    '',
+    ...lines,
+  ].join('\n');
 }
 
 async function policyCheck(args: Record<string, unknown>): Promise<string> {
@@ -3167,8 +3219,11 @@ async function handle(req: JsonRpc): Promise<void> {
   if (method && method.startsWith('notifications/')) return;
 
   if (method === 'tools/list') {
+    // The conditional tools below are already gated by a CAPABILITY (a bound chat thread, a configured
+    // platform, a media backend). `offered()` narrows only the always-on set — withholding a chat
+    // session's own reply tool would break the path it was launched for.
     send({ jsonrpc: '2.0', id, result: { tools: [
-      ...TOOLS,
+      ...offered(TOOLS),
       ...(SLACK_REPLY ? [SLACK_REPLY_TOOL] : []),
       ...(DISCORD_REPLY ? [DISCORD_REPLY_TOOL] : []),
       ...(TELEGRAM_REPLY ? [TELEGRAM_REPLY_TOOL] : []),
@@ -3186,6 +3241,9 @@ async function handle(req: JsonRpc): Promise<void> {
   if (method === 'tools/call') {
     const name = params?.name as string;
     const args = (params?.arguments as Record<string, unknown>) || {};
+    // Everything this call does downstream runs inside the tool's name, so each loopback request carries
+    // `x-aos-tool` (see H()) and the server can report latency per TOOL, not only per route.
+    return toolContext.run(name ?? 'unknown', async () => {
     try {
       const text =
         name === 'recall' ? await recall(args)
@@ -3272,7 +3330,7 @@ async function handle(req: JsonRpc): Promise<void> {
       // error was reporting itself as a memory failure, sending the agent to the wrong subsystem).
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `${name ?? 'tool'} error: ${e instanceof Error ? e.message : String(e)}` }], isError: true } });
     }
-    return;
+    });
   }
 
   // Unknown method with an id → proper JSON-RPC error; ignore id-less calls.

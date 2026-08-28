@@ -77,9 +77,14 @@ const MIN_TOPIC_COUNT = 3;
  *
  * **Bump this in the same commit as any change to `isEntity`/`properNouns`/`STOP`.** v0.281.3 tightened
  * `isEntity` (opaque hex ids) without bumping, so the ids already stored stayed in the map — the exact
- * failure this counter exists to prevent.
+ * failure this counter exists to prevent. v0.401.0 then did it AGAIN — it stopped extracting `wait`,
+ * `c05cl830mnd`, `d3cby9k` and `already-contacted-in-90-days`, and every one of them stayed in the live
+ * maps, with `wait:3` sitting exactly on {@link MIN_TOPIC_COUNT} and therefore still headlining the
+ * guidance line every agent reads. A comment is evidently not enough to enforce this, so
+ * `scripts/insights-signal-test.cjs` now fingerprints the extractor and fails the build when it changes
+ * without a bump.
  */
-const TOPICS_VERSION = 3;
+export const TOPICS_VERSION = 4;
 const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none',
   // Procedural / plumbing words — they describe HOW an agent worked, not WHAT the fleet works on, so they
   // drown the real topics ("slack, check, report, completed, summary" is a useless "frequently works on").
@@ -90,7 +95,12 @@ const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'th
   'lets', 'please', 'want', 'wants', 'wanted', 'like', 'would', 'give', 'tell', 'know', 'here', 'there', 'what', 'which', 'where', 'whether', 'still', 'back', 'next', 'first', 'last', 'good', 'great', 'thing', 'things', 'stuff', 'working', 'work', 'going', 'getting', 'recent', 'recently', 'latest', 'today', 'yesterday', 'tomorrow', 'current', 'currently', 'again', 'once', 'above', 'below', 'help', 'lets', 'able', 'sure', 'okay', 'yeah', 'issue', 'issues', 'problem', 'problems', 'thanks', 'quick', 'quickly',
   // Imperative scaffolding from step-by-step test/QA prompts ("Test the … tools end-to-end, then STOP. Do
   // ONLY these steps … EXACTLY") — describes how a run was scripted, not a subject the fleet works on.
-  'stop', 'exactly', 'step', 'steps', 'only', 'test', 'tests', 'tool', 'tools', 'end', 'ping', 'pls', 'else', 'anything', 'everything', 'something', 'nothing']);
+  'stop', 'exactly', 'step', 'steps', 'only', 'test', 'tests', 'tool', 'tools', 'end', 'ping', 'pls', 'else', 'anything', 'everything', 'something', 'nothing',
+  // Shouted imperatives and status words. A prompt that writes "WAIT for it to finish" reads as an
+  // ACRONYM to `properNouns` (short, all-caps, standing alone), which promoted it to a proper noun —
+  // instawp's first clean pass told every agent "the fleet frequently works on: freescout, apache2,
+  // WAIT". These are states a run passes through, never subjects it works on.
+  'wait', 'waiting', 'block', 'blocked', 'blocking', 'advanced', 'live', 'record', 'records', 'library', 'note', 'notes']);
 
 export class DreamingEngine {
   constructor(private readonly os: AgentOS) {}
@@ -285,7 +295,7 @@ export class DreamingEngine {
 /** L1: repair a partial / schema-drifted / corrupt `dreaming_state` into a well-formed shape, so the
  *  fold's `state.totals[k] += win[k]` can never hit an `undefined` field and spew `NaN` into every
  *  downstream number (rate, guidance, the page). Non-numeric fields fall back to safe defaults. */
-function normalizeState(raw: Record<string, unknown>): DreamState {
+export function normalizeState(raw: Record<string, unknown>): DreamState {
   const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
   const rt = (raw.totals ?? {}) as Record<string, unknown>;
   const totals = zeroTally();
@@ -297,7 +307,15 @@ function normalizeState(raw: Record<string, unknown>): DreamState {
   }
   const recent = Array.isArray(raw.recent) ? (raw.recent as RecentEntry[]) : [];
   const watermark = Number.isFinite(Number(raw.watermark)) ? Number(raw.watermark) : undefined;
-  return { firstPass: num(raw.firstPass, Date.now()), passes: num(raw.passes, 0), totals, topics, recent, watermark };
+  // `topicsVersion` MUST survive the round-trip. Dropping it here made the extractor-version check in
+  // `dream()` true on EVERY load, so the cumulative topic map was wiped at the start of every pass — the
+  // exact opposite of the 21-day half-life it is documented to have. Live proof before the fix: instapods
+  // reset on 29 of 46 passes and instawp on 31 of 41, discarding 666 and 1760 topic counts respectively,
+  // so `topics` only ever held ONE day of episodes. With MIN_TOPIC_COUNT = 3 that left the smaller tenant
+  // permanently below the bar — its "the fleet frequently works on …" guidance line never fired once, and
+  // the fleet Insight every agent recalls read "Recurring topics: —".
+  const topicsVersion = Number.isFinite(Number(raw.topicsVersion)) ? Number(raw.topicsVersion) : undefined;
+  return { firstPass: num(raw.firstPass, Date.now()), passes: num(raw.passes, 0), totals, topics, recent, watermark, topicsVersion };
 }
 
 function zeroTally(): Tally {
@@ -311,7 +329,7 @@ function parse(s: string): Record<string, unknown> {
 /** Count topic keywords across the window's episode task/summary lines. `nameStop` holds team-member
  *  name tokens (built per-pass from the roster) — a person's name describes WHO asked, not WHAT the fleet
  *  works on, so "the fleet frequently works on … vikas, singhal" is noise; drop them alongside STOP. */
-function topicCounts(episodes: EpisodeRow[], nameStop: Set<string> = new Set()): [string, number][] {
+export function topicCounts(episodes: EpisodeRow[], nameStop: Set<string> = new Set()): [string, number][] {
   const proper = properNouns(episodes);
   const counts = new Map<string, number>();
   for (const e of episodes) {
@@ -427,6 +445,13 @@ function isEntity(token: string, proper: Set<string>): boolean {
   // hex ids through — live globex surfaced `f90fc16d7fb9a19` as something "the fleet frequently works
   // on". A long hex/base36 run with no vowel structure is a handle, not a name.
   if (/^[0-9a-f]{8,}$/i.test(token) || /^[a-z]{2,4}_[0-9a-f]{6,}$/i.test(token)) return false;
+  // …and neither is a mixed handle the hex rule misses. A real tech name carries its digits at the END
+  // (`apache2`, `php8`, `dev3`, `oauth2`, `utf-8`) — a digit buried in the MIDDLE of a long token is an
+  // id or a slug. instawp's first clean pass surfaced `d3cby9k`, `d2mp41k` and the Slack channel id
+  // `c05cl830mnd` as fleet topics; instapods surfaced the task slug `already-contacted-in-90-days`.
+  // Bounded by length so short legitimate names (`log4j`, `s3`) are untouched, and a token the corpus
+  // consistently capitalizes is a name whatever its shape, so `proper` still wins.
+  if (!proper.has(token) && token.length >= 7 && /\d/.test(token.replace(/[\d-]+$/, ''))) return false;
   // A FILENAME qualifies on its base name, never its extension — otherwise the dot rule (meant for
   // hostnames and versions) admits every path an agent mentions, including format placeholders like
   // `yyyy-mm-dd.md`. `.com`/`.io` are not code extensions, so real hostnames still pass below.

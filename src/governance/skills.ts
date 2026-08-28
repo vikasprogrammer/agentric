@@ -473,8 +473,14 @@ export class SkillsStore {
    * the list) are materialised — and a skill that was previously synced but is no longer assigned to
    * this agent is pruned by the same managed-skill cleanup below. When `agent` is undefined, every
    * library skill is synced (back-compat for non-agent callers).
+   *
+   * `allow` is the AGENT-side half of the same question (`AgentManifest.skills`): the skills this agent
+   * asked to carry. The two are ANDed — a skill lands only if its own audience admits the agent AND the
+   * agent's list is empty or names it — so a skill owner scoping their skill and an agent owner keeping
+   * their agent lean never override each other. Undefined/empty `allow` ⇒ audience decides alone, which
+   * is the pre-existing behaviour. Names in `allow` that aren't in the library are simply inert.
    */
-  materialize(claudeDir: string, agent?: string): string[] {
+  materialize(claudeDir: string, agent?: string, allow?: string[]): string[] {
     if (!this.dir) return [];
     const target = path.join(claudeDir, 'skills');
     // Always create the skills dir, even when this agent has NO skills yet. Claude Code only *watches*
@@ -495,8 +501,13 @@ export class SkillsStore {
 
     // Only skills targeting this agent (empty audience ⇒ all agents). Undefined agent ⇒ keep all.
     // Proposed (unpublished) skills are NEVER materialised — that gate is the whole safety story.
+    // Then intersect with the agent's own opt-in list, when it declares one.
+    const wantedByAgent = allow && allow.length ? new Set(allow) : null;
     const library = this.list().filter(
-      (s) => !s.proposed && (agent === undefined || s.agents.length === 0 || s.agents.includes(agent)),
+      (s) =>
+        !s.proposed &&
+        (agent === undefined || s.agents.length === 0 || s.agents.includes(agent)) &&
+        (!wantedByAgent || wantedByAgent.has(s.name)),
     );
     const wanted = new Set(library.map((s) => s.name));
 

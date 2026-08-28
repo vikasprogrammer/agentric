@@ -61,26 +61,14 @@ export type RuntimeTuningPatch = {
   verbosity?: Verbosity | ''
 }
 
-/** One arm of the terse-vs-normal comparison, normalised per TURN (a longer run costs more because it
- *  did more, not because it was wordy). */
-export interface VerbosityArm {
-  sessions: number
-  turns: number
-  outputPerTurn: number
-  usdPerTurn: number
-}
-export interface VerbosityComparison {
-  normal: VerbosityArm
-  terse: VerbosityArm
-  /** Percent reduction terse vs normal (positive = cheaper). Null until both arms have enough runs. */
-  outputDelta: number | null
-  usdDelta: number | null
-  comparable: boolean
-}
-/** `byAgent` holds the agent fixed and is the number to trust; the top-line pair mixes different work. */
-export interface VerbositySavings extends VerbosityComparison {
+/** How far the terse flag has spread — counts only. The predecessor (`VerbositySavings`) carried
+ *  cost-per-turn deltas and was retired in v0.389.0: `output_tokens` is ~85% tool-call arguments, so
+ *  it never measured the narration the brief acts on. Whether terse WORKS is answered by
+ *  `npm run bench:verbosity` / `bench:verbosity-turns`, not by a query over live traffic. */
+export interface VerbosityAdoption {
   windowDays: number
-  byAgent: Array<{ agent: string } & VerbosityComparison>
+  sessions: { normal: number; terse: number; unstamped: number }
+  byAgent: Array<{ agent: string; normal: number; terse: number }>
   error?: string
 }
 
@@ -139,10 +127,34 @@ export interface RuntimeSpecInfo {
 /** A guided sign-in in flight: the console starts it, shows `url` for the human to authorize, takes the
  *  code back, and the runtime's own CLI writes the credential dir. */
 export type LoginPhase = 'starting' | 'awaiting-code' | 'exchanging' | 'done' | 'failed'
-export interface RuntimeLogin { id: string; runtime: string; name: string; phase: LoginPhase; url?: string; error?: string; startedAt: number }
+export interface RuntimeLogin {
+  id: string; runtime: string; name: string; phase: LoginPhase; url?: string; error?: string
+  /** A recoverable hiccup while the flow CONTINUES — a rejected code, with a fresh link on the way.
+   *  Distinct from `error`, which ends the login. */
+  notice?: string
+  /** Codes rejected so far in this login. */
+  codeAttempts?: number
+  startedAt: number
+}
 /** `refreshing` = `<runtime>/<name>` for each account whose usage snapshot is being re-probed in the
  *  background right now (the read kicked it — see src/edge/runtime-account-usage.ts). The `accounts` in
  *  THIS response are the pre-probe reading, so a non-empty list means "read again shortly for fresh %". */
+/** A runtime as the agent picker sees it: what it supports, and whether this box actually HAS its
+ *  CLI — `installed:false` means every session on it would park, so the picker offers to install. */
+export interface RuntimePickerInfo {
+  id: string
+  label: string
+  suggestedModels: string[]
+  capabilities: Record<string, boolean>
+  bin: string
+  /** Display form of the install command, e.g. `npm install -g opencode-ai`. */
+  install: string
+  installed: boolean
+  version?: string
+}
+/** Presence of every coding runtime on this box (Settings → Runtimes). */
+export interface RuntimePresence { id: string; label: string; bin: string; installed: boolean; version?: string; install: string }
+
 export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; logins?: RuntimeLogin[]; refreshing?: string[]; error?: string }
 
 export interface AgentInfo {
@@ -188,11 +200,19 @@ export interface RouteStat {
   errors: number
 }
 
+/** The same timing, keyed by the agent-facing MCP tool that made the call (`x-aos-tool`). */
+export interface ToolStat extends RouteStat {
+  /** The tool waits on a human or a delegate by design (`ask_human`, `task_wait`) — its clock is not code. */
+  blocking: boolean
+}
+
 /** Per-endpoint timings + independent event-loop lag — see src/edge/request-metrics.ts. */
 export interface RequestMetricsSnapshot {
   since: number
   requests: number
   routes: RouteStat[]
+  /** Per-MCP-tool timings; empty until an agent session has called one since the last restart. */
+  tools?: ToolStat[]
   loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number }
   error?: string
 }
@@ -753,6 +773,11 @@ export interface TaskRun {
   alive: boolean
   archived: boolean
 }
+/** Which agents have actually WORKED a task — the card's rollup of its runs. Only sent for tasks worked
+ *  by more than one agent (with one, the assignee badge already says it). See TerminalManager.taskWorkers. */
+export interface TaskWorkers {
+  agents: { id: string; runs: number; alive: boolean }[]
+}
 /** What happened to a plain discussion message beyond being stored — whether it REACHED the run working
  *  the task. `choose` = more than one live run, so nothing was delivered until the human picks one. */
 export interface TaskDiscussionDelivery {
@@ -941,7 +966,9 @@ export interface Automation {
   type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram' | 'clickup'
   mode: ExecMode
   schedule?: string
-  /** composio: trigger slug. slack: event type (app_mention/message) or channel id. webhook: a
+  /** composio: trigger slug. slack: event type (app_mention/message) or channel id, optionally
+   *  followed by `when`/`unless` clauses over the message (`C0ABUSE1 when text ~ "abuse report"`);
+   *  a channel-scoped filter also watches that channel for non-mention messages. webhook: a
    *  comma-separated event list (`convo.created, convo.note.*`). '' = any. */
   filter?: string
   /** webhook: dot path to the source's conversation id in the payload — follow-ups on the same
@@ -1301,6 +1328,33 @@ export interface SecretMeta {
 export interface GovernanceThresholds {
   moneyCapUsd: number
   bulkDeleteCount: number
+}
+
+// ── install wizard ───────────────────────────────────────────────────────────────
+export type SetupStepId = 'claude' | 'company' | 'composio' | 'chat' | 'github' | 'memory' | 'team' | 'agents'
+export interface SetupStep {
+  id: SetupStepId
+  title: string
+  why: string
+  /** Required steps gate "setup complete" and drive the console banner. */
+  required: boolean
+  /** `unknown` = there is evidence of a credential but the launch path can't be proven from here. */
+  status: 'done' | 'todo' | 'unknown'
+  /** Evidence behind the status ("2 accounts in the rotation pool") — never a secret. */
+  detail: string
+  skipped: boolean
+}
+export interface SetupStatus {
+  steps: SetupStep[]
+  done: number
+  total: number
+  /** Required steps neither done nor skipped. */
+  blocking: number
+  complete: boolean
+  dismissedAt: number | null
+  /** Whether this box can drive a runtime sign-in from the console. */
+  guidedLogin: boolean
+  guidedLoginWhy?: string
 }
 
 export interface IntegrationsResp {
@@ -1894,7 +1948,7 @@ export const api = {
   kbRevert: (id: string, rev: number) => call<{ ok: boolean; page?: KbPage; error?: string }>('POST', `/api/kb/page/${id}/revert`, { rev }),
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
 
-  tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; prCounts?: Record<string, TaskPrSummary>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
+  tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; prCounts?: Record<string, TaskPrSummary>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary>; workers?: Record<string, TaskWorkers> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
   task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; children?: TaskChild[]; runs?: TaskRun[]; prs?: TaskPr[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
   /** The task's PRs with their status refreshed from GitHub (stale-only unless `refresh`). Separate from
    *  the detail payload because it makes network calls — the detail's `prs` render instantly from cache. */
@@ -1976,7 +2030,7 @@ export const api = {
   taskReconcilePreview: () => call<{ ok: boolean; plan?: TaskReconcilePlan; error?: string }>('GET', '/api/insights/tasks/reconcile'),
   taskReconcileApply: () => call<{ ok: boolean; closed?: number; error?: string }>('POST', '/api/insights/tasks/reconcile'),
 
-  createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
+  createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; skills?: string[]; tools?: string[]; icon?: string; runtime?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
   duplicateAgent: (id: string, newId: string) => call<{ ok: boolean; id?: string; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/duplicate`, { newId }),
   agentCatalog: () => call<AgentCatalogResp>('GET', '/api/agents/catalog'),
@@ -1987,13 +2041,15 @@ export const api = {
   presence: () => call<{ now: number; lastSeen: Record<string, number> }>('GET', '/api/presence'),
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
-  agentConfig: (id: string) => call<{ agent: string; error?: string; runtime?: string; runtimes?: { id: string; label: string; suggestedModels: string[]; capabilities: Record<string, boolean> }[]; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
-  saveAgentConfig: (id: string, patch: RuntimeTuningPatch & { runtime?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string; runtime?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
+  runtimes: () => call<{ runtimes?: RuntimePresence[]; error?: string }>('GET', '/api/runtimes'),
+  installRuntime: (id: string) => call<{ ok?: boolean; version?: string; error?: string }>('POST', `/api/runtimes/${encodeURIComponent(id)}/install`),
+  agentConfig: (id: string) => call<{ agent: string; error?: string; runtime?: string; runtimes?: RuntimePickerInfo[]; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; skills?: string[]; tools?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
+  saveAgentConfig: (id: string, patch: RuntimeTuningPatch & { runtime?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; skills?: string[]; tools?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; skills?: string[]; tools?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string; runtime?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
   agentRevisions: (id: string) => call<{ agent: string; revisions: AgentRevision[]; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/revisions`),
   agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
-  verbositySavings: (days = 30) => call<VerbositySavings>('GET', `/api/settings/verbosity-savings?days=${days}`),
+  verbosityAdoption: (days = 30) => call<VerbosityAdoption>('GET', `/api/settings/verbosity-adoption?days=${days}`),
   subagentDefault: () => call<{ mode: 'all' | 'none'; error?: string }>('GET', '/api/settings/subagent-default'),
   saveSubagentDefault: (mode: 'all' | 'none') => call<{ ok: boolean; mode?: 'all' | 'none'; error?: string }>('PUT', '/api/settings/subagent-default', { mode }),
   agentProposalTrust: () => call<{ trust: AgentProposalTrust; error?: string }>('GET', '/api/settings/agent-proposal-trust'),
@@ -2033,6 +2089,13 @@ export const api = {
   killSwitch: () => call<{ engaged: boolean; reason?: string; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/kill-switch'),
   setKillSwitch: (engaged: boolean, reason?: string, haltSessions?: boolean) => call<{ ok: boolean; engaged: boolean; reason?: string; halted?: number; updatedBy?: string; error?: string }>('POST', '/api/settings/kill-switch', { engaged, reason, haltSessions }),
 
+
+  // Install wizard: one read-side roll-up of "what's still unconfigured". Fixing a step calls that
+  // setting's own endpoint (saveCompany, saveIntegrations, invite, …) — these three only read, skip
+  // and dismiss.
+  setup: () => call<SetupStatus & { error?: string }>('GET', '/api/setup'),
+  skipSetupStep: (step: SetupStepId, skip = true) => call<SetupStatus & { error?: string }>('POST', '/api/setup/skip', { step, skip }),
+  dismissSetup: (dismissed = true) => call<SetupStatus & { error?: string }>('POST', '/api/setup/dismiss', { dismissed }),
 
   settings: () => call<CompanySettings>('GET', '/api/settings'),
   saveCompany: (companyMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/company', { companyMd }),
@@ -2164,6 +2227,8 @@ export const api = {
   editArtifact: (id: string, content: string) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('PUT', `/api/artifacts/${id}/content`, { content }),
   /** Direct URL to an artifact's bytes (for <img>/<iframe>/download). `file` selects a sibling (sites). */
   artifactRawUrl: (id: string, file?: string) => `/api/artifacts/${id}/raw${file ? `?file=${encodeURIComponent(file)}` : ''}`,
+  /** Markdown artifacts only — the server renders the PDF on demand and sends it as an attachment. */
+  artifactPdfUrl: (id: string) => `/api/artifacts/${id}/pdf`,
 
   // Hosted apps (owner/admin) — the management surface for small server-side apps.
   apps: () => call<{ apps: AppInfo[]; enabled: boolean }>('GET', '/api/apps'),

@@ -8,12 +8,21 @@
 // a single tight-timeout loopback GET to /api/agent/status (session-secret gated, same lane as the
 // gate hook); if the server is old or slow the fetch fails silent and we still render the local part.
 //
+// It ALSO runs standalone, on any machine, in a plain claude session that Agentric never launched
+// (`scripts/install-statusline.sh` drops it into ~/.claude and points settings.json at it). There is
+// no AOS_URL/SESSION/AOS_SECRET there, so the governance fetch is skipped entirely and the head slot
+// carries the git branch instead of the agent id — same bar, the half of it that doesn't need a
+// server. Keep every governed-only field behind the `governed` flag, or a personal session renders
+// placeholders for state it doesn't have.
+//
 // Zero deps, Node built-ins only (matches the repo's stance). Wired in by claude-launch.sh, which
 // writes `statusLine.command = node <this>` into the per-session .claude/aos-settings.json.
 
+const { spawnSync } = require('node:child_process');
+
 const C = {
   reset: '\x1b[0m', dim: '\x1b[2m', bold: '\x1b[1m',
-  cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', gray: '\x1b[90m',
+  cyan: '\x1b[36m', magenta: '\x1b[35m', green: '\x1b[32m', yellow: '\x1b[33m', red: '\x1b[31m', gray: '\x1b[90m',
 };
 const sep = `${C.gray} · ${C.reset}`;
 
@@ -31,10 +40,13 @@ function readStdin() {
   });
 }
 
+// A session Agentric launched exports all three; a plain `claude` on someone's laptop exports none.
+const GOVERNED = Boolean(process.env.AOS_URL && process.env.SESSION && process.env.AOS_SECRET);
+
 // Live governance for THIS run: pending approvals + run-as. Best-effort, fails to nulls.
 async function governance() {
   const base = process.env.AOS_URL, session = process.env.SESSION, secret = process.env.AOS_SECRET;
-  if (!base || !session || !secret) return {};
+  if (!GOVERNED) return {};
   try {
     const r = await fetch(`${base}/api/agent/status?session=${encodeURIComponent(session)}`, {
       headers: { 'x-aos-secret': secret, 'x-aos-tenant': process.env.AOS_TENANT || '' },
@@ -57,6 +69,24 @@ function contextBar(cw) {
   return `${color}${bar}${C.reset} ${color}${pct}%${C.reset}`;
 }
 
+// Git branch + dirty marker for the standalone lane, where there is no agent id to head the bar.
+// One `git status -b --porcelain` call (no untracked scan — that's the expensive part in a big repo),
+// hard-capped at 300ms: this runs on every TUI refresh and must never be what makes the bar stutter.
+function gitBranch(cwd) {
+  try {
+    const r = spawnSync('git', ['status', '-b', '--porcelain', '--untracked-files=no'], {
+      cwd: cwd || process.cwd(), encoding: 'utf8', timeout: 300, windowsHide: true,
+    });
+    if (r.status !== 0 || !r.stdout) return null;
+    const lines = r.stdout.split('\n').filter(Boolean);
+    const head = lines[0] || '';
+    if (!head.startsWith('## ')) return null;
+    // "## main...origin/main [ahead 1]" -> "main"; detached HEAD reads "## HEAD (no branch)".
+    const name = head.slice(3).split('...')[0].split(' ')[0];
+    return { name, dirty: lines.length > 1 };
+  } catch { return null; }
+}
+
 // Compact working dir: ~ for $HOME, and collapse to the last two segments when deep.
 function folderLabel(cwd) {
   if (!cwd) return null;
@@ -72,16 +102,24 @@ function folderLabel(cwd) {
 
   const parts = [];
 
-  // Agent + short AOS session id (maps the TUI to the console row) + run-as identity.
-  const agent = process.env.AGENT || (d.agent && d.agent.name) || 'agent';
-  const sid = process.env.SESSION ? String(process.env.SESSION).slice(-4) : '';
-  let head = `${C.cyan}${C.bold}◆ ${agent}${C.reset}`;
-  if (sid) head += ` ${C.gray}#${sid}${C.reset}`;
-  parts.push(head);
-  if (g.runAs) parts.push(`${C.dim}as ${g.runAs}${C.reset}`);
+  const cwd = (d.workspace && d.workspace.current_dir) || d.cwd;
+
+  if (GOVERNED) {
+    // Agent + short AOS session id (maps the TUI to the console row) + run-as identity.
+    const agent = process.env.AGENT || (d.agent && d.agent.name) || 'agent';
+    const sid = process.env.SESSION ? String(process.env.SESSION).slice(-4) : '';
+    let head = `${C.cyan}${C.bold}◆ ${agent}${C.reset}`;
+    if (sid) head += ` ${C.gray}#${sid}${C.reset}`;
+    parts.push(head);
+    if (g.runAs) parts.push(`${C.dim}as ${g.runAs}${C.reset}`);
+  } else {
+    // Standalone: the branch is what an ungoverned session actually wants at the head of the bar.
+    const br = gitBranch(cwd);
+    if (br) parts.push(`${C.magenta}${C.bold}⎇ ${br.name}${C.reset}${br.dirty ? `${C.yellow}*${C.reset}` : ''}`);
+  }
 
   // Current working folder (compact).
-  const folder = folderLabel((d.workspace && d.workspace.current_dir) || d.cwd);
+  const folder = folderLabel(cwd);
   if (folder) parts.push(`${C.cyan}${folder}${C.reset}`);
 
   // Model · effort (JSON first, env fallback for either).

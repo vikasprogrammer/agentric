@@ -90,3 +90,43 @@ export function capabilityDescriptor(id: string): CapabilityDescriptor | undefin
 export function knownCapabilities(): CapabilityDescriptor[] {
   return [...DESCRIPTORS];
 }
+
+/** One entry in the governed-capability surface: the id policy targets + why it's governed. */
+export interface GovernedCapability {
+  id: string;
+  description: string;
+}
+
+/**
+ * The STRUCTURAL capabilities the gate hook assigns purely by tool shape (terminal/gate-hook.sh) plus
+ * the two the terminal gate reclassifies host egress into (net.connect / ssh.exec). These are the real
+ * ids an agent's tool calls collapse to before the policy classifies them — independent of any tenant's
+ * connector plugins.
+ */
+const STRUCTURAL: GovernedCapability[] = [
+  { id: 'shell.exec', description: 'Run a shell command (the Bash tool). The command is parsed into facts — destructive flags, delete counts, host egress via ssh/curl — so a risky command can be gated or denied even though the tool is just "Bash".' },
+  { id: 'file.write', description: 'Create or edit a file (Edit/Write/apply_patch). Writes to protected paths (credentials, workspace state) are denied; writes outside your own folder may be gated when the file-write guard is on.' },
+  { id: 'connector.connect', description: 'Start an OAuth grant that connects a third-party app for the whole workspace (INITIATE_CONNECTION). Owner-gated.' },
+  { id: 'connector.call', description: 'Call a connected third-party tool over MCP. Payment / PR / messaging actions normalize to the canonical capabilities below so one rule governs them across providers.' },
+  { id: 'email.send', description: 'Send an outbound email. Gated by recipient — internal (your org domains) is lighter than external.' },
+  { id: 'net.connect', description: 'Open a network connection to a host (host-egress governance, when enabled). An unknown or un-granted host pauses for approval; a host with a "never" posture is denied.' },
+  { id: 'ssh.exec', description: 'Run a command on a remote host over SSH (host-egress governance, when enabled). An unknown or un-granted host pauses for owner approval; a host with a "never" posture is denied.' },
+];
+
+/**
+ * The REAL governed capability surface an agent faces: the structural capabilities above plus the
+ * canonical (provider-independent) capabilities the normalizer resolves connector calls to. This — NOT
+ * the demo execution registry (src/capabilities/examples.ts, whose echo.run/stripe.refund/… only exist
+ * so the zero-dependency demo runs) — is what `list_capabilities` reports on a live tenant. Deduped so
+ * email.send (both structural and canonical) appears once.
+ */
+export function governedCapabilities(): GovernedCapability[] {
+  const seen = new Set(STRUCTURAL.map((s) => s.id));
+  const canonical = DESCRIPTORS
+    .filter((d) => !seen.has(d.id))
+    .map((d) => ({
+      id: d.id,
+      description: `Canonical ${d.effects.join('/')} action (${d.risk} risk) — normalized from e.g. ${d.providers.slice(0, 2).join(', ')}.`,
+    }));
+  return [...STRUCTURAL, ...canonical];
+}

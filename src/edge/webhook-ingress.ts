@@ -264,6 +264,21 @@ export type FilterVerdict =
  */
 export function evaluateFilter(filter: string | undefined, event: string, payload: unknown): FilterVerdict {
   if (!matchesFilter(filter, event)) return { ok: false, reason: 'event' };
+  return evaluatePredicates(filter, payload);
+}
+
+/**
+ * The `when`/`unless` half of a filter, on its own — everything {@link evaluateFilter} does EXCEPT the
+ * event-name match. Split out because the chat triggers reuse this grammar over a different first half:
+ * a Slack automation's filter is `<channel-id|event-type> [when …] [unless …]`, whose scope half is an
+ * exact channel/event match rather than webhook's comma-and-glob event list, but whose payload clauses
+ * mean exactly the same thing against the Slack event body (`text ~ "abuse report"`). One grammar, one
+ * parser, one fail-open rule — see the `when` clause commentary above, which applies verbatim.
+ *
+ * Fails OPEN, like the whole predicate layer: an unparseable clause fires rather than silently dropping
+ * real work. {@link validateFilter} is what refuses it at save time.
+ */
+export function evaluatePredicates(filter: string | undefined, payload: unknown): FilterVerdict {
   const { predicates, reject } = parseFilter(filter);
   for (const p of predicates) {
     if (!testPredicate(p, payload)) return { ok: false, reason: 'payload', predicate: p.source };

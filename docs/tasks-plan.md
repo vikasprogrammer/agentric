@@ -446,6 +446,45 @@ leaves `blocked`, so a stale "waiting on the founder" can't mute a later done-po
 `scripts/blocked-routing-test.cjs`; the board shows it as a `waiting on …` chip, since the column header
 ("Needs you") is only true for one of the three.
 
+### 3.8 What a wake-up is FOR decides whether it may spawn — `poke-done` is inject-only
+
+§3.7 asked who a `blocked` wake is for. The same question, asked of `done`, has a sharper answer, because
+the three lanes of §3.6 are not equally priced. Injecting into a live pane is free and in-context: the
+caller reads the result inside the plan that produced the hand-off. **Resuming a cold caller is neither** —
+it costs a session, and the woken agent arrives with a fresh context in which it re-derives the situation
+and re-decides what to tell the human.
+
+Measured on northwind over 14 days: **140 wake-ups — 71 injected (~free), 69 resumed** (~$11.60 marginal
+each, 6.2 turns; ~15% of the tenant's spend). Of the 69 resumes, **45 were plain completions**, 18 were
+hand-backs and 6 were strandings. And 21 of the 69 filed a NEW task, which dispatches a run, which wakes a
+caller, which files a task. On 2026-08-20 one wrong first analysis rode that loop into eight Discord
+messages in 68 minutes — three of them the same agent correcting its own earlier correction, each written
+by a session that only existed because good news had resurrected it.
+
+So the wake-up now declares its class and the queue prices it:
+
+| `kind` | Live caller | Cold caller |
+|---|---|---|
+| `poke-done` — the delegate finished | inject (unchanged) | **dropped**, audited `agent.poke.skipped` (`reason: 'done-cold-caller'`) |
+| `poke-blocked` — handed back | inject | `--resume` |
+| `poke-stranded` — its run died without closing | inject | `--resume` |
+
+Nobody is stuck on a completion: the result is durable in the task (`task_get`) and the owner already has
+the `task.notified` card, so a cold caller is left cold. A hand-back or a stranding is the opposite — the
+caller is the only one who can move it — and those keep the full ladder. A mixed batch resumes and carries
+the completions along free; a completion arriving alone at a cold caller is **decided on arrival** (the row
+settles `dropped`, not `pending`, so it never expires into an inbox card). Any other `kind` — the legacy
+`poke`, a future `approval` — keeps the full ladder: this narrows only on an explicit declaration.
+
+**And a run a human stopped is not a stranding.** `sweepStrandedTasks` woke a caller 10 minutes after a
+founder killed a delegate from the console (northwind 2026-08-20, 09:28 → 09:38), which re-opened the work
+as a PR: the stop button produced one more agent. It now reads the `session.stopped` principal — `system`
+is the reaper, an agent id is a self-stop, a **member's email is a person** — and a human halt is MARKED
+(so it can never fire on a later tick) but never woken. A self-stop still wakes: that is the agent's own
+call and it may have left work behind.
+
+Pinned by `scripts/wakeup-queue-test.cjs` (cases 8-9) and `scripts/stranded-human-stop-test.cjs`.
+
 ---
 
 ## 4. Agent-facing MCP tools — `src/memory/memory-mcp.ts`

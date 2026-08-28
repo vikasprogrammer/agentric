@@ -115,6 +115,37 @@ prompt.
 `measureLearning` defines an *intervention* as a `recommendation.applied` audit event. There is **1
 in the fleet's entire history**. "Is it working?" measures its own never-taken actions.
 
+### 2f. The recommendations panel is parked — and now says so (2026-08-27)
+
+`recommendation.applied`: **1 in the fleet's entire history** (instapods, 2026-06-25). Two months on,
+`learned_recommendations.open` is `[]` on both live tenants and has been throughout.
+
+That is not a bug. Step 0 retired `runtime.effort.high` because it fired off `success / sessions`, and
+what remains can only fire on two narrow, observable conditions:
+
+| id | fires when |
+| --- | --- |
+| `policy.review` | ≥3 rejected approvals in the recent window **and** ≥20% rejection rate |
+| `budget.review` | ≥2 budget stops in the recent window |
+
+Neither tenant crosses either — instapods ran 14 rejections and 12 budget stops *lifetime*, spread
+thin enough that no recent window qualifies. So the correct state of this surface is empty.
+
+The defect was the **empty-state copy**, which read "if agents start hitting friction — rejected
+actions, budget limits, *low success* — suggestions appear here". `low success` cannot be produced any
+more; the panel was promising a signal Step 0 deleted, so an empty panel read as "all clear" rather
+than "two narrow conditions, neither met". It now names both conditions with their thresholds and says
+plainly that quality-keyed suggestions are absent until a derived outcome replaces the self-grade.
+
+**Deliberately NOT done:** inventing new thresholds to fill the panel. Every candidate considered —
+"upkeep is disabled", "preload is off", "this agent stores runs but not lessons" — was either a setup
+nudge that belongs in the install wizard, or a quality claim resting on the same self-graded outcome
+Step 0 removed. Checked against live data, the lesson-drought idea also had no subject: the worst
+agent in either fleet stores 43% lessons, and the one that looked starved (`check-resolve-tickets`,
+2 of 8 preamble slots) turned out to be the *most* lesson-rich at 87% — its thin preamble was the
+177-way duplicate flood, fixed by the cleanup, not a content gap. A panel filled with plausible
+non-signals is the exact failure this document exists to correct.
+
 ## 3. Root causes, ranked
 
 1. **Built on telemetry that doesn't exist.** Self-graded outcome, near-zero variance, 40% missing.

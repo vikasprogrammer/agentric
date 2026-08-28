@@ -16,6 +16,7 @@ import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
 import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice, ReviewNotice } from './terminal';
 import { Automations } from './edge/automations';
+import { WAKE_KIND_DONE } from './edge/wakeups';
 import { AppSupervisor } from './edge/app-supervisor';
 import { InsightAlert } from './edge/alerts';
 import { SlackSocket } from './edge/slack-socket';
@@ -652,7 +653,12 @@ function maybePokeCaller(autos: Automations, os: AgentOS, notice: TaskNotice): v
   const verb = t.status === 'done' ? 'done' : 'blocked';
   const shortTitle = t.title.length > 48 ? `${t.title.slice(0, 47)}…` : t.title;
   const title = `Poke ← ${delegate} ${verb}: ${shortTitle}`;
-  autos.pokeCaller({ callerAgent: t.callerAgent, callerClaudeId: t.callerClaudeId, runAs: t.owner, message, source: t.id, title });
+  // The `kind` is what the queue prices the wake-up by: a completion injects into a live caller but never
+  // resurrects a cold one (nobody is stuck, and the result is durable in the task); a hand-back does, since
+  // the caller is the only one who can move it. See the "Not every wake-up is worth a claude" note in
+  // `edge/wakeups.ts` for the measurement that drew the line.
+  const kind = t.status === 'done' ? WAKE_KIND_DONE : 'poke-blocked';
+  autos.pokeCaller({ callerAgent: t.callerAgent, callerClaudeId: t.callerClaudeId, runAs: t.owner, message, source: t.id, title, kind });
 }
 
 /**

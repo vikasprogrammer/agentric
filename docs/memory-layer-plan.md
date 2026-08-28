@@ -533,7 +533,7 @@ Closes most of "consolidation/decay": the store now keeps itself healthy. All op
 
 - **Usage tracking (`db.ts`).** `memories` gains `recall_count` + `last_recalled_at`. A recall **with a query**
   bumps the rows it surfaced (a blank recency listing does not), so "never recalled" is a trustworthy signal.
-- **`MemoryProvider.maintain(opts)`** (optional). sqlite + libsql implement it; automem omits it (self-maintains).
+- **`MemoryProvider.maintain(opts)`** (optional). sqlite + libsql implement it; automem omits it, and an external backend is maintained THROUGH the mirror — see §17.1.
   - **Prune:** `DELETE … WHERE created_at < cutoff AND recall_count = 0 AND (importance IS NULL OR importance <
     keepImportance)`. Old **and** unused **and** unimportant — three guards, so it can't eat live memory.
   - **Consolidate:** a pure, shared planner (`planConsolidation` in `embedding.ts`) clusters an agent's memories
@@ -558,6 +558,114 @@ two near-duplicates (distinct wording, same vector) merge while an unrelated mem
 automem ops doc. The automem `associate` graph path remains the richer alternative to this in-provider upkeep.
 
 ---
+
+### 17.1 Upkeep under an external backend (2026-08-27)
+
+`automem self-maintains` was an assumption, and reading the live stores disproved it: instapods carried
+the **same episode 177 times** (one 2h cron's identical output over a month — 7% of that tenant's whole
+memory, one string) and it ranked in live recall probes. automem's enrichment/consolidation rewrites and
+relates memories; it does not remove exact duplicates.
+
+Worse, `MirroredMemoryProvider.maintain` used to prune the local mirror while returning the BACKEND's
+result — so enabling upkeep on an automem tenant reported `pruned: 0` while mirror rows really did
+vanish, and the two stores **diverged**: Dreaming, consolidation and the Memory-hub counts (which read
+the mirror) lost rows that agents could still recall.
+
+Now the mirror is the DECIDER and the backend follows:
+
+1. `SqliteMemoryProvider.maintain` selects before it deletes and returns `removed: {id, tenant, agentId}[]`
+   alongside its counts — the mirror is the only side holding the signals prune and dedupe key off (age,
+   `recall_count`, importance, exact-content grouping).
+2. `MirroredMemoryProvider.maintain` replays each removal onto the backend as an **admin-scoped**
+   `delete` (housekeeping, not one agent reaching into another's memories).
+3. The result reports the MIRROR's real counts, plus **`backendFailures`** — removals the backend refused,
+   surfaced rather than swallowed, so an operator can see the mirror has run ahead of the backend.
+
+Order is mirror-first, backend-second on purpose: the backend delete is per-id over the network and can
+fail, and the worse failure is the opposite one — a mirror row left behind for a backend row that is gone
+would make the local ledger claim memories recall can never return. Pinned by
+`scripts/memory-upkeep-test.cjs`.
+
+**Note for existing automem tenants:** upkeep is still opt-in and no tenant has it enabled, so the
+historical duplicates are not removed by this change — it only makes the knob safe to turn on.
+
+### 17.2 Recall fidelity — the backend ranks, the mirror is the record (2026-08-27)
+
+A recall backend is free to transform the text it is handed, and automem does. Over
+`MEMORY_CONTENT_SOFT_LIMIT` (**500 chars** by default) with an LLM configured, `MEMORY_AUTO_SUMMARIZE`
+replaces `content` with a ~300-char LLM summary and **discards the original**
+(`automem/api/memory.py`). instawp's average memory is **1305 chars**, so most of that store was being
+rewritten at ingest — **81%** of sampled recall hits existed nowhere in the mirror. What an agent stored as
+
+> Bunny edge-rule QA cannot be done on a `*.instawp.site` sandbox — it resolves to the PPU/OVH origin and
+> never traverses Bunny's edge, so every probe returns 200 …
+
+came back from recall as *"Bunny edge-rule QA limitations. Testing on `*.instawp.site` fails…"* — same id,
+same ranking, none of the specifics that made it worth storing. And the two stores then disagreed:
+Dreaming, the consolidation gardener and the Memory-hub read the mirror's original while agents recalled
+the paraphrase.
+
+instapods was unaffected: no OpenAI client is configured there (local 384-dim embedder), so the
+summarizer returns `None` and content is kept verbatim — 2% divergence against instawp's 81%.
+
+`MirroredMemoryProvider.recall` now overlays each returned record's `content` from the mirror when the
+mirror holds that id (`SqliteMemoryProvider.contentByIds`). **Ranking, ordering and score stay entirely
+the backend's** — the embedding is computed over whatever the backend holds either way, so retrieval
+quality is untouched and only the text handed to the agent is restored. A record the mirror has never
+seen (stored before mirroring, or written straight to the backend) passes through unchanged, so this can
+only add fidelity, never drop a result. Best-effort: a mirror failure returns the backend's records as-is.
+
+Backend-agnostic on purpose — it holds for any future store that rewrites, not just this automem setting.
+Turning the setting off (`MEMORY_AUTO_SUMMARIZE=false`, or raising `MEMORY_CONTENT_SOFT_LIMIT` to the hard
+limit) is still worth doing on a rewriting deployment, since it stops paying an LLM call per write.
+Pinned by `scripts/memory-upkeep-test.cjs`.
+
+### 17.3 The launch preamble is ranked against the task (2026-08-27)
+
+`MemoryConfig.preload` seeds a cold session's prompt with what the agent already knows, so it isn't blind
+before it thinks to call `recall`. The first version ran **no query at all** —
+`ORDER BY importance DESC, last_recalled_at DESC` — i.e. the same memories on every launch whatever the
+work. Two things made that weak on live data:
+
+- **Importance barely orders anything.** instapods has **893** memories at 0.8 and **912** at 0.7, so
+  below the top ~70 rows the ranking is decided almost entirely by the tiebreaker.
+- **Tenant-shared memories crowd the top.** The highest-importance row in the workspace rides in EVERY
+  agent's prompt. On instapods that meant the **engineer's** cold prompt opened with *"Never auto-send
+  email as the marketing agent"* (0.95, tenant-shared), and spent two of its eight slots on marketing copy
+  rules.
+
+Now `TerminalManager.memoryPreamble(agent, task)` uses the session's task (first
+`PRELOAD_QUERY_MAX` = 400 chars — a 2KB cron standing order buries the distinctive words under
+boilerplate) as a **recall query through the real provider**, so the backend's own ranking chooses what
+bears on THIS work. Going through the provider also reinforces the hits
+(`recall_count`/`last_recalled_at`), so preloaded memories now participate in the usage signal that prune
+and re-ranking read instead of being invisible to it.
+
+**Episodes are excluded.** An episode's text OPENS with the session's task line, so a task-shaped query
+matches episodes better than the lessons distilled from them — task-ranking made that bias systematic.
+Measured over 8 realistic agent/task pairs against the live instapods store: **28 of 64 preamble slots
+(44%) were raw past task prompts**, and `check-resolve-tickets` spent 4 of 8 slots on near-identical
+replays of one daily sweep while the reconciliation lesson it has been recalled on 185 times was crowded
+out. The preamble now over-fetches (`PRELOAD_OVERFETCH` = 4×), drops anything tagged `episode` (or opening
+`Task:`, for rows predating the tag), collapses near-identical survivors on their first 80 chars
+(`distinctLines`), and keeps the first `count`. Same exclusion on the fallback path, so which path answered
+never changes WHAT KIND of memory an agent is seeded with. After: **0 of 64 slots** are episodes, and the
+engineer's deploy task is seeded with five concrete deploy-failure lessons instead. Episodes still exist
+for Dreaming and the consolidation gardener, which read them from the ledger directly — "what you already
+know" should be the conclusions, not a transcript of past assignments. One consequence worth knowing: an
+agent whose store is overwhelmingly episodic gets a SHORTER preamble (2 of 8 slots for
+`check-resolve-tickets`) rather than a padded one.
+
+**It degrades, never blocks.** No task text (a bare interactive session), a recall that throws, one that
+returns nothing, or one that hasn't answered within `PRELOAD_TIMEOUT_MS` = 2.5s → fall back to the old
+importance ordering. So the preamble is never worse than before, and an unreachable backend costs a launch
+at most 2.5 seconds. The timeout timer is deliberately **not** `unref`'d: a recall that never settles
+leaves the event loop with nothing else pending, and an unref'd timer would let node exit before the
+timeout fires — the launch would die silently instead of falling back. Pinned by
+`scripts/memory-preload-test.cjs`.
+
+The recall is I/O, so it is resolved in the async launcher (`launchAgentRuntimeNow`) and handed to
+`buildCompanyMd`, which stays a pure synchronous assembly of the prompt.
 
 ## 18. Shared-scope memory — Phase 0 toward a KB (2026-06-23)
 

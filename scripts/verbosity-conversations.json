@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "note": "Multi-turn threads for the per-turn reinforcement test. Single-turn prompts cannot test it: the hypothesis is that an appended system prompt LOSES the model's attention as a conversation grows, so the unit of measurement has to be a conversation, and the interesting statistic is the trend across turn index. Every turn is answerable from the thread itself — no tools — so the response stays pure narration. `mustMention` literals per turn are the completeness guard, same contract as verbosity-prompts.json: a turn that gets shorter by dropping them has degraded, not saved. Threads deliberately mix registers (debugging, review, planning, incident, teaching) because narration habits differ by register and a single register would measure one habit.",
+  "conversations": [
+    {
+      "id": "debug-thread",
+      "category": "debugging",
+      "turns": [
+        {
+          "prompt": "My Node service intermittently returns 502 through nginx. Direct curl to 127.0.0.1:3010 always returns 200. The nginx location block sets `proxy_set_header Connection \"upgrade\";`. What is happening?",
+          "mustMention": ["Connection", "upgrade"]
+        },
+        { "prompt": "Why does the direct curl succeed then?", "mustMention": ["nginx"] },
+        { "prompt": "Give me the exact nginx config change.", "mustMention": ["map", "$http_upgrade"] },
+        { "prompt": "Will that break the WebSocket terminal that shares the same port?", "mustMention": ["upgrade"] },
+        { "prompt": "How do I verify the fix without waiting for a real WebSocket client?", "mustMention": ["curl"] },
+        { "prompt": "Anything else in that config likely to bite me later?", "mustMention": ["header"] }
+      ]
+    },
+    {
+      "id": "review-thread",
+      "category": "review",
+      "turns": [
+        {
+          "prompt": "Review this change: `const rate = limits[plan] || 100;` replacing `limits[plan] ?? 100`. The limits map can legitimately contain 0 for a suspended plan.",
+          "mustMention": ["0", "||"]
+        },
+        { "prompt": "What is the smallest test that would have caught it?", "mustMention": ["0"] },
+        { "prompt": "The author says `||` is more readable. Respond to that.", "mustMention": ["??"] },
+        { "prompt": "Are there other places this pattern is dangerous?", "mustMention": ["empty string"] },
+        { "prompt": "Should we lint for it, and with what rule?", "mustMention": ["lint"] },
+        { "prompt": "Summarize your review decision for the PR thread.", "mustMention": ["0"] }
+      ]
+    },
+    {
+      "id": "incident-thread",
+      "category": "incident",
+      "turns": [
+        {
+          "prompt": "A production box became unresponsive. Load average 92 on 12 cores. `ps` shows 86 processes named `ttyd ... attach.sh /tmp/aos-*-test-*/tmux.sock`. What is your first read?",
+          "mustMention": ["ttyd", "86"]
+        },
+        { "prompt": "Why would test sockets leave live processes behind?", "mustMention": ["exit"] },
+        { "prompt": "What do I run right now to bring load down safely?", "mustMention": ["kill"] },
+        { "prompt": "How do I stop it recurring?", "mustMention": ["port"] },
+        { "prompt": "Was memory or CPU the actual limit here?", "mustMention": ["CPU"] },
+        { "prompt": "Write the one-line post-incident note.", "mustMention": ["ttyd"] }
+      ]
+    },
+    {
+      "id": "planning-thread",
+      "category": "planning",
+      "turns": [
+        {
+          "prompt": "I need to rename an env var from `OLD_TOKEN` to `NEW_TOKEN` across a Node service on three machines under systemd, with no downtime. Ordered steps please.",
+          "mustMention": ["OLD_TOKEN", "NEW_TOKEN"]
+        },
+        { "prompt": "Which step is the one that actually risks an outage?", "mustMention": ["restart"] },
+        { "prompt": "How long should I keep reading both names?", "mustMention": ["deploy"] },
+        { "prompt": "What do I do if one machine is unreachable mid-rollout?", "mustMention": ["OLD_TOKEN"] },
+        { "prompt": "How do I confirm nothing still reads the old name?", "mustMention": ["log"] },
+        { "prompt": "Give me the rollback in one sentence.", "mustMention": ["OLD_TOKEN"] }
+      ]
+    },
+    {
+      "id": "teaching-thread",
+      "category": "teaching",
+      "turns": [
+        {
+          "prompt": "Explain what SQLite WAL mode changes about concurrency, compared to the default rollback journal.",
+          "mustMention": ["WAL", "reader"]
+        },
+        { "prompt": "So can two processes write at once?", "mustMention": ["one"] },
+        { "prompt": "What are the `-wal` and `-shm` files for?", "mustMention": ["-shm"] },
+        { "prompt": "Does a single-process app still create them?", "mustMention": ["-shm"] },
+        { "prompt": "When would WAL be the wrong choice?", "mustMention": ["network"] },
+        { "prompt": "What should I put in .gitignore?", "mustMention": ["-wal"] }
+      ]
+    }
+  ]
+}

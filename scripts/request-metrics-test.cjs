@@ -14,6 +14,9 @@
  *   3. Paths collapse to templates, so an id-bearing route can't unbound the table (the leak that this
  *      module must not become).
  *   4. It is wired into the REAL server: a live request through `startServer` shows up in the snapshot.
+ *   5. The TOOL dimension (`x-aos-tool`, sent by the MCP server) is recorded separately from routes, and a
+ *      by-design-blocking tool (`ask_human`, `task_wait`) is FLAGGED and sorted below real work — a
+ *      40-minute wait on a human is not a slow endpoint, and must never be ranked as one.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -62,6 +65,23 @@ m.observe('POST', '/api/tasks', 500, 5, 0);
 snap = m.snapshot();
 assert.strictEqual(snap.routes.find((r) => r.route === 'POST /api/tasks').errors, 1);
 
+// ── 5: the tool dimension ──────────────────────────────────────────────────────────────────────────────
+const t = new RequestMetrics();
+for (let i = 0; i < 10; i++) t.observeTool('recall', 200, 260, 0);   // remote memory backend, real work
+t.observeTool('task_wait', 200, 900_000, 0);                          // 15 min waiting on a delegate
+t.observeTool('kb_read', 200, 2, 0);
+const tsnap = t.snapshot();
+assert.strictEqual(tsnap.routes.length, 0, 'a tool call must not be counted as a route by this path');
+assert.strictEqual(tsnap.tools[0].route, 'recall', 'tools rank by total time, blocking ones excluded from the top');
+assert.strictEqual(tsnap.tools[0].totalMs, 2_600);
+assert.strictEqual(tsnap.tools[0].blocking, false);
+const wait = tsnap.tools.find((r) => r.route === 'task_wait');
+assert.strictEqual(wait.blocking, true, 'a by-design-blocking tool is flagged');
+assert.strictEqual(tsnap.tools[tsnap.tools.length - 1].route, 'task_wait', 'blocking tools sort last');
+const capped2 = new RequestMetrics();
+for (let i = 0; i < 500; i++) capped2.observeTool(`tool-${i}`, 200, 1, 0);
+assert.ok(capped2.snapshot(500).tools.length <= 300, 'a forged tool header cannot grow the map without bound');
+
 // The route map is capped — an unbounded key space is the failure mode this module must not have.
 const capped = new RequestMetrics();
 for (let i = 0; i < 500; i++) capped.observe('GET', `/api/thing-${i}`, 200, 1, 0);
@@ -73,16 +93,21 @@ const server = startServer(0);
 server.on('listening', async () => {
   const { port } = server.address();
   for (let i = 0; i < 3; i++) await fetch(`http://127.0.0.1:${port}/health`).then((r) => r.json());
+  // A request carrying the MCP tool header lands in the tool dimension, through the real server.
+  await fetch(`http://127.0.0.1:${port}/health`, { headers: { 'x-aos-tool': 'kb_read' } }).then((r) => r.json());
   const live = requestMetrics.snapshot();
+  const toolRow = live.tools.find((r) => r.route === 'kb_read');
+  assert.ok(toolRow && toolRow.count === 1, 'x-aos-tool must bucket a live request by tool');
   const row = live.routes.find((r) => r.route === 'GET /health');
   assert.ok(row, 'a real request must reach the collector');
-  assert.strictEqual(row.count, 3, `expected 3 recorded requests, got ${row && row.count}`);
+  assert.strictEqual(row.count, 4, `expected 4 recorded requests, got ${row && row.count}`); // 3 plain + 1 tool-tagged
+  assert.ok(row.count > toolRow.count, 'a tool-tagged request is recorded in BOTH dimensions, not moved out of routes');
   assert.ok(row.totalMs >= 0, 'handler time is recorded');
   assert.ok(live.loop.samples >= 0, 'the loop sampler is running');
   requestMetrics.stop();
   server.close();
   fs.rmSync(home, { recursive: true, force: true });
-  console.log('request-metrics-test: ok (stall separated from handler time, ranked by total, paths templated, wired live)');
+  console.log('request-metrics-test: ok (stall separated, ranked by total, paths templated, per-tool dimension, wired live)');
   process.exit(0);
 });
 setTimeout(() => { console.error('request-metrics-test: server never listened'); process.exit(1); }, 20_000).unref();

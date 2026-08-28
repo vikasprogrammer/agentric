@@ -146,7 +146,7 @@ function allFinished(os: AgentOS, now: number): TaskDriftItem[] {
 export interface PokeHook {
   pokeCaller(input: {
     callerAgent: string; callerClaudeId: string; runAs?: string;
-    message: string; source: string; title?: string;
+    message: string; source: string; title?: string; kind?: string;
   }): { ok: boolean };
 }
 
@@ -188,6 +188,22 @@ interface StrandedRow extends Row {
  * Once per dead run (`markStranded`, keyed on the session), bounded by {@link POKE_PER_TICK} and
  * {@link POKE_MAX_AGE_MS}. A row that is over budget is left UNMARKED so the next tick still owes it.
  */
+/**
+ * Did a PERSON end this run? `TerminalManager.stopSession` audits `session.stopped` with its `by`
+ * verbatim: `system` for the reaper, the agent's own id for a self-stop via the `stop` tool, and a
+ * MEMBER'S EMAIL for the console kill button — so "is that principal a member" is the whole test. A
+ * self-stop is deliberate too, but it is the agent's own call and it may well have left work behind for
+ * the caller; only the human's veto suppresses the wake-up.
+ */
+function endedByHuman(os: AgentOS, sessionId: string): boolean {
+  const row = os.db
+    .prepare("SELECT principal FROM audit_events WHERE run_id = ? AND type = 'session.stopped' ORDER BY ts DESC LIMIT 1")
+    .get<{ principal: string | null }>(sessionId);
+  const by = row?.principal;
+  if (!by || by === 'system') return false;
+  return !!(os.team.getMemberByEmail(by) ?? os.team.getMember(by));
+}
+
 export function sweepStrandedTasks(
   os: AgentOS,
   poker: PokeHook,
@@ -226,14 +242,25 @@ export function sweepStrandedTasks(
     // wake-up BEFORE burning the one-time marker — a poke we skip for budget must stay owed next tick.
     const waiting = r.poke_on_done === 1 && !!r.caller_agent && !!r.caller_claude_id;
     const fresh = now - r.s_updated <= POKE_MAX_AGE_MS;
-    if (waiting && fresh && budget <= 0) continue;
+    // A run a HUMAN halted is not a stranding — it is a decision, made by someone who is present. Waking
+    // the caller to recover work its owner just stopped hands the agent back the very thing the human took
+    // away, and the wake-up is usually a resume (the halted agent is cold by definition). northwind
+    // 2026-08-20: an engineer run was stopped from the console at 09:28 and this sweep spawned a caller
+    // session at 09:38 that re-opened the work as a PR. Still MARKED (so it can never fire later), never
+    // woken; the task card already tells the human it is open.
+    const halted = waiting && fresh && endedByHuman(os, r.s_id);
+    const owed = waiting && fresh && !halted;
+    if (owed && budget <= 0) continue;
     if (!os.tasks.markStranded(r.id, r.s_id)) continue; // this dead run was already handled
     out.marked++;
     os.audit.append({
       ts: now, runId: r.s_id, tenant: os.tenant, principal: 'system', type: 'task.stranded',
-      data: { id: r.id, status: r.status, outcome: outcomeOf(r), caller: r.caller_agent ?? null, poked: waiting && fresh },
+      data: {
+        id: r.id, status: r.status, outcome: outcomeOf(r), caller: r.caller_agent ?? null, poked: owed,
+        ...(halted ? { reason: 'human-stopped' } : {}),
+      },
     });
-    if (!waiting || !fresh) continue; // nobody delegated this, or it went cold — marked, not woken
+    if (!owed) continue; // nobody delegated this, it went cold, or a human halted it — marked, not woken
     budget--;
     const delegate = r.assignee?.startsWith('agent:') ? r.assignee.slice('agent:'.length) : (r.assignee ?? 'the delegate');
     const full = os.tasks.latestNote(r.id) || '(it left no note)';
@@ -244,6 +271,9 @@ export function sweepStrandedTasks(
       callerClaudeId: r.caller_claude_id!,
       runAs: r.owner ?? undefined,
       source: r.id,
+      // Not a completion: the work is unfinished and its worker is gone, so this one earns a resume if the
+      // caller is cold. (`poke-done` does not — see `edge/wakeups.ts`.)
+      kind: 'poke-stranded',
       title: `Poke ← ${delegate} ran out: ${shortTitle}`,
       message:
         `⚠️ Ran out: ${delegate}'s run on the task you handed off (${r.id}: "${r.title}") ENDED without closing it — ` +

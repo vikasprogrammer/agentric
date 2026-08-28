@@ -84,10 +84,15 @@ terminal in a test". Leftovers show as `ttyd … attach.sh /tmp/aos-*-test-*/tmu
   KeepAlive, home `~/agent-os-data/northwind` (kept OUTSIDE the repo checkout so a spawned agent's
   parent-dir CLAUDE.md walk can't pick up this repo's own CLAUDE.md; new tenants go alongside as
   `~/agent-os-data/<slug>`), on :3010, fronted by `tailscale serve` http→3010): **"make it live" is
-  `scripts/make-live.sh`** — it syncs the dedicated live checkout (`~/agent-os-live`) to `origin/main`,
-  installs only if a lockfile moved, builds both bundles, gates on `npm run test:governance`, restarts
-  via `launchctl kickstart` (never `pkill`), and verifies `/health` reports the version it just built,
-  printing the rollback command if it doesn't. `--dry-run` shows what would deploy. The manual
+  `scripts/make-live.sh`** — it syncs each dedicated live checkout (`~/agent-os-live`, and any other
+  tenant's own) to `origin/main`, installs only if a lockfile moved, builds both bundles, gates on
+  `npm run test:governance`, restarts via `launchctl kickstart` (never `pkill`), and verifies `/health`
+  reports the version it just built, printing the rollback command if it doesn't. It deploys **every
+  tenant listed in `AOS_LIVE_TARGETS`** (`<tenant>:<checkout>:<port>[:<label>]`, space-separated, in the
+  untracked `~/.agentric-live.env`) — a second tenant on the box silently keeping old code because the
+  script only kicked one launchd label was a real recurring bug. All builds run BEFORE any restart, so a
+  bad commit leaves every server untouched; `--only <tenant>` narrows it, `--dry-run` shows what would
+  deploy. The manual
   equivalent is `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`; logs at
   `~/agent-os-data/northwind/server.log`; load/unload with `launchctl load -w|unload <plist>`.)
 - **Agent-facing MCP tools (`src/memory/memory-mcp.ts` — `recall`/`remember`/`revise`/`forget`, the
@@ -162,12 +167,23 @@ Key modules:
 - `src/gateway/gateway.ts` — the 7-step mediated effect boundary. The heart of the trust layer.
 - `src/server.ts` — zero-dependency Node `http` server: JSON API + serves `web/dist` + terminal sessions.
 - `src/terminal.ts` — tmux-backed agent sessions; routes every effect through the same gateway via the
-  PreToolUse gate hook (`terminal/gate-hook.sh`). **Two real runtimes** — `claude-code` and `codex`
+  PreToolUse gate hook (`terminal/gate-hook.sh`). **Three real runtimes** — `claude-code`, `codex` and `opencode`
   (`AgentManifest.runtime`; `CODING_RUNTIMES` in `src/types.ts` declares what each supports, probed via
   `runtimeSupports()` / `isCodingRuntime()` — never compare runtime ids). `launchAgentRuntime` picks
-  `terminal/<runtime>-launch.sh`; the gate hook is SHARED and switches its tool→capability routing table
-  on `$AOS_RUNTIME`. Codex holds the invariant differently (shell via the hook, writes via an OS sandbox,
-  MCP server-side) and degrades on attach/resident-chat/cost/skills — see `docs/codex-runtime.md`. At launch it resolves each claude-code agent's
+  `terminal/<runtime>-launch.sh` and `$HOOK` = `terminal/<spec.gateHook>`. claude-code + codex SHARE
+  `gate-hook.sh`, which switches its tool→capability routing table on `$AOS_RUNTIME`. Codex holds the
+  invariant differently (shell via the hook, writes via an OS sandbox, MCP server-side) and degrades on
+  attach/resident-chat/cost/skills — see `docs/codex-runtime.md`. **opencode has no command-hook facility
+  at all**, so its gate is a JS PLUGIN (`terminal/opencode-gate-plugin.js`, a second implementation of the
+  same `/api/gate` contract — fix one, re-read the other) that the launcher copies into
+  `.opencode/plugin/`. Two traps there: opencode loads **`.js` only** and ignores `.mjs`/`.ts` SILENTLY, and
+  `--pure` disables plugins outright — either would yield an ungoverned agent, so the generated config
+  writes every permission as `"ask"` and the PLUGIN relaxes it, making a non-loading gate fail closed
+  rather than silent. Sub-agents are disabled there (opencode#6396: hooks may not fire for a sub-agent's
+  calls). Runtime CLIs are installed from **Settings → Runtime → Runtimes** (owner-only, audited
+  `runtime.install.*`); the agent runtime picker offers the same install when the box lacks the binary.
+  See `docs/opencode-runtime.md`. Only claude-code auto-loads `CLAUDE.md`: codex and opencode both get the
+  agent's persona + Company context composed into **`AGENTS.md`** by their launcher. At launch it resolves each claude-code agent's
   **runtime tuning** (`resolveRuntimeTuning` in `src/types.ts`: agent manifest → workspace default → CLI
   default) and exports `CLAUDE_MODEL`/`CLAUDE_EFFORT`/`CLAUDE_PERMISSION_MODE`, which `claude-launch.sh`
   maps onto `--model`/`--effort`/`--permission-mode` (model+effort both lanes; permission-mode interactive
@@ -203,7 +219,11 @@ Key modules:
   /api/approvals/:id/always`, audited `policy.rule.added`), `approvals.ts`, `audit.ts`, `team.ts`,
   `settings.ts` (Company context **+ workspace runtime defaults**: the fleet-wide model/effort/permission
   fallback, `runtimeDefaults`/`setRuntimeDefaults`), `skills.ts` (global `.claude/skills` library,
-  materialised into every claude-code agent at launch by `TerminalManager`), budget, identity.
+  materialised into every claude-code agent at launch by `TerminalManager` — narrowed by the agent's
+  own `skills` allowlist ANDed with each skill's audience; see `docs/per-agent-context.md`, which also
+  covers the sibling `tools` allowlist over the agentos MCP tool list. Both default to "everything" and
+  shape CONTEXT only — neither grants or withholds a capability, the gateway still governs every
+  effect), budget, identity.
   The Inbox surface itself — its data model, the notifier/chat-mirror sinks, per-member read/dismiss, and
   the gap roadmap — is documented in `docs/inbox-plan.md`.
 - `src/edge/automations.ts` — Automations: cron/webhook/composio/**slack**/**discord** triggers that spawn
@@ -235,7 +255,18 @@ Key modules:
   pinned claude id — headless runs now launch with `--session-id $CLAUDE_SESSION_ID` (stored in
   `term_sessions.claude_session_id`). Caveat: plain in-thread replies only reach the socket if the Slack app
   subscribes to `message.channels`/etc. AND the bot is in-channel (`app_mention` covers only @mentions). The
-  socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
+  **Filters + channel watch (v0.390.0):** a slack automation's `filter` is `<scope> [when …] [unless …]`
+  — the scope half keeps its old meaning (exact event type or channel id, '' / `*` = any) and the clause
+  half is `webhook-ingress.ts`'s predicate grammar (`evaluatePredicates`, split out of `evaluateFilter`)
+  over the Slack event, with `text` = the mention-stripped body and `actor` = the resolved sender. Naming
+  a channel id ALSO makes it a watch: `slack-socket.ts` stops dropping non-mention messages in that
+  channel and calls `fireSlack(…, { channelWatch: true, router: false })`. Narrow on purpose — only an
+  exactly-channel-scoped automation is woken (a `*` scope suddenly eating every channel message would
+  multiply a live tenant's spend with nobody having edited anything) and the `/agent` router never runs
+  there. Bot-posted messages are still dropped (`ev.fromBot`) — an integration that POSTS reports belongs
+  on a webhook automation. Slack filters are validated at save time (the predicate layer fails open at
+  runtime, so that's the only place a typo is caught). Pinned by `scripts/slack-content-filter-test.cjs`.
+  The socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
   (no `ws` dep). Slack here is INGRESS-native; Composio remains the webhook ingress lane.
 - `src/edge/discord-socket.ts` + `src/connectors/discord.ts` — **native Discord via the Gateway**: a
   one-for-one mirror of the Slack path. One company bot (single `Bot …` token in Settings → Integrations)
@@ -383,6 +414,18 @@ Key modules:
   policy gate — same posture as `slack_reply`. Each tool is a session-secret-gated loopback call to an `/api/*` route that sits BEFORE
   the member-auth gate. Canonical tool↔route↔store matrix + the governance notes:
   `docs/agent-mcp-tools.md`. See also `docs/memory-layer-plan.md`.
+- `src/edge/setup.ts` — the **install wizard's** status roll-up (`GET /api/setup`, console `#/setup` +
+  a dismissible banner): eight post-install steps (runtime credential → company context → Composio key →
+  chat channel → GitHub App → memory layer → team → agents). The GitHub step counts EITHER half of the App
+  (OAuth pair = members commit as themselves · App id + private key = the company-bot push token); the
+  memory step counts only a real upgrade over the keyword-only default (an embedder on the built-in store,
+  or automem/libSQL). Deliberately **read-side only** — each step is re-derived from the store
+  that owns that setting and the wizard UI writes through that setting's EXISTING endpoint, so a step
+  finished by CLI/another admin ticks itself and no step can disagree with its Settings page. The only
+  state it owns is `settings: setup_state` (dismissal + per-step "not now" — intent isn't derivable).
+  Credential detection is best-effort by design and says so: pool → box `.credentials.json` → **macOS
+  Keychain** (a signed-in Mac has no creds FILE) → `ANTHROPIC_API_KEY` (reported `unknown`, not `done`).
+  Pinned by `scripts/setup-wizard-test.cjs`.
 - `src/state/kb.ts` — the **Knowledge Base plane** (`os.kb`): the shared, tenant-wide *living* wiki agents
   + humans co-author. Markdown on disk (`<home>/kb/<section>/<slug>.md`) + SQLite/FTS mirror, full
   **revision chain + revert**, auto-apply + audit (no gate). Agent tools `kb_search`/`kb_read`/`kb_write`/
@@ -562,6 +605,28 @@ in `src/types.ts` and `TeamStore.canRun()`.
   `/terminal/`+cookie → 200, no-cookie → 401, WS handshake (`Upgrade` + `Sec-WebSocket-Protocol: tty`) →
   101. Was isolated to umbrella (that one config was hand-written differently); jump-server + initech
   configs were clean.
+- **nginx gotcha on any hand-written vhost (hooli, 2026-08-20) — a trailing slash on the ttyd
+  `proxy_pass`.** The app launches ttyd with **`-b /terminal`**, so its WebSocket lives at
+  **`/terminal/ws`**. Writing the location as `proxy_pass http://127.0.0.1:3011/;` (**with** the trailing
+  slash) makes nginx strip the location prefix and ask ttyd for `/ws` — ttyd 404s the upgrade and drops
+  the connection, so the browser terminal is a **solid black pane** and the log shows
+  `GET /terminal/ws → 502` + `upstream prematurely closed connection while reading response header`.
+  Sessions meanwhile spawn and run perfectly (cost accrues, transcript written), so it reads as
+  "sessions are not spawning" when nothing is wrong with sessions. Fix = **drop the trailing slash**
+  (`proxy_pass http://127.0.0.1:3011;`) so the URI passes through unchanged. Note the 502 string is
+  identical to the umbrella `Connection: upgrade` gotcha above but the blast radius differs — that one
+  502s EVERY request, this one only `/terminal/ws`. Probe ttyd directly to tell them apart:
+  `curl -o /dev/null -w '%{http_code}' localhost:3011/terminal/` = 200 while `…:3011/ws` = 404 means the
+  base path is `/terminal` and your `proxy_pass` is rewriting it away. Verify the fix with the same WS
+  handshake as above → **101** with a cookie, **401** without.
+  ⚠ **Diagnostic trap while verifying:** `curl -b <jar>` against the loopback can return a misleading
+  **401** for `/terminal/` (the jar's `#HttpOnly_localhost` entry doesn't match), which looks exactly
+  like a broken `auth_request`. Re-test with an explicit `-H "Cookie: aos_sid=…"` before believing it.
+- **⚠ Ubuntu's `ttyd` apt package auto-enables a ROOT login shell.** `apt-get install ttyd` also installs
+  and **enables** `ttyd.service` — `/usr/bin/ttyd -W -i lo -p 7681 -O login` running as **root**, entirely
+  separate from the app-spawned ttyd on `TTYD_PORT`. It is loopback-bound, so not internet-reachable, but
+  it is a root shell on a box that runs agents and it returns on every reboot. Disable it on any box that
+  installs ttyd from apt: `sudo systemctl disable --now ttyd`.
 - **Hardened-unit gotcha — `ReadWritePaths=` dirs must pre-exist.** Under `ProtectHome=read-only` the
   unit fails to start with `status=226/NAMESPACE` (`Failed to set up mount namespacing: <path>: No such
   file or directory`) if any carve-out path is missing. On a fresh box `~/.config`/`~/.cache`/`~/.claude`

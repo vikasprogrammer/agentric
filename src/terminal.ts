@@ -17,7 +17,7 @@ import { containedPath, mimeOf } from './state/artifacts';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { isolateClaudeConfig } from './edge/config-isolation';
 import { resolveCapability } from './capabilities/normalize';
@@ -164,7 +164,10 @@ Your terminal output may not be read. The operator lives in the Inbox:
 - \`publish\` real deliverables (a document, PDF, image, chart, generated media) to the Library. The one
   rule that matters — overriding the harness's "put ALL temporary files in the scratchpad" instruction —
   is that a deliverable must live in **your working folder (your cwd)**, never the scratchpad, or
-  \`publish\` can't reach it (see the tool's own notes for the details).
+  \`publish\` can't reach it (see the tool's own notes for the details). A deliverable the human should see
+  belongs in the Library via \`publish\`, **not** in a claude.ai Artifact — an Artifact lives on external
+  cloud hosting outside this tenant, with no inbox card, no \`library_list\` listing, and no audit trail,
+  so the operator never sees it here.
 
 ## Opening a pull request — always link back to this session
 When you open a pull request (or any deliverable that carries a description), add a line linking back to
@@ -267,10 +270,12 @@ export interface Session {
   working?: boolean;
   /**
    * Whether this session can be resurrected in place via `claude --resume` when its terminal is
-   * re-opened (the ttyd attach wrapper sources its persisted `session-<id>.env`). True only for
-   * interactive claude-code sessions — headless automation runs write no env file, so they're never
-   * resumable. Independent of `status`: a running session is also "resumable", but the console only
-   * offers a Resume affordance once it's no longer live.
+   * re-opened (the ttyd attach wrapper sources its persisted `session-<id>.env`). True for every
+   * claude-code run, unattended ones included — the env is written at launch whatever the lane, which is
+   * what makes Reload / Reload-on-another-account reachable for a taken-over automation run. It says
+   * nothing about WHICH lane the run is on: that's the `headless` flag. Independent of `status` too — a
+   * running session is also "resumable", but the console only offers a Resume affordance once it isn't
+   * live.
    */
   resumable?: boolean;
   /** True when this session can be FORKED — branched into a new independent session that inherits its
@@ -518,7 +523,11 @@ export interface FeedMessage {
 }
 
 type GateStatus = 'pending' | 'allow' | 'deny';
-type GateResult = { decision: 'allow' | 'deny' | 'pending'; gateId?: string; note?: string };
+// On a deny, `reason` (the classifier's human account — see describeMatch/hostGovernanceDecision) and the
+// classified `capability` ride back to the hook so the agent is told WHY it was blocked and WHICH rule
+// fired, instead of an opaque "this action is blocked". The rich reason already existed (audit trail +
+// approval cards); it was just dropped before the wire. Diagnosability, not permissiveness.
+type GateResult = { decision: 'allow' | 'deny' | 'pending'; gateId?: string; note?: string; reason?: string; capability?: string };
 
 /** The automation columns the per-row label/source/authz helpers read — see `TerminalManager.withRowCache`. */
 interface AutomationLookup {
@@ -754,8 +763,15 @@ export class TerminalManager {
   private launchScriptFor(runtime: CodingRuntimeId): string {
     return path.resolve(__dirname, '..', 'terminal', CODING_RUNTIMES[runtime].launchScript);
   }
-  /** PreToolUse gate hook every runtime is wired to (shared; $AOS_RUNTIME picks its routing table). */
+  /** PreToolUse gate hook for the runtimes that share it (claude-code + codex; $AOS_RUNTIME picks
+   *  the routing table). Kept as a named field because the uid-isolation launcher references it. */
   private readonly hook = path.resolve(__dirname, '../terminal/gate-hook.sh');
+  /** The gate artifact for a given runtime (`terminal/<spec.gateHook>`), exported to the launcher as
+   *  $HOOK. Usually the shared shell hook above; opencode has no command-hook facility at all, so its
+   *  gate is a JS plugin the launcher copies into the session's plugin dir instead. */
+  private gateHookFor(runtime: CodingRuntimeId): string {
+    return path.resolve(__dirname, '..', 'terminal', CODING_RUNTIMES[runtime].gateHook);
+  }
   /** OS-owned memory MCP server (compiled JS), injected into every CLI-backed session. */
   private readonly memoryMcp = path.resolve(__dirname, 'memory/memory-mcp.js');
   private readonly db: Db;
@@ -1579,15 +1595,44 @@ export class TerminalManager {
    * `Member` viewer — the agent-facing routes gate on the CALLER'S own agent id (an agent only ever
    * sees its own sessions, never a sibling's), which the member-visibility rules can't express.
    */
-  sessionsForAgent(agent: string): Session[] {
-    return this.listSessions().filter((s) => s.agent === agent);
+  sessionsForAgent(agent: string, opts: { query?: string; excludeId?: string; limit?: number } = {}): Session[] {
+    // Select the agent's OWN ids first, in SQL, then derive the full shape for only those rows. The old
+    // shape — `listSessions().filter(...)` — materialised every session in the tenant (full `task` prose)
+    // and ran the whole derivation chain (tmux liveness, cost backfill of up to 20 transcripts, insights
+    // stamping) to then throw ~99% of it away: 18ms on a 1k-session tenant, growing with the tenant, for
+    // a tool an agent calls mid-run. The filters live here rather than in the caller so the LIMIT is
+    // applied before that derivation, not after.
+    const limit = Math.min(Math.max(Math.floor(opts.limit ?? 20), 1), 100);
+    const args: unknown[] = [agent];
+    let where = 'agent = ? AND archived_at IS NULL';
+    if (opts.excludeId) { where += ' AND id != ?'; args.push(opts.excludeId); }
+    const q = opts.query?.trim().toLowerCase();
+    if (q) {
+      // Same substring match the route did in JS, moved into SQL so it narrows before the LIMIT.
+      where += ' AND (lower(title) LIKE ? OR lower(task) LIKE ?)';
+      args.push(`%${q}%`, `%${q}%`);
+    }
+    const ids = this.db
+      .prepare(`SELECT id FROM term_sessions WHERE ${where} ORDER BY created_at DESC LIMIT ?`)
+      .all<{ id: string }>(...args, limit)
+      .map((r) => r.id);
+    return this.listSessions(undefined, undefined, ids);
+  }
+
+  /** Does this session belong to that agent (and is it visible — not archived)? The ownership check
+   *  behind `session_open`, which used to resolve the agent's ENTIRE history just to test one id. */
+  sessionBelongsToAgent(sessionId: string, agent: string): boolean {
+    return !!this.db
+      .prepare('SELECT 1 FROM term_sessions WHERE id = ? AND agent = ? AND archived_at IS NULL')
+      .get(sessionId, agent);
   }
 
   /**
-   * Session ids that have a persisted launch env (`session-<id>.env`) — i.e. an interactive session
-   * the ttyd attach wrapper can resurrect via `claude --resume` (see `writeEnvFile`/`terminal/attach.sh`).
-   * Headless runs write no env file, so they're absent (and correctly report `resumable:false`). One
-   * readdir serves the whole list; no data home (demo/tests) → nothing resumable.
+   * Session ids that have a persisted launch env (`session-<id>.env`) — i.e. a session the ttyd attach
+   * wrapper can resurrect via `claude --resume` (see `writeEnvFile`/`terminal/attach.sh`). Every
+   * claude-code launch writes one, unattended included; runtimes with no resurrect env (and sessions
+   * predating that change) are absent and correctly report `resumable:false`. One readdir serves the
+   * whole list; no data home (demo/tests) → nothing resumable.
    */
   private resumableIds(): Set<string> {
     const ids = new Set<string>();
@@ -2531,7 +2576,11 @@ export class TerminalManager {
     // The unattended brief rides the same appended prompt, on exactly the lane `markTurnIdle` tears down
     // at turn-end (headless, non-resident) — a resident chat pane and a member's own session both survive
     // a turn boundary, so telling them "this run ends when your turn ends" would simply be false.
-    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, tuning.verbosity, !!o.headless && !o.resident);
+    // The memory preamble is I/O (a recall against the live store), so it is resolved HERE — in the
+    // async launcher — and handed to `buildCompanyMd`, which stays a pure synchronous assembly of the
+    // prompt. Keeps every other caller (and four governance tests) on the sync signature.
+    const preamble = await this.memoryPreamble(o.agent, o.task);
+    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, tuning.verbosity, !!o.headless && !o.resident, preamble);
     // Skills + sub-agents are materialised as native filesystem conventions (`.claude/skills`,
     // `.claude/agents`), so they only apply to a runtime that discovers them. Codex has its own
     // (differently-shaped) skills mechanism — not wired yet, so we skip rather than write files it
@@ -2548,7 +2597,7 @@ export class TerminalManager {
     // thread follow-ups are delivered by send-keys (see deliverToResident / reviveResident).
     if (o.resident) env.RESIDENT = '1';
     env.AGENT_DIR = manifest.dir;
-    env.HOOK = this.hook;
+    env.HOOK = this.gateHookFor(runtime);
     // Tells the shared gate hook which tool→capability routing table to use.
     env.AOS_RUNTIME = runtime;
     // No OS sandbox env: the gate hook (PreToolUse) is the sole authority for governed side effects, so
@@ -2562,6 +2611,11 @@ export class TerminalManager {
       // permissionMode is deliberately not forwarded.
       if (tuning.model) env.CODEX_MODEL = tuning.model;
       if (tuning.effort) env.CODEX_EFFORT = tuning.effort;
+    } else if (runtime === 'opencode') {
+      // opencode takes `provider/model` on --model. Effort is a per-provider `--variant` rather than
+      // a portable scale, and permission-mode has no analogue (Agentric is the sole authority via the
+      // generated config's `permission: allow`), so neither is forwarded.
+      if (tuning.model) env.OPENCODE_MODEL = tuning.model;
     } else {
       if (tuning.model) env.CLAUDE_MODEL = tuning.model;
       if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
@@ -2587,7 +2641,9 @@ export class TerminalManager {
       // per-session CODEX_HOME and POSTs it to /api/runtime-session. On a resume we hand back whatever
       // it reported (persisted in the same column) so it can continue that transcript.
       if (o.resume && o.claudeSessionId) env.RUNTIME_SESSION_ID = o.claudeSessionId;
-      env.AOS_CODEX_HOME = this.ensureCodexHome(o.id);
+      // The per-session CODEX_HOME is how the CODEX launcher discovers that id. opencode reports its
+      // own from the gate plugin (every hook carries `sessionID`), so it needs no such dir.
+      if (runtime === 'codex') env.AOS_CODEX_HOME = this.ensureCodexHome(o.id);
     }
     if (o.resume) env.RESUME = '1';
     // Fork: on FIRST launch, branch off the parent conversation. RESUME is never set alongside forkFrom
@@ -2634,7 +2690,7 @@ export class TerminalManager {
       this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', launchScript], files: { mcp: mcpJson || undefined, company: companyMd || undefined, task: o.task || undefined }, agentSrc: manifest.dir });
     } else {
       // Flag off: materialise into the app's connectors dir and persist the launch context so the ttyd
-      // attach wrapper can resurrect a dead session. Headless automation runs write no resurrect env.
+      // attach wrapper can resurrect a dead session.
       const mcpFile = this.writeSessionFile(o.id, 'mcp.json', mcpJson);
       if (mcpFile) env.MCP_CONFIG = mcpFile;
       const companyFile = this.writeSessionFile(o.id, 'company.md', companyMd);
@@ -2648,7 +2704,15 @@ export class TerminalManager {
       // persisted resume envs). Drop TASK_B64 once the file is written so it can't re-inflate the cmdline.
       const taskFile = this.writeSessionFile(o.id, 'task', o.task);
       if (taskFile) { env.TASK_FILE = taskFile; delete env.TASK_B64; }
-      if (!o.headless) this.writeEnvFile(o.id, env);
+      // Persist the launch env for EVERY run, unattended ones included. This used to be interactive-only,
+      // which quietly made `resumable` ("this id has an env file") double as "this run is attended" — so a
+      // headless run taken over while its pane was STILL LIVE stayed non-resumable forever: `claimSession`
+      // relaunches nothing, so nothing ever wrote the env, and the console's Reload / Reload-on-another-
+      // account items were permanently hidden for it (live instawp run, 2026-08-27). The two lanes are told
+      // apart by the `headless` COLUMN now, never by the presence of this file. Safe on the teardown side:
+      // `teardownUnattended` → `markEnded` → `blockResume` drops the stay-stopped sentinel, so a reaped
+      // unattended run can't be resurrected behind our back by ttyd's silent auto-reconnect.
+      this.writeEnvFile(o.id, env);
       this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', launchScript] });
     }
   }
@@ -2674,11 +2738,16 @@ export class TerminalManager {
    * agnostic. `null` = no transcript yet / unreadable, exactly as before.
    */
   private readCostFor(sessionId: string, agent: string, runtimeSessionId: string) {
-    if (this.os.agents.get(agent)?.runtime === 'codex') {
+    const runtime = this.os.agents.get(agent)?.runtime;
+    if (runtime === 'codex') {
       const home = this.codexHomePath(sessionId);
       const file = home ? findCodexRollout(home) : undefined;
       return file ? readCodexCost(file) : null;
     }
+    // A runtime with no transcript reader (opencode) must report "unknown", NOT fall through to the
+    // Claude reader — that one resolves an id against `~/.claude/projects`, where a foreign session id
+    // simply is not, so the honest `null` would arrive as a confidently wrong zero.
+    if (!runtimeSupports(runtime, 'transcript')) return null;
     return readSessionCost(runtimeSessionId);
   }
 
@@ -2690,11 +2759,14 @@ export class TerminalManager {
     const row = this.db.prepare('SELECT agent, claude_session_id FROM term_sessions WHERE id = ?')
       .get<{ agent: string; claude_session_id: string | null }>(sessionId);
     if (!row) return { turns: [], found: false };
-    if (this.os.agents.get(row.agent)?.runtime === 'codex') {
+    const runtime = this.os.agents.get(row.agent)?.runtime;
+    if (runtime === 'codex') {
       const home = this.codexHomePath(sessionId);
       const file = home ? findCodexRollout(home) : undefined;
       return file ? readCodexConversation(file) : { turns: [], found: false };
     }
+    // Same reasoning as readCostFor: no reader → an empty timeline, never the Claude tree.
+    if (!runtimeSupports(runtime, 'transcript')) return { turns: [], found: false };
     this.refreshTranscriptRoots(); // an account added since boot writes somewhere the reader doesn't know yet
     return row.claude_session_id ? readConversation(row.claude_session_id) : { turns: [], found: false };
   }
@@ -2953,6 +3025,11 @@ export class TerminalManager {
     // claim was missing.
     this.db.prepare("UPDATE term_sessions SET headless = 0, status = 'running', claimed_by = ?, claimed_at = ?, updated_at = ? WHERE id = ?")
       .run(by, Date.now(), Date.now(), sessionId);
+    // The row now says attended, so the persisted launch env must agree: strip its UNATTENDED marker or a
+    // later reattach/Reload would resurrect this run on the unattended lane the turn-end reaper owns. The
+    // dead-run take-over below gets this for free (it relaunches with `headless:false`); the live path
+    // relaunches nothing, so patch the file in place.
+    this.attendLaunchEnv(sessionId);
     // No kill, no relaunch — the live pane keeps streaming; the caller opens ttyd and attaches to it.
     this.audit(sessionId, by, 'session.claimed', { agent: row.agent });
     return { ok: true };
@@ -3832,11 +3909,128 @@ export class TerminalManager {
     return file;
   }
 
+  /** How much of a task is used as the retrieval query. A cron/standing-order task can be 2KB of
+   *  procedure; feeding all of it to a semantic search returns the fleet's most generic memories,
+   *  because the distinctive words are buried under boilerplate. The first sentences carry the subject. */
+  private static readonly PRELOAD_QUERY_MAX = 400;
+  /** Over-fetch factor for the preamble. Episodes are filtered out AFTER retrieval (no backend expresses
+   *  "exclude this tag" — automem's tag_mode is `all`), so ask for more than we need and keep the first
+   *  `count` that survive. */
+  private static readonly PRELOAD_OVERFETCH = 4;
+  /** A launch must never wait on the memory store. Past this, fall back to the local ranking and go. */
+  private static readonly PRELOAD_TIMEOUT_MS = 2_500;
+
+  /**
+   * The launch-time memory preamble (Settings → Memory `preload`, off by default): seed a cold session
+   * with what this agent already knows, instead of relying on it to call `recall` itself.
+   *
+   * Ranked **against this session's task** when there is one. The first version of this ordered by
+   * `importance DESC, last_recalled_at DESC` with no query at all — the same 8 memories on every launch
+   * regardless of the work. On live instapods that put "Never auto-send email as the marketing agent"
+   * (importance 0.95, tenant-shared) at the top of the ENGINEER's prompt, and spent two of eight slots on
+   * marketing copy rules; below the top ~70 rows the order was decided almost entirely by the tiebreaker,
+   * since 893 memories share importance 0.8 and 912 share 0.7. A head start that ignores the task is a
+   * weak one.
+   *
+   * Now the task text (first `PRELOAD_QUERY_MAX` chars — see the constant) is the recall query, through
+   * the real provider, so the backend's own ranking picks the memories that bear on THIS work. Going
+   * through the provider also means the hits are reinforced (`recall_count`/`last_recalled_at`), so
+   * preloaded memories participate in the usage signal that prune and re-ranking read, rather than being
+   * invisible to it.
+   *
+   * Falls back to the old importance ordering whenever the task-ranked path can't answer — no task text
+   * (a bare interactive session), a recall that throws, times out, or returns nothing. So the preamble is
+   * never worse than it was, and a slow or unreachable backend costs a launch at most PRELOAD_TIMEOUT_MS.
+   *
+   * **Episodes are excluded.** An episode's text OPENS with the session's task line, so a task-shaped
+   * query matches episodes better than it matches the lessons distilled from them — measuring 8 realistic
+   * agent/task pairs against the live instapods store, **44% of preamble slots (28/64)** came back as raw
+   * past task prompts, and one agent spent 4 of 8 slots on near-identical replays of the same daily sweep
+   * while the reconciliation lesson it has been recalled on 185 times was crowded out. Task-ranking made
+   * that bias systematic, so the retrieval has to correct for it. Episodes exist for Dreaming and the
+   * consolidation gardener, which read them from the ledger directly; "what you already know" should be
+   * the conclusions, not a transcript of past assignments. Same reason near-identical survivors are
+   * collapsed: v0.396.0 stops byte-identical episodes being STORED, but older rows differing by a few
+   * characters would otherwise take several slots to say one thing.
+   */
+  private async memoryPreamble(selfAgent?: string, task?: string): Promise<string> {
+    const preload = this.os.settings.memoryConfig()?.preload;
+    if (!preload?.enabled || !selfAgent) return '';
+    const n = Math.max(1, Math.min(Math.floor(preload.count ?? 8), 25));
+
+    const query = (task ?? '').replace(/\s+/g, ' ').trim().slice(0, TerminalManager.PRELOAD_QUERY_MAX);
+    let lines: string[] = [];
+    let relevant = false;
+
+    if (query) {
+      // The timer is deliberately NOT unref'd: a recall that never settles leaves the event loop with
+      // nothing else pending, so an unref'd timer lets node exit before the timeout can fire — the launch
+      // would die silently rather than fall back. Cleared as soon as the race settles either way.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timeout = new Promise<never>((_, rej) => {
+          timer = setTimeout(() => rej(new Error('preload recall timed out')), TerminalManager.PRELOAD_TIMEOUT_MS);
+        });
+        const hits = await Promise.race([
+          // Over-fetch: episodes and near-duplicates are dropped below, and no backend can express
+          // "exclude this tag" in the query itself (automem's tag_mode is `all`, an AND-filter).
+          this.os.memory.recall({
+            tenant: this.os.tenant,
+            agentId: selfAgent,
+            query,
+            limit: Math.min(n * TerminalManager.PRELOAD_OVERFETCH, 100),
+            scope: 'all',
+          }),
+          timeout,
+        ]);
+        lines = distinctLines(hits.filter((h) => !isEpisodeRecord(h)).map((h) => h.content), n);
+        relevant = lines.length > 0;
+      } catch {
+        /* fall through to the salience ordering below */
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
+    if (!lines.length) {
+      try {
+        // Same exclusion on the fallback path (`tags` is a JSON array in the ledger), so which path
+        // answered never changes WHAT KIND of memory an agent is seeded with.
+        lines = distinctLines(
+          this.db
+            .prepare(
+              `SELECT content FROM memories
+               WHERE tenant = ? AND (scope = 'tenant' OR (scope = 'agent' AND agent_id = ?))
+                 AND COALESCE(tags, '') NOT LIKE '%"episode"%'
+               ORDER BY COALESCE(importance, 0.5) DESC, COALESCE(last_recalled_at, created_at) DESC
+               LIMIT ?`,
+            )
+            .all<{ content: string }>(this.os.tenant, selfAgent, n * TerminalManager.PRELOAD_OVERFETCH)
+            .map((r) => r.content),
+          n,
+        );
+      } catch {
+        return ''; // preamble is best-effort; a query failure must never block a session launch
+      }
+    }
+    if (!lines.length) return '';
+
+    const heading = relevant
+      ? '# What you already know — your memories most relevant to this task'
+      : '# What you already know — your most salient memories';
+    return (
+      `${heading}\n\n` +
+      "Surfaced from your persistent memory so you don't start blind. This is a HEAD START, not the " +
+      'whole picture — `recall` for more on any specific topic before non-trivial work.\n\n' +
+      lines.map((c) => `- ${c.replace(/\s+/g, ' ').trim()}`).join('\n')
+    );
+  }
+
   /** The workspace Company context markdown (or '' if unset) — appended to claude's system prompt.
    *  We tack on OS-owned operating notes after the user's content. The terminal here is a browser
    *  xterm (over ttyd) running the TUI on the alternate screen with mouse reporting on, so embedded
    *  terminal hyperlinks (OSC 8) aren't clickable — the agent must surface raw URLs as plain text. */
-  private buildCompanyMd(selfAgent?: string, actingMember?: string, verbosity?: Verbosity, unattended = false): string {
+  private buildCompanyMd(selfAgent?: string, actingMember?: string, verbosity?: Verbosity, unattended = false, preamble = ''): string {
     const company = this.os.settings.company().companyMd.trim();
     // Per-member personal context: free-text the human you run AS chose to inject into their sessions
     // (their working style, standing preferences, domain notes). Self-service, owner-scoped — set on
@@ -3964,29 +4158,6 @@ export class TerminalManager {
     // agent's most salient memories so a cold session isn't blind, instead of relying on it to call
     // `recall`. Reads the local `memories` ledger directly (node:sqlite is synchronous) — the same
     // store recall ranks over. Best-effort: never let a preamble query block a launch.
-    let preamble = '';
-    const preload = this.os.settings.memoryConfig()?.preload;
-    if (preload?.enabled && selfAgent) {
-      const n = Math.max(1, Math.min(Math.floor(preload.count ?? 8), 25));
-      try {
-        const rows = this.db
-          .prepare(
-            `SELECT content FROM memories
-             WHERE tenant = ? AND (scope = 'tenant' OR (scope = 'agent' AND agent_id = ?))
-             ORDER BY COALESCE(importance, 0.5) DESC, COALESCE(last_recalled_at, created_at) DESC
-             LIMIT ?`,
-          )
-          .all<{ content: string }>(this.os.tenant, selfAgent, n);
-        if (rows.length)
-          preamble =
-            '# What you already know — your most salient memories\n\n' +
-            "Surfaced from your persistent memory so you don't start blind. This is a HEAD START, not the " +
-            'whole picture — `recall` for more on any specific topic before non-trivial work.\n\n' +
-            rows.map((r) => `- ${r.content.replace(/\s+/g, ' ').trim()}`).join('\n');
-      } catch {
-        /* preamble is best-effort; a query failure must never block a session launch */
-      }
-    }
     // The strategic layer — the active company goals this agent's work should ladder up to. Injected so
     // "why am I doing this" is answerable straight from the prompt (goal_list is the live equivalent).
     // Human-owned; toggleable in Settings. Capped so a long goal list can't dominate every prompt.
@@ -4118,6 +4289,7 @@ export class TerminalManager {
 
     // The OS-owned tool server: recall/remember (memory) + ask (ask-human) + report (completion)
     // + list_capabilities/policy_check (policy preview).
+    const toolAllow = this.os.agents.get(agent)?.tools?.join(',') || undefined;
     config.mcpServers.agentos = {
       command: 'node',
       args: [this.memoryMcp],
@@ -4142,6 +4314,10 @@ export class TerminalManager {
         // ASK_ANSWER: '1' exposes the `answer` tool — only on an ask_agent delegate, so it can return its
         // result to the agent that asked. Other sessions never see it.
         ...(askAnswer ? { ASK_ANSWER: '1' } : {}),
+        // AOS_TOOLS: the agent's `tools` allowlist, narrowing what the agentos server OFFERS (its
+        // schemas are re-read from the prompt on every turn). Context shaping only — the gateway is
+        // still what governs whether an effect may happen. Unset ⇒ the full always-on set.
+        ...(toolAllow ? { AOS_TOOLS: toolAllow } : {}),
         ...(this.os.settings.slackConfigured() ? { SLACK_EGRESS: '1' } : {}),
         ...(this.os.settings.discordConfigured() ? { DISCORD_EGRESS: '1' } : {}),
         // IMAGE_GEN: '1' exposes `image_generate` when a backend key (OpenRouter/Atlas) is configured.
@@ -4171,7 +4347,8 @@ export class TerminalManager {
   /**
    * Persist a claude-code session's launch env as a sourceable 0600 `session-<id>.env`, so the ttyd
    * attach wrapper (terminal/attach.sh) can resurrect a stopped session and resume the SAME claude
-   * session id without involving the server. Carries the per-session secret → never world-readable.
+   * session id without involving the server. Written for every lane; `attendLaunchEnv` un-marks it when
+   * a human takes an unattended run over. Carries the per-session secret → never world-readable.
    * Auto-removed with the rest of the session's files by `removeSessionFiles`. No data home → skip.
    */
   private writeEnvFile(sessionId: string, env: Record<string, string>): void {
@@ -4190,8 +4367,17 @@ export class TerminalManager {
    */
   private materializeSkills(sessionId: string, agent: string, agentDir: string): void {
     try {
-      const names = this.os.skills.materialize(path.join(agentDir, '.claude'), agent);
-      if (names.length) this.audit(sessionId, agent, 'skills.materialized', { count: names.length, skills: names });
+      // The agent's own opt-in list (`AgentManifest.skills`) is ANDed with each skill's audience — see
+      // SkillsStore.materialize. Audit the fact that a list was in play, so "why did my skill not show
+      // up" is answerable from the trail rather than by reading two tables.
+      const allow = this.os.agents.get(agent)?.skills;
+      const names = this.os.skills.materialize(path.join(agentDir, '.claude'), agent, allow);
+      if (names.length)
+        this.audit(sessionId, agent, 'skills.materialized', {
+          count: names.length,
+          skills: names,
+          ...(allow?.length ? { allowlist: allow.length } : {}),
+        });
     } catch (e) {
       this.audit(sessionId, agent, 'skills.error', { error: String(e) });
     }
@@ -4307,7 +4493,7 @@ export class TerminalManager {
     // Workspace emergency stop — deny every action before classifying anything.
     if (this.os.settings.killSwitch().engaged) {
       this.audit(sessionId, agent, 'gate.killswitch', { capability });
-      return { decision: 'deny' };
+      return { decision: 'deny', reason: 'workspace emergency stop (kill switch) is engaged — every action is blocked until an owner disengages it', capability };
     }
     // Host-egress governance (Phase 2b): OFF unless the workspace switch is on. When on, pass the
     // agent's granted host matchers (org + shared + the session's run-as member's personal) so the
@@ -4329,7 +4515,7 @@ export class TerminalManager {
       if (emailDenial) {
         this.audit(sessionId, agent, 'gate.email.blocked', { capability, reason: emailDenial, recipients: args.emailRecipients ?? [] });
         this.audit(sessionId, agent, 'gate.decision', { capability, decision: { effect: 'deny', riskClass: 'deny', reason: emailDenial } });
-        return { decision: 'deny' };
+        return { decision: 'deny', reason: emailDenial, capability };
       }
     }
     // Host egress reclassification (Phase 2b): shell.exec → net.connect / ssh.exec when this command
@@ -4410,19 +4596,22 @@ export class TerminalManager {
 
     if (decision.effect === 'allow') {
       // Behavioural-failure watch (phase 3): the effect is allowed, but if it completes a no-progress
-      // LOOP we let it through WITH an advisory note — an `instruct` (allow + additionalContext) that
-      // nudges the agent to break the loop. Soft by design: the model may ignore it. Sub-agent calls
-      // don't carry a distinct run to loop within, so watch only top-level effects.
+      // LOOP — or backgrounds work whose cleanup can't survive the tool call — we let it through WITH an
+      // advisory note: an `instruct` (allow + additionalContext) nudging the agent. Soft by design: the
+      // model may ignore it. Sub-agent calls don't carry a distinct run to loop within, so watch only
+      // top-level effects.
       if (this.reliabilityOn && !sub) {
         const sig = this.reliability.observe(sessionId, capability, args, brief.headline, Date.now());
         if (sig) {
-          this.audit(sessionId, agent, 'reliability.loop', { capability, signature: brief.signature, count: sig.count });
+          const data: Record<string, unknown> = { capability, signature: brief.signature };
+          if (sig.kind === 'loop') data.count = sig.count; else data.reason = sig.reason;
+          this.audit(sessionId, agent, sig.kind === 'loop' ? 'reliability.loop' : 'reliability.detached_work', data);
           return { decision: 'allow', note: sig.note };
         }
       }
       return { decision: 'allow' };
     }
-    if (decision.effect === 'deny') return { decision: 'deny' };
+    if (decision.effect === 'deny') return { decision: 'deny', reason: decision.reason, capability };
 
     // Auto-approval list: an owner has said "always approve THIS action" for this exact brief signature,
     // so clear it without a card or notification. Only reachable for an `approve` (the deny/never tier
@@ -4844,6 +5033,51 @@ export class TerminalManager {
       alive: r.status === 'running' && (alive ? alive.has(r.tmux) : true),
       archived: r.archived_at != null,
     }));
+  }
+
+  /**
+   * Which agents have worked each task, tenant-wide — the board/list card's rollup of {@link taskRuns}.
+   *
+   * The card shows the ASSIGNEE, i.e. who the task was handed to. That is not who ran it: a support agent
+   * that files a fix and an engineer that picks it up both leave runs on the same task, so a card could
+   * name `engineer` while a completely different agent's session was the one live on it. Same two sources
+   * as `taskRuns` (`task:<id>` provenance + `task_events.session_id`), folded per task in ONE pass rather
+   * than one query per card — measured on the instapods tenant that's ~660 rows for the whole board.
+   *
+   * Returns ONLY the multi-agent tasks: with one agent the assignee badge already tells the whole story,
+   * so a per-task entry there would be payload that renders nothing.
+   */
+  taskWorkers(): Record<string, TaskWorkers> {
+    const rows = this.db
+      .prepare(`SELECT task_id, agent, tmux, status FROM (
+                    SELECT substr(spawned_by, 6) AS task_id, id AS sid, agent, tmux, status
+                      FROM term_sessions WHERE spawned_by LIKE 'task:%'
+                    UNION
+                    SELECT e.task_id AS task_id, s.id AS sid, s.agent, s.tmux, s.status
+                      FROM task_events e JOIN term_sessions s ON s.id = e.session_id
+                     WHERE e.session_id IS NOT NULL
+                  )`)
+      .all<{ task_id: string; agent: string; tmux: string; status: string }>();
+    if (!rows.length) return {};
+    // One tmux poll for the whole board (null = unknown liveness on the launcher backend / a failed poll,
+    // in which case we trust the row's own status — same rule as `taskRuns` and `listSessions`).
+    const alive = this.backend.aliveNames();
+    const byTask = new Map<string, Map<string, { runs: number; alive: boolean }>>();
+    for (const r of rows) {
+      if (!r.task_id) continue;
+      const agents = byTask.get(r.task_id) ?? new Map();
+      byTask.set(r.task_id, agents);
+      const e = agents.get(r.agent) ?? { runs: 0, alive: false };
+      e.runs++;
+      if (r.status === 'running' && (alive ? alive.has(r.tmux) : true)) e.alive = true;
+      agents.set(r.agent, e);
+    }
+    const out: Record<string, TaskWorkers> = {};
+    for (const [taskId, agents] of byTask) {
+      if (agents.size < 2) continue;
+      out[taskId] = { agents: [...agents].map(([id, e]) => ({ id, runs: e.runs, alive: e.alive })) };
+    }
+    return out;
   }
 
   /**
@@ -6824,6 +7058,25 @@ export class TerminalManager {
    *  for one session. */
   private readonly episoded = new Set<string>();
 
+  /** How far back an episode is compared for an exact duplicate. Long enough to cover a slow-cadence
+   *  automation (a daily/weekly sweep that keeps producing the same summary), short enough that a fact
+   *  worth re-learning a season later still lands. */
+  private static readonly EPISODE_DEDUPE_WINDOW_MS = 30 * 86_400_000;
+
+  /** True when this agent already stored a byte-identical episode inside the dedupe window. Reads the
+   *  local `memories` table directly — it is the store for the built-in backend and the mirror for an
+   *  external one (see src/memory/mirror.ts), so this holds whichever backend is configured. */
+  private recentDuplicateEpisode(agent: string, content: string): boolean {
+    try {
+      const since = Date.now() - TerminalManager.EPISODE_DEDUPE_WINDOW_MS;
+      return !!this.db
+        .prepare('SELECT 1 FROM memories WHERE tenant = ? AND agent_id = ? AND content = ? AND created_at >= ? LIMIT 1')
+        .get(this.os.tenant, agent, content, since);
+    } catch {
+      return false; // never let a dedupe read cost us the episode
+    }
+  }
+
   /**
    * Write one end-of-session **episode** — a durable `Insight` memory for the agent — so a future
    * session can `recall` what this one did. Prefers the agent's own `report` summary; failing that,
@@ -6840,6 +7093,14 @@ export class TerminalManager {
     const ep = composeEpisode(task, report, events, outcomeOverride);
     if (!ep) return; // nothing worth remembering
     this.episoded.add(sessionId);
+    // A repeat run that produced a byte-identical episode teaches nothing the agent hasn't already stored,
+    // and every copy competes for the same top-k recall slot. The live case: one support agent's 2h cron
+    // wrote the SAME 1979-char episode 177 times in a month — 7% of that tenant's entire memory, one string.
+    // Exact-content match within the recency window, so a genuinely different run is never suppressed.
+    if (this.recentDuplicateEpisode(agent, ep.content)) {
+      this.audit(sessionId, agent, 'episode.duplicate', { outcome: ep.outcome, source: ep.source });
+      return;
+    }
     void this.os.memory
       .store({
         tenant: this.os.tenant,
@@ -7008,6 +7269,21 @@ export class TerminalManager {
     }
   }
 
+  /** Drop the `UNATTENDED` marker from a taken-over run's persisted launch env, so the next resurrect
+   *  (a browser reattach, or the Reload that kills the pane and lets attach.sh bring it back) comes up on
+   *  the ATTENDED lane — a human owns this run now, and the unattended lane's server-driven turn-end
+   *  teardown is not what they asked for. Best-effort: a run with no env yet has nothing to patch. */
+  private attendLaunchEnv(sessionId: string): void {
+    if (!this.os.paths) return;
+    const file = path.join(this.os.paths.connectors, `session-${sessionId}.env`);
+    try {
+      const kept = fs.readFileSync(file, 'utf8').split('\n').filter((line) => !/^export UNATTENDED=/.test(line));
+      this.writeSecret(file, kept.filter((l) => l.trim() !== '').join('\n') + '\n');
+    } catch {
+      /* no env (an older run, or a runtime that writes none) — nothing to un-mark */
+    }
+  }
+
   /** Rewrite the persisted `session-<id>.env` so a resurrect authenticates with `vars`. Every credential
    *  var this runtime knows is stripped first — rotating from an api-key account to a credential dir must
    *  not leave the old key behind for the CLI to prefer. */
@@ -7087,8 +7363,10 @@ export class TerminalManager {
 
   /** Mark a session as "do not auto-resurrect" so the ttyd attach wrapper (attach.sh) won't
    *  `claude --resume` it the next time its dead pane triggers a silent reconnect. Only a session with a
-   *  persisted launch env is resurrectable, so there's nothing to block otherwise — skip it (a headless
-   *  run leaves no env and would only litter the dir). A deliberate re-open clears it via `allowResume`. */
+   *  persisted launch env is resurrectable, so there's nothing to block otherwise — skip it (a runtime
+   *  that writes no env would only litter the dir). Unattended runs DO write one now, which is exactly
+   *  what stops ttyd's auto-reconnect resurrecting a run the turn-end reaper just closed. A deliberate
+   *  re-open clears it via `allowResume`. */
   private blockResume(sessionId: string): void {
     const p = this.stopMarkerPath(sessionId);
     if (!p || !this.os.paths) return;
@@ -7408,7 +7686,30 @@ const EPISODE_NOISE = new Set([
   'connector.secret.unresolved', 'shell.secret.injected', 'shell.secret.unresolved',
   'gate.attempt', 'gate.killswitch', 'approval.resolved',
   'approval.auto_approved', 'episode.stored', 'episode.error',
+  // Launch plumbing — every run emits these before the agent has done anything at all, so on their own
+  // they described a session that did NOTHING. Live fleet proof: 72 stored episodes across instapods +
+  // instawp whose whole body was "Activity: 1 github.token.injected." ("Task: cred check - stop",
+  // "Task: teste"). They were recalled 22 times between them, i.e. they displaced real lessons in a
+  // top-k recall for nothing.
+  'github.token.injected', 'github.bot_token.injected', 'github.token.refreshed', 'github.token.withheld',
+  'runtime.account.selected', 'runtime.account.rotated', 'automation.fired', 'claude.config.isolated',
 ]);
+
+/** Longest `Task:` line an episode keeps. The task is CONTEXT for the episode, not its content — but it
+ *  is stored verbatim, so an unattended run's multi-paragraph cron prompt became the whole memory (automem
+ *  caps a memory at 2000 chars, and one live 1979-char support-sweep prompt filled it edge to edge, 177
+ *  times over). Keep enough to identify the run, drop the standing-order boilerplate. */
+const EPISODE_TASK_MAX = 200;
+
+/** Condense a session's task into one identifying line: first non-empty line, whitespace collapsed,
+ *  capped. Empty in → empty out (the caller then omits the line entirely). Pure. */
+function episodeTaskLine(task: string): string {
+  const firstLine = (task || '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+  const collapsed = firstLine.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '';
+  const body = collapsed.length > EPISODE_TASK_MAX ? `${collapsed.slice(0, EPISODE_TASK_MAX - 1).trimEnd()}\u2026` : collapsed;
+  return `Task: ${body}`;
+}
 
 /** Friendlier names for the common activity events when summarising a session with no report. */
 const EPISODE_LABELS: Record<string, string> = {
@@ -7468,7 +7769,7 @@ function composeEpisode(
   events: { type: string; data?: string }[],
   outcomeOverride?: string,
 ): { content: string; outcome: string; source: 'report' | 'audit'; importance: number; signals: SalienceSignals } | null {
-  const taskLine = task.trim() ? `Task: ${task.trim()}` : '';
+  const taskLine = episodeTaskLine(task);
   const body = (report?.body ?? '').trim();
   // A real agent summary vs the launcher's generic end card ("The session ended." / "…unexpectedly (the
   // process died)." / "(no summary)") — the latter carries no signal, so fall through to the audit summary.
@@ -7490,6 +7791,33 @@ function composeEpisode(
   const content = [taskLine, `Outcome: ${outcome}`, `Activity: ${parts.join(', ')}.`].filter((l) => l !== '').join('\n').trim();
   const { importance, signals } = episodeSalience('audit', outcome, events);
   return { content, outcome, source: 'audit', importance, signals };
+}
+
+/** Is this record a session EPISODE rather than a distilled lesson? Tagged `episode` at write time
+ *  (`writeEpisode`); the `Task:` opening is the belt-and-braces check for rows stored before the tag, or
+ *  by a backend that drops tags on the way back. */
+export function isEpisodeRecord(r: { content?: string; tags?: string[] }): boolean {
+  if (r.tags?.includes('episode')) return true;
+  return /^\s*Task:/.test(r.content ?? '');
+}
+
+/** Collapse near-identical entries and cap at `limit`. Two memories that open the same ~80 characters say
+ *  the same thing for a reader's purposes — several slots for one fact is the failure this prevents (one
+ *  live agent's preamble spent 4 of 8 slots on replays of the same daily sweep). Order is preserved, so
+ *  the best-ranked copy of a repeated fact is the one kept. */
+export function distinctLines(contents: string[], limit: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of contents) {
+    const text = (c ?? '').trim();
+    if (!text) continue;
+    const key = text.replace(/\s+/g, ' ').slice(0, 80).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /** Derive a short, single-line session title from an agent's free-text report summary:

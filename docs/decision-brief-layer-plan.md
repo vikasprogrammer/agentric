@@ -303,6 +303,19 @@ Design consequences, now load-bearing:
    model, §8a). Loop key folds digit runs so a `?v=$RANDOM` cache-buster / timestamp doesn't hide a real
    poll loop, while distinct commands never accumulate. Audited `reliability.loop`; off via
    `AOS_RELIABILITY=0`. See §8/§8a.
+3b. ✅ **Detached-work detector (SHIPPED v0.381.0).** The second detector on the same `instruct` channel,
+   and the first driven by an incident rather than a plan: on 2026-08-20 an agent ran a flaky Go test
+   under deliberate CPU contention (`(for i in $(seq 1 24); do (while :; do :; done) & done; go test …;
+   jobs -p | xargs kill)`), the tool call died before the trailing `kill`, and 24 spinner subshells
+   reparented to init burned ~30% CPU each for a day and a half — **load 29 on 12 cores**. `ProcessJanitor`
+   reaps that class after the fact (v0.380.1); this steers it before it happens. Fires only when a shell
+   command backgrounds a job (a bare `&`, not `&&`/`2>&1`/`&>`) AND has no `trap` AND either self-kills on
+   the happy path (`kill %1`, `kill $!`, `jobs -p | xargs kill`) or spawns a sleep-less `while` spin — so
+   a plain `npm run dev &` stays quiet, having promised nothing a dead tool call could break. Once per
+   session per command shape (a nagging steer is one the model learns to ignore). Audited
+   `reliability.detached_work`; same `AOS_RELIABILITY=0` kill switch. Detection sits in
+   `src/edge/reliability.ts`, NOT in `gate-hook.sh`, which stays dumb transport. Pinned by
+   `scripts/detached-work-steer-test.cjs`.
 4. **Runaway / drift / hallucination detectors + Dreaming feedback.** The full reliability plane and
    a console "reliability" surface.
 

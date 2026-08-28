@@ -65,6 +65,22 @@ Clamped to **0.3–0.95**. The signal breakdown is persisted in the episode's `m
 `episode.stored` audit; the Memory card's `imp` badge tooltip explains the score. (Spread from testing:
 1-action stop → `0.42`, 13-action → `0.6`, 5-action + 2 errors + 1 rejection → `0.8`.)
 
+### What an episode is allowed to store (the quality gate)
+
+An episode is **auto-encoded** — no agent decides to write it — so everything that keeps it worth
+recalling has to be enforced in `composeEpisode` / `writeEpisode`. Three rules, each added after the
+live instapods + instawp stores showed the failure it prevents (2026-08-27):
+
+| rule | why | live evidence |
+| --- | --- | --- |
+| the `Task:` line is condensed to one identifying line, capped at **200 chars** (`episodeTaskLine`) | the task is *context* for the episode, not its content; an unattended run's task is a multi-paragraph standing order, and automem caps a memory at 2000 chars | one 1979-char support-sweep prompt filled a whole memory edge to edge; 419 stored episodes carried a >300-char task line |
+| launch plumbing is `EPISODE_NOISE` — `github.token.injected`, `runtime.account.selected`, `automation.fired`, … — so a run with nothing else stores **no** episode | those fire on every run before the agent has done anything, so a smoke run looked like work | 72 episodes whose whole body was `Activity: 1 github.token.injected.`, recalled 22 times, each displacing a real lesson in a top-k recall |
+| an **exact-content** repeat from the same agent within 30 days is suppressed and audited `episode.duplicate` | a repeat teaches nothing new and every copy competes for the same recall slot | one 2h cron wrote the identical episode **177 times in a month** — 7% of that tenant's whole memory, one string, and it ranked in live recall probes |
+
+The agent's own `report` body is never capped — only the task line is. Dedupe is exact-content and
+per-agent: a run whose report differs is always stored, and two agents that happen to write the same
+episode each keep their own. Pinned by `scripts/episode-quality-test.cjs`.
+
 ## Lever 4 — consolidation (the memory gardener)
 
 `src/edge/consolidation.ts` (`Consolidation`, wired at the server level because it needs both `os` and

@@ -64,6 +64,7 @@ const SEMANTIC_GUARD_KEY = 'semantic_guard_enabled'; // master switch for the pr
 const FILE_WRITE_GUARD_KEY = 'file_write_guard';
 const ENRICH_PATTERNS_KEY = 'enrich_patterns'; // operator regex→boolean-fact rules the enricher applies (JSON EnrichPattern[])
 const BRANDING_KEY = 'ui_branding'; // per-tenant web-console accent colour + favicon badge (JSON Branding)
+const SETUP_KEY = 'setup_state'; // install-wizard state: dismissal + per-step "not now" (JSON SetupState)
 
 /** Numeric governance caps the policy's never-tier rules reference by name (e.g. `$moneyCapUsd`).
  *  Live-editable in Settings → Governance; resolved at classify time by the policy engine. */
@@ -658,6 +659,28 @@ export class SettingsStore {
   }
   setDreamingState(state: Record<string, unknown>, by?: string): void {
     this.set(DREAMING_STATE_KEY, JSON.stringify(state), by);
+  }
+
+  // ── install wizard ───────────────────────────────────────────────────────────────
+  // The ONLY state the setup wizard owns. Whether a step is done is always re-derived from the store
+  // that owns that setting (src/edge/setup.ts), so the checklist can never disagree with the Settings
+  // page behind it; what can't be derived is intent — "I know about Slack and I don't want it" — which
+  // is what `skipped` and `dismissedAt` record.
+
+  /** Wizard dismissal + the steps the operator explicitly deferred. */
+  setupState(): { dismissedAt?: number; skipped: string[] } {
+    const raw = this.getRow(SETUP_KEY)?.value;
+    if (!raw) return { skipped: [] };
+    try {
+      const j = JSON.parse(raw) as { dismissedAt?: unknown; skipped?: unknown };
+      return {
+        dismissedAt: typeof j.dismissedAt === 'number' ? j.dismissedAt : undefined,
+        skipped: Array.isArray(j.skipped) ? j.skipped.filter((s): s is string => typeof s === 'string') : [],
+      };
+    } catch { return { skipped: [] }; }
+  }
+  setSetupState(next: { dismissedAt?: number; skipped: string[] }, by?: string): void {
+    this.set(SETUP_KEY, JSON.stringify(next), by);
   }
 
   // ── daily digest (the "what got done today" standup) ─────────────────────────────

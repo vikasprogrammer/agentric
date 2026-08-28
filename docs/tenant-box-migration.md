@@ -264,6 +264,17 @@ connections; retry after the ban clears.
   the tmux server + live `claude` panes keep running (some mid-Slack-request → double-posts). After
   cutover, kill them explicitly: `tmux -S <home>/tmux.sock kill-server`, then `pkill -f '<old checkout
   path>'` for the double-forked stragglers — matching the checkout path spares the user's own `claude`.
+- **ttyd `proxy_pass` must NOT have a trailing slash.** ttyd runs with `-b /terminal`, so its WebSocket
+  is at `/terminal/ws`; `proxy_pass http://127.0.0.1:3011/;` strips the prefix, ttyd 404s the upgrade, and
+  the browser terminal is a black pane with `GET /terminal/ws → 502` (`upstream prematurely closed
+  connection`). Use `proxy_pass http://127.0.0.1:3011;`. Sessions run fine throughout, so it masquerades
+  as "sessions won't spawn". Tell it apart from the two look-alikes by probing ttyd directly:
+  `:3011/terminal/` = 200 + `:3011/ws` = 404 ⇒ base-path mismatch (not the backslash-403, not the
+  unconditional-`Connection: upgrade` 502).
+- **Disable the apt `ttyd.service`** — installing ttyd from apt on Ubuntu also enables a **root** login
+  shell on `:7681` (`-O login`), unrelated to the app's ttyd: `sudo systemctl disable --now ttyd`.
+- **A cookie-jar 401 is not an `auth_request` failure** — `curl -b <jar>` on loopback can miss the
+  `#HttpOnly_localhost` entry and 401 on `/terminal/`. Verify with an explicit `-H "Cookie: aos_sid=…"`.
 - **Never copy the box's private `id_rsa` to enroll the new box** (§6) — own keypair + push the pubkey.
 - **fail2ban bans the probing IP** when you SSH with wrong usernames — enroll with clean connections.
 - **Concurrency cap:** the derived default scales with RAM (`max(3, floor(GB/1.5))`), so a big box

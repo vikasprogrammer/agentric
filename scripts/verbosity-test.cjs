@@ -24,7 +24,7 @@ let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
 const { resolveRuntimeTuning, sanitizeRuntimeTuning } = require(path.join(ROOT, 'dist/types.js'));
-const { verbositySavings, TERSE_OUTPUT_BRIEF } = require(path.join(ROOT, 'dist/edge/verbosity.js'));
+const { verbosityAdoption, TERSE_OUTPUT_BRIEF } = require(path.join(ROOT, 'dist/edge/verbosity.js'));
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
 const { TerminalManager } = require(path.join(ROOT, 'dist/terminal.js'));
 
@@ -85,62 +85,52 @@ console.log('\n\x1b[1m5) prompt injection\x1b[0m');
   assert(!tm.buildCompanyMd().includes(head), 'an un-migrated caller (no arg) appends nothing');
 }
 
-console.log('\n\x1b[1m6) savings — per-turn, and hard to fool\x1b[0m');
-const DAY = 24 * 3600_000;
+console.log('\n\x1b[1m6) adoption — counts, and only counts\x1b[0m');
+// The predecessor of this section tested the savings math: output-per-turn, USD-per-turn, the
+// under-powered-arm guard. Those assertions were removed with the query in v0.389.0. They were all
+// PASSING — the arithmetic was correct — which is exactly the trap: a well-tested number can still be
+// the wrong number. `output_tokens` is ~85% tool-call arguments, so no amount of per-turn hygiene made
+// it a measure of the narration the brief compresses. What replaced it reports who ran which level,
+// which is a claim a row count can actually support.
+const DAY = 86_400_000;
 let n = 0;
-/** One costed, terminal session. `verbosity` null = a run from before the flag existed. */
-const mkRun = (agent, verbosity, turns, output, usd, ageDays = 1) => {
+const mkRun = (agent, verbosity, ageDays = 1) => {
   const id = 'ts_' + (++n), at = Date.now() - ageDays * DAY;
   db.prepare(`INSERT INTO term_sessions (id,agent,title,task,tmux,status,created_at,updated_at,turns,output_tokens,cost_usd,verbosity)
-              VALUES (?,?,'t','x',?,'done',?,?,?,?,?,?)`)
-    .run(id, agent, 'aos-' + id, at, at + 60_000, turns, output, usd, verbosity);
+              VALUES (?,?,'t','x',?,'done',?,?,10,10000,1.0,?)`)
+    .run(id, agent, 'aos-' + id, at, at + 60_000, verbosity);
 };
-const agentRow = (agent, days = 30) => verbositySavings(db, days).byAgent.find((a) => a.agent === agent);
+const agentRow = (agent, days = 30) => verbosityAdoption(db, days).byAgent.find((a) => a.agent === agent);
 
-// alpha: terse halves output per turn and is 20% cheaper per turn.
-for (let i = 0; i < 6; i++) mkRun('alpha', 'normal', 10, 10_000, 1.0);
-for (let i = 0; i < 6; i++) mkRun('alpha', 'terse', 10, 5_000, 0.8);
+for (let i = 0; i < 6; i++) mkRun('alpha', 'normal');
+for (let i = 0; i < 4; i++) mkRun('alpha', 'terse');
+for (let i = 0; i < 9; i++) mkRun('beta', 'terse');
 {
   const a = agentRow('alpha');
-  assert(a && a.normal.outputPerTurn === 1000 && a.terse.outputPerTurn === 500, 'output/turn is computed per turn');
-  assert(a.outputDelta === 50 && a.usdDelta === 20, 'reports −50% output, −20% USD');
+  assert(a && a.normal === 6 && a.terse === 4, 'counts each level per agent');
+  const totals = verbosityAdoption(db).sessions;
+  assert(totals.normal === 6 && totals.terse === 13, 'workspace totals sum every agent');
 }
-
-// beta: identical per-turn economics, but the terse runs are 5× LONGER. Totals would call that a
-// regression; per-turn must not.
-for (let i = 0; i < 6; i++) mkRun('beta', 'normal', 2, 2_000, 0.2);
-for (let i = 0; i < 6; i++) mkRun('beta', 'terse', 10, 5_000, 0.8);
-assert(agentRow('beta').outputDelta === 50, 'a longer terse run does not fake a regression');
-
-// gamma: a spectacular ratio off one run per arm — noise, and must not be reported as a delta.
-mkRun('gamma', 'normal', 10, 10_000, 1.0);
-mkRun('gamma', 'terse', 10, 1_000, 0.1);
+// An agent that only ever ran one way is still real adoption — unlike the old comparison, which had
+// to drop it for want of a second arm.
+assert(agentRow('beta').terse === 9 && agentRow('beta').normal === 0, 'a single-level agent is still listed');
+// Sorted so the heaviest terse users lead — the question the panel exists to answer.
+assert(verbosityAdoption(db).byAgent[0].agent === 'beta', 'ordered by terse runs, most first');
 {
-  const g = agentRow('gamma');
-  assert(g.comparable === false && g.outputDelta === null, 'an under-powered arm reports no delta');
-}
-
-// delta: terse only. Comparing it to itself would be meaningless, so it is not a row at all.
-for (let i = 0; i < 8; i++) mkRun('delta', 'terse', 10, 5_000, 0.5);
-assert(!agentRow('delta'), 'an agent that only ran one way is excluded from byAgent');
-
-{
-  const before = verbositySavings(db);
-  for (let i = 0; i < 20; i++) mkRun('alpha', null, 10, 999_999, 99);  // pre-flag rows, wildly expensive
-  const after = verbositySavings(db);
-  assert(after.normal.turns === before.normal.turns && after.terse.turns === before.terse.turns,
-    'pre-flag (NULL verbosity) rows count toward neither arm');
+  // Pre-flag rows are attributable to neither level. They are counted as `unstamped` rather than
+  // silently folded into `normal`, so the panel cannot overstate how far the flag has spread.
+  for (let i = 0; i < 5; i++) mkRun('alpha', null);
+  const s = verbosityAdoption(db).sessions;
+  assert(s.unstamped === 5 && s.normal === 6, 'un-stamped rows are their own bucket, not normal');
+  assert(agentRow('alpha').normal === 6 && agentRow('alpha').terse === 4, 'and they do not reach byAgent');
 }
 {
-  const before = verbositySavings(db).normal.sessions;
+  // Cost is no longer read at all, so a live, unpriced row is ordinary adoption data.
   db.prepare(`INSERT INTO term_sessions (id,agent,title,task,tmux,status,created_at,updated_at,turns,output_tokens,cost_usd,verbosity)
-              VALUES ('ts_live','alpha','t','x','aos-live','running',?,?,5,5000,NULL,'normal')`).run(Date.now(), Date.now());
-  assert(verbositySavings(db).normal.sessions === before, 'a live/uncosted row is excluded until it is priced');
+              VALUES ('ts_live','alpha','t','x','aos-live','running',?,?,5,5000,NULL,'terse')`).run(Date.now(), Date.now());
+  assert(agentRow('alpha').terse === 5, 'a running, uncosted run counts — adoption does not wait on a price');
 }
-
-// epsilon: real both-arm data, but outside the window.
-for (let i = 0; i < 10; i++) mkRun('epsilon', 'normal', 10, 10_000, 1.0, 90);
-for (let i = 0; i < 10; i++) mkRun('epsilon', 'terse', 10, 5_000, 0.5, 90);
+for (let i = 0; i < 10; i++) mkRun('epsilon', 'terse', 90);
 assert(!agentRow('epsilon', 30), 'the trailing window excludes older runs');
 assert(!!agentRow('epsilon', 120), 'and a wider window finds them again');
 

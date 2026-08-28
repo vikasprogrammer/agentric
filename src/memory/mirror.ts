@@ -48,7 +48,45 @@ export class MirroredMemoryProvider implements MemoryProvider {
     if (q.query && out.length) {
       try { this.mirror.reinforce(out.map((r) => r.id)); } catch { /* mirror is best-effort */ }
     }
-    return out;
+    return this.withCanonicalContent(out);
+  }
+
+  /**
+   * The backend RANKS; the mirror is the record of what the agent actually wrote.
+   *
+   * A recall backend is free to transform the text it was handed, and automem does: over
+   * `MEMORY_CONTENT_SOFT_LIMIT` (500 chars by default) with an LLM configured, `MEMORY_AUTO_SUMMARIZE`
+   * replaces `content` with a ~300-char LLM summary and DISCARDS the original. On the live instawp
+   * tenant — average memory 1305 chars — that hit most of the store: 81% of sampled recall hits existed
+   * nowhere in the mirror, and the specifics that made them useful were gone. What an agent stored as
+   *
+   *   "Bunny edge-rule QA cannot be done on a *.instawp.site sandbox — it resolves to the PPU/OVH origin
+   *    and never traverses Bunny's edge, so every probe returns 200 …"
+   *
+   * came back as "Bunny edge-rule QA limitations. Testing on *.instawp.site fails…". Same id, same
+   * ranking, no `.env` names, no exact commands. Worse, the two stores then disagreed: Dreaming, the
+   * consolidation gardener and the Memory-hub all read the mirror's original while agents recalled the
+   * paraphrase.
+   *
+   * So content is served from the mirror whenever the mirror has that id. Ranking, ordering and score
+   * stay entirely the backend's — this restores fidelity without touching retrieval quality (the
+   * embedding is computed over whatever the backend holds either way). A row the mirror doesn't know
+   * (stored before mirroring, or written directly to the backend) keeps the backend's own copy, so this
+   * can only ever add fidelity, never drop a result. Best-effort: a mirror failure returns the backend's
+   * records unchanged.
+   */
+  private withCanonicalContent(out: MemoryRecord[]): MemoryRecord[] {
+    if (!out.length) return out;
+    try {
+      const canonical = this.mirror.contentByIds(out.map((r) => r.id));
+      if (!canonical.size) return out;
+      return out.map((r) => {
+        const content = canonical.get(r.id);
+        return content != null && content !== r.content ? { ...r, content } : r;
+      });
+    } catch {
+      return out; // mirror is best-effort — never fail a recall over it
+    }
   }
 
   async update(input: UpdateInput): Promise<MemoryRecord | null> {
@@ -78,11 +116,43 @@ export class MirroredMemoryProvider implements MemoryProvider {
     return this.backend.count ? this.backend.count(tenant) : Promise.resolve(null);
   }
 
+  /**
+   * Upkeep across BOTH stores. The local mirror decides what to drop — it is the only side that holds the
+   * SQL-level signals prune and dedupe key off (age, `recall_count`, importance, exact-content grouping)
+   * — and every id it removed is then deleted from the external backend, so the two stay in step.
+   *
+   * This used to trust the backend to look after itself ("automem self-maintains") and prune the mirror
+   * silently alongside. Neither half held: automem's enrichment/consolidation does NOT remove exact
+   * duplicates (a live tenant carried the SAME episode 177 times, 7% of its whole store, and it ranked in
+   * recall probes), and because the result came from the backend, the API reported `pruned: 0` while rows
+   * really did vanish from the mirror. So enabling upkeep on an external backend made the two stores
+   * diverge — agents kept recalling exactly what the console had been told was pruned.
+   *
+   * Order is mirror-first, backend-second: the backend delete is per-id over the network and some of them
+   * can fail, and a mirror row left behind for a backend row that IS gone is the worse failure (the local
+   * ledger, which Dreaming and the hub counts read, would claim memories that recall can never return).
+   * Failures are counted into `backendFailures` rather than swallowed.
+   */
   async maintain(opts: MemoryMaintenance): Promise<MemoryMaintenanceResult> {
-    // The backend self-maintains (automem) or prunes its own store (libsql); either way, keep the
-    // local mirror bounded with the same policy so it doesn't grow forever behind an external store.
-    const res = this.backend.maintain ? await this.backend.maintain(opts) : { pruned: 0, merged: 0 };
-    try { await this.mirror.maintain?.(opts); } catch { /* best-effort */ }
-    return res;
+    const backendRes = this.backend.maintain ? await this.backend.maintain(opts) : { pruned: 0, merged: 0 };
+    let local: MemoryMaintenanceResult = { pruned: 0, merged: 0 };
+    try { local = (await this.mirror.maintain?.(opts)) ?? local; } catch { /* best-effort */ }
+
+    let backendFailures = 0;
+    for (const r of local.removed ?? []) {
+      // `admin` bypasses the author guard: upkeep is the workspace's own housekeeping, not one agent
+      // reaching into another agent's memories.
+      try {
+        const ok = await this.backend.delete({ tenant: r.tenant, agentId: r.agentId, id: r.id, admin: true });
+        if (!ok) backendFailures++;
+      } catch { backendFailures++; }
+    }
+
+    return {
+      pruned: local.pruned + backendRes.pruned,
+      merged: local.merged + backendRes.merged,
+      removed: local.removed,
+      backendFailures,
+    };
   }
 }

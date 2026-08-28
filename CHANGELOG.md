@@ -19,6 +19,871 @@ new version heading in the same commit.
   tmux pane. `AOS_UID_ISOLATION` stays off, so the app's own `/terminal/` proxy means one published
   port is enough. Carries no host, tenant or token — all deployment identity stays in runtime config.
 
+## [0.404.0] - 2026-08-27
+### Added
+- **Per-tool latency for every agent-facing MCP tool.** The request-metrics collector already answered
+  "which endpoint costs the most"; it could not answer "what is an AGENT waiting on mid-run", because one
+  tool can span routes and one route serves several tools. `src/memory/memory-mcp.ts` now tags every
+  loopback call with `x-aos-tool` (bound per call through an `AsyncLocalStorage`, so concurrent tool calls
+  can't mislabel each other), and the server buckets those into a second dimension —
+  `tools[]` on `GET /api/metrics/requests`, and an "Agent tool calls (MCP)" table under Settings →
+  Endpoint timings. The header is telemetry only: authority stays with the session secret, and the tool map
+  is capped like the route map, so a forged header buys nothing and can't grow the table.
+  Tools that block on a human or a delegate by design (`ask_human`, `ask_agent`, `task_wait`) are FLAGGED
+  and sorted below real work — a 40-minute wait on a person is not a slow endpoint and must never rank as one.
+
+### Changed
+- **`session_history` / `session_open` stop building the whole tenant to answer about one agent.**
+  `sessionsForAgent` was `listSessions().filter(...)`: it materialised every session row (full `task`
+  prose), polled tmux liveness, backfilled cost by parsing up to 20 transcripts and stamped insights — then
+  discarded ~99% of it. Measured against a copy of a live 1k-session tenant: **19ms of handler time to
+  return ≤20 rows**, growing with the tenant rather than with the answer, on a tool an agent calls mid-run.
+  It now selects the agent's own ids in SQL (`query`/`excludeId`/`limit` pushed down, new
+  `idx_sessions_agent(agent, created_at)`) and derives only those rows — **19ms → 1.4ms**. `session_open`'s
+  ownership test is one indexed row-lookup (`sessionBelongsToAgent`) instead of resolving the agent's entire
+  history to `.find()` one id — **17.5ms → 1.5ms**.
+- **`task_list` uses the index it already had.** `TaskStore.list` over-fetched 5× the limit and applied
+  `status`/`assignee` in JS while `idx_tasks_assignee(tenant, assignee)` sat unused. Both filters are now in
+  SQL (the JS pass stays as the exactness guard) and the over-fetch is kept only for `label`, which has no
+  column of its own — **6.4ms → 3.0ms** on a 500-task board. Same rows, same order.
+
+### Notes
+- Benchmarking all 64 tools against a scrubbed copy of a live tenant put the memory plane an order of
+  magnitude above everything else: `recall` **260ms**, `remember` **170–480ms**, versus ≤3ms for every
+  local-DB tool. That is not an index — it is the remote automem backend's round trip (TCP connect 155ms,
+  TLS 325ms to an `fr-1` host). Switching the same copy to the built-in `sqlite` backend put recall at 4ms
+  and remember at 2ms. Co-locating automem (or fronting it with the local mirror on the read path) is worth
+  more than every other tool optimisation combined.
+
+## [0.403.2] - 2026-08-27
+### Fixed
+- **A stopped session is never a dead end — "Resume & take over" on the read-only view.** A run claimed
+  while it was still LIVE and stopped afterwards had no way back: claiming relaunches nothing, so it never
+  got a launch env, which left it non-`resumable` (no Resume) while `claimedBy`/`headless=0` hid Take over
+  as well. Opening it plain-attached to a pane that was gone and surfaced tmux's own
+  `can't find session: aos-…` (live instawp run, 2026-08-27).
+  - `canGoInteractive` now splits by liveness: LIVE → an unclaimed unattended run (claim the pane); DEAD →
+    any run with a conversation that cannot bring itself back (unattended, or no persisted env). `claimedBy`
+    is no longer consulted for a dead run — a claim doesn't revive a dead pane, and `takeoverRun` already
+    handles exactly this case server-side.
+  - The read-only transcript view (`ended`) is shown whenever there is no live pane AND nothing would bring
+    one back, so the console never attaches to a pane that is gone.
+  - That view (timeline, raw log and report alike) now carries a **Resume & take over** button, so the run
+    is revived from where you are reading it and the frame re-attaches to the resumed pane.
+  - Pinned by `scripts/session-revive-gates-test.cjs` (the predicates are lifted from the source and
+    evaluated over every shape a real row takes: exactly one of Resume / Take over for a revivable dead run,
+    and never an attach) plus a `takeoverRun` case in `scripts/headless-resumable-test.cjs`.
+
+## [0.403.1] - 2026-08-27
+### Fixed
+- **A taken-over unattended run can be reloaded.** `resumable` is derived from a file — the persisted
+  launch env `<home>/connectors/session-<id>.env` — and that file was written only for interactive
+  launches, so the flag quietly doubled as "this run is attended". Consequence: taking over an unattended
+  run whose pane was still LIVE left it permanently non-resumable (`claimSession` marks the row and
+  relaunches nothing, so nothing ever wrote the env), and the terminal's Operations menu hid **Reload**
+  and **Reload on another account** for it forever — the two items you actually want on a claimed run
+  (pick up a newly-connected MCP server; move off an account that hit its usage limit). Seen live on
+  instawp: a claimed run, `headless=0`, a pinned `claude_session_id`, and no Reload.
+  - Every claude-code launch now persists the env, unattended included; the lanes are told apart by the
+    `headless` column, never by the presence of a file.
+  - Taking a live run over strips the env's `UNATTENDED` marker, so a later reattach/Reload resurrects it
+    on the attended lane instead of handing it back to the turn-end reaper (the dead-run take-over path
+    already got this by relaunching).
+  - Console gates that used `!resumable` as a proxy for "unattended" now read the `headless` flag: Take
+    over, the ended-run transcript view, and Resume (attended runs only — Take over is the human entry
+    point for an unattended one).
+  - Teardown is unchanged and now actually effective for these runs: `markEnded` → `blockResume` drops the
+    stay-stopped sentinel, so ttyd's silent auto-reconnect can't resurrect a run the reaper just closed.
+  - Pinned by `scripts/headless-resumable-test.cjs`.
+
+## [0.403.0] - 2026-08-27
+### Added
+- **Per-agent context allowlists — `AgentManifest.skills` and `AgentManifest.tools`.** Every
+  claude-code agent was handed the entire skills library and every agentos MCP tool, whether it used
+  them or not. On the live instawp fleet that is 50–59 skills materialised per agent out of a 60-skill
+  library (a *site-monitoring* agent carrying `pptx`, `xlsx`, `marketing-plan` and `aso`) plus all 68
+  tool schemas. Both a skill's description and a tool's schema are pinned in the system prompt and
+  re-read on **every turn**: measured on one 103-call watchdog run, ~32k of an 85k-token baseline was
+  skills and tools it never touched, and the run re-read 12.7M tokens of context in 17 minutes. Under a
+  fixed-price subscription that is not a bill, it is quota and wall-clock — the same tenant hit
+  `runtime.account.limited` / `runtime.usage_limited` 256 times in 30 days.
+  - `skills` is ANDed with the existing skill-side audience (`skill_assignments`), so a skill owner
+    scoping their skill and an agent owner keeping their agent lean never override each other. Same
+    dual-control shape as `shellSecrets` ↔ `secret_assignments`.
+  - `tools` narrows what the OS-owned MCP server lists, over a core set (`report`, `update`,
+    `ask_human`, `check_inbox`, `notify`, `recall`, `remember`) that is always kept — a manifest typo
+    must cost the context saving, never the agent's ability to report or ask for help.
+  - **Absent/empty means everything**, so every currently-uncurated agent is unchanged on upgrade.
+  - Settable from the agent's console settings card, `PUT /api/agents/:id/config`, the manifest, or the
+    agent's own `agent_update` (self-narrowing only ever reduces its own offer).
+  - Both are **context shaping, not permission**: `tools/call` stays unfiltered and the gateway still
+    governs every effect. To withhold a capability, write a policy rule.
+  - Snapshotted into `agent_revisions` (new `skills`/`tools` columns), so an agent revert restores the
+    offer alongside the prompt. Docs: `docs/per-agent-context.md`. Pinned by
+    `scripts/per-agent-context-test.cjs`.
+
+## [0.402.2] - 2026-08-27
+### Fixed
+- **A `claude login` credential dir stored in the macOS Keychain can be READ after all — the pool's usage
+  probe now does.** `readConfigDirToken` only ever parsed a plaintext `.credentials.json`, on the belief
+  that the Keychain item's ACL trusted claude alone (`security find-generic-password -w` exits 36). That
+  belief was wrong: 36 is `errSecInteractionRequired`, which is what *any* keychain read gets from a
+  **Background** security session — an ssh shell, a LaunchDaemon — where the login keychain is still
+  locked. The same command in the **Aqua** session, which is where a LaunchAgent like
+  `com.agentos.<tenant>` runs, returns the credential JSON with exit 0. So every credential-dir account
+  signed in on a Mac showed `Usage —` forever and a Refresh that said it "can't be probed from here", and
+  the background sweep skipped it — leaving the pool dispatching to accounts whose quota it could not
+  see. `readCredentialRecord` now resolves the plaintext file first and the Keychain second (accepting
+  both `security`'s text and hex output), and `configDirCanRefresh` reads the same record.
+- The Refresh error for an unreadable Keychain login now names the real cause (locked keychain / wrong
+  security session) instead of describing it as normal, since `claude` hits the identical refusal — an
+  ssh-launched run of such an account comes up `Not logged in · Please run /login` while the same account
+  authenticates fine under the server.
+- New falsifier `scripts/keychain-credential-test.cjs` (in `npm run test:governance`) pins the resolution
+  order, the hex form, exit 36 as a miss rather than a throw, and that `security` is never shelled out to
+  off darwin.
+
+## [0.402.1] - 2026-08-27
+### Fixed
+- **v0.401.0 changed the topic extractor without bumping `TOPICS_VERSION`, so nothing it stopped
+  extracting was actually removed.** `topics` is a cumulative map that decays only on a 21-day half-life;
+  the version counter exists precisely so a changed extractor clears the words it used to admit. It was
+  not bumped, so `wait`, `c05cl830mnd`, `d3cby9k`, `d2mp41k` and `already-contacted-in-90-days` all
+  survived in the live maps — and `wait:3` sat exactly on `MIN_TOPIC_COUNT`, so the guidance line every
+  instawp agent reads still said "the fleet frequently works on: freescout, apache2, **wait**". Bumped to
+  4; both tenants rebuild their map from the current corpus on the next pass. This is the **second** time
+  the counter was missed (v0.281.3 tightened `isEntity` the same way), and the warning telling you to bump
+  it sits two paragraphs above the constant — so a comment is demonstrably not enough. The insights test
+  now **fingerprints the extractor** (the `STOP` literal plus `topicCounts`/`properNouns`/`isEntity`) and
+  fails the build when it changes without a bump, naming the new hash and the version to move.
+
+## [0.402.0] - 2026-08-27
+### Fixed
+- **A finished run is no longer a delivery target for good news.** The wake queue picks a live pane by
+  `reachable` — the PANE — which is deliberate, but `report` is the agent saying the RUN is over, and its
+  pane stays reachable regardless. Measured on live instawp over 7 days: **55% of injects (152 of 275)
+  landed in a session that had already reported**, resurrecting it in place — the very thing `dropDone`
+  refuses to spawn a claude for. The archetype was a `support-ops` run that reported success at **+152
+  seconds** and was then held open **6.5 hours** by ten injects (still `running` 49h later). And the
+  inject lane is not free: sessions that received one ran **78 API calls against 42**, at **381k context
+  per call against 277k**, costing **93% more per run** — 14% of runs consuming 24% of spend, because the
+  message lands in a transcript that then keeps growing and every subsequent call re-reads all of it.
+  (The gate itself is 1ms at p50 over 32,515 samples; it was never the tax.) Now a **done-only** batch
+  treats a finished run as no target at all and drops, exactly as it would for a cold caller — the result
+  is durable in the task and the human already has the card — while any other batch merely **prefers** a
+  still-working session, so a stranding or hand-back still injects rather than spending a resume. Against
+  the same week: 131 of 275 injects stop happening, and the 21 stranded/blocked deliveries into a
+  finished run still land, so this costs **no extra resumes**. Pinned by two new sections in
+  `scripts/wakeup-queue-test.cjs`.
+
+## [0.401.1] - 2026-08-27
+### Fixed
+- **The "Things to consider" panel no longer promises a signal that was deleted.** Its empty state read
+  "if agents start hitting friction — rejected actions, budget limits, *low success* — suggestions appear
+  here", but `low success` was retired in Step 0 (it divided self-reported successes by all sessions) and
+  cannot be produced. An empty panel therefore read as "all clear" when it meant "two narrow conditions
+  are watched and neither fired" — `policy.review` (≥3 rejected approvals at ≥20%) and `budget.review`
+  (≥2 budget stops), neither of which either live tenant crosses. The empty state now names both
+  conditions with their thresholds and says plainly that quality-keyed suggestions stay absent until a
+  derived outcome replaces the agent's own grade of its own work. Documented as §2f of
+  `docs/insights-revisit.md`, including the candidates deliberately rejected rather than invented to fill
+  the panel.
+
+## [0.401.0] - 2026-08-27
+### Fixed
+- **"The fleet frequently works on…" no longer names states and handles.** That list rides in every
+  agent's system prompt via the learned guidance, so a junk token there is a junk token in every prompt.
+  The first clean pass after the topic accumulator was fixed surfaced exactly two failure shapes. (1) A
+  shouted imperative reads as an **acronym** to `properNouns` (short, all-caps, standing alone), so a
+  prompt writing "WAIT for it to finish" promoted `wait` to a proper noun — instawp told every agent the
+  fleet frequently works on "freescout, apache2, **wait**". Those status words are now stopped. (2)
+  `isEntity` admitted anything containing a digit (the rule that keeps `php8`/`v3`), which let opaque
+  handles through: the Slack channel id `c05cl830mnd`, site ids `d3cby9k`/`d2mp41k`, and the task slug
+  `already-contacted-in-90-days`. A real tech name carries its digits at the **end**; a digit buried
+  mid-token is an id, so those are now rejected above a length bound — `apache2`, `php8`, `dev3`,
+  `oauth2` and `log4j` all still pass, and a token the corpus consistently capitalizes still wins on
+  `proper` whatever its shape. Pinned by a new section in `scripts/insights-signal-test.cjs`.
+
+## [0.400.0] - 2026-08-27
+### Changed
+- **The launch preamble carries lessons, not a transcript of past assignments.** An episode's text opens
+  with the session's task line, so ranking the preamble against the task (v0.399.0) matched episodes
+  better than the lessons distilled from them — the bias was systematic, not incidental. Measured over 8
+  realistic agent/task pairs against the live instapods store: **28 of 64 preamble slots (44%) were raw
+  past task prompts**, and `check-resolve-tickets` spent 4 of 8 slots on near-identical replays of one
+  daily sweep while the reconciliation lesson it has been recalled on 185 times was crowded out. The
+  preamble now over-fetches 4×, drops anything tagged `episode` (or opening `Task:`, for rows predating
+  the tag), collapses near-identical survivors, and keeps the first `count` — on the fallback path too, so
+  which path answered never changes what kind of memory an agent is seeded with. After: **0 of 64 slots**
+  are episodes, and an engineer asked about repeated deploy failures is seeded with five concrete
+  deploy-failure lessons. Episodes remain what Dreaming and the consolidation gardener read. An agent
+  whose store is overwhelmingly episodic now gets a shorter preamble rather than a padded one.
+
+## [0.399.0] - 2026-08-27
+### Changed
+- **The launch-time memory preamble is ranked against the task, not the agent's all-time top 8.**
+  `MemoryConfig.preload` seeds a cold session with what the agent already knows; it used to run no query
+  at all (`ORDER BY importance DESC, last_recalled_at DESC`), so every launch got the same memories
+  whatever the work. On live instapods that put a tenant-shared marketing rule ("Never auto-send email as
+  the marketing agent", importance 0.95) at the top of the **engineer's** prompt and spent two of eight
+  slots on copy rules — and below the top ~70 rows the order was decided almost entirely by the
+  tiebreaker, since 893 memories share importance 0.8 and 912 share 0.7. The session's task (first 400
+  chars — a 2KB cron standing order buries the distinctive words under boilerplate) is now the recall
+  query, through the real provider, so the backend's ranking picks what bears on this work; the hits are
+  reinforced too, so preloaded memories finally participate in the `recall_count` signal that prune and
+  re-ranking read. Falls back to the old importance ordering whenever the task-ranked path can't answer —
+  no task text, a recall that throws, returns nothing, or exceeds a 2.5s budget — so the preamble is never
+  worse than before and an unreachable backend costs a launch at most 2.5s. Pinned by
+  `scripts/memory-preload-test.cjs`.
+
+## [0.398.0] - 2026-08-27
+### Fixed
+- **Agents recalled a paraphrase of their own memories.** A recall backend may transform the text it is
+  handed, and automem does: over `MEMORY_CONTENT_SOFT_LIMIT` (500 chars by default) with an LLM
+  configured, it replaces `content` with a ~300-char summary and **discards the original**. instawp's
+  average memory is 1305 chars, so **81%** of sampled recall hits existed nowhere in the mirror — a note
+  reading "Bunny edge-rule QA cannot be done on a `*.instawp.site` sandbox — it resolves to the PPU/OVH
+  origin and never traverses Bunny's edge…" came back as "Bunny edge-rule QA limitations. Testing on
+  `*.instawp.site` fails…", losing every exact command and `.env` name that made it worth storing. The
+  two stores also disagreed: Dreaming, consolidation and the Memory-hub read the mirror's original while
+  agents recalled the summary. `MirroredMemoryProvider.recall` now serves `content` from the mirror
+  whenever it holds that id; **ranking, ordering and score stay entirely the backend's**, and a record
+  the mirror has never seen passes through untouched, so this can only add fidelity. Backend-agnostic —
+  it holds for any store that rewrites, not just this setting. (instapods was unaffected: no LLM
+  configured there, so nothing was ever rewritten.)
+
+### Added
+- **`scripts/make-live.sh` deploys tenants on OTHER boxes.** A tenant reached over ssh (Linux/systemd)
+  now goes in `AOS_LIVE_REMOTE_TARGETS` as `tenant:ssh:checkout:port[:unit]`, alongside the existing
+  local `AOS_LIVE_TARGETS` — it was being deployed by hand, which is how one box sat 5 versions behind
+  while "make it live" reported success. Remote targets keep every guarantee the local lane has: preflight
+  (reachable without a password prompt, checkout present, unit known, node found) before anything is
+  touched; **every** checkout — local and remote — synced, built and tested before **any** service is
+  restarted; the running process must report the version just built; and a failure prints the exact
+  rollback command plus that box's journal. `--only` and `--dry-run` span both lanes, and a deployment
+  whose tenants are all remote no longer has a phantom local target invented for it.
+
+## [0.397.0] - 2026-08-27
+### Fixed
+- **Memory upkeep on an external backend pruned only half the store.** `MirroredMemoryProvider.maintain`
+  assumed "the backend self-maintains (automem)" and pruned the local mirror alongside it. Reading the
+  live stores disproved the assumption — automem's enrichment rewrites and relates memories but does not
+  remove exact duplicates, and one instapods cron's identical episode sat there **177 times** (7% of that
+  tenant's whole memory, one string, ranking in live recall probes). Because the result came from the
+  backend, the API also reported `pruned: 0` while mirror rows really did vanish. So turning upkeep on
+  made the two stores **diverge**: Dreaming, consolidation and the Memory-hub counts (which read the
+  mirror) lost rows agents could still recall. Now the mirror decides and the backend follows —
+  `SqliteMemoryProvider.maintain` returns `removed: {id, tenant, agentId}[]`, the mirror replays each
+  removal onto the backend as an admin-scoped delete, and the result reports the mirror's real counts plus
+  **`backendFailures`** for removals the backend refused. Upkeep stays opt-in; this makes the knob safe to
+  turn on, it does not enable it.
+- **The self-learning pass wiped its own topic accumulator on every run.** `normalizeState` dropped
+  `topicsVersion` on load, so the extractor-version check in `dream()` was true every pass and emptied the
+  cumulative topic map before anything read it. The documented "counts merge across passes … sharpens over
+  time" never happened in production: instapods reset on **29 of 46** passes and instawp on **31 of 41**,
+  discarding **666** and **1760** topic counts, leaving `topics` holding a single day of episodes. With
+  `MIN_TOPIC_COUNT = 3` that kept the smaller tenant permanently under the bar — its "the fleet frequently
+  works on …" guidance line never fired once in two months, and the fleet Insight every agent recalls read
+  `Recurring topics: —`. Both pinned by `scripts/memory-upkeep-test.cjs`.
+
+## [0.396.0] - 2026-08-27
+### Changed
+- **Session episodes stop polluting the memory they are supposed to teach.** Every finished session
+  auto-encodes an episode into its agent's memory — nobody decides to store it, so its quality is
+  entirely a property of the code. A read of the live instapods + instawp stores found three ways it
+  was storing noise, all now fixed. (1) The `Task:` line was kept **verbatim**: an unattended run's task
+  is a multi-paragraph standing order, so one 1979-char support-sweep prompt filled an entire memory
+  (automem caps a memory at 2000 chars) leaving no room for what the run actually did — 419 stored
+  episodes carried a task line over 300 chars. It is now condensed to one identifying line, capped at
+  200 chars; the agent's own report body is untouched. (2) **Launch plumbing counted as work**:
+  `github.token.injected` / `runtime.account.selected` / `automation.fired` fire on every run before the
+  agent has done anything, so smoke runs became episodes whose whole body was
+  `Activity: 1 github.token.injected.` — 72 of them across the two tenants, recalled 22 times, each one
+  displacing a real lesson in a top-k recall. Those events are now episode noise, and a run with nothing
+  but plumbing stores no episode at all. (3) **Nothing deduped**: one support agent's 2h cron wrote the
+  same byte-identical episode **177 times in a month** — 7% of that tenant's entire memory, one string,
+  and it ranked in live recall probes. An exact-content repeat from the same agent within 30 days is now
+  suppressed and audited as `episode.duplicate` (a run whose report differs is always stored). Pinned by
+  `scripts/episode-quality-test.cjs`.
+
+## [0.395.0] - 2026-08-27
+### Added
+- **A task room shows every agent that worked the task, not just the last one.** A task is one unit of
+  work and a session is one attempt at it, so the relation has always been one-to-many — but the room
+  said `Session` (singular), showed whichever run was newest, and put the run picker in the 320px
+  details sidebar, which collapses and stays collapsed. On a task a support agent filed and an engineer
+  then took, the second agent's session was reachable from nowhere on screen. Now: the tab reads
+  **Sessions · N** with a live pip when any run is running; a **run switcher** sits directly above the
+  terminal, one chip per session (named by AGENT when several worked it, numbered by attempt when one
+  did); the room header carries a **N agents** button that jumps to them; and the sidebar's run history
+  **groups by agent** when the runs span more than one, because `#1 #2 #3` reads as "it failed twice",
+  which is the wrong story for a hand-off. The history also highlights the run the room is already
+  showing instead of nothing-until-you-click.
+- **The board and list say who actually ran a task.** A card showed `assignee` — who the task was handed
+  to — so a task worked by two agents rendered exactly like one worked by its assignee alone. Multi-agent
+  tasks now carry an agent stack (live pip per agent, full run counts in the tooltip) next to the
+  assignee. Server-computed in the existing list payload (`TerminalManager.taskWorkers`, one pass over
+  the two sources `taskRuns` already uses) and sent ONLY for tasks worked by more than one agent, so the
+  single-agent case — which the assignee badge already states — costs nothing. Pinned by
+  `scripts/task-workers-test.cjs`.
+
+## [0.394.0] - 2026-08-25
+### Added
+- **Docs → Use cases: every use case ships a "Create this agent" button.** The page told you which
+  33 agent shapes are worth building and left you to write the prompt yourself — the gap between
+  reading a use case and having that agent was a blank New-agent form. Each entry now carries a
+  ready brief for the bundled `agent-author`: name, job, trigger, and the safety posture that entry
+  argues for, plus an instruction to ask before creating anything it does not know. Click **Create
+  this agent** to open the brief in a textarea, edit it, then **Run now** (spawns `agent-author`
+  and opens its terminal) or **Copy**.
+  The brief opens into an editable box rather than firing on click — the posture is the decision the
+  page exists to teach, and a one-click spawn would skip reading it. `Copy` uses the existing
+  `copyText` fallback, so it still works on a plain-HTTP tenant where `navigator.clipboard` is
+  undefined. Where the viewer cannot run `agent-author` (a member with no assignment), Run is
+  disabled and says why; Copy still works.
+  Scoped to the Docs page on purpose — the ```create-agent fence is intercepted by a DocsPage-local
+  markdown component, NOT the shared `mdComponents` that also renders KB, task and goal markdown.
+  Docs ships with the software; that markdown is written by whoever is in the tenant, and a runnable
+  button rendered from tenant-authored prose invites a member to run something they did not read.
+  (It would not be an authority bypass — the spawn is still `canRun`-gated and every effect still
+  crosses the gateway — but there is no reason to widen the surface.)
+  Pinned by `scripts/docs-create-agent-test.cjs`: fences balanced, every brief names a DNS-safe
+  agent plus a job, trigger and posture, no duplicate ids, none targets `agent-author` itself, and
+  the runnable block stays out of the shared renderer.
+
+## [0.393.1] - 2026-08-25
+### Fixed
+- **Docs → Use cases: the Related table no longer lists the same page twice.** The move into the
+  console collapsed five repo docs onto four manual pages, so `tasks-plan.md` and `memory-model.md`
+  both resolved to Memory, Knowledge & Tasks and the table shipped two rows with one destination.
+  Merged into a single row carrying both descriptions.
+
+## [0.393.0] - 2026-08-25
+### Added
+- **Use cases are in the console manual** (Docs → Use cases, second in the list, right after Getting
+  started). The catalog shipped in v0.386.0 as `docs/use-cases.md` — a repo file reachable only from
+  the README's docs table — so the one page written to answer "what do I automate first?" was
+  invisible to the people asking it, who are in the console, not the GitHub tree. The console Docs
+  nav is a hand-maintained list (`web/src/docs/index.ts`); the page had no entry in it.
+
+### Changed
+- **`docs/use-cases.md` moved to `web/src/docs/use-cases.md`** rather than being copied, so there is
+  one source of truth instead of two 500-line files free to drift. The README's docs table points at
+  the new path. Body text is unchanged; only the five cross-doc links were retargeted from repo-relative
+  paths (`governance-model.md`) to in-console routes (`#/docs/governance`) — `mdComponents.a` opens any
+  non-`#` href in a NEW TAB, so left as they were those links would have opened a blank tab on a
+  nonexistent relative URL.
+
+## [0.392.0] - 2026-08-25
+### Added
+- **Pick the runtime when creating an agent** (New agent → Runtime). `POST /api/agents` hardcoded
+  `runtime: 'claude-code'` and the create form had no picker, so the only way to get a Codex or
+  opencode agent was to create a Claude one and switch it afterwards. The field is optional and still
+  defaults to `claude-code`, so existing callers are unaffected. Tuning is validated against the chosen
+  runtime, so a cross-family model (the form's `opus` pre-fill on opencode) is refused at creation
+  instead of at the first launch, and the form clears it on switch. The create page shows the same
+  install prompt as the edit page when the box lacks that runtime's CLI.
+
+## [0.391.2] - 2026-08-25
+### Fixed
+- **Runtime install failed on any box with a root-owned npm prefix**, which is the standard
+  NodeSource/apt layout: `npm install -g` targeted `/usr`, and the server — a non-root user, usually
+  under `ProtectSystem=strict` — cannot write there, so Install died with
+  `ENOENT … mkdir '/usr/lib/node_modules/<pkg>'`. Installs now go to `~/.local`, which the service user
+  can write, which is inside the hardened unit's `ReadWritePaths`, and whose `bin` is already the FIRST
+  entry of both the presence probe and the PATH every launch script exports — so the installed CLI is
+  the one the console reports AND the one a session runs.
+
+## [0.391.1] - 2026-08-25
+### Fixed
+- Runtime presence probing spawned `command -v` through a shell, so every Settings → Runtimes load
+  and every agent-config read logged Node's `DEP0190` shell-argument warning (and spawned one shell
+  per runtime). Resolution is now an in-process PATH walk — same answer, no child process, no warning.
+
+## [0.391.0] - 2026-08-25
+### Added
+- **Third coding runtime: `opencode`.** Selectable per agent (Agents → Runtime tuning → Runtime),
+  applied on the next session. opencode has no command-hook facility, so its gate is a JS plugin
+  (`terminal/opencode-gate-plugin.js`) implementing the same `/api/gate` contract as the shared shell
+  hook: route tool → capability, allow / throw on deny / block-until-approved / fail closed when
+  unreachable. New `terminal/opencode-launch.sh` composes `AGENTS.md` from the agent's `CLAUDE.md` +
+  Company context (only Claude Code auto-loads `CLAUDE.md`), translates the session MCP config to
+  opencode's schema, and refuses to start unauthenticated rather than parking on the provider picker.
+  Pinned by `scripts/opencode-gate-test.cjs`. See `docs/opencode-runtime.md`.
+- **Runtime install management.** Settings → Runtime → **Runtimes** lists every coding runtime, whether
+  its CLI is on this box, and installs a missing one in a click (owner-only, audited
+  `runtime.install.*`). The agent runtime picker shows the same prompt when the selected runtime is not
+  installed, so a choice whose every session would park on "the CLI is not on PATH" can't be saved
+  blind. Presence is probed with the same PATH a session gets; install trusts a re-probe rather than
+  npm's exit code. New `GET /api/runtimes` + `POST /api/runtimes/:id/install`.
+
+### Security
+- **opencode sessions fail closed if the gate plugin does not load.** opencode discovers
+  `.opencode/plugin/*.js` and silently ignores any other extension, so a renamed plugin would have
+  produced a fully ungoverned agent with no warning. The generated config now writes every permission
+  as `"ask"` and the plugin relaxes it at runtime — plugin missing ⇒ opencode prompts (an unattended
+  run blocks) instead of acting ungoverned. `--pure` (which disables plugins) is likewise banned.
+- **opencode sub-agents are disabled** (`tools.task = false` plus a refusal in the plugin).
+  anomalyco/opencode#6396 reports plugin hooks and config `deny` rules being bypassed for
+  sub-agent/SDK invocations; an un-hooked sub-agent would reach the world with no gate, no audit and no
+  run-as identity. Governed delegation via `task_create` is unaffected.
+
+### Fixed
+- A non-Claude agent could not be switched back: the runtime picker lives in the tuning card, which
+  rendered only for `runtime === 'claude-code'` — so moving an agent to Codex was a one-way door. The
+  tuning, revisions and cross-agent-proposal cards now render for any CLI-backed runtime, matching the
+  server (`applyAgentEdit` already gated on `isCodingRuntime`).
+- `RuntimeBadge` labelled every non-Claude runtime **"mock"**, so a real Codex agent was badged as the
+  in-process demo adapter. It now names the runtime it actually runs on.
+- Cost and the chat timeline for a runtime with no transcript reader fell through to the Claude reader,
+  which resolves an id against `~/.claude/projects` — a foreign session id simply is not there, so an
+  honest "unknown" arrived as a confidently wrong zero. Both now probe the `transcript` capability.
+
+## [0.390.0] - 2026-08-24
+### Added
+- **Slack automations can filter on the message, and watch a channel that nobody @mentions.** A slack
+  filter was a scope and nothing else — an event type or a channel id — so *whether this particular
+  message was the one the automation is about* could only be decided inside the spawned session. That
+  is a whole Claude run bought to conclude "not mine", and an instruction in the agent's prompt cannot
+  prevent it: the prompt runs after the spawn. The filter is now
+  `<scope> [when …] [unless …]`, reusing the predicate grammar `webhook-ingress.ts` already owns
+  (`==`, `!=`, `~`, `!~`, joined by `and`; `when` requires, `unless` rejects). `evaluateFilter` was
+  split so the chat triggers get the payload half without webhook's event-list half —
+  `C0ABUSE1 when text ~ "abuse report"`. Predicates read the Slack event with `text` replaced by the
+  mention-stripped body (what a human reads, not `<@B1> …`) and the resolved sender on `actor`, which
+  has no path in the raw event. `dropped` names the refusing predicate in the `trigger.slack` audit
+  row, so "why didn't it fire" is answerable without re-reading the filter. Slack filters are now
+  validated at save time like webhook's — the predicate layer fails open at runtime, so that is the
+  only place a typo is ever caught.
+- **A channel-scoped slack automation is a channel WATCH.** Non-mention channel messages were dropped
+  in `slack-socket.ts` before reaching `fireSlack`, so a standing watch on a channel could not fire:
+  it depended on whoever pasted the report remembering to summon the bot. Reports get pasted,
+  forwarded and relayed — they are not addressed to anybody. A message in a channel some enabled
+  automation names now goes to `fireSlack` with `channelWatch`, acked in a thread under the report
+  itself. Deliberately narrow, because the failure mode is spend: only an automation whose scope is
+  exactly that channel id is woken (a blank / `*` / event-type scope keeps its mention-and-DM
+  behaviour, so this cannot change what an existing fleet's automations do), and the `/agent` chat
+  router never runs on this path — its help list would otherwise land in the channel on every
+  message. Messages from other bots and apps are still ignored on every Slack path; an integration
+  that posts reports should use a webhook automation instead.
+  Pinned by `scripts/slack-content-filter-test.cjs` (39 assertions, incl. the socket gate end to end).
+
+### Fixed
+- **`CHANGELOG.md` had a merge conflict committed into it** (`<<<<<<< HEAD` at the 0.389.1/0.389.0
+  boundary). Both sides were real releases; resolved by keeping both in order.
+
+## [0.389.1] - 2026-08-24
+### Fixed
+- **An expired Claude access token is no longer branded a dead credential.** A revoked token and one
+  that has merely aged out return the same `401`, so the pool probe reported both as
+  `not a valid Claude subscription token; re-run \`claude setup-token\`` — telling an operator to do a
+  full re-auth for an account that fixes itself. `claude` swaps the stored `refreshToken` for a new
+  access token on its next launch; the credential file already carries everything needed.
+  `checkClaudeToken` now takes the account's `configDir` and, on a 401, checks
+  `configDirCanRefresh()`: a live refresh token yields `ok: null` ("couldn't verify — refreshes on next
+  run"), which keeps the account enabled and its previous health, and retries on the next sweep. A
+  missing or expired refresh token is still a hard `ok: false` — those genuinely need a human.
+  Live cost of the old behaviour: the `tools` account sat mislabelled as broken for days, which also
+  masked the real state underneath — it was simply at its weekly cap.
+  Pinned by `scripts/runtime-usage-refresh-test.cjs` §7.
+
+## [0.389.0]
+### Changed
+- **`verbositySavings()` is retired; the console now reports terse ADOPTION, not savings.** The flag
+  shipped beside a query meant to falsify it — cost per turn, terse arm against normal arm, on live
+  traffic — and Settings → Runtime defaults rendered the deltas in green and amber. Four controlled
+  benchmark runs established that the query cannot mean what it was read to mean, so it is removed
+  rather than caveated. Three defects, none fixable from inside a query over `term_sessions`:
+  `output_tokens` is ~85% `tool_use` arguments and ~18% thinking, so it barely contains the narration
+  the brief compresses (against the live instapods DB it called terse 28–92% *worse* on four of five
+  agents — that was tool-use volume); dividing by turns lets the treatment move its own denominator
+  (`marketing-manager` read 92% worse per turn and 25% cheaper per session from the same rows); and
+  the two arms are a 2026-08-07 cutover rather than a split.
+  `verbosityAdoption()` replaces it — per-level session counts, per agent, over a trailing window, with
+  pre-flag rows kept in their own `unstamped` bucket so the panel cannot overstate the flag's reach. A
+  row count is a claim the data supports. `GET /api/settings/verbosity-savings` becomes
+  `GET /api/settings/verbosity-adoption`; the panel's caption now states the measured ceiling (~1% of
+  spend, because narration is a small share of what an agent emits) and points at
+  `npm run bench:verbosity` for the effect question, which belongs to a controlled experiment and not
+  to a comparison of live runs.
+  The removed test assertions were all **passing** — the arithmetic was correct throughout. That is the
+  point worth keeping: a well-tested number can still be the wrong number, and no amount of per-turn
+  hygiene turned `output_tokens` into a measure of narration.
+
+## [0.388.0]
+### Added
+- **`npm run bench:verbosity-turns` — the multi-turn harness, and the answer on per-turn
+  reinforcement: the mechanism is real and not worth wiring.** The single-turn benchmark had shown
+  `TERSE_OUTPUT_BRIEF` to be indistinguishable from no brief, and a rewrite with a much better prior
+  failed too — two very different texts inside the noise, which is a mechanism problem, not a wording
+  one. The suspected mechanism was attention decay, which a single-turn harness structurally cannot
+  test. So: five six-turn threads, tool-free, mixed registers, walked through three arms — no brief,
+  the brief in the system prompt, and the brief plus a 61-token reminder re-injected every turn via a
+  `UserPromptSubmit` hook (the channel `caveman` uses; verified beforehand that it fires on every
+  `--resume` turn and reaches the model). 270 turns, claude-sonnet-5, 3 reps, the live ~13k company
+  prompt underneath.
+  **`reinforced` vs `system`: +6.8%, 95% CI [+0.5%, +13.3%] — the first interval in this whole line of
+  work to exclude zero.** But `system` vs `control` is still +1.0% [-7.1%, +7.8%] (the appended brief
+  does nothing, now confirmed multi-turn), and end-to-end `reinforced` vs `control` is +8.4%
+  [-0.4%, +16.6%], still inside the noise.
+  Nothing was wired, for three reasons recorded on `TERSE_OUTPUT_BRIEF`. **The decay hypothesis was
+  wrong** — every arm gets *more* verbose across turns (slopes +4.2/+6.9/+8.1 tokens per turn) and the
+  reinforced arm grows fastest; the gain is flat across turn index (4.2% on turn *one*), so the hook
+  buys PROXIMITY, not decay resistance. **The money is not there** — 26.4 output tokens saved against
+  61 input tokens spent nets ~$0.13/month across instapods' 780 terse turns, consistent with the
+  ceiling already established (narration is ~15% of output tokens; this moves ~7% of that). And **it
+  is the wrong lane** — `UserPromptSubmit` fires on user messages, so the result covers chat/resident
+  sessions, while most fleet spend is unattended runs whose turns are driven by tool calls; the
+  analogous channel there is PreToolUse `additionalContext`, which this did not test.
+  One non-cost finding worth keeping: the reinforced arm was also **more complete** — required facts
+  present on 60/90 turns against control's 48/90 (paired, discordant 20 vs 8, exact binomial
+  p=0.036). Shorter *and* better. If terse is revisited it should be as an answer-shape feature
+  measured on completeness, not as a cost lever.
+- **`--analyze <file>` on the turns benchmark** — re-report a finished run without re-running it. A
+  270-turn run costs ~$19 and an hour, and the first one nearly went to waste when the scratchpad
+  holding its results was cleaned; recovering it meant rebuilding the arm labels from claude's own
+  transcripts. The raw rows now ship as `scripts/verbosity-turns-result.json` so the evidence outlives
+  the run that produced it.
+
+## [0.387.0] - 2026-08-24
+
+### Added
+- **`docs/use-cases.md` — "what should I automate first?"** New installs consistently ask what agents to
+  create; the answer existed only as tribal knowledge in running fleets. The page is a catalog of the
+  agent shapes that hold up in production, organised by department (support, infrastructure, engineering,
+  marketing, customer success, finance, security, fleet management), each with its trigger, its safety
+  posture, and a starter prompt — plus the six safety postures, the five trigger shapes, a first-three
+  sequence, and an honest "what does not work" list. Linked from the README doc table.
+- **A `reviewer` agent in the bundled starter fleet.** Independent review — a change, a plan or a claim
+  judged in isolation from the session that produced it, returning a ranked PASS / WARN / BLOCK verdict.
+  Verification before shipping was the one high-value role the starter set had no agent for, and folding
+  it into `engineer` doesn't work: a reviewer that inherits the author's reasoning is an echo, not a
+  second opinion.
+
+### Changed
+- **Every bundled agent now carries an explicit, named safety posture.** The starter prompts previously
+  ended in a soft "don't ship irreversible/outward-facing actions unprompted", which is a boundary an
+  agent can talk itself around. Each now has a `## Safety posture — <name>` section with the hard rules
+  written out (draft-never-send, pull-request-only, diagnose-and-propose, read-only, per-item sign-off,
+  a-human-publishes). The gate still enforces the boundary; the posture is what makes the agent
+  understand why it stops there.
+- **Bundled agents now say how to work with the rest of the fleet.** Each prompt gained a "Working with
+  the fleet" section — `recall`/`kb_search` before starting, `ask` rather than guessing past a blocker,
+  `task_create` to hand off what belongs to another specialist, `kb_write`/`remember` for what's worth
+  keeping — and a "Finishing" rule that ends every run in a `report` with a verdict, plus `publish` for
+  anything a human is meant to read.
+- **`agent-author` now picks a safety posture and a trigger for every agent it creates.** It gained a
+  step listing the six postures with guidance to choose the strictest that still does the job, a step
+  recommending how the new agent should be triggered (with the silent-when-nothing-to-say rule for
+  scheduled sweeps), and a sharper narrowness test: if the job needs the word "and", it's two agents.
+
+## [0.386.0] - 2026-08-24
+
+### Fixed
+- **Runtime-account quota snapshots now refresh on their own.** `refreshStaleUsage` was reachable
+  only from `GET /api/runtime-accounts`, so the usage reading was refreshed *only when a human
+  opened Settings → Runtime accounts*. On an unattended box the snapshot froze — `last_checked_at`
+  days old — while `pick()` kept dispatching live work to an account that had already hit its
+  weekly wall. The teardown limit-detector was no backstop: the tmux pane is too volatile, and it
+  fires on roughly 3 of 31 real quota deaths. So the pool learned an account was spent by burning
+  a real customer ticket on it. `Automations.tick` now sweeps too, using a longer
+  `BACKGROUND_USAGE_STALE_MS` (30 min) than the read path's 10 min. Self-throttling: only
+  snapshots past the window are probed, in-flight probes are de-duped and the batch is capped, so
+  the ~20s tick costs nothing until a reading actually ages out.
+  Measured on the instawp tenant before the fix: **~20% of inbound support tickets silently
+  dropped over three days** (including a cancellation and a billing request), every drop on an
+  account whose displayed quota was stale. Pinned by `scripts/runtime-usage-refresh-test.cjs` §6.
+
+## [0.385.0] - 2026-08-24
+
+### Changed
+- **Agents are now steered to publish deliverables to the Library, not to a claude.ai Artifact.** The
+  operating notes told agents to `publish` real deliverables but were silent on the built-in claude.ai
+  Artifact tool, so an agent deciding "the human should see this" could reach for an Artifact — which
+  lives on external cloud hosting outside the tenant, with no inbox card, no `library_list` listing, and
+  no audit trail, so the operator never sees it in the console. Added an explicit steer next to the
+  existing publish rule (`AGENT_OS_OPERATING_NOTES`), matching the "native-first / don't use the external
+  alternative" pattern the same prompt already applies to messaging (native over Composio Slack) and code
+  review (never a cloud-billed review). Prompt-only change — takes effect on the next session launch.
+
+## [0.384.0] - 2026-08-24
+
+### Added
+- **The setup wizard now covers GitHub and the memory layer** — the two things every install ended up
+  configuring later, after the first PR came out authored by a bot nobody recognised and after agents had
+  spent a month re-learning the same facts. Two new steps (`#/setup`, `GET /api/setup`), both optional and
+  skippable, sitting between the chat channel and the team:
+  - **Connect GitHub** — drives the one-click App-manifest flow (now shared with Settings → Integrations
+    via `web/src/lib/github-app.ts`, so one callback URL and one permission set), surfaces the
+    install-on-your-repos link (a GitHub App can only touch repos it is installed on — the step people
+    miss, and it looks exactly like a broken token), and shows the two halves separately: the OAuth pair
+    that lets each member link their own account so a run-as session authors as the human, and the
+    App id + private key that mint the company-bot token every other session pushes with. Either half
+    counts as configured; the step's detail names the one still missing.
+  - **Set up the memory layer** — the default recall is keyword-only, so an agent misses its own past work
+    whenever it words it differently. The step offers the two real upgrades: an OpenAI key for hybrid
+    (keyword + vector) recall on the built-in store with no new service to run, or AutoMem — the
+    recommended option — with a Test button before the save, since a wrong endpoint fails closed and every
+    recall comes back empty. It carries the backend-independent settings (ranking, maintenance, preload,
+    shared-write policy) through the save, because `PUT /api/settings/memory` REPLACES the config.
+
+  Both stay read-side only like every other step: status is re-derived from the store that owns the
+  setting (`GithubIdentity`, `settings.memoryConfig()`), so an App or backend configured anywhere else
+  ticks itself, and neither step ever echoes a secret. Pinned by `scripts/setup-wizard-test.cjs`.
+
+## [0.383.0] - 2026-08-24
+
+### Changed
+- **A denied action now tells the agent WHY and WHICH capability fired, instead of an opaque "this action
+  is blocked".** The classifier already computed a human reason (`describeMatch` for a JSON rule,
+  `hostGovernanceDecision`/`fileGovernanceDecision` for the engine-level guards — e.g. `ssh.exec: host
+  could not be identified`, `any action: destructive`) and rode it on the audit trail and approval cards,
+  but `TerminalManager.gate()` dropped it on the floor before the wire (`GateResult` had no field for it).
+  It now carries `reason` + the classified `capability` back through `/api/gate` to the PreToolUse hook,
+  which surfaces them: `Agentric policy: denied [ssh.exec] — ssh.exec: host could not be identified. …use
+  policy_check to see the governing rule, then policy_propose or ask a human to change it — do not attempt
+  to route around the gate.` An agent that can see which rule blocked it can comply or take the sanctioned
+  path; a guess at an opaque deny is indistinguishable from probing for a way around the gate. Diagnosability,
+  not permissiveness — no decision changed, and a bare `{decision:'deny'}` from an older server still renders
+  cleanly (the hook can outlive a server upgrade). Covers the kill-switch, email-identity, and policy denies.
+
+- **`list_capabilities` now reports the REAL governed surface, not the demo plugin registry.** It was
+  sourcing `/api/agent/policy` from `os.registry.list()` — which only ever holds the five zero-dependency
+  demo capabilities (`echo.run`, `slack.post`, `stripe.refund`, `prod.restart`, `paid.action`), none of
+  which a live agent can act on — so on every real tenant the tool returned pure noise. The endpoint now
+  builds its capability list from `governedCapabilities()` (new, in `src/capabilities/normalize.ts`): the
+  structural capabilities the gate hook classifies tool calls into (`shell.exec`, `file.write`,
+  `connector.connect`/`call`, `email.send`, `net.connect`, `ssh.exec`) plus the canonical provider-independent
+  ones the normalizer resolves connector calls to (`payments.refund`, `repo.pr.create`, …). Each still carries
+  its dry-run policy verdict; the tool output notes that host-egress and file-write guards apply additional
+  arg/host-dependent tightening at gate time, and points to `policy_check` for an exact preview.
+
+## [0.382.0] - 2026-08-22
+
+### Added
+- **The Agentric status line now installs into any claude session on any machine, with one command.**
+  `curl -fsSL .../scripts/install-statusline.sh | bash` copies `terminal/statusline.js` into the claude
+  config dir (`$CLAUDE_CONFIG_DIR`, default `~/.claude`) and points `settings.json` → `statusLine` at
+  it. It is the SAME renderer the governed fleet TUIs run — one source of truth, no forked copy to
+  drift. Every settings edit goes through `node`, never `sed`, because that file also holds the user's
+  hooks, permissions and MCP servers; the file is backed up, unrelated keys are preserved, and any
+  status line already configured is snapshotted so `--uninstall` puts it back verbatim (a re-run
+  deliberately does not re-snapshot — recording our own line as "previous" would turn a reversible
+  install into a one-way door).
+
+### Changed
+- **`terminal/statusline.js` grew a standalone lane.** A session Agentric launched exports
+  `AOS_URL`/`SESSION`/`AOS_SECRET`; a plain `claude` on a laptop exports none. When they are absent the
+  renderer skips the loopback governance fetch entirely and heads the bar with the git branch (one
+  `git status -b --porcelain --untracked-files=no`, hard-capped at 300ms) instead of an agent id it
+  does not have. Governed rendering is untouched — every governed-only field sits behind the flag.
+  Pinned by `scripts/statusline-install-test.cjs`, now in `npm run test:governance`.
+
+## [0.381.0] - 2026-08-22
+
+### Added
+- **Agents are now steered away from backgrounding work whose cleanup can't survive the tool call.** The
+  companion to v0.380.1: that release reaps the orphaned spinners after the fact, this one nudges the
+  agent before they exist. `ReliabilityMonitor` gains a second detector on the existing `instruct` channel
+  (allow + `additionalContext`, the one path verified to reach the model mid-turn). It fires only when a
+  shell command backgrounds a job (a bare `&` — not `&&`, `2>&1` or `&>`) **and** has no `trap` **and**
+  either cleans up on the happy path only (`kill %1`, `kill $!`, `jobs -p | xargs kill`) or spawns a
+  sleep-less `while` spin. A plain `npm run dev &` therefore stays quiet: it promised nothing that a dead
+  tool call could break. The note names the concrete fix (`trap 'kill 0' EXIT;`) and explicitly invites the
+  agent to ignore it when the processes are meant to outlive the command — the non-coercive framing §8a
+  showed the model heeds rather than flags as prompt-injection. Once per session per command shape, because
+  a nagging steer is one the model learns to ignore. Audited `reliability.detached_work`, same
+  `AOS_RELIABILITY=0` kill switch as the loop detector.
+
+  Detection lives in `src/edge/reliability.ts`, **not** in `terminal/gate-hook.sh`: the hook is dumb
+  transport (governance PR #2) and every riskiness judgement is made server-side, where it can be tested
+  and can't drift per runtime. Pinned by `scripts/detached-work-steer-test.cjs`.
+
+## [0.380.1] - 2026-08-21
+
+### Fixed
+- **The process janitor now reaps agent shells orphaned by a dead tool call.** On 2026-08-20 an agent ran a
+  Go race test under deliberate CPU contention — `(for i in $(seq 1 24); do (while :; do :; done) & done;
+  go test …; jobs -p | xargs kill)` — and the tool call died before the trailing `kill`. The 24 spinner
+  subshells were reparented to init and spun at ~30% CPU each for a day and a half: **load 29 on 12 cores**,
+  882 CPU-minutes apiece, every governed effect on the box queued behind them. Neither existing sweep could
+  see them — they hold no tmux socket (so the ttyd/tmux janitor skipped them) and they are in no
+  `term_sessions` row (so the session reaper never knew them). The janitor now also treats `PPID == 1` on a
+  process still carrying a claude-code Bash-tool argv (`… -c … /shell-snapshots/snapshot-…`) as proof of
+  unreachability: that argv only survives on a shell that forked without exec'ing, so its spawning `claude`
+  is gone and its output can never reach a session. A daemonised server (`nohup npm run dev &`) exec's and
+  therefore never matches. Same guards as the socket kinds — own uid, older than 10 minutes, seen on two
+  consecutive sweeps — and a survivor now escalates SIGTERM → SIGKILL instead of being re-TERMed forever.
+  Counts land on the existing `orphan.reaped` audit event as `shell`. Pinned by
+  `scripts/process-janitor-test.cjs`.
+
+## [0.380.0] - 2026-08-20
+
+### Added
+- **A proposed agent edit is now visible from the Agents roster.** When an agent proposes a change to
+  another agent (`agent_propose_update`), the review queue renders on the TARGET agent's settings page —
+  the one page nobody opens unless they already know something is waiting there. Each agent in the roster
+  (both the gallery cards and the split-view list) now carries a violet "N proposed" badge, and the task
+  composer's header gets a matching button that jumps straight to the queue. Owner-only endpoint, so the
+  badge simply never renders for anyone who couldn't approve it.
+
+### Changed
+- **Open review cards moved from Inbox → Activity to Inbox → "Needs you".** `skill.proposed`,
+  `skill.request`, `agent.update.proposed`, `goal.update.proposed`, `automation.proposed`,
+  `policy.proposal`, `secret.request`, `host.proposed`, `connection.request` and `app.proposed` are all
+  pending decisions that change nothing until a human acts, yet every one of them rendered as a muted,
+  read-only Activity row that scrolled away. They now render as action cards — each deep-linking to the
+  page that resolves it — and count toward the Inbox badge. An `agent.update.proposed` can be approved or
+  rejected in the card itself (owner only, the same gate `/api/agents/proposals/:id/approve` enforces),
+  with a "See the full diff" link through to the target's settings for the before → after.
+  Pinned by `scripts/proposal-surfacing-test.cjs` — the inline approve button only works because a review
+  card's MESSAGE id *is* its proposal id, which nothing had ever asserted.
+
+## [0.379.0] - 2026-08-20
+
+### Changed
+- **Markdown → PDF now looks like a document, not a terminal dump.** The first version set tables in
+  Courier and truncated cells to make them fit, which is what a data-heavy report is mostly made of —
+  so the whole export read as low effort. Tables are now a real grid: proportional text, per-cell word
+  wrap, natural column widths water-filled into the text column (narrow label columns keep their width,
+  and spare space goes to the widest column instead of leaving the grid short), a tinted header row and
+  hairline separators, with links inside cells still clickable. Nothing is truncated any more.
+  Also: wider margins and leading, a stronger heading scale with rules under H1/H2, a heading kept with
+  the two lines that follow it, an accent bar and hairline in the title block, a footer carrying the
+  document title beside the page number, near-black ink instead of pure black, and the artifact title no
+  longer printed twice when the document's own H1 says the same thing. Decorative emoji are dropped
+  rather than rendered as `?` (a stray `?` in a heading reads as a broken renderer), circled digits
+  ①②③ become 1/2/3, and `≈ ≤ ≥ ≠ ×` get ASCII equivalents.
+
+## [0.378.2] - 2026-08-20
+
+### Fixed
+- Guided runtime sign-in never completed **on macOS**: the pane showed `Logged in as …`, then the console
+  waited out its grace and reported "the runtime did not complete the sign-in". Claude writes
+  `<configDir>/.credentials.json` on Linux but stores the login in the **macOS Keychain** instead — one
+  generic-password item per config dir, `Claude Code-credentials-<sha256(configDir)[0..8]>` — so the
+  completion check was watching for a file the platform never writes. `credentialDirHasLogin` now
+  recognises either shape, which also means a Keychain-backed account is accepted by the launcher rather
+  than silently falling back to the box login. Abandoning a login now forgets its Keychain item too: the
+  item is keyed by PATH and outlives the deleted dir, so a later login into the same path would otherwise
+  inherit the earlier account — a pool row labelled one account while authenticating as another.
+  Refresh on such an account now explains that only claude can read the item (it launches fine, its usage
+  just can't be probed) instead of reporting a missing file. The CLI's post-login
+  `Press Enter to continue…` screen is dismissed rather than left parked.
+
+## [0.378.1] - 2026-08-20
+
+### Fixed
+- Markdown → PDF: a table too wide for the page squeezed every column by the same factor, so a 6-char
+  label column ("Field", "Name") was clipped to `Na…` while a 90-char prose cell kept most of its text —
+  losing exactly the part that makes a row readable. Column widths are now water-filled: raise a cap
+  until the row fits, keep every column narrower than the cap whole, and clip only the ones above it.
+
+## [0.378.0] - 2026-08-20
+
+### Added
+- **Download as PDF** for Markdown deliverables — a button in the Library detail pane and in the
+  full-screen viewer, backed by `GET /api/artifacts/:id/pdf` (same visibility gate as `/raw`, audited
+  `artifact.pdf.exported`). The PDF is rendered **on demand and never stored**, so editing the Markdown
+  can't leave a stale PDF beside it, and the `.md` stays the source of truth.
+  `src/edge/md-pdf.ts` is a dependency-free renderer: it uses only the 14 standard PDF fonts, so nothing
+  is embedded and no headless browser is needed on a box that already runs agents. It covers headings,
+  paragraphs, lists (with hanging indents), fenced code on a tint, block quotes, rules, tables as
+  monospaced rows, and inline bold/italic/code/links — links as real PDF annotations, so they stay
+  clickable. Text is laid out with the fonts' actual AFM metrics rather than an estimate, curly quotes /
+  en–em dashes / bullets keep their real WinAnsi glyphs, accented Latin survives, and anything a standard
+  font can't draw degrades to an ASCII stand-in instead of corrupting the stream. Markdown only for now —
+  the button promises exactly what the renderer delivers. Pinned by `scripts/md-pdf-test.cjs` (48
+  assertions incl. xref offsets that really point at their objects, and no run extending past the margin).
+
+## [0.377.1] - 2026-08-20
+
+### Fixed
+- Guided runtime sign-in (Settings → Runtime accounts, and the setup wizard) kept rejecting valid codes.
+  Two causes, both ours. `injectText` presses Enter **twice** — right for an agent composer that can
+  swallow the first, wrong for a one-shot CLI prompt: the second press landed on claude's
+  `Press Enter to retry` screen, which silently re-runs the whole login with a **new PKCE challenge**,
+  so the link the human already had open no longer matched what the CLI was waiting for and every
+  subsequent code failed with `OAuth error: Request failed with status code 400`. The code is now
+  submitted with exactly one Enter (`injectText` takes an `enterPresses` count). And a rejected code is
+  treated as **recoverable** rather than fatal: the flow presses the retry prompt deliberately, waits for
+  the CLI's fresh authorize URL, and republishes it with a notice saying the earlier link is dead —
+  instead of telling the operator to "start again" while the pane re-armed behind their back. Bounded at
+  three rejections, then it hands over the manual `CLAUDE_CONFIG_DIR=… claude` path. Audited
+  `runtime.account.login.code.rejected`. Both sign-in surfaces now also say the code is the whole
+  string including its `#…` tail, and that each link is single-use.
+
+## [0.377.0] - 2026-08-20
+
+### Changed
+- `scripts/make-live.sh` deploys **every configured tenant on the box**, not just one. Targets come from
+  `AOS_LIVE_TARGETS="<tenant>:<checkout>:<port>[:<label>] …"` in the untracked env file (the older
+  single-tenant `AOS_LIVE_TENANT`/`CHECKOUT`/`LABEL`/`PORT`/`LOG` form still works when it's unset), and
+  `--only <tenant>` deploys one. Tenants sharing a checkout are synced and built once, then each service
+  restarted — which is why the phases are now build-everything-then-restart-everything: a broken commit
+  leaves EVERY server untouched instead of only the first one. Restarts run one tenant at a time and stop
+  at the first failed health check, naming the tenants that already moved plus the rollback command.
+  Fixes the standing footgun where a second tenant on the same box silently kept running old code because
+  the deploy script only ever kicked one launchd label.
+
+## [0.376.0] - 2026-08-20
+
+### Added
+- **Setup wizard** — a post-install checklist at `#/setup` (owner/admin), opened once automatically on
+  a new install and reachable afterwards from Settings → Setup checklist, plus a dismissible one-line
+  banner while work is outstanding. Six steps in the order they matter: sign in to a coding runtime
+  (drives the same guided login as Settings → Runtime accounts), write the company context (with a
+  starter outline, because an empty textarea reliably produces nothing), add a Composio API key,
+  connect Slack/Discord/Telegram, invite teammates with a role explainer, and install a first agent
+  from the catalog. `GET /api/setup` + `POST /api/setup/skip|dismiss` (`src/edge/setup.ts`).
+  Every step is **derived** from the store that owns its setting and fixed through that setting's
+  existing endpoint — so a step completed by CLI or another admin ticks itself, and the checklist can
+  never disagree with the Settings page behind it. Skipping is recorded as a decision (the step keeps
+  reporting its true status while it stops blocking), and dismissing hides the banner without faking
+  completion. Runtime-credential detection covers the pool, the box's `.credentials.json`, the **macOS
+  Keychain** (a signed-in Mac has no credentials file, so a file-only check would tell every Mac
+  operator to sign in again) and `ANTHROPIC_API_KEY` (reported as `unknown`, since the interactive TUI
+  may still want a subscription login). Pinned by `scripts/setup-wizard-test.cjs` (38 assertions, wired
+  into `npm run test:governance`).
+
+### Documentation
+- Deployment: document the ttyd `-b /terminal` base-path gotcha — a trailing slash on the
+  `/terminal/` `proxy_pass` strips the prefix, ttyd 404s the WebSocket upgrade, and the browser
+  terminal renders as a black pane with `GET /terminal/ws → 502` while sessions run normally
+  (reads as "sessions won't spawn"). Added to the CLAUDE.md nginx gotcha list and the tenant
+  box-migration checklist, with the probe that distinguishes it from the backslash-403 and the
+  unconditional-`Connection: upgrade` 502, plus the cookie-jar false-401 diagnostic trap.
+- Deployment: note that Ubuntu's `ttyd` apt package auto-enables `ttyd.service`, a **root** login
+  shell on `:7681` separate from the app-spawned ttyd — disable it on any apt-installed box.
+
+## [0.375.0]
+### Changed
+- **A completion no longer resurrects a cold caller — the poke-back's resume lane is priced by what the
+  wake is FOR.** The wake queue's three lanes are not equally expensive: injecting into a live pane is
+  free and in-context, while `--resume`ing an exited caller costs a session in which the agent re-derives
+  the whole situation from a blank context and re-decides what to tell the human. Measured on a live
+  tenant over 14 days: 140 wake-ups, 71 injected and 69 resumed (~$11.60 marginal each, 6.2 turns, ~15%
+  of that tenant's spend) — and **45 of the 69 resumes were plain "your delegate finished"**, while 21 of
+  the 69 filed a NEW task, which dispatches a run, which wakes a caller. One wrong first analysis rode
+  that loop into eight Discord messages in 68 minutes, three of them the same agent correcting its own
+  earlier correction. So a wake-up now carries a `kind`: `poke-done` injects into a live caller exactly as
+  before but is **dropped** at a cold one (audited `agent.poke.skipped`, `reason: 'done-cold-caller'`) —
+  nobody is stuck, the result is durable on the task and the owner already has the `task.notified` card;
+  `poke-blocked` (handed back) and `poke-stranded` (the delegate's run died) keep the full ladder, since
+  there the caller is the only one who can move the work. A mixed batch resumes and carries the
+  completions along free. `task_create`'s `poke_on_done` description now states this rather than promising
+  a wake-up it may not deliver. `docs/tasks-plan.md` §3.8; pinned by `scripts/wakeup-queue-test.cjs`.
+
+### Fixed
+- **Stopping a run from the console no longer spawns another agent 10 minutes later.** The stranded-task
+  sweep treated "the delegate's run ended without closing its task" as always meaning nobody is coming —
+  including when a human had just hit stop, which is the case where somebody very much is. On the live
+  fleet a founder killed a delegate at 09:28 and the sweep woke its caller at 09:38, which re-opened the
+  stopped work as a PR. `sweepStrandedTasks` now reads the `session.stopped` principal (`system` = the
+  reaper, an agent id = a self-stop, a member's email = a person) and a human halt is recorded but never
+  woken; a self-stop still wakes the caller, since the agent may have left work behind. New pin:
+  `scripts/stranded-human-stop-test.cjs`.
+
 ## [0.374.0]
 ### Added
 - **`/v2` session viewer — our own, not the terminal or a chat box.** Clicking a recent session opens a

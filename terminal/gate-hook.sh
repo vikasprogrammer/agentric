@@ -127,9 +127,19 @@ while :; do
   gid=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.gateId||"")})')
   # An `instruct`: the gate allowed the effect but attached an advisory note (e.g. a detected loop).
   note=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");process.stdout.write(o.note||"")})')
+  # On a deny the gate now returns WHY (the classifier's reason) and WHICH capability was classified, so
+  # the agent can comply or take the sanctioned path (policy_propose / ask a human) instead of guessing —
+  # a guess at an opaque deny is indistinguishable from probing for a way around the gate.
+  reason=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");process.stdout.write(o.reason||"")})')
+  dcap=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");process.stdout.write(o.capability||"")})')
   case "$dec" in
     allow) if [ -n "$note" ]; then emit_allow_note "Agentric: allowed by policy." "$note"; else emit allow "Agentric: allowed by policy."; fi ;;
-    deny)  emit deny "Agentric policy: denied — this action is blocked (irreversible or not permitted)." ;;
+    deny)
+      denymsg="Agentric policy: denied"
+      [ -n "$dcap" ] && denymsg="$denymsg [$dcap]"
+      [ -n "$reason" ] && denymsg="$denymsg — $reason"
+      denymsg="$denymsg. This is a hard block, not a pending approval; no human can approve it as-is. If you believe it should be permitted, use policy_check to see the governing rule, then policy_propose or ask a human to change it — do not attempt to route around the gate."
+      emit deny "$denymsg" ;;
     pending) break ;;
     *) echo "Agentric: gate unreachable — blocking this action until it responds…" >&2; sleep 2 ;;
   esac

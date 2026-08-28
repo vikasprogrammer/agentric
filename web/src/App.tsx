@@ -14,24 +14,26 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbosityAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
+import { createGithubApp } from '@/lib/github-app'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
+import { SetupPage, SetupBanner } from '@/setup'
 import { docPages } from '@/docs'
 import { Xterm } from './Xterm'
 
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'overview' | 'feed' | 'inbox' | 'cockpit' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'apps' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
+type Route = 'setup' | 'overview' | 'feed' | 'inbox' | 'cockpit' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'apps' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['overview', 'feed', 'inbox', 'cockpit', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'apps', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
+const ROUTES: Route[] = ['setup', 'overview', 'feed', 'inbox', 'cockpit', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'apps', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
 // The single source of truth for a page's human name — used for the header <h1> AND the browser-tab
 // title, so both always agree. The `agent` detail page appends the agent id at the call site.
 const ROUTE_TITLES: Record<Route, string> = {
-  overview: 'Overview', feed: 'Feed', inbox: 'Inbox', cockpit: 'Cockpit', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
+  setup: 'Set up', overview: 'Overview', feed: 'Feed', inbox: 'Inbox', cockpit: 'Cockpit', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
   'new-agent': 'New agent', agent: 'Agent', connectors: 'Connections', team: 'Team',
   automations: 'Automations', goals: 'Goals', tasks: 'Tasks', memory: 'Memory', insights: 'Insights',
   kb: 'Knowledge Base', skills: 'Skills', apps: 'Apps', files: 'Files', artifacts: 'Library', audit: 'Audit log',
@@ -297,8 +299,10 @@ function SessionInsights({ s, chain = 0, className = '' }: { s: Session; chain?:
 /** A stopped/ended/crashed interactive session that can be resurrected in place: re-opening its
  *  terminal runs `claude --resume` (via terminal/attach.sh), picking the conversation back up. Shown
  *  as a Resume affordance. Requires a persisted launch env (`resumable`) and no live pane — a live
- *  session is just "open", not "resume". */
-const canResume = (s: Session): boolean => Boolean(s.resumable) && !isLive(s)
+ *  session is just "open", not "resume". Attended runs only: an unattended run also carries an env now,
+ *  but its human entry point is Take over (which resurrects it AND claims it), not a bare Resume that
+ *  would hand it straight back to the turn-end reaper. */
+const canResume = (s: Session): boolean => Boolean(s.resumable) && !s.headless && !isLive(s)
 
 /** Resume a stopped session from the console: lift the server-side stop-block, THEN open/focus its
  *  terminal. A plain stop leaves the block in place so ttyd's silent auto-reconnect can't revive the
@@ -312,11 +316,19 @@ const resumeAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void
  *  interactive TUI a human watches and steers. Two flavours, one affordance:
  *   • LIVE  → claim the still-streaming pane and attach (nothing interrupted).
  *   • ENDED headless run → resurrect it in place (`claude --resume` the same transcript) and attach.
- *  Offered whenever the run is unattended (`!resumable` — an interactive run already has its own
- *  live/Resume path), not already claimed, and either still live OR has a conversation to resume
- *  (`forkable` ⇒ a pinned claude session id exists). */
+ *  LIVE  → only an unclaimed unattended run: claim the streaming pane (an attended run is just "open").
+ *  DEAD  → any run with a conversation (`forkable` ⇒ a pinned claude session id) that CANNOT bring itself
+ *          back: an unattended one (a bare Resume would hand it to the turn-end reaper) or one with no
+ *          persisted launch env for attach.sh to replay. `claimedBy` is deliberately NOT consulted here —
+ *          a claim doesn't revive a dead pane, and a run claimed while live and stopped afterwards (no
+ *          env, because claiming relaunches nothing) would otherwise be offered NOTHING: no Resume, no
+ *          Take over, and opening it just plain-attaches to a pane that is gone ("can't find session:
+ *          aos-…", tmux's own error, seen live on instawp 2026-08-27). `takeoverRun` handles exactly this
+ *          case server-side — it resurrects the transcript and writes the env. */
 const canGoInteractive = (s: Session): boolean =>
-  !s.resumable && !s.claimedBy && (isLive(s) || Boolean(s.forkable))
+  isLive(s)
+    ? Boolean(s.headless) && !s.claimedBy
+    : Boolean(s.forkable) && (Boolean(s.headless) || !s.resumable)
 
 /** Tooltip for the take-over affordance — states which flavour applies for THIS run. */
 const takeOverTip = (s: Session): string =>
@@ -610,6 +622,8 @@ const LAST_AGENT_KEY = 'aos_last_agent'
 const taskDraftKey = (agentId: string) => `aos_task_draft:${agentId}`
 // Which agent-chooser layout the user prefers: a card gallery ('grid') or a list-rail + detail
 // ('split'). Persisted so it sticks across visits; defaults to the compact list-rail split view.
+/** The bundled agent that writes other agents — the target of every Docs `create-agent` brief. */
+const AGENT_AUTHOR = 'agent-author'
 const AGENTS_VIEW_KEY = 'aos_agents_view'
 type AgentsView = 'grid' | 'split'
 
@@ -629,11 +643,19 @@ function groupByCategory(agents: AgentInfo[]): [string, AgentInfo[]][] {
   })
 }
 
+/** True for a real CLI-backed runtime (anything but the in-process `mock` demo adapter) — the client
+ *  mirror of `isCodingRuntime` in src/types.ts. Gate on THIS, not on `=== 'claude-code'`: that
+ *  shorthand meant "a real agent" back when Claude Code was the only one, and every place it survived
+ *  silently drops support for the other runtimes. */
+function isCodingRuntime(runtime?: AgentInfo['runtime']) { return !!runtime && runtime !== 'mock' }
+
 function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
-  const claude = runtime === 'claude-code'
+  // Name the runtime the agent actually runs on. This used to print 'claude' or 'mock', so every
+  // codex agent was badged 'mock' — a real agent labelled as the demo adapter.
+  const label = runtime === 'claude-code' ? 'claude' : (runtime || 'mock')
   return (
-    <Badge variant={claude ? 'default' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
-      {claude ? 'claude' : 'mock'}
+    <Badge variant={runtime === 'claude-code' ? 'default' : isCodingRuntime(runtime) ? 'outline' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
+      {label}
     </Badge>
   )
 }
@@ -746,7 +768,7 @@ function IconPicker({ value, onChange }: { value?: string; onChange: (v: string 
 /** What the agent-config route tells the console about a runtime: its label, the model ids worth
  *  suggesting, and which knobs it honours. Mirrors CODING_RUNTIMES server-side so the picker never
  *  hardcodes the registry. */
-type RuntimeInfo = { id: string; label: string; suggestedModels: string[]; capabilities: Record<string, boolean> }
+type RuntimeInfo = { id: string; label: string; suggestedModels: string[]; capabilities: Record<string, boolean>; bin?: string; install?: string; installed?: boolean; version?: string }
 
 function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritLabel = 'inherit', permInheritLabel, runtime }: {
   tuning: RuntimeTuning
@@ -1808,6 +1830,8 @@ function Console({ me }: { me: Member }) {
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
+          {route !== 'setup' && !fullBleed && <SetupBanner me={me} />}
+          {route === 'setup' && <SetupPage me={me} step={detail} onStep={(id) => nav('setup', id)} onDone={refreshState} />}
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} sessions={sessions} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
@@ -1830,7 +1854,7 @@ function Console({ me }: { me: Member }) {
           {route === 'files' && <FilesPage initialDir={detail} />}
           {route === 'artifacts' && <ArtifactsPage me={me} permalink={detail} nav={nav} />}
           {route === 'audit' && <AuditPage />}
-          {route === 'docs' && <DocsPage selected={detail} onSelect={(slug) => nav('docs', slug)} />}
+          {route === 'docs' && <DocsPage selected={detail} onSelect={(slug) => nav('docs', slug)} canCreateAgent={(state?.agents ?? []).some((a) => a.id === AGENT_AUTHOR)} onRun={(task) => runAgent(AGENT_AUTHOR, task)} />}
           {route === 'settings' && <SettingsPage me={me} state={state} tab={detail} onTab={(t) => nav('settings', t)} onStateChange={refreshState} />}
           {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} onSaved={refreshState} />}
         </div>
@@ -2315,6 +2339,17 @@ function ShareAgentDialog({ me, agent, open, onOpenChange }: { me: Member; agent
   )
 }
 
+/** "N agents want to change this one" — the roster flag for open `agent_propose_update` cards targeting an
+ *  agent. Renders nothing at zero, so a clean fleet stays visually quiet. */
+function ProposedEditsBadge({ n, className = '' }: { n: number; className?: string }) {
+  if (!n) return null
+  return (
+    <Badge variant="outline" className={`shrink-0 gap-1 border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700 ${className}`} title={`${n} proposed edit${n === 1 ? '' : 's'} awaiting review`}>
+      <Pencil className="h-2.5 w-2.5 shrink-0" /> {n}
+    </Badge>
+  )
+}
+
 function AgentsPage({
   me, agents, sessions, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport, onRefresh, nav,
 }: {
@@ -2379,6 +2414,23 @@ function AgentsPage({
     }).catch(() => {})
     return () => { ok = false }
   }, [])
+
+  // Open cross-agent edit proposals, counted per TARGET agent. The review queue itself lives on the target's
+  // settings page, which meant a pending proposal was invisible from the roster you actually work in — this
+  // is the "someone wants to change this agent" flag, and it links straight to the queue. Owner-only
+  // endpoint (a 403 leaves the map empty, so the badge simply never renders for anyone else). Refetched
+  // when the selected agent changes, which is also what happens on the way back from approving one.
+  const [proposalCounts, setProposalCounts] = useState<Record<string, number>>({})
+  useEffect(() => {
+    let ok = true
+    api.agentUpdateProposals().then((r) => {
+      if (!ok) return
+      const counts: Record<string, number> = {}
+      for (const pr of r.proposals ?? []) counts[pr.target] = (counts[pr.target] ?? 0) + 1
+      setProposalCounts(counts)
+    }).catch(() => {})
+    return () => { ok = false }
+  }, [selected])
 
   // The chosen agent is driven by the URL (`#/agents/<id>`) so a refresh keeps it. When the URL names
   // no agent (a bare `#/agents`), fall back to the last one you used (remembered across visits) then
@@ -2467,6 +2519,16 @@ function AgentsPage({
         <RuntimeBadge runtime={agent.runtime} />
         {agent.builtIn && <BuiltInBadge />}
         <div className="ml-auto flex items-center gap-1">
+          {(proposalCounts[agent.id] ?? 0) > 0 && (
+            <Button
+              render={<a href={navHref('agent', agent.id)} />}
+              size="sm" variant="outline" className="h-8 shrink-0 gap-1 border-violet-300 px-2 text-xs text-violet-700"
+              onClick={onNavClick(() => onEdit(agent.id))}
+              title="another agent proposed an edit to this one — review it"
+            >
+              <Pencil className="h-3.5 w-3.5" /> {proposalCounts[agent.id]} proposed {proposalCounts[agent.id] === 1 ? 'edit' : 'edits'}
+            </Button>
+          )}
           {(autoCounts[agent.id] ?? 0) > 0 && (
             <Button
               render={<a href={navHref('automations', agent.id)} />}
@@ -2589,6 +2651,7 @@ function AgentsPage({
                         <RuntimeBadge runtime={a.runtime} />
                         {a.builtIn && <BuiltInBadge />}
                         <MaturityBadge s={maturity[a.id]} />
+                        <ProposedEditsBadge n={proposalCounts[a.id] ?? 0} />
                       </span>
                       {a.description && <span className="line-clamp-2 text-[11px] text-muted-foreground">{a.description}</span>}
                     </a>
@@ -2617,6 +2680,7 @@ function AgentsPage({
                       <span className="truncate">{a.id}</span>
                       <span className="ml-auto flex shrink-0 items-center gap-1">
                         {liveRunOf(a.id) && <SessionStatus s={liveRunOf(a.id)!} iconClass="h-3.5 w-3.5" />}
+                        <ProposedEditsBadge n={proposalCounts[a.id] ?? 0} />
                         <MaturityBadge s={maturity[a.id]} />
                         {a.builtIn && <BuiltInBadge />}
                       </span>
@@ -2903,10 +2967,12 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
     return n >= TERM_FONT_MIN && n <= TERM_FONT_MAX ? n : 14
   })
   useEffect(() => { localStorage.setItem('aos_terminal_font', String(fontSize)) }, [fontSize])
-  // A finished/crashed unattended run has no live pane — never resumable and no longer live — so attaching
-  // would show a dead terminal. Show its captured transcript instead. Interactive ended sessions stay
-  // resumable and keep the normal attach/resume path untouched.
-  const ended = Boolean(session) && !isLive(session!) && !session!.resumable && !overrideAttach
+  // Show the captured transcript instead of attaching whenever there is no live pane AND nothing would
+  // bring one back: an unattended run (reaped at turn-end — attaching would resurrect what the reaper just
+  // closed) or a run with no persisted launch env for attach.sh to replay (attaching lands on tmux's raw
+  // "can't find session: aos-…"). An attended run WITH an env keeps the normal attach/resume path — that
+  // attach is exactly what resurrects it.
+  const ended = Boolean(session) && !isLive(session!) && (Boolean(session!.headless) || !session!.resumable) && !overrideAttach
   // A LIVE unattended run can be taken over — attach to its streaming pane (see canGoInteractive). Hidden
   // once claimed (overrideAttach flips it off immediately; the prop's claimedBy follows on the next poll).
   const showTakeover = Boolean(session) && !overrideAttach && canGoInteractive(session!)
@@ -2946,8 +3012,10 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
     return () => { alive = false }
   }, [session?.id, tmux, ended, nonce])
   // A finished/crashed run is read-only — show its conversation timeline (falling back to the raw pane
-  // log, then to the reported outcome) rather than attaching to a dead terminal.
-  if (ended && session) return <EndedSession session={session} />
+  // log, then to the reported outcome) rather than attaching to a dead terminal. It is not a dead END,
+  // though: if the run can be resurrected (`canGoInteractive`) the transcript header offers it, and taking
+  // it over flips `overrideAttach` so this same frame re-attaches to the freshly resumed pane.
+  if (ended && session) return <EndedSession session={session} onTakeOver={showTakeover ? takeOver : undefined} takingOver={takingOver} />
   if (err) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-red-400">⚠ {err}</div>
   if (!wsUrl) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
   return (
@@ -2980,7 +3048,24 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
  * run that only tee'd a pane log, with no structured transcript). When neither exists, we show what the
  * run REPORTED via {@link RunReport}, so the pane always answers "what came of it".
  */
-function EndedSession({ session }: { session: Session }) {
+/** "Resume & take over" on a read-only run — the ONE affordance that turns a finished/stopped session
+ *  back into a live TUI. Server-side `takeoverRun` relaunches `claude --resume` on the same transcript,
+ *  claims it for the human, and persists the launch env; the frame then re-attaches to the new pane.
+ *  Rendered only when `canGoInteractive` says this run can actually come back (see its note). */
+function ResumeRunButton({ onTakeOver, takingOver }: { onTakeOver: () => void; takingOver?: boolean }) {
+  return (
+    <button
+      onClick={onTakeOver}
+      disabled={takingOver}
+      className="flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-sky-500 hover:bg-muted hover:text-sky-400 disabled:opacity-50"
+      title="resume this conversation (claude --resume) and take it over — you land in a live terminal you can type into"
+    >
+      <Play className="h-3 w-3" /> {takingOver ? 'resuming…' : 'Resume & take over'}
+    </button>
+  )
+}
+
+function EndedSession({ session, onTakeOver, takingOver }: { session: Session; onTakeOver?: () => void; takingOver?: boolean }) {
   type Phase = 'loading' | 'timeline' | 'raw-only' | 'report'
   const [phase, setPhase] = useState<Phase>('loading')
   const [turns, setTurns] = useState<ChatTurn[]>([])
@@ -3022,7 +3107,7 @@ function EndedSession({ session }: { session: Session }) {
 
   if (phase === 'loading')
     return <div className="flex min-h-0 flex-1 items-center justify-center bg-background text-sm text-muted-foreground"><RefreshCw className="mr-2 h-4 w-4 animate-spin" /> loading transcript…</div>
-  if (phase === 'report') return <RunReport session={session} note={note} />
+  if (phase === 'report') return <RunReport session={session} note={note} onTakeOver={onTakeOver} takingOver={takingOver} />
 
   const canToggle = phase === 'timeline' // a raw-only run has nothing friendlier to switch back to
   const showingRaw = raw || phase === 'raw-only'
@@ -3030,6 +3115,8 @@ function EndedSession({ session }: { session: Session }) {
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
         <span>Session ended · read-only{showingRaw && phase === 'timeline' ? ' · raw terminal' : ''}</span>
+        <span className="flex items-center gap-2">
+        {onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />}
         {canToggle && (
           <button
             onClick={() => (showingRaw ? setRaw(false) : void showRaw())}
@@ -3039,6 +3126,7 @@ function EndedSession({ session }: { session: Session }) {
             <Terminal className="h-3 w-3" /> {showingRaw ? 'Timeline' : 'Raw'}
           </button>
         )}
+        </span>
       </div>
       {showingRaw ? (
         rawLoading
@@ -3063,7 +3151,7 @@ function EndedSession({ session }: { session: Session }) {
  * one-line summary live on the session row, so "what came of it" survives even when "what happened"
  * doesn't. Strictly better than the bare error this replaced, which told the reader nothing at all.
  */
-function RunReport({ session: s, note }: { session: Session; note: string }) {
+function RunReport({ session: s, note, onTakeOver, takingOver }: { session: Session; note: string; onTakeOver?: () => void; takingOver?: boolean }) {
   const v = OUTCOME_TONE[verdictOf(s.outcome) ?? 'none']
   const facts = [
     s.agent,
@@ -3076,6 +3164,7 @@ function RunReport({ session: s, note }: { session: Session; note: string }) {
     <div className="flex min-h-0 flex-1 flex-col bg-black">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-800 px-3 py-1.5 text-xs text-neutral-500">
         <span>Session ended · report</span>
+        {onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />}
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
         <div className="mx-auto max-w-2xl space-y-3">
@@ -4577,11 +4666,43 @@ function SessionsPage({
 }
 
 // ── Inbox ──────────────────────────────────────────────────────────────────────
-/** An item needs the human: an unresolved approval, an unanswered question, or a session that fired a
- *  Notification (Claude is blocked waiting on a permission prompt / idle input). */
+/** The "an agent filed something for a human to decide" family — a proposal or request that stays OPEN
+ *  until someone approves or rejects it, and changes nothing until they do. Each entry names the page
+ *  whose review UI resolves it; mirrors REVIEW_PRESENTATION in `src/tenant-registry.ts`, which builds the
+ *  same link for the out-of-band DM. Keyed loosely (`Record<string, …>`) because a card type can reach the
+ *  console before the `Msg` union names it. */
+const REVIEW_KINDS: Record<string, { page: Route; detail?: string; label: string }> = {
+  'skill.proposed': { page: 'skills', label: 'Skills' },
+  'skill.request': { page: 'skills', label: 'Skills' },
+  'host.proposed': { page: 'connectors', label: 'Connections' },
+  'connection.request': { page: 'connectors', label: 'Connections' },
+  'policy.proposal': { page: 'settings', detail: 'policy', label: 'Settings → Policy' },
+  'secret.request': { page: 'settings', detail: 'secrets', label: 'Settings → Secrets' },
+  'automation.proposed': { page: 'automations', label: 'Automations' },
+  'agent.update.proposed': { page: 'agents', label: 'Agents' },
+  'goal.update.proposed': { page: 'goals', label: 'Goals' },
+  'app.proposed': { page: 'apps', label: 'Apps' },
+}
+
+/** Where an open review card is acted on. An `agent.update.proposed` names its TARGET, so it deep-links to
+ *  that agent's settings page — where the review queue actually renders — rather than the Agents index. */
+function reviewTarget(m: Msg): { page: Route; detail?: string; label: string } | null {
+  const r = REVIEW_KINDS[m.type]
+  if (!r) return null
+  const tgt = (m.args as { target?: string } | undefined)?.target
+  if (m.type === 'agent.update.proposed' && tgt) return { page: 'agent', detail: tgt, label: `${tgt}’s settings` }
+  return r
+}
+
+/** An item needs the human: an unresolved approval, an unanswered question, a session that fired a
+ *  Notification (Claude is blocked waiting on a permission prompt / idle input) — or an open review card.
+ *  That last clause is why these are here at all: a proposal is a PENDING DECISION, but every one of them
+ *  used to render as a muted Activity row, so an agent's request to edit another agent (or install a skill,
+ *  or tighten a policy) scrolled away unnoticed and could only be found by opening the target's own page. */
 const isActionRequired = (m: Msg): boolean =>
   ((m.type === 'approval' || m.type === 'question') && m.status === 'pending') ||
-  (m.type === 'notification' && m.status === 'open')
+  (m.type === 'notification' && m.status === 'open') ||
+  (m.status === 'open' && !!REVIEW_KINDS[m.type])
 
 /** An agent flagged a progress update as a key milestone / heads-up (carried in `args.important`). */
 const isImportant = (m: Msg): boolean =>
@@ -6089,13 +6210,68 @@ function ApprovalBrief({ m }: { m: Msg }) {
   )
 }
 
-/** An action-required item (approval · question · waiting-notification) — a compact, coloured card with
- *  its controls inline. Pending only; once resolved the item drops into the read-only Activity feed. */
+/** The glyph for each open review card in "Needs you" — one per {@link REVIEW_KINDS} entry. */
+const REVIEW_ICON: Record<string, LucideIcon> = {
+  'skill.proposed': Sparkles, 'skill.request': Sparkles,
+  'host.proposed': Server, 'connection.request': Plug,
+  'policy.proposal': Shield, 'secret.request': KeyRound,
+  'automation.proposed': Zap, 'agent.update.proposed': Pencil,
+  'goal.update.proposed': Target, 'app.proposed': Package,
+}
+
+/** An action-required item (approval · question · waiting-notification · open review card) — a compact,
+ *  coloured card with its controls inline. Pending only; once resolved the item drops into the read-only
+ *  Activity feed. */
 function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: (tmux: string, title: string) => void; onDismiss: (id: string) => void }) {
   const [busy, setBusy] = useState(false)
   const [answer, setAnswer] = useState('')
+  const [hint, setHint] = useState('')
   const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
   const time = <span className="shrink-0 pt-0.5 text-[11px] tabular-nums text-muted-foreground">{timeAgo(m.createdAt)}</span>
+
+  // ── An agent filed a proposal / request for a human to decide. Every kind gets a card that deep-links
+  //    to the page that resolves it; an agent-edit proposal — the one whose review UI is buried inside the
+  //    TARGET agent's settings — is decidable right here, so an owner never has to go looking for it.
+  //    Resolving flips the card's status server-side, so the next poll drops it out of "Needs you". ──
+  const review = reviewTarget(m)
+  if (review) {
+    const Icon = REVIEW_ICON[m.type] ?? Pencil
+    const isAgentEdit = m.type === 'agent.update.proposed'
+    // Approving an agent edit is owner-only (rewriting another agent's prompt is an owner act), and the
+    // server re-checks — the buttons are hidden for everyone else rather than failing on click.
+    const canDecide = isAgentEdit && me.role === 'owner'
+    const decide = async (approve: boolean) => {
+      if (approve && !window.confirm(`Apply this edit to ${review.detail}?\n\nIt rewrites the agent's listing/CLAUDE.md and records a revertable revision. The change applies on the agent's next session.`)) return
+      setBusy(true); setHint('')
+      const r = approve ? await api.approveAgentUpdateProposal(m.id) : await api.rejectAgentUpdateProposal(m.id)
+      setBusy(false)
+      if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
+      setHint(approve ? 'applied' : 'rejected')
+    }
+    return (
+      <div className="rounded-lg border border-violet-300 bg-violet-50/40 px-3 py-2.5">
+        <div className="flex items-start gap-2.5">
+          <Icon className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
+          <div className="min-w-0 flex-1">
+            <MsgHeading m={m}>
+              <Badge variant="outline" className="shrink-0 border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">awaiting review</Badge>
+            </MsgHeading>
+            <div className="mt-1 whitespace-pre-line break-words text-xs text-muted-foreground"><InlineLinks text={m.body} /></div>
+          </div>
+          {time}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-6">
+          {canDecide && <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => decide(true)}>Approve &amp; apply</Button>}
+          {canDecide && <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => decide(false)}>Reject</Button>}
+          <Button render={<a href={navHref(review.page, review.detail)} />} size="sm" variant={canDecide ? 'ghost' : 'default'} className="h-7 px-2.5 text-xs">
+            {canDecide ? 'See the full diff' : `Review in ${review.label}`}
+          </Button>
+          {isAgentEdit && !canDecide && <span className="text-[11px] text-muted-foreground">an owner has to approve this one</span>}
+          {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
+        </div>
+      </div>
+    )
+  }
 
   // ── Notification — either "Claude is waiting on you" (session-backed) or a proactive insight alert
   //    (session-less; deep-links to the page that acts on it, never to a phantom session terminal). ──
@@ -7013,6 +7189,9 @@ function FullArtifactView({ id }: { id: string }) {
         <div className="ml-auto flex shrink-0 items-center gap-2">
           <a href={raw} target="_blank" rel="noreferrer"><Button size="sm" variant="ghost"><ExternalLink className="mr-1 h-4 w-4" />Raw</Button></a>
           <a href={raw} download={a.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
+          {isMarkdownArt(a) && (
+            <a href={api.artifactPdfUrl(a.id)}><Button size="sm" variant="secondary" title="Render this Markdown as a PDF"><FileText className="mr-1 h-4 w-4" />Download as PDF</Button></a>
+          )}
         </div>
       </header>
       <main className="px-4 py-6">
@@ -7585,6 +7764,11 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                         (image/pdf/video/html) open their raw URL, which the browser renders full-screen itself. */}
                     <a href={(isMarkdownArt(selected) || (isTextMime(selected.mime) && !isHtmlArt(selected))) ? `#/view/${selected.id}` : api.artifactRawUrl(selected.id)} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="secondary"><ExternalLink className="mr-1 h-4 w-4" />Open</Button></a>
                     <a href={api.artifactRawUrl(selected.id)} download={selected.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
+                    {/* Markdown only: the server renders it, so the promise on the button is one the
+                        renderer can keep. Other types already download as themselves. */}
+                    {isMarkdownArt(selected) && (
+                      <a href={api.artifactPdfUrl(selected.id)}><Button size="sm" variant="secondary" title="Render this Markdown as a PDF"><FileText className="mr-1 h-4 w-4" />PDF</Button></a>
+                    )}
                     {(me.role === 'owner' || me.role === 'admin' || selected.source === me.id) && (
                       <>
                         {(isMarkdownArt(selected) || (isTextMime(selected.mime) && !isHtmlArt(selected))) && editing !== selected.id && (
@@ -7965,19 +8149,9 @@ function GithubSetupGuide() {
   const [err, setErr] = useState('')
   const create = async () => {
     setBusy(true); setErr('')
-    const r = await api.githubManifest(org.trim() || undefined)
-    if (r.error || !r.postUrl || !r.manifest) { setBusy(false); return setErr(r.error || 'Could not prepare the manifest.') }
-    // Hand GitHub the manifest via a real form POST (it's too large for a query string); this navigates
-    // to GitHub's "Create this GitHub App?" confirmation, after which it redirects back with the creds.
-    const form = document.createElement('form')
-    form.method = 'POST'
-    form.action = r.postUrl
-    form.style.display = 'none'
-    const input = document.createElement('input')
-    input.type = 'hidden'; input.name = 'manifest'; input.value = r.manifest
-    form.appendChild(input)
-    document.body.appendChild(form)
-    form.submit()
+    // Shared with the setup wizard — see lib/github-app.ts. On success the browser navigates to GitHub.
+    const e = await createGithubApp(org)
+    if (e) { setBusy(false); setErr(e) }
   }
   return (
     <div className="rounded-md border">
@@ -9756,6 +9930,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   /** taskId → its PR rollup, for the board/list cards. Server-computed in the list payload (no per-card
    *  fetch); absent for a task that mentions no PR. */
   const [prCounts, setPrCounts] = useState<Record<string, TaskPrSummary>>({})
+  /** taskId → which agents have actually RUN it, for the cards. Server-computed in the list payload and
+   *  present only for MULTI-agent tasks (a support agent files it, an engineer takes it — the assignee
+   *  badge names one of them and the card used to imply that was the whole story). */
+  const [workers, setWorkers] = useState<Record<string, TaskWorkers>>({})
   const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
   // Live sessions, cross-referenced against a task's lastSessionId to know which cards are running right now.
   const [sessions, setSessions] = useState<Session[]>([])
@@ -9895,6 +10073,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     setTasks(r.tasks ?? [])
     setDiscussions(r.discussions ?? {})
     setPrCounts(r.prCounts ?? {})
+    setWorkers(r.workers ?? {})
     if (r.counts) setCounts(r.counts)
     // Only the sessions a visible task points at (its `lastSessionId`) are needed here — to light up a
     // "doing" card as live via `liveOf`. Fetch exactly those instead of the whole ~950-row list on a 5 s
@@ -10059,6 +10238,18 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
           {t.assignee
             ? <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[10px]">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</Badge>
             : <span className="font-mono text-[10px] text-muted-foreground/60">unassigned</span>}
+          {/* The assignee is who the task was HANDED to; this is who has actually run it. Present only
+              when they differ in number — a task worked by two agents used to render exactly like one
+              worked by its assignee alone, so a hand-off was invisible from the board. */}
+          {workers[t.id] && (
+            <span
+              className="inline-flex items-center gap-1"
+              title={`worked by ${workers[t.id].agents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')}`}
+            >
+              <AgentStack agents={workers[t.id].agents} />
+              <span className="text-[10px] text-muted-foreground">{workers[t.id].agents.length} ran</span>
+            </span>
+          )}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
           {/* What a blocked task waits on, as its delegate declared it. The column header says "Needs you",
               which is only true for `human` — this says which of the three it actually is, and `human` is
@@ -10337,6 +10528,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     // task that crashed twice can be read attempt by attempt without leaving the room.
     const picked = runSel ? detail.runs.find((r) => r.id === runSel) : undefined
     const sessId = picked?.id || live?.id || t.lastSessionId || ''
+    // Who has actually worked this task. More than one agent = a HAND-OFF, and until now the only place
+    // that said so was the run history in the 320px sidebar — which collapses (`roomSide`, sticky), so a
+    // second agent on the task could be invisible from every tab. It's named in the header, counted on
+    // the tab, and switchable above the terminal below.
+    const runAgents = agentsOfRuns(detail.runs)
+    const handoff = runAgents.length > 1
     // Hand TerminalFrame the session ROW even for a finished run — that's what lets it show the captured
     // transcript instead of attaching to a tmux session that no longer exists. A headless task run (the
     // common case here) leaves no resumable pane, so without the row every ended task run rendered
@@ -10367,6 +10564,18 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
             ><Pencil className="h-3.5 w-3.5" /></button>
             <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{t.id}</span>
           </div>
+          {handoff && (
+            <button
+              onClick={() => openTaskTab(t.id, 'session')}
+              title={`worked by ${runAgents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')} — open the sessions`}
+              className="hidden shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground sm:flex"
+            >
+              {/* An avatar stack here would sit right next to the Discussion's own stack and read as one
+                  eight-tile row — the glyph says "sessions", the tooltip names the agents. */}
+              <TerminalSquare className="h-3.5 w-3.5" />{runAgents.length} agents
+              {runAgents.some((a) => a.alive) && <span className={`h-1.5 w-1.5 rounded-full ${STATE_META.working.dot}`} />}
+            </button>
+          )}
           {parts.length > 0 && <span className="hidden items-center gap-1.5 text-[11px] text-muted-foreground sm:flex"><DiscussionAvatars participants={parts} members={members} />{parts.filter((p) => p !== 'system').length} in discussion</span>}
           {/* Collapse the details sidebar (lg+ only — below that the grid stacks and the sidebar is just
               the next block down, so there's nothing to reclaim and no toggle to offer). */}
@@ -10386,7 +10595,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
             <div className="flex shrink-0 items-center gap-0.5 border-b px-2">
               {roomTab_btn('discussion', <><MessageSquare className="h-3.5 w-3.5" />Discussion{detail.unread > 0 && <span className="ml-0.5 rounded-full bg-sky-500 px-1.5 text-[10px] font-semibold text-white">{detail.unread}</span>}</>)}
               {roomTab_btn('description', <><FileText className="h-3.5 w-3.5" />Description</>)}
-              {sessTmux && roomTab_btn('session', <><TerminalSquare className="h-3.5 w-3.5" />Session{live && <span className={`ml-0.5 h-1.5 w-1.5 rounded-full ${STATE_META.working.dot}`} />}</>)}
+              {/* Plural + count the moment the task has more than one run: the tab used to say "Session",
+                  which stated the one-to-one relation the data has never had. */}
+              {sessTmux && roomTab_btn('session', <><TerminalSquare className="h-3.5 w-3.5" />{detail.runs.length > 1 ? <>Sessions<span className="text-muted-foreground"> · {detail.runs.length}</span></> : 'Session'}{detail.runs.some((r) => r.alive) && <span className={`ml-0.5 h-1.5 w-1.5 rounded-full ${STATE_META.working.dot}`} />}</>)}
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
               {activeTab === 'discussion' && (
@@ -10441,6 +10652,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
               )}
               {activeTab === 'session' && sessTmux && (
                 <div className="flex h-full min-h-0 flex-col">
+                  {detail.runs.length > 1 && (
+                    <RunChips runs={detail.runs} selected={sessId} handoff={handoff} onPick={(id) => setRunSel(id)} />
+                  )}
                   {sessPending
                     ? <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening session…</div>
                     : <TerminalFrame key={sessTmux} session={sessRow} tmux={sessTmux} standalone />}
@@ -10449,7 +10663,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
             </div>
           </div>
           <div className={`overflow-y-auto bg-muted/20 p-4 ${roomSide ? '' : 'lg:hidden'}`}>
-            {detailBody({ withDiscussion: false, editInline: false, selectedRun: runSel || undefined, onRun: (id) => { setRunSel(id); openTaskTab(t.id, 'session') } })}
+            {/* `sessId`, not `runSel` — the room is already SHOWING a run before you pick one (the live
+                one, else the last), and the history highlighted nothing until you clicked. */}
+            {detailBody({ withDiscussion: false, editInline: false, selectedRun: sessId || undefined, onRun: (id) => { setRunSel(id); openTaskTab(t.id, 'session') } })}
           </div>
         </div>
       </div>
@@ -10728,7 +10944,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
                           {live && <span className={`inline-flex shrink-0 items-center gap-1 font-mono text-[10px] ${statusTone(live)}`}><SessionStatus s={live} iconClass="h-3 w-3" />{statusLabel(live)} · {fmtElapsed(now - live.createdAt)}</span>}
                           {t.labels.map((l) => <Badge key={l} variant="outline" className="hidden shrink-0 px-1 py-0 text-[10px] md:inline-flex">{l}</Badge>)}
                         </div>
-                        <div className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</div>
+                        <div className="hidden w-32 shrink-0 items-center gap-1.5 truncate text-xs text-muted-foreground sm:flex">
+                          <span className="min-w-0 truncate">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</span>
+                          {workers[t.id] && (
+                            <span title={`worked by ${workers[t.id].agents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')}`}><AgentStack agents={workers[t.id].agents} /></span>
+                          )}
+                        </div>
                         <div className="hidden w-16 shrink-0 text-xs sm:block">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</div>
                         <PriorityPips p={t.priority} />
                         <div className="w-20 shrink-0 text-right">
@@ -11022,6 +11243,47 @@ function DiscussionAvatars({ participants, members }: { participants: string[]; 
   )
 }
 
+/**
+ * The agents that have RUN a task, oldest-first, folded from its run history.
+ *
+ * A task's runs are one-to-many in two different shapes and the console used to render only the first:
+ * the SAME agent retrying (attempt #1, #2 — a retry), and DIFFERENT agents working it in turn (support
+ * files it, engineering takes it — a hand-off). Which one it is decides how the history should read, so
+ * every surface that shows runs asks this rather than counting rows.
+ */
+function agentsOfRuns(runs: TaskRun[]): { id: string; runs: number; alive: boolean }[] {
+  const by = new Map<string, { id: string; runs: number; alive: boolean }>()
+  for (const r of runs) {
+    const e = by.get(r.agent) ?? { id: r.agent, runs: 0, alive: false }
+    e.runs++
+    if (r.alive) e.alive = true
+    by.set(r.agent, e)
+  }
+  return [...by.values()]
+}
+
+/** An overlapping avatar stack of AGENTS (by id), with a live pip on any that is running right now.
+ *  The agent-side counterpart of {@link DiscussionAvatars}: who worked this, not who talked about it. */
+function AgentStack({ agents, className = '' }: { agents: { id: string; alive?: boolean }[]; className?: string }) {
+  if (!agents.length) return null
+  const shown = agents.slice(0, 4)
+  return (
+    <span className={`flex shrink-0 -space-x-1.5 ${className}`}>
+      {shown.map((a) => (
+        <span
+          key={a.id}
+          title={a.alive ? `${a.id} — running now` : a.id}
+          className={`relative flex h-4 w-4 items-center justify-center rounded-[4px] bg-sky-500/20 text-[8px] font-semibold text-sky-600 ring-2 ring-background`}
+        >
+          {a.id.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase()}
+          {a.alive && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-500 ring-1 ring-background motion-safe:animate-pulse" />}
+        </span>
+      ))}
+      {agents.length > shown.length && <span className="flex h-4 items-center rounded-[4px] bg-muted px-1 text-[8px] font-semibold text-muted-foreground ring-2 ring-background">+{agents.length - shown.length}</span>}
+    </span>
+  )
+}
+
 /** Render a Discussion body as markdown (agents author markdown), with @mentions highlighted — agent
  *  mentions get the sky accent — and `[[wiki]]`/entity refs linked like every other markdown surface. */
 function DiscussionBody({ text, agents }: { text: string; agents: AgentInfo[] }) {
@@ -11278,55 +11540,123 @@ function runVerdict(r: TaskRun): { label: string; cls: string; role: StatusRole 
 }
 
 /**
+ * The run SWITCHER, pinned above the task room's terminal — one chip per session that worked the task.
+ *
+ * The room's Session tab shows one run at a time and the only way to pick another was the run history in
+ * the 320px sidebar, which collapses (and stays collapsed — the toggle is sticky). So on a task two
+ * agents worked, the second agent's session was reachable from nowhere on screen. The chips live in the
+ * wide column, next to the thing they switch.
+ *
+ * `handoff` (more than one agent ran it) changes the label: agents are named, because WHO is the story.
+ * With a single agent it's a retry history, so the chips number the attempts instead.
+ */
+function RunChips({ runs, selected, handoff, onPick }: {
+  runs: TaskRun[]; selected?: string; handoff?: boolean; onPick: (id: string) => void
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b bg-muted/20 px-2 py-1.5">
+      {runs.map((r, i) => {
+        const v = runVerdict(r)
+        const on = selected === r.id
+        return (
+          <button
+            key={r.id}
+            onClick={() => onPick(r.id)}
+            title={r.summary || `${r.agent} · ${r.id}`}
+            className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ${on ? 'border-primary bg-primary/10 text-foreground' : 'border-transparent bg-muted/40 text-muted-foreground hover:bg-muted'}`}
+          >
+            <RoleIcon role={v.role} label={v.label} className="h-3 w-3" />
+            <span className="max-w-[10rem] truncate font-medium">{handoff ? r.agent : `attempt ${i + 1}`}</span>
+            {handoff && runs.filter((x) => x.agent === r.agent).length > 1 && (
+              <span className="font-mono text-[10px] opacity-60">#{runs.filter((x, j) => x.agent === r.agent && j <= i).length}</span>
+            )}
+            <span className={`font-mono text-[10px] uppercase tracking-wide ${v.cls}`}>{v.label}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
  * Run history of a task — every session that worked it, oldest-first, not just the newest.
  *
  * A task is the unit of work and a session is one ATTEMPT at it, so "crashed, re-dispatched, then
  * succeeded" is the normal shape. The console only ever linked `lastSessionId`, which made that story
  * read as a single clean run; each attempt is now openable, with its own verdict, duration and cost.
  * Long histories collapse to the last three so a much-retried task doesn't push the rest of the drawer
- * off screen.
+ * off screen. When the runs span MORE THAN ONE AGENT the list groups by agent instead of numbering the
+ * runs flat: `#1 #2` reads as "it failed and retried", which is the wrong story for a hand-off (support
+ * files a fix, engineering takes it) — there the agent is the unit, and attempts number inside it.
  */
 function TaskRuns({ runs, selected, onOpen }: { runs: TaskRun[]; selected?: string; onOpen: (id: string) => void }) {
   const [all, setAll] = useState(false)
   const hidden = all ? 0 : Math.max(0, runs.length - 3)
   const shown = hidden ? runs.slice(hidden) : runs
+  const byAgent = agentsOfRuns(runs)
+  // Two agents on one task is a HAND-OFF, not a retry — so the flat `#1 #2 #3` numbering (which reads
+  // "it failed twice") gives way to one block per agent, with attempts numbered inside it.
+  const handoff = byAgent.length > 1
+  // Attempt number WITHIN that run's agent, so a grouped list still says which try of that agent's it is.
+  const nth = (r: TaskRun) => runs.filter((x, i) => x.agent === r.agent && i <= runs.indexOf(r)).length
+  const row = (r: TaskRun, label: string) => {
+    const v = runVerdict(r)
+    const ms = (r.endedAt ?? Date.now()) - r.createdAt
+    return (
+      <button
+        key={r.id}
+        onClick={() => onOpen(r.id)}
+        title={r.summary || `${r.agent} · ${r.id}`}
+        className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-muted/50 ${selected === r.id ? 'border-primary bg-primary/5' : r.current ? 'bg-muted/20' : 'border-dashed'}`}
+      >
+        <span className="w-5 shrink-0 font-mono text-[10px] text-muted-foreground/70">{label}</span>
+        <RoleIcon role={v.role} label={v.label} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5">
+            {/* In a grouped list the agent name is the block header — repeating it on every row would
+                spend the width that the verdict + summary need. */}
+            {!handoff && <span className="truncate text-xs font-medium">{r.agent}</span>}
+            <span className={`font-mono text-[10px] uppercase tracking-wide ${v.cls}`}>{v.label}</span>
+            {r.link === 'linked' && <span className="font-mono text-[10px] text-muted-foreground/70" title="a session that touched this task from elsewhere (claim / discussion), not one dispatched for it">linked</span>}
+            {r.archived && <span className="font-mono text-[10px] text-muted-foreground/70" title="archived out of the Sessions list — still part of this task's history">archived</span>}
+          </span>
+          {r.summary && <span className="block truncate text-[10px] text-muted-foreground">{r.summary}</span>}
+        </span>
+        <span className="shrink-0 text-right font-mono text-[10px] leading-tight text-muted-foreground">
+          <span className="block tabular-nums">{fmtElapsed(ms)}</span>
+          <span className="block">{r.costUsd != null ? fmtCost(r.costUsd) : timeAgo(r.createdAt)}</span>
+        </span>
+      </button>
+    )
+  }
   return (
     <div>
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Runs · {runs.length}</div>
+        <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          Runs · {runs.length}{handoff && <span className="normal-case tracking-normal"> · {byAgent.length} agents</span>}
+        </div>
         {hidden > 0 && <button onClick={() => setAll(true)} className="text-[11px] text-muted-foreground hover:text-foreground">show {hidden} earlier</button>}
       </div>
-      <div className="space-y-1">
-        {shown.map((r, i) => {
-          const n = hidden + i + 1
-          const v = runVerdict(r)
-          const ms = (r.endedAt ?? Date.now()) - r.createdAt
-          return (
-            <button
-              key={r.id}
-              onClick={() => onOpen(r.id)}
-              title={r.summary || `${r.agent} · ${r.id}`}
-              className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-muted/50 ${selected === r.id ? 'border-primary bg-primary/5' : r.current ? 'bg-muted/20' : 'border-dashed'}`}
-            >
-              <span className="w-5 shrink-0 font-mono text-[10px] text-muted-foreground/70">#{n}</span>
-              <RoleIcon role={v.role} label={v.label} />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className="truncate text-xs font-medium">{r.agent}</span>
-                  <span className={`font-mono text-[10px] uppercase tracking-wide ${v.cls}`}>{v.label}</span>
-                  {r.link === 'linked' && <span className="font-mono text-[10px] text-muted-foreground/70" title="a session that touched this task from elsewhere (claim / discussion), not one dispatched for it">linked</span>}
-                  {r.archived && <span className="font-mono text-[10px] text-muted-foreground/70" title="archived out of the Sessions list — still part of this task's history">archived</span>}
-                </span>
-                {r.summary && <span className="block truncate text-[10px] text-muted-foreground">{r.summary}</span>}
-              </span>
-              <span className="shrink-0 text-right font-mono text-[10px] leading-tight text-muted-foreground">
-                <span className="block tabular-nums">{fmtElapsed(ms)}</span>
-                <span className="block">{r.costUsd != null ? fmtCost(r.costUsd) : timeAgo(r.createdAt)}</span>
-              </span>
-            </button>
-          )
-        })}
-      </div>
+      {handoff ? (
+        <div className="space-y-2">
+          {byAgent
+            .filter((a) => shown.some((r) => r.agent === a.id))
+            .map((a) => (
+              <div key={a.id}>
+                <div className="mb-1 flex items-center gap-1.5 text-[11px]">
+                  <AgentStack agents={[a]} />
+                  <span className="truncate font-medium text-foreground">{a.id}</span>
+                  <span className="font-mono text-[10px] text-muted-foreground/70">{a.runs} run{a.runs === 1 ? '' : 's'}</span>
+                </div>
+                <div className="space-y-1 border-l border-dashed pl-2">
+                  {shown.filter((r) => r.agent === a.id).map((r) => row(r, `#${nth(r)}`))}
+                </div>
+              </div>
+            ))}
+        </div>
+      ) : (
+        <div className="space-y-1">{shown.map((r, i) => row(r, `#${hidden + i + 1}`))}</div>
+      )}
     </div>
   )
 }
@@ -11933,8 +12263,8 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                     </Field>
                   </>
                 ) : type === 'slack' ? (
-                  <Field label="Trigger filter" help="Scope to an event type (app_mention / message) or a channel id (e.g. C0123…). Blank = any Slack message the app receives. Needs Slack tokens in Connections → Creds.">
-                    <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="app_mention  ·  or a channel id  (blank = any)" />
+                  <Field label="Trigger filter" help="Scope to an event type (app_mention / message) or a channel id (e.g. C0123…). Blank = any Slack message the app receives. Naming a CHANNEL ID also makes it a watch: messages there fire this automation without anyone @mentioning the bot — for reports that get pasted or forwarded into a channel rather than addressed to you. (Only a channel-scoped filter behaves that way; blank / * keeps the mention-and-DM behaviour.) Add `when <path> == <value>` (fire only if ALL hold) and/or `unless …` (drop if ALL hold) to test the message itself — ops are == != ~ (contains) !~, joined by `and`. `text` is the message with any bot mention stripped; `actor` is the sender's resolved name. Do this rather than telling the agent to ignore the wrong messages: a prompt instruction runs after the session it was meant to prevent. Messages from other bots/apps are ignored on every Slack path — for those, use a webhook automation. Needs Slack tokens in Connections → Creds.">
+                    <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder={'C0ABUSE1 when text ~ "abuse report"   ·   app_mention   ·   (blank = any)'} />
                   </Field>
                 ) : type === 'discord' ? (
                   <Field label="Trigger filter" help="Scope to an event type (mention / direct_message) or a channel id. Blank = any Discord message the bot receives. Needs a bot token in Connections → Creds.">
@@ -12206,13 +12536,91 @@ function KindChip({ on, onClick, children }: { on: boolean; onClick: () => void;
   )
 }
 
+/** A ```create-agent fence in the manual: a ready brief for `agent-author`, editable before it runs.
+ *  The point is that reading a use case and HAVING that agent are one click apart — but the brief is a
+ *  starting point, not a spell, so it opens into a textarea rather than firing on click.
+ *
+ *  Deliberately scoped to the Docs page, NOT added to the shared `mdComponents`: Docs markdown ships
+ *  with the software, while KB/task/goal markdown is written by whoever is in the tenant. A runnable
+ *  button rendered from tenant-authored prose is not an authority bypass — the spawn is still gated by
+ *  `canRun` and every effect still crosses the gateway — but it invites a member to run something they
+ *  did not read, and there is no reason to widen the surface for it. */
+function CreateAgentBlock({ prompt, canRun, onRun }: { prompt: string; canRun: boolean; onRun: (task: string) => Promise<string | null> }) {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState(prompt)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [copied, setCopied] = useState<'idle' | 'ok' | 'fail'>('idle')
+
+  if (!open) {
+    return (
+      <div className="my-3">
+        <Button size="sm" variant="outline" className="h-7" onClick={() => setOpen(true)}>
+          <Wand2 className="mr-1 h-3.5 w-3.5" />Create this agent
+        </Button>
+      </div>
+    )
+  }
+  const run = async () => {
+    if (busy) return
+    setBusy(true); setErr('')
+    const e = await onRun(text).catch((x) => String(x?.message ?? x))
+    setBusy(false)
+    if (e) setErr(e)
+  }
+  return (
+    <div className="my-3 rounded-md border bg-muted/30 p-3">
+      <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+        <Wand2 className="h-3.5 w-3.5" />
+        <span>Brief for <span className="font-mono">agent-author</span> — edit it, then run.</span>
+      </div>
+      <textarea
+        className="min-h-[13rem] w-full resize-y rounded-md border bg-background p-2 font-mono text-[11px] leading-relaxed"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        spellCheck={false}
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button size="sm" className="h-7" disabled={busy || !canRun || !text.trim()} onClick={run}>
+          <Play className="mr-1 h-3.5 w-3.5" />{busy ? 'Starting…' : 'Run now'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7"
+          onClick={async () => { const ok = await copyText(text); setCopied(ok ? 'ok' : 'fail'); setTimeout(() => setCopied('idle'), 2000) }}
+        >
+          <Copy className="mr-1 h-3.5 w-3.5" />{copied === 'ok' ? 'Copied' : copied === 'fail' ? 'Select + ⌘C' : 'Copy'}
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7" onClick={() => { setOpen(false); setText(prompt); setErr('') }}>Cancel</Button>
+        {!canRun && <span className="text-[11px] text-muted-foreground">You can copy this, but running <span className="font-mono">agent-author</span> needs it assigned to you.</span>}
+        {err && <span className="text-[11px] text-destructive">{err}</span>}
+      </div>
+    </div>
+  )
+}
+
 /** Product manual bundled into the build (web/src/docs) — read-only, identical for every tenant,
  *  unlike the KB, which is the tenant's own living wiki. Adding a page = drop a .md in web/src/docs
  *  and register it in web/src/docs/index.ts. */
-function DocsPage({ selected, onSelect }: { selected: string; onSelect: (slug: string) => void }) {
+function DocsPage({ selected, onSelect, canCreateAgent, onRun }: { selected: string; onSelect: (slug: string) => void; canCreateAgent: boolean; onRun: (task: string) => Promise<string | null> }) {
   // The selected page is a URL detail (`#/docs/<slug>`) so a refresh / shared link lands on the
   // same page instead of always resetting to the first one.
   const sel = docPages.find((p) => p.slug === selected) ?? docPages[0]
+  // A ```create-agent fence renders as a runnable brief instead of a code block. Intercepted at `pre`
+  // (not `code`) so the result is not nested inside a <pre>; anything else falls through unchanged.
+  const components = useMemo(() => ({
+    ...mdComponents,
+    pre: (props: any) => {
+      const child: any = Array.isArray(props.children) ? props.children[0] : props.children
+      if (String(child?.props?.className ?? '').includes('language-create-agent')) {
+        const kids = child.props.children
+        const raw = (Array.isArray(kids) ? kids.join('') : String(kids ?? '')).replace(/\n$/, '')
+        return <CreateAgentBlock prompt={raw} canRun={canCreateAgent} onRun={onRun} />
+      }
+      return mdComponents.pre(props)
+    },
+  }), [canCreateAgent, onRun])
   return (
     <div className="flex gap-4">
       <div className="w-64 shrink-0 space-y-3">
@@ -12227,7 +12635,7 @@ function DocsPage({ selected, onSelect }: { selected: string; onSelect: (slug: s
         </div>
       </div>
       <div className="min-w-0 max-w-3xl flex-1">
-        <Card><CardContent className="p-6 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{sel.body}</ReactMarkdown></CardContent></Card>
+        <Card><CardContent className="p-6 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={components}>{sel.body}</ReactMarkdown></CardContent></Card>
       </div>
     </div>
   )
@@ -12730,6 +13138,12 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
   const [prompts, setPrompts] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  // The runtime the agent is BORN on. This used to be hardcoded server-side, so the only way to get a
+  // Codex/opencode agent was to create a Claude one and switch it afterwards.
+  const [runtime, setRuntime] = useState('claude-code')
+  const [runtimes, setRuntimes] = useState<RuntimePresence[]>([])
+  const [installing, setInstalling] = useState('')
+  useEffect(() => { api.runtimes().then((r) => { if (!r.error) setRuntimes(r.runtimes ?? []) }).catch(() => {}) }, [])
 
   if (me.role !== 'owner' && me.role !== 'admin') {
     return <div className="text-sm text-muted-foreground">Creating agents requires owner or admin.</div>
@@ -12742,7 +13156,7 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
   const create = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
-    const r = await api.createAgent({ id: slug, description: description.trim(), category: category.trim(), icon, claudeMd, examplePrompts, ...tuning })
+    const r = await api.createAgent({ id: slug, description: description.trim(), category: category.trim(), icon, claudeMd, examplePrompts, runtime, ...tuning })
     setBusy(false)
     if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed to create agent'))
     onCreated(r.id || slug)
@@ -12787,7 +13201,60 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
             <p className="text-[11px] text-muted-foreground">Optional. The first becomes the spawn box’s prefill; the rest are one-click chips. Up to 6.</p>
           </div>
           <div className="space-y-1">
-            <TuningFields tuning={tuning} onChange={setTuning} modelPlaceholder="opus" />
+            {runtimes.length > 1 && (
+              <div className="space-y-1">
+                <label className="text-xs font-medium">Runtime</label>
+                <select
+                  value={runtime}
+                  onChange={(e) => {
+                    const next = e.target.value
+                    setRuntime(next)
+                    // The form pre-fills the Claude `opus` alias, which every other runtime rejects —
+                    // so clear a model that belongs to the runtime being left rather than letting the
+                    // server 400 on submit. Blank = inherit the workspace default.
+                    const m = tuning.model
+                    if (m) {
+                      const foreign = next === 'opencode' ? !m.includes('/')
+                        : next === 'codex' ? /^(claude|opus|sonnet|haiku|fable)\b/i.test(m)
+                        : /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i.test(m)
+                      if (foreign) setTuning((t) => ({ ...t, model: undefined }))
+                    }
+                    if (next !== 'claude-code') setTuning((t) => ({ ...t, permissionMode: undefined }))
+                  }}
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                >
+                  {runtimes.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                </select>
+                {(() => {
+                  const info = runtimes.find((x) => x.id === runtime)
+                  if (!info || info.installed) return null
+                  // Creating an agent on a runtime this box lacks would produce an agent whose every
+                  // session parks on "the CLI is not on PATH". Offer the install here, as the edit
+                  // page does.
+                  return (
+                    <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+                      <p className="text-[11px] text-amber-700 dark:text-amber-500"><b>{info.label}</b> is not installed on this box, so sessions on it cannot start.</p>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm" variant="outline" className="h-6 text-[11px]" disabled={!!installing || me.role !== 'owner'}
+                          onClick={async () => {
+                            setInstalling(info.id); setHint('')
+                            const r = await api.installRuntime(info.id)
+                            setInstalling('')
+                            if (r.error || !r.ok) { setHint('⚠ ' + (r.error || 'install failed')); return }
+                            const list = await api.runtimes()
+                            setRuntimes(list.runtimes ?? [])
+                          }}
+                        >{installing === info.id ? 'Installing…' : `Install ${info.label}`}</Button>
+                        <code className="text-[10px] text-muted-foreground">{info.install}</code>
+                      </div>
+                      {me.role !== 'owner' && <p className="text-[11px] text-muted-foreground">An owner can install it.</p>}
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
+            <TuningFields tuning={tuning} onChange={setTuning} modelPlaceholder={runtime === 'claude-code' ? 'opus' : 'inherit'} />
             <p className="text-[11px] text-muted-foreground">Per-agent overrides. Leave effort/permission on <span className="font-mono">inherit</span> to follow the workspace default (Settings → Runtime defaults). The gate-hook governs regardless of permission mode.</p>
           </div>
           <div className="space-y-1">
@@ -12823,6 +13290,12 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
   const [icon, setIcon] = useState<string | undefined>(undefined)
   const [savedIcon, setSavedIcon] = useState<string | undefined>(undefined)
   const [secrets, setSecrets] = useState('')
+  // Context-shaping allowlists (AgentManifest.skills / .tools). Empty = "everything", which is what
+  // every uncurated agent reads as — so a blank field must never be sent as "none".
+  const [skillList, setSkillList] = useState('')
+  const [savedSkillList, setSavedSkillList] = useState('')
+  const [toolList, setToolList] = useState('')
+  const [savedToolList, setSavedToolList] = useState('')
   const [savedSecrets, setSavedSecrets] = useState('')
   const [subagents, setSubagents] = useState<string[]>([])
   const [savedSubagents, setSavedSubagents] = useState<string[]>([])
@@ -12835,6 +13308,8 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
   const [runtime, setRuntime] = useState('')
   const [savedRuntime, setSavedRuntime] = useState('')
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([])
+  const [installing, setInstalling] = useState('')
+  const [installError, setInstallError] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
@@ -12846,26 +13321,29 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
       const p = (r.examplePrompts ?? []).join('\n')
       const c = r.category ?? ''
       const s = (r.shellSecrets ?? []).join(' ')
+      const sk = (r.skills ?? []).join(' '); const tl = (r.tools ?? []).join(' ')
       const sub = r.usableSubagents ?? []
       const sp = r.spawnableAsSubagent !== false; const cr = r.chatReachable !== false
       const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
       const rt = r.runtime ?? ''
       setRuntime(rt); setSavedRuntime(rt); setRuntimes(r.runtimes ?? [])
-      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm)
+      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSkillList(sk); setSavedSkillList(sk); setToolList(tl); setSavedToolList(tl); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || spawnable !== savedSpawnable || chatReachable !== savedChatReachable || netMode !== savedNetMode || runtime !== savedRuntime
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || skillList !== savedSkillList || toolList !== savedToolList || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || spawnable !== savedSpawnable || chatReachable !== savedChatReachable || netMode !== savedNetMode || runtime !== savedRuntime
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
     const shellSecrets = secrets.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+    const skills = skillList.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+    const tools = toolList.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     // Always send `icon` (empty string clears it → server drops the manifest key).
     // Same for every tuning knob: the server now PATCHES tuning (an absent key keeps its current value),
     // and `JSON.stringify` drops `undefined` — so spreading a tuning with cleared fields would transmit
     // no key and silently fail to clear. This card owns all four knobs, so it states all four.
     const t0: RuntimeTuningPatch = { model: tuning.model ?? '', effort: tuning.effort ?? '', permissionMode: tuning.permissionMode ?? '', verbosity: tuning.verbosity ?? '' }
-    const r = await api.saveAgentConfig(agentId, { runtime, ...t0, description: description.trim(), examplePrompts, shellSecrets, usableSubagents: subagents, spawnableAsSubagent: spawnable, chatReachable, netMode, category: category.trim(), icon: icon ?? '' })
+    const r = await api.saveAgentConfig(agentId, { runtime, ...t0, description: description.trim(), examplePrompts, shellSecrets, skills, tools, usableSubagents: subagents, spawnableAsSubagent: spawnable, chatReachable, netMode, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     // Mirror back every knob the server echoes — a partial copy blanks the rest of the form until reload.
@@ -12874,10 +13352,11 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
     const p = (r.examplePrompts ?? []).join('\n')
     const c = r.category ?? ''
     const s = (r.shellSecrets ?? []).join(' ')
+    const sk = (r.skills ?? []).join(' '); const tl = (r.tools ?? []).join(' ')
     const sub = r.usableSubagents ?? []
     const sp = r.spawnableAsSubagent !== false; const cr = r.chatReachable !== false
     const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
-    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm); setRuntime(r.runtime ?? runtime); setSavedRuntime(r.runtime ?? runtime); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSkillList(sk); setSavedSkillList(sk); setToolList(tl); setSavedToolList(tl); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm); setRuntime(r.runtime ?? runtime); setSavedRuntime(r.runtime ?? runtime); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
     onSaved?.()
   }
 
@@ -12899,10 +13378,19 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
                 // safe landing spot; the operator can set a runtime-appropriate model right after.
                 const info = runtimes.find((x) => x.id === next)
                 if (tuning.model && info && !info.suggestedModels.includes(tuning.model)) {
-                  const foreign = next === 'codex' ? /^claude/i.test(tuning.model) : /^(gpt|o[0-9]|codex)/i.test(tuning.model)
+                  // Mirrors CodingRuntimeSpec.foreignModel server-side. opencode addresses models as
+                  // `provider/model`, so for it "foreign" is any id with no provider prefix; for the
+                  // others it is an id that clearly belongs to another family.
+                  const m = tuning.model
+                  const foreign = next === 'opencode' ? !m.includes('/')
+                    : next === 'codex' ? /^(claude|opus|sonnet|haiku|fable)\b/i.test(m)
+                    : /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i.test(m)
                   if (foreign) setTuning({ ...tuning, model: undefined })
                 }
-                if (next === 'codex') setTuning((t) => ({ ...t, permissionMode: undefined }))
+                // permission-mode is a Claude Code flag; every other runtime holds the invariant
+                // differently and would silently ignore it, so drop it rather than store a dead knob.
+                if (info && !info.capabilities.permissionMode) setTuning((t) => ({ ...t, permissionMode: undefined }))
+                setInstallError('')
               }}
               className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
             >
@@ -12911,6 +13399,38 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
             {runtime !== savedRuntime && (
               <p className="text-[11px] text-amber-600 dark:text-amber-500">Changes on the next session — the current conversation isn't portable between runtimes.</p>
             )}
+            {(() => {
+              // A runtime whose CLI is missing would let the operator save a choice that parks every
+              // future session on "the 'x' CLI is not on PATH". Offer the install here instead.
+              const info = runtimes.find((x) => x.id === runtime)
+              if (!info || info.installed !== false) return null
+              return (
+                <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+                  <p className="text-[11px] text-amber-700 dark:text-amber-500">
+                    <b>{info.label}</b> is not installed on this box, so sessions on it cannot start.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm" variant="outline" className="h-6 text-[11px]"
+                      disabled={!!installing}
+                      onClick={async () => {
+                        setInstalling(info.id); setInstallError('')
+                        const r = await api.installRuntime(info.id)
+                        setInstalling('')
+                        if (r.error || !r.ok) { setInstallError(r.error || 'install failed'); return }
+                        // Re-read config so `installed` (and the version) reflect the box, rather than
+                        // optimistically flipping a flag the next session would disagree with.
+                        const cfg = await api.agentConfig(agentId)
+                        setRuntimes(cfg.runtimes ?? [])
+                      }}
+                    >{installing === info.id ? 'Installing…' : `Install ${info.label}`}</Button>
+                    <code className="text-[10px] text-muted-foreground">{info.install}</code>
+                  </div>
+                  {installing === info.id && <p className="text-[11px] text-muted-foreground">Running the installer — this can take a minute.</p>}
+                  {installError && <p className="text-[11px] text-red-600 dark:text-red-400">{installError}</p>}
+                </div>
+              )
+            })()}
             {(() => {
               const info = runtimes.find((x) => x.id === runtime)
               if (!info) return null
@@ -12943,6 +13463,16 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
           <label className="text-xs font-medium">Shell secrets</label>
           <Input value={secrets} onChange={(e) => setSecrets(e.target.value)} className="font-mono text-sm" placeholder="e.g. GH_TOKEN  (space/comma separated env-var names)" />
           <p className="text-[11px] text-muted-foreground">Vault keys exported as env vars into this agent's shell (so CLIs like <span className="font-mono">gh</span> authenticate). Store the value in <span className="font-medium">Settings → Secrets</span> (key = the name here; set its principal to <span className="font-mono">{agentId}</span> for a per-agent value, or leave tenant-wide). Resolved at launch, audited per key.</p>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Skills it carries</label>
+          <Input value={skillList} onChange={(e) => setSkillList(e.target.value)} className="font-mono text-sm" placeholder="leave blank for every skill  ·  or e.g. site-health-check sheet-reporting" />
+          <p className="text-[11px] text-muted-foreground">Blank = every skill this agent is eligible for, which is the default. Naming skills here trims the list to those, and is ANDed with each skill's own audience in <span className="font-medium">Settings → Skills</span> — neither overrides the other. Only a skill's name and description reach the model, but that index sits in the prompt and is re-read every turn, so a long library is a per-turn tax on an agent that uses a handful.</p>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Agentric tools it is offered</label>
+          <Input value={toolList} onChange={(e) => setToolList(e.target.value)} className="font-mono text-sm" placeholder="leave blank for all tools  ·  or e.g. kb_search kb_write task_create" />
+          <p className="text-[11px] text-muted-foreground">Blank = the full set, which is the default. Naming tools here trims what this agent is offered; <span className="font-mono">report</span>, <span className="font-mono">ask_human</span>, <span className="font-mono">check_inbox</span>, <span className="font-mono">update</span>, <span className="font-mono">notify</span>, <span className="font-mono">recall</span> and <span className="font-mono">remember</span> are always kept. Chat-reply, egress and media tools keep their own gating. <span className="font-medium">This shapes context, it does not grant or withhold permission</span> — every effect is still governed by policy. To stop an agent doing something, write a policy rule.</p>
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium">Sub-agents it can spawn</label>
@@ -13126,7 +13656,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
       </div>
       {/* Pending cross-agent edit proposals sit at the TOP so an owner arriving from the inbox deep-link
           sees the review queue first (mirrors the PolicyEditor's atop-the-editor review pattern). */}
-      {info?.runtime === 'claude-code' && <AgentUpdateProposalsCard agentId={agentId} onApplied={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
+      {isCodingRuntime(info?.runtime) && <AgentUpdateProposalsCard agentId={agentId} onApplied={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
       <p className="text-sm text-muted-foreground">
         <span className="font-medium text-foreground">{agentId}</span>
         {info && <RuntimeBadge runtime={info.runtime} />} — this agent's <span className="font-mono text-xs">CLAUDE.md</span> is its
@@ -13134,7 +13664,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
         <span className="font-mono text-xs"> recall</span>/<span className="font-mono text-xs">remember</span>). Applied on the agent's next session.
       </p>
       <AgentTrustCard agentId={agentId} />
-      {info?.runtime === 'claude-code' && <AgentTuningCard key={revBump} agentId={agentId} agents={agents} onSaved={onSaved} />}
+      {isCodingRuntime(info?.runtime) && <AgentTuningCard key={revBump} agentId={agentId} agents={agents} onSaved={onSaved} />}
       <Card>
         <CardContent className="space-y-3 p-4">
           {!loaded && !hint ? (
@@ -13155,7 +13685,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
           )}
         </CardContent>
       </Card>
-      {info?.runtime === 'claude-code' && <AgentRevisionsCard agentId={agentId} onReverted={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
+      {isCodingRuntime(info?.runtime) && <AgentRevisionsCard agentId={agentId} onReverted={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
     </div>
   )
 }
@@ -14911,7 +15441,14 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
             <p className="text-xs text-muted-foreground">Changes the OS suggests from what it’s been seeing. Nothing happens until you decide — <strong>Apply</strong> makes the change (reversible), <strong>Dismiss</strong> hides it.</p>
           </div>
           {recs.length === 0
-            ? <div className="text-xs text-muted-foreground">Nothing to flag right now. If agents start hitting friction — rejected actions, budget limits, low success — suggestions appear here.</div>
+            ? <div className="space-y-1 text-xs text-muted-foreground">
+                <div>Nothing to flag right now. Two conditions are watched, both from the recent window:</div>
+                <ul className="ml-4 list-disc space-y-0.5">
+                  <li><strong>3+ rejected approvals</strong> at a 20%+ rejection rate — a capability may belong on the deny list, or the gate may just be friction.</li>
+                  <li><strong>2+ budget stops</strong> — raise the caps, or tighten what agents are asked to do.</li>
+                </ul>
+                <div>An empty panel means neither has fired, not that nothing could be improved. Suggestions keyed to run <em>quality</em> are deliberately absent until an outcome derived from observable facts replaces the agent’s own grade of its own work.</div>
+              </div>
             : recs.map((r) => (
                 <div key={r.id} className="rounded-md border p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -15301,10 +15838,13 @@ function SettingsPage({ me, state, tab: tabParam, onTab, onStateChange }: { me: 
         <TabButton on={tab === 'governance'} href={navHref('settings', 'governance')} onClick={() => setTab('governance')}>Governance</TabButton>
         <TabButton on={tab === 'policy'} href={navHref('settings', 'policy')} onClick={() => setTab('policy')}>Policy</TabButton>
         <TabButton on={tab === 'system'} href={navHref('settings', 'system')} onClick={() => setTab('system')}>System</TabButton>
+        {/* The wizard is dismissible, so it needs a way back — an install that grows a team or adds a
+            chat channel months later wants the same checklist. */}
+        <a className="mt-1 border-t px-3 py-2 text-xs text-muted-foreground hover:text-foreground" href="#/setup">Setup checklist →</a>
       </div>
       <div className="min-w-0 flex-1">
         {tab === 'company' ? <CompanySettings me={me} />
-          : tab === 'runtime' ? <div className="space-y-4"><RuntimeDefaultsSettings me={me} /><ConcurrencySettings me={me} /><RuntimeAccountsSettings me={me} /></div>
+          : tab === 'runtime' ? <div className="space-y-4"><RuntimeDefaultsSettings me={me} /><ConcurrencySettings me={me} /><RuntimeInstallSettings me={me} /><RuntimeAccountsSettings me={me} /></div>
           : tab === 'theme' ? <ThemeSettings me={me} state={state} onStateChange={onStateChange} />
           : tab === 'secrets' ? <SecretsSettings me={me} agents={state?.agents ?? []} />
           : tab === 'memory' ? <MemorySettings me={me} />
@@ -15740,6 +16280,44 @@ function EndpointTimingsPanel() {
                 </tbody>
               </table>
             </div>
+            {/* The same clock, keyed by the MCP TOOL an agent called. Routes answer "which endpoint costs
+                the most"; this answers "what is an AGENT waiting on mid-run" — and the two don't map 1:1.
+                Tools that block on a human/delegate by design are flagged and sorted last, so a 40-minute
+                `ask_human` never reads as the slowest thing in the system. */}
+            {snap.tools && snap.tools.length > 0 && (
+              <div className="overflow-x-auto">
+                <div className="pb-1 pt-2 text-xs font-medium text-muted-foreground">Agent tool calls (MCP)</div>
+                <table className="w-full text-xs">
+                  <thead className="text-muted-foreground">
+                    <tr className="text-left">
+                      <th className="py-1 pr-3 font-medium">tool</th>
+                      <th className="py-1 pr-3 text-right font-medium">calls</th>
+                      <th className="py-1 pr-3 text-right font-medium">total</th>
+                      <th className="py-1 pr-3 text-right font-medium">avg</th>
+                      <th className="py-1 pr-3 text-right font-medium">p95</th>
+                      <th className="py-1 pr-3 text-right font-medium">max</th>
+                      <th className="py-1 text-right font-medium">errors</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snap.tools.map((r) => (
+                      <tr key={r.route} className="border-t">
+                        <td className="py-1 pr-3 font-mono">
+                          {r.route}
+                          {r.blocking && <span className="ml-2 text-muted-foreground" title="blocks on a human or a delegate by design — this is a wait, not a slow endpoint">waits</span>}
+                        </td>
+                        <td className="py-1 pr-3 text-right">{r.count.toLocaleString()}</td>
+                        <td className="py-1 pr-3 text-right font-medium">{ms(r.totalMs)}</td>
+                        <td className="py-1 pr-3 text-right">{r.avgMs < 1 ? '<1ms' : ms(r.avgMs)}</td>
+                        <td className="py-1 pr-3 text-right">≤{ms(r.p95Ms)}</td>
+                        <td className={`py-1 pr-3 text-right ${!r.blocking && r.maxMs >= 1000 ? 'text-amber-500' : ''}`}>{ms(r.maxMs)}</td>
+                        <td className={`py-1 text-right ${r.errors ? 'text-amber-500' : 'text-muted-foreground'}`}>{r.errors || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )}
       </CardContent>
@@ -16349,52 +16927,51 @@ function KillSwitchCard({ me }: { me: Member }) {
   )
 }
 
-/** Did terse output actually cost less, on THIS workspace's traffic? Terse is a prompt instruction, not
- *  an enforced transform — the model can ignore it and compliance drifts by model and task — so the flag
- *  ships next to the number that can contradict it. Renders nothing until both arms have real runs. */
-function VerbositySavingsPanel() {
-  const [data, setData] = useState<VerbositySavings | null>(null)
-  useEffect(() => { api.verbositySavings().then((r) => { if (!r.error) setData(r) }).catch(() => {}) }, [])
+/** How far the terse flag has spread across this workspace — counts, not savings.
+ *
+ *  This panel used to render cost-per-turn and USD-per-turn deltas in green and amber. Those were
+ *  removed in v0.389.0 rather than caveated: `output_tokens` is ~85% tool-call arguments, so the
+ *  number never contained the narration the brief acts on, and against real traffic it swung ±50-90%
+ *  on tool-use volume alone — reading as a confident verdict either way. Whether terse WORKS is a
+ *  question for `npm run bench:verbosity` / `bench:verbosity-turns` (paired, controlled, CI that
+ *  refuses a verdict inside the noise), which measured its ceiling at ~1% of spend. What a console
+ *  can honestly show is who is running it. */
+function VerbosityAdoptionPanel() {
+  const [data, setData] = useState<VerbosityAdoption | null>(null)
+  useEffect(() => { api.verbosityAdoption().then((r) => { if (!r.error) setData(r) }).catch(() => {}) }, [])
   if (!data) return null
-  const { normal, terse } = data
-  if (!normal.sessions && !terse.sessions) return null // nothing has run under the flag yet
-
-  const pct = (v: number | null) => (v == null ? '—' : `${v > 0 ? '−' : '+'}${Math.abs(v)}%`)
-  const tone = (v: number | null) => (v == null ? 'text-muted-foreground' : v > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400')
+  const { normal, terse } = data.sessions
+  if (!normal && !terse) return null // nothing has run under the flag yet
 
   return (
     <div className="space-y-2 border-t pt-4">
-      <label className="text-sm font-medium">Terse output — measured, last {data.windowDays} days</label>
-      {!data.comparable ? (
-        <p className="text-sm text-muted-foreground">
-          {terse.sessions} terse and {normal.sessions} normal costed sessions so far — not enough of both to compare yet.
-          Numbers appear once each side has a handful of runs.
-        </p>
-      ) : (
-        <>
-          <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
-            <span className="text-muted-foreground">Output tokens / turn: <span className="font-mono">{normal.outputPerTurn.toLocaleString()} → {terse.outputPerTurn.toLocaleString()}</span> <span className={tone(data.outputDelta)}>{pct(data.outputDelta)}</span></span>
-            <span className="text-muted-foreground">USD / turn: <span className="font-mono">${normal.usdPerTurn.toFixed(3)} → ${terse.usdPerTurn.toFixed(3)}</span> <span className={tone(data.usdDelta)}>{pct(data.usdDelta)}</span></span>
-          </div>
-          <p className="text-[11px] text-muted-foreground">
-            Fleet-wide, this pair is <strong>confounded</strong>: if you flipped particular agents to terse, the two sides
-            are made of different work. The per-agent rows below hold the agent fixed — trust those.
-          </p>
-        </>
-      )}
+      <label className="text-sm font-medium">Terse output — where it is running, last {data.windowDays} days</label>
+      <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
+        <span>Terse runs: <span className="font-mono text-foreground">{terse.toLocaleString()}</span></span>
+        <span>Normal runs: <span className="font-mono text-foreground">{normal.toLocaleString()}</span></span>
+        {data.sessions.unstamped > 0 && (
+          <span>Unstamped: <span className="font-mono">{data.sessions.unstamped.toLocaleString()}</span></span>
+        )}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Counts only. Terse is an output-style preference, not a cost control — measured against a
+        controlled benchmark its effect on spend is around <strong>1%</strong>, because narration is a
+        small share of what an agent emits. Run <code className="font-mono">npm run bench:verbosity</code> to
+        re-measure it; a comparison of live terse and normal runs cannot answer it, which is why the
+        old savings figures were removed.
+      </p>
       {data.byAgent.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="text-muted-foreground">
-              <tr className="text-left"><th className="py-1 pr-4 font-medium">Agent</th><th className="py-1 pr-4 font-medium">Runs (normal/terse)</th><th className="py-1 pr-4 font-medium">Output / turn</th><th className="py-1 font-medium">USD / turn</th></tr>
+              <tr className="text-left"><th className="py-1 pr-4 font-medium">Agent</th><th className="py-1 pr-4 font-medium">Terse runs</th><th className="py-1 font-medium">Normal runs</th></tr>
             </thead>
             <tbody>
               {data.byAgent.map((a) => (
                 <tr key={a.agent} className="border-t">
                   <td className="py-1 pr-4 font-mono">{a.agent}</td>
-                  <td className="py-1 pr-4 text-muted-foreground">{a.normal.sessions}/{a.terse.sessions}</td>
-                  <td className="py-1 pr-4"><span className="font-mono">{a.normal.outputPerTurn.toLocaleString()} → {a.terse.outputPerTurn.toLocaleString()}</span> <span className={tone(a.outputDelta)}>{pct(a.outputDelta)}</span></td>
-                  <td className="py-1"><span className="font-mono">${a.normal.usdPerTurn.toFixed(3)} → ${a.terse.usdPerTurn.toFixed(3)}</span> <span className={tone(a.usdDelta)}>{pct(a.usdDelta)}</span></td>
+                  <td className="py-1 pr-4 font-mono">{a.terse.toLocaleString()}</td>
+                  <td className="py-1 font-mono">{a.normal.toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -16461,7 +17038,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
         </div>
-        <VerbositySavingsPanel />
+        <VerbosityAdoptionPanel />
         <div className="space-y-1 border-t pt-4">
           <label className="text-sm font-medium">Sub-agents</label>
           <p className="text-sm text-muted-foreground">
@@ -16732,6 +17309,72 @@ function runtimeUsageCell(a: RuntimeAccount, refreshing = false) {
   return <span className="text-muted-foreground" title={age}>{a.kind === 'token' && a.checkNote && a.checkOk !== true ? a.checkNote : '—'}</span>
 }
 
+/** Settings → Runtime → Runtimes. Which coding CLIs this box HAS, and a one-click install for the ones
+ *  it doesn't. Presence is upstream of everything else on this page: an agent can be pointed at a
+ *  runtime whose binary is missing, and every session on it then parks on "the 'x' CLI is not on PATH"
+ *  — a dead end an operator could previously only fix by ssh-ing into the box. Install is owner-only
+ *  (it writes a global package to the host) and audited (`runtime.install.*`). */
+function RuntimeInstallSettings({ me }: { me: Member }) {
+  const [rows, setRows] = useState<RuntimePresence[] | null>(null)
+  const [installing, setInstalling] = useState('')
+  const [hint, setHint] = useState('')
+  const load = () => api.runtimes().then((r) => { if (!r.error) setRows(r.runtimes ?? []) }).catch(() => {})
+  useEffect(() => { load() }, [])
+  const install = async (id: string, label: string) => {
+    setInstalling(id); setHint('')
+    const r = await api.installRuntime(id)
+    setInstalling('')
+    setHint(r.error || !r.ok ? `⚠ ${label}: ${r.error || 'install failed'}` : `${label} installed${r.version ? ` — ${r.version}` : ''}`)
+    // Re-read rather than flip a flag optimistically: npm can exit 0 with the shim off PATH.
+    load()
+    if (!r.error && r.ok) setTimeout(() => setHint(''), 4000)
+  }
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div>
+          <h3 className="text-sm font-medium">Runtimes</h3>
+          <p className="text-xs text-muted-foreground">The coding CLIs agents run on. A runtime that isn't installed can be selected on an agent, but its sessions cannot start.</p>
+        </div>
+        {rows === null ? <p className="text-xs text-muted-foreground">Loading…</p> : (
+          <table className="w-full text-xs">
+            <thead className="text-muted-foreground">
+              <tr className="border-b text-left">
+                <th className="py-1.5 pr-3 font-medium">Runtime</th>
+                <th className="py-1.5 pr-3 font-medium">Binary</th>
+                <th className="py-1.5 pr-3 font-medium">Status</th>
+                <th className="py-1.5 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-b last:border-0">
+                  <td className="py-1.5 pr-3">{r.label}</td>
+                  <td className="py-1.5 pr-3 font-mono text-muted-foreground">{r.bin}</td>
+                  <td className="py-1.5 pr-3">
+                    {r.installed
+                      ? <span className="text-emerald-600 dark:text-emerald-400" title={r.version}>installed{r.version ? ` — ${r.version}` : ''}</span>
+                      : <span className="text-amber-600 dark:text-amber-500">not installed</span>}
+                  </td>
+                  <td className="py-1.5 text-right">
+                    {!r.installed && me.role === 'owner' && (
+                      <Button size="sm" variant="outline" className="h-6 text-[11px]" disabled={!!installing} onClick={() => install(r.id, r.label)}>
+                        {installing === r.id ? 'Installing…' : 'Install'}
+                      </Button>
+                    )}
+                    {!r.installed && me.role !== 'owner' && <span className="text-[11px] text-muted-foreground" title={r.install}>owner can install</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
 function RuntimeAccountsSettings({ me }: { me: Member }) {
   const [resp, setResp] = useState<RuntimeAccountsResp | null>(null)
   const [busy, setBusy] = useState(false)
@@ -16926,11 +17569,16 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
                   <span className="text-xs font-medium">Signing in as <span className="font-mono">{login.name}</span></span>
                   <button className="text-xs text-muted-foreground hover:text-foreground" onClick={cancelLogin}>Cancel</button>
                 </div>
-                {login.phase === 'starting' && <p className="text-xs text-muted-foreground">Starting the runtime's sign-in — the authorization link appears here in a moment…</p>}
+                {login.notice && (
+                  <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-xs text-amber-700 dark:text-amber-400">{login.notice}</p>
+                )}
+                {login.phase === 'starting' && <p className="text-xs text-muted-foreground">{login.notice ? 'Preparing a fresh authorization link…' : "Starting the runtime's sign-in — the authorization link appears here in a moment…"}</p>}
                 {login.phase === 'awaiting-code' && login.url && (
                   <div className="space-y-2">
                     <p className="text-xs text-muted-foreground">
-                      1. Open this link and authorize as the account you're adding, then 2. paste the code it gives you.
+                      1. Open this link and authorize as the account you're adding, then 2. paste the code it gives you —
+                      the WHOLE string, including the <span className="font-mono">#…</span> tail. Each link is single-use: if a
+                      code is rejected, wait for the fresh link that appears here rather than re-using the page you already opened.
                     </p>
                     <div className="flex items-center gap-2">
                       <a href={login.url} target="_blank" rel="noreferrer" className="truncate text-xs text-blue-600 underline dark:text-blue-400">{login.url}</a>

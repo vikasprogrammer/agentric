@@ -3,6 +3,7 @@
 // build time via Vite ?raw imports; adding a page = add the .md file + one entry here.
 import whatIsAgentric from './what-is-agentric.md?raw'
 import gettingStarted from './getting-started.md?raw'
+import useCases from './use-cases.md?raw'
 import coreConcepts from './core-concepts.md?raw'
 import workingWithAgents from './working-with-agents.md?raw'
 import automations from './automations.md?raw'
@@ -18,6 +19,7 @@ export type DocPage = { slug: string; title: string; body: string }
 export const docPages: DocPage[] = [
   { slug: 'what-is-agentric', title: 'What is Agentric?', body: whatIsAgentric },
   { slug: 'getting-started', title: 'Getting started', body: gettingStarted },
+  { slug: 'use-cases', title: 'Use cases', body: useCases },
   { slug: 'core-concepts', title: 'Core concepts', body: coreConcepts },
   { slug: 'working-with-agents', title: 'Working with agents', body: workingWithAgents },
   { slug: 'automations', title: 'Automations', body: automations },

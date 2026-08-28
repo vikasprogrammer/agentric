@@ -19,6 +19,7 @@ import { pruneAuditMirror } from './governance/audit';
 import { requestMetrics } from './edge/request-metrics';
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
+import { governedCapabilities } from './capabilities/normalize';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
@@ -38,18 +39,21 @@ import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerAsk } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
-import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, RuntimeCheckResult } from './edge/runtime-account-check';
+import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, keychainHasLogin, RuntimeCheckResult } from './edge/runtime-account-check';
 import { refreshStaleUsage } from './edge/runtime-account-usage';
+import { runtimePresence, installRuntime } from './edge/runtime-install';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { TelegramSocket } from './edge/telegram-socket';
 import { AppSupervisor } from './edge/app-supervisor';
+import { markdownToPdf, isMarkdownArtifact } from './edge/md-pdf';
+import { buildSetupStatus, skipSetupStep, dismissSetup, SETUP_STEP_IDS, type SetupStepId } from './edge/setup';
 import { DreamingEngine, recommendationResolved, guidanceStale } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
 import { buildInsights } from './edge/insights';
-import { verbositySavings } from './edge/verbosity';
+import { verbosityAdoption } from './edge/verbosity';
 import { buildImprovements } from './edge/improvements';
 import { Diagnosis, ANALYST_ID } from './edge/diagnosis';
 import { Improver, proposalSlug, IMPROVER_ID } from './edge/improver';
@@ -74,7 +78,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -221,6 +225,11 @@ function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSna
     model: snap.model, effort: snap.effort, permissionMode: snap.permissionMode, verbosity: snap.verbosity,
     examplePrompts: snap.examplePrompts.length ? snap.examplePrompts : undefined,
     shellSecrets: snap.shellSecrets.length ? snap.shellSecrets : undefined,
+    // Empty ⇒ drop the key ⇒ "everything", which is exactly how a revision predating these fields
+    // reads back. So reverting to an old rev restores the pre-curation offer rather than stranding
+    // the agent on an empty list.
+    skills: snap.skills?.length ? snap.skills : undefined,
+    tools: snap.tools?.length ? snap.tools : undefined,
   };
   const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
   fs.writeFileSync(path.join(ag.dir!, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
@@ -292,6 +301,13 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
       const ms = Number(process.hrtime.bigint() - startedNs) / 1e6;
       const pathname = (req.url || '/').split('?')[0];
       requestMetrics.observe(req.method || 'GET', pathname, res.statusCode, ms, arrivalStall);
+      // The same request, keyed by the agent-facing MCP TOOL that made it (`x-aos-tool`, set by
+      // src/memory/memory-mcp.ts). Route timings answer "which endpoint costs the most"; an agent waits
+      // on TOOLS, and the two don't map 1:1 — so this is a second dimension, recorded here because this
+      // is the one place every request already passes through. Loopback-only in practice; the header is
+      // advisory (it buys no authority), and the tool map is capped like the route map.
+      const tool = String(req.headers['x-aos-tool'] || '').trim();
+      if (tool) requestMetrics.observeTool(tool, res.statusCode, ms, arrivalStall);
     });
     // Superadmin control plane — host-independent (bearer-gated), so it sits before tenant routing.
     if ((req.url || '').split('?')[0].startsWith('/api/admin/')) {
@@ -388,9 +404,10 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     try { rt.tm.reapIdleSessions(); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
   }), 60_000);
   reaper.unref?.();
-  // Process janitor: reap ttyd/tmux left behind pointing at tmux sockets that no longer exist (see
-  // ProcessJanitor). Process-wide, not per-tenant — it scans the process table, not any DB. Audited onto
-  // the seed tenant with the counts, because a janitor that silently cleans up after a leak hides the leak.
+  // Process janitor: reap ttyd/tmux left behind pointing at tmux sockets that no longer exist, plus agent
+  // shells reparented to init by a dead tool call (see ProcessJanitor). Process-wide, not per-tenant — it
+  // scans the process table, not any DB. Audited onto the seed tenant with the counts, because a janitor
+  // that silently cleans up after a leak hides the leak.
   const janitor = new ProcessJanitor(() => {
     const live = new Set<string>();
     registry.forEach((rt) => { if (rt.os.paths?.tmuxSocket) live.add(rt.os.paths.tmuxSocket); });
@@ -399,10 +416,10 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   const janitorTimer = setInterval(() => {
     try {
       const r = janitor.sweep();
-      if (r.ttyd === 0 && r.tmux === 0) return;
+      if (r.ttyd === 0 && r.tmux === 0 && r.shell === 0) return;
       const os = registry.default()?.os;
-      console.log(`  [janitor] reaped ${r.ttyd} orphaned ttyd + ${r.tmux} orphaned tmux (unreachable sockets)`);
-      if (os) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'orphan.reaped', data: { ttyd: r.ttyd, tmux: r.tmux, pending: r.pending } });
+      console.log(`  [janitor] reaped ${r.ttyd} orphaned ttyd + ${r.tmux} orphaned tmux (unreachable sockets) + ${r.shell} orphaned agent shells (reparented to init)`);
+      if (os) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'orphan.reaped', data: { ttyd: r.ttyd, tmux: r.tmux, shell: r.shell, pending: r.pending } });
     } catch { /* never let the janitor crash the process */ }
   }, 5 * 60_000);
   janitorTimer.unref?.();
@@ -747,12 +764,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const agent = tm.sessionAgent(session);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
-    const capabilities = os.registry.list().map((c) => {
+    // The REAL governed surface (structural + canonical capabilities), NOT os.registry — that only holds
+    // the demo execution plugins (echo.run/stripe.refund/…) so the zero-dep demo runs, and surfacing them
+    // to a live agent as its "capabilities" was pure noise it couldn't act on. Each verdict is the dry-run
+    // of the JSON policy for empty args (the base outcome); host-egress + file-write guards apply ADDITIONAL
+    // engine-level tightening at gate time (args/host dependent), so this is a floor, not the last word.
+    const capabilities = governedCapabilities().map((c) => {
       const d = tm.policyCheck(session, agent, c.id, {});
       return {
         id: c.id,
         description: c.description,
-        defaultRisk: c.defaultRisk,
         effect: d.effect,
         level: d.effect === 'approve' ? d.level : undefined,
       };
@@ -1065,9 +1086,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);
     const q = (url.searchParams.get('query') || '').trim().toLowerCase();
-    let mine = tm.sessionsForAgent(agent).filter((s) => s.id !== session); // exclude the current run
-    if (q) mine = mine.filter((s) => `${s.title} ${s.task}`.toLowerCase().includes(q));
-    const sessions = mine.slice(0, limit).map((s) => ({
+    // Filters + limit are pushed into the store: it selects this agent's ids in SQL and derives only
+    // those rows (see sessionsForAgent) instead of building the whole tenant's list to discard it here.
+    const mine = tm.sessionsForAgent(agent, { query: q, excludeId: session, limit });
+    const sessions = mine.map((s) => ({
       id: s.id, title: s.title, task: s.task, status: s.status,
       createdAt: s.createdAt, updatedAt: s.updatedAt, rating: s.rating, headless: s.headless, source: s.sourceKind,
     }));
@@ -1083,7 +1105,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const id = url.searchParams.get('id') || '';
-    const target = tm.sessionsForAgent(agent).find((s) => s.id === id);
+    // Ownership is one indexed row-test; the shape then comes from the by-id list path — instead of
+    // building this agent's whole history to `.find()` one id in it.
+    if (!tm.sessionBelongsToAgent(id, agent)) return sendJson(res, 403, { error: 'not one of your sessions' });
+    const target = tm.listSessions(undefined, undefined, [id])[0];
     if (!target) return sendJson(res, 403, { error: 'not one of your sessions' });
     const meta = { id: target.id, title: target.title, task: target.task, status: target.status, createdAt: target.createdAt, updatedAt: target.updatedAt, rating: target.rating };
     const convo = tm.sessionConversation(id);
@@ -1998,6 +2023,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = sanitizeCategory(b.category);
     const icon = sanitizeIcon(b.icon);
     const shellSecrets = sanitizeShellSecrets(b.shellSecrets);
+    const skills = sanitizeAgentSkills(b.skills);
+    const tools = sanitizeAgentTools(b.tools);
     const manifest: AgentManifest = {
       id, version: '1.0.0', description,
       ...(category ? { category } : {}),
@@ -2005,6 +2032,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ...tuning,
       ...(examplePrompts ? { examplePrompts } : {}),
       ...(shellSecrets ? { shellSecrets } : {}),
+      ...(skills ? { skills } : {}),
+      ...(tools ? { tools } : {}),
       ...(icon ? { icon } : {}),
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
     };
@@ -2075,7 +2104,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!resolved.ok) return sendJson(res, 200, { ok: false, outcome: 'refused', error: resolved.error });
     const risk = resolved.text !== undefined ? assessClaudeMdEdit(before.claudeMd, resolved.text) : undefined;
     const fields: Record<string, unknown> = {};
-    for (const k of ['description', 'category', 'model', 'effort', 'icon', 'verbosity', 'examplePrompts', 'shellSecrets'] as const) {
+    for (const k of ['description', 'category', 'model', 'effort', 'icon', 'verbosity', 'examplePrompts', 'shellSecrets', 'skills', 'tools'] as const) {
       if (k in b) fields[k] = b[k];
     }
     if (resolved.text !== undefined) fields.claudeMd = resolved.text;
@@ -3611,7 +3640,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // page load would burn the rate limit to render a number. `prCounts` is parsed BEFORE the body clip
     // above would matter — `tasks`, not `slim`, so a link past the clip point still counts.
     const prCounts = new PrCache(os.db, os.tenant).summaries(taskPrRefsBulk(os.db, tasks));
-    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), prCounts, agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me) });
+    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), prCounts, agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me), workers: tm.taskWorkers() });
   }
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);
@@ -4204,7 +4233,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const claudeMd = String(b.claudeMd ?? '');
     // model/effort are per-agent overrides — each optional (omit → inherit the workspace default at
     // launch). Validate effort against the CLI's value set.
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
+    // The runtime an agent is BORN on. Defaults to claude-code (what every agent got before the picker
+    // existed), but it has to be settable here: it used to be hardcoded, so a Codex/opencode agent could
+    // only be made by creating a Claude one and switching it afterwards.
+    const runtime = (b.runtime === undefined || b.runtime === '') ? 'claude-code' : String(b.runtime) as RuntimeId;
+    if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `runtime must be one of: ${Object.keys(CODING_RUNTIMES).join(', ')}` });
+    // Validate the tuning AGAINST that runtime, so a model belonging to another CLI is refused at
+    // creation rather than at the first launch (`opus` on Codex, a bare `claude-*` on opencode, …).
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(b, runtime);
     if (tErr) return sendJson(res, 400, { error: tErr });
     // No forced model default: a blank field means "inherit the workspace default" (Settings →
     // Runtime defaults), same as effort/permission. The create form pre-fills the `opus` alias (which
@@ -4220,6 +4256,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = sanitizeCategory(b.category);
     const icon = sanitizeIcon(b.icon);
     const shellSecrets = sanitizeShellSecrets(b.shellSecrets);
+    const skills = sanitizeAgentSkills(b.skills);
+    const tools = sanitizeAgentTools(b.tools);
     const manifest: AgentManifest = {
       id,
       version: '1.0.0',
@@ -4227,10 +4265,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ...(category ? { category } : {}),
       principal: `svc-${id}`,
       policyContext: 'default@v3',
-      runtime: 'claude-code',
+      runtime,
       ...tuning,
       ...(examplePrompts ? { examplePrompts } : {}),
       ...(shellSecrets ? { shellSecrets } : {}),
+      ...(skills ? { skills } : {}),
+      ...(tools ? { tools } : {}),
       ...(icon ? { icon } : {}),
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
     };
@@ -4238,7 +4278,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     fs.writeFileSync(path.join(folder, 'agent.json'), JSON.stringify(manifest, null, 2) + '\n');
     fs.writeFileSync(path.join(folder, 'CLAUDE.md'), claudeMd);
     os.registerAgent({ ...manifest, dir: folder });
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.created', data: { agent: id, runtime: 'claude-code', dir: folder } });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.created', data: { agent: id, runtime, dir: folder } });
     return sendJson(res, 200, { ok: true, id });
   }
 
@@ -4287,6 +4327,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = sanitizeCategory((m as { category?: unknown }).category);
     const icon = sanitizeIcon((m as { icon?: unknown }).icon);
     const shellSecrets = sanitizeShellSecrets((m as { shellSecrets?: unknown }).shellSecrets);
+    const skills = sanitizeAgentSkills((m as { skills?: unknown }).skills);
+    const tools = sanitizeAgentTools((m as { tools?: unknown }).tools);
     const manifest: AgentManifest = {
       id,
       version: typeof m.version === 'string' && m.version ? m.version : '1.0.0',
@@ -4298,6 +4340,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ...(tErr ? {} : tuning),
       ...(examplePrompts ? { examplePrompts } : {}),
       ...(shellSecrets ? { shellSecrets } : {}),
+      ...(skills ? { skills } : {}),
+      ...(tools ? { tools } : {}),
       ...(icon ? { icon } : {}),
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
     };
@@ -4465,11 +4509,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isCodingRuntime(ag.runtime)) return sendJson(res, 400, { error: 'runtime tuning applies to CLI-backed agents only' });
     if (method === 'GET') {
       // `runtimes` lets the console render the picker (and its per-runtime model suggestions +
-      // capability flags) without hardcoding the registry client-side.
+      // capability flags) without hardcoding the registry client-side. `installed` rides along so the
+      // picker can offer to INSTALL a runtime this box lacks, instead of saving a choice whose every
+      // session would park on "the 'x' CLI is not on PATH".
+      const present = new Map(runtimePresence().map((r) => [r.id, r]));
       const runtimes = Object.values(CODING_RUNTIMES).map((r) => ({
         id: r.id, label: r.label, suggestedModels: r.suggestedModels, capabilities: r.capabilities,
+        bin: r.bin, install: r.install.join(' '),
+        installed: present.get(r.id)?.installed ?? false, version: present.get(r.id)?.version,
       }));
-      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, skills: ag.skills ?? [], tools: ag.tools ?? [], usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     // Runtime change (owner/admin). Validate BEFORE the tuning, so the tuning is checked against the
@@ -4494,6 +4543,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // (a tuning-only save from the runtime card leaves them as-is). Preserve everything else.
     const prompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
     const shellSecrets = 'shellSecrets' in b ? sanitizeShellSecrets(b.shellSecrets) : ag.shellSecrets;
+    // Context-shaping allowlists: which library skills this agent carries, and which agentos MCP tools
+    // it is offered. Both default to "everything" when absent, so an untouched agent is unchanged. They
+    // trim what the model READS, never what an effect is allowed to DO — the gateway is untouched.
+    const skills = 'skills' in b ? sanitizeAgentSkills(b.skills) : ag.skills;
+    const tools = 'tools' in b ? sanitizeAgentTools(b.tools) : ag.tools;
     // Which fleet teammates this agent may spawn as native sub-agents. Amplification-sensitive but not a
     // governance bypass (every sub-agent effect is still gated), so it rides the owner/admin config route
     // like shellSecrets. A self-editing agent can't reach here to widen its own reach.
@@ -4514,13 +4568,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, skills, tools, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
     const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, before.claudeMd), 'edited config', me.email);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, category, shellSecrets: shellSecrets ?? [], netMode: netMode ?? 'open', rev } });
-    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, netMode: netMode ?? 'open', category, icon });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, category, shellSecrets: shellSecrets ?? [], skills: skills ?? [], tools: tools ?? [], netMode: netMode ?? 'open', rev } });
+    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, skills, tools, netMode: netMode ?? 'open', category, icon });
   }
 
   // ── agent config revision history + revert (owner/admin) — the human rollback for a self-editing agent ──
@@ -4562,13 +4616,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, ...saved });
   }
 
-  // ── did terse output actually cost less? The measurement that ships WITH the verbosity flag, so the
-  //    claim can be checked against this workspace's own traffic instead of taken on faith. Read-only,
-  //    owner/admin (it exposes fleet-wide spend). `days` widens the trailing window.
-  if (method === 'GET' && p === '/api/settings/verbosity-savings') {
+  // ── how far has the terse flag actually spread? Counts only. The predecessor route
+  //    (/api/settings/verbosity-savings) reported cost-per-turn deltas and was retired in v0.389.0:
+  //    `output_tokens` is ~85% tool-call arguments, so it could not measure the narration the brief
+  //    acts on, and the console was rendering the result as a saving. The effect question belongs to
+  //    `npm run bench:verbosity` / `bench:verbosity-turns`, not to a query over live traffic.
+  //    Read-only, owner/admin. `days` widens the trailing window.
+  if (method === 'GET' && p === '/api/settings/verbosity-adoption') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const days = Math.max(1, Math.min(Math.floor(Number(url.searchParams.get('days')) || 30), 365));
-    return sendJson(res, 200, { windowDays: days, ...verbositySavings(os.db, days) });
+    return sendJson(res, 200, verbosityAdoption(os.db, days));
   }
 
   // ── fleet-wide sub-agent posture ('all' | 'none') — owner/admin only ──
@@ -4723,6 +4780,31 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }));
     return sendJson(res, 200, { accounts, runtimes, logins: tm.logins.list(), refreshing });
   }
+  // ── runtime presence + install ──────────────────────────────────────────────────────────────────
+  // Which coding CLIs this box actually HAS. Read by Settings → Runtimes and by the agent runtime
+  // picker, so switching an agent to a runtime that isn't installed offers to install it instead of
+  // producing a session that parks on "the 'x' CLI is not on PATH".
+  // Admin-readable (any admin manages agents, and this only reports presence + a version string).
+  if (method === 'GET' && p === '/api/runtimes') {
+    if (me.role !== 'owner' && me.role !== 'admin') return sendJson(res, 403, { error: 'admin required' });
+    return sendJson(res, 200, { runtimes: runtimePresence() });
+  }
+  if (method === 'POST' && /^\/api\/runtimes\/[^/]+\/install$/.test(p)) {
+    // Owner only: this installs a global npm package on the HOST. It is a persistent change to the
+    // box (not a per-session effect), so it sits at the same bar as managing the credential pool.
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const id = decodeURIComponent(p.split('/')[3] ?? '');
+    if (!isCodingRuntime(id as RuntimeId)) return sendJson(res, 400, { error: `unknown runtime: ${id}` });
+    const spec = CODING_RUNTIMES[id as CodingRuntimeId];
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.install.started', data: { runtime: id, command: spec.install.join(' ') } });
+    const result = await installRuntime(id);
+    os.audit.append({
+      ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email,
+      type: result.ok ? 'runtime.install.succeeded' : 'runtime.install.failed',
+      data: { runtime: id, version: result.version, error: result.error },
+    });
+    return sendJson(res, result.ok ? 200 : 500, result);
+  }
   if (method === 'POST' && p === '/api/runtime-accounts') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
     const b = await readBody(req) as { runtime?: unknown; name?: unknown; kind?: unknown; configDir?: unknown; apiKeyRef?: unknown; token?: unknown };
@@ -4784,7 +4866,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // right after adding (non-blocking: a bad dir is just badged, not rejected — the operator set the path).
       if (!check && kind === 'oauth' && runtime === 'claude-code' && acct.configDir) {
         const dirTok = readConfigDirToken(acct.configDir);
-        if (dirTok) check = await checkClaudeToken(dirTok);
+        if (dirTok) check = await checkClaudeToken(dirTok, undefined, { configDir: acct.configDir });
       }
       // Persist the validation snapshot (health + weekly/session usage) so the console can show it right away;
       // if usage says a window is already exhausted, park the account limited until it resets.
@@ -4846,8 +4928,22 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const token = acct.kind === 'token'
         ? (acct.apiKeyRef ? os.secrets.getSync(os.tenant, '*', acct.apiKeyRef) : undefined)
         : (acct.configDir ? readConfigDirToken(acct.configDir) : undefined);
-      if (!token) return sendJson(res, 400, { error: acct.kind === 'token' ? 'token value not found in the vault' : 'no .credentials.json found in the credential dir' });
-      const check = await checkClaudeToken(token);
+      if (!token) {
+        // A Keychain-stored login with no readable value means this process is in a Background security
+        // session with the login keychain locked (an ssh shell, a LaunchDaemon) — NOT that the credential is
+        // missing. `claude` reads it through the same locked keychain, so a session launched from here would
+        // also come up "Not logged in": say the actual cause rather than badging the account broken.
+        const keychained = acct.kind === 'oauth' && !!acct.configDir && keychainHasLogin(acct.configDir);
+        return sendJson(res, 400, {
+          error: acct.kind === 'token' ? 'token value not found in the vault'
+            : keychained ? 'this account’s login is in the macOS Keychain, but this process cannot read it — the login keychain is locked for its security session. Run the server as a LaunchAgent in the GUI (Aqua) session; a run launched from here would fail to authenticate too'
+            : 'no .credentials.json found in the credential dir',
+        });
+      }
+      // Pass the credential dir so an EXPIRED-but-refreshable access token is reported as such rather than
+      // as a dead credential (see configDirCanRefresh) — the manual Refresh button must not tell an operator
+      // to re-run `claude setup-token` for an account that fixes itself on its next launch.
+      const check = await checkClaudeToken(token, undefined, { configDir: acct.configDir });
       os.runtimeAccounts.recordCheck(runtime, name, { ok: check.ok, note: check.note, usage: check.usage });
       // A now-valid token re-enables a previously auto-disabled account; usage-exhaustion re-parks it limited.
       if (check.ok === true && !acct.enabled && acct.checkOk === false) os.runtimeAccounts.setEnabled(runtime, name, true);
@@ -5025,6 +5121,34 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const halted = tm.stopAllRunning(me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'sessions.stop_all', data: { halted } });
     return sendJson(res, 200, { ok: true, halted });
+  }
+
+  // ── install wizard (the post-install checklist) ────────────────────────────────
+  // Read-side only: every step is re-derived from the store that owns that setting, and the wizard UI
+  // fixes a step by calling that setting's OWN endpoint (PUT /api/settings/company, …). The only state
+  // these two writers touch is "skip"/"dismiss" — see src/edge/setup.ts.
+  if (method === 'GET' && p === '/api/setup') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    // "Own" agents = the fleet minus what every install is seeded with; a seeded agent-author is not
+    // evidence that anybody has built a team yet.
+    const ownAgents = terminalAgents(os).filter((a) => !a.builtIn).length;
+    return sendJson(res, 200, buildSetupStatus(os, { ownAgents, guidedLogin: tm.logins.supported('claude-code') }));
+  }
+  if (method === 'POST' && p === '/api/setup/skip') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as { step?: unknown; skip?: unknown };
+    const step = String(b.step ?? '') as SetupStepId;
+    if (!SETUP_STEP_IDS.includes(step)) return sendJson(res, 400, { error: `unknown setup step: ${step}` });
+    skipSetupStep(os, step, b.skip !== false, me.email);
+    const ownAgents = terminalAgents(os).filter((a) => !a.builtIn).length;
+    return sendJson(res, 200, buildSetupStatus(os, { ownAgents, guidedLogin: tm.logins.supported('claude-code') }));
+  }
+  if (method === 'POST' && p === '/api/setup/dismiss') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as { dismissed?: unknown };
+    dismissSetup(os, b.dismissed !== false, me.email);
+    const ownAgents = terminalAgents(os).filter((a) => !a.builtIn).length;
+    return sendJson(res, 200, buildSetupStatus(os, { ownAgents, guidedLogin: tm.logins.supported('claude-code') }));
   }
 
   // ── company settings (workspace-wide context injected into every claude-code agent) ──
@@ -5984,6 +6108,33 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const resolved = os.artifacts.readPath(a.id, url.searchParams.get('file') || undefined);
     if (!resolved) return sendJson(res, 404, { error: 'file not found' });
     return streamArtifactFile(req, res, resolved);
+  }
+  // Markdown deliverable → PDF, rendered on demand (never stored: the .md stays the source of truth, so
+  // an edit can't leave a stale PDF beside it). Same gate as /raw. Markdown only for now — the button
+  // promises exactly what it delivers.
+  const artPdfMatch = p.match(/^\/api\/artifacts\/([\w-]+)\/pdf$/);
+  if (method === 'GET' && artPdfMatch) {
+    const a = os.artifacts.get(artPdfMatch[1]);
+    if (!a) return sendJson(res, 404, { error: 'not found' });
+    if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam) return sendJson(res, 403, { error: 'forbidden' });
+    if (!isMarkdownArtifact(a.mime, a.filename)) return sendJson(res, 400, { error: 'only Markdown artifacts can be exported as PDF' });
+    const resolved = os.artifacts.readPath(a.id);
+    if (!resolved) return sendJson(res, 404, { error: 'file not found' });
+    let md: string;
+    try { md = fs.readFileSync(resolved.absPath, 'utf8'); } catch { return sendJson(res, 404, { error: 'file not readable' }); }
+    const when = new Date(a.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    const pdf = markdownToPdf(md, { title: a.title || a.filename, subtitle: `${a.agent} · ${when}` });
+    const name = a.filename.replace(/\.(md|markdown)$/i, '') + '.pdf';
+    os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: me.email, type: 'artifact.pdf.exported', data: { id: a.id, filename: name, bytes: pdf.length } });
+    res.writeHead(200, {
+      'content-type': 'application/pdf',
+      'content-length': String(pdf.length),
+      // attachment, not inline: this route exists because someone asked for a FILE to send on.
+      'content-disposition': `attachment; filename="${name.replace(/[^\w.\-]+/g, '_')}"`,
+      'cache-control': 'no-store',
+    });
+    res.end(pdf);
+    return;
   }
   const artMatch = p.match(/^\/api\/artifacts\/([\w-]+)$/);
   // Move an artifact into a folder ('' = root). Same gate as delete: owner/admin, or the member whose

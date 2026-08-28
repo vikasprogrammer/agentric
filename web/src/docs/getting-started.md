@@ -2,6 +2,24 @@
 
 You're reading this, so you've already accepted your invite link and you're logged in. Here's the lay of the land.
 
+## If this install is brand new (owners)
+
+An owner landing on a fresh workspace gets the **setup checklist** (`Settings → Setup checklist`, and it
+opens itself once on first login). Six things, in order of how much they matter:
+
+1. **A coding runtime credential** — sign in to Claude from the console. Without it a spawned session sits
+   on the runtime's login screen forever. Adding more than one account gives you rotation when one hits its
+   usage limit.
+2. **Company context** — the markdown appended to every agent's system prompt. This is the single biggest
+   difference between an agent that knows your product and one that guesses.
+3. **A Composio API key** — the hosted OAuth layer behind ~1000 app connectors (Gmail, Notion, Linear…).
+4. **A chat channel** — Slack, Discord or Telegram, so people reach the fleet without the console.
+5. **Teammates** — roles are what make approvals meaningful; with one owner, every approval waits on you.
+6. **Agents** — install from the catalog, or have `agent-author` write one.
+
+Nothing there is one-way: the checklist reads the live settings, so finishing a step anywhere (Settings, the
+CLI, another admin) ticks it, and steps you don't want can be skipped.
+
 ## Your first five minutes
 
 1. **Open Agents** (left sidebar). These are the agents your team runs. You can run any agent that's been *assigned* to you — if the Run button is missing, ask an admin for access.

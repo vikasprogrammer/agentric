@@ -788,12 +788,14 @@ function migrate(db: Db): void {
       tenant            TEXT NOT NULL,
       agent             TEXT NOT NULL,          -- the CALLER agent id (bare, no agent: prefix)
       source            TEXT NOT NULL,          -- what woke it — a task id today
-      kind              TEXT NOT NULL,          -- wake class: 'poke' (room for 'approval', …)
+      kind              TEXT NOT NULL,          -- wake class: 'poke-done' | 'poke-blocked' | 'poke-stranded'
+                                                -- (legacy 'poke'; room for 'approval', …). 'poke-done' is
+                                                -- inject-only — it never spawns a resume (edge/wakeups.ts).
       transcript        TEXT NOT NULL,          -- caller's pinned claude session id — the resume target
       run_as            TEXT,                   -- member the woken run acts as (identity passthrough)
       title             TEXT,                   -- session title for the resume lane
       message           TEXT NOT NULL,          -- must stand alone: a sibling session has no shared context
-      status            TEXT NOT NULL,          -- 'pending' | 'delivered' | 'expired'
+      status            TEXT NOT NULL,          -- 'pending' | 'delivered' | 'expired' | 'dropped'
       attempts          INTEGER NOT NULL DEFAULT 0,
       delivered_via     TEXT,                   -- 'inject' | 'inject-sibling' | 'resume' | 'none'
       delivered_session TEXT,                   -- the session that received it
@@ -1110,6 +1112,11 @@ function migrate(db: Db): void {
   // …and on the revision snapshot, so reverting an agent restores the verbosity it was saved with
   // rather than silently leaving the current one in place.
   addColumn(db, 'agent_revisions', 'verbosity', 'TEXT');
+  // Context-shaping allowlists (AgentManifest.skills / .tools) — snapshotted so a revert restores the
+  // agent's offer alongside its prompt. JSON arrays; '[]' reads as "everything", matching a manifest
+  // that never declared one, so every pre-existing revision stays correct without a backfill.
+  addColumn(db, 'agent_revisions', 'skills', "TEXT NOT NULL DEFAULT '[]'");
+  addColumn(db, 'agent_revisions', 'tools', "TEXT NOT NULL DEFAULT '[]'");
 
   // WHEN the current turn started (epoch ms), NULL between turns. For a WARM chat session the pane stays
   // alive across turns, so `alive` stops meaning "working" — this is the honest replacement: set when a
@@ -1154,6 +1161,9 @@ function migrate(db: Db): void {
   // Indices the feed view leans on: sessions ordered by recency within a state, pending decisions, and the
   // session→task→goal attribution join (tasks.last_session_id). All IF NOT EXISTS, so a no-op on re-run.
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_status_updated ON term_sessions(status, updated_at)');
+  // An agent's OWN run history (`session_history`, `sessionBelongsToAgent`) is a per-agent, newest-first
+  // read; without this it scanned every session row in the tenant.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_agent ON term_sessions(agent, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_last_session ON tasks(last_session_id)');

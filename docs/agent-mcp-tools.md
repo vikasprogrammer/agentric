@@ -5,6 +5,45 @@ The OS injects one stdio MCP server (`agent-os`) into every claude-code session,
 (session-secret + tenant gated, sitting *before* the member-auth gate in `src/server.ts`). The agent
 can only ever act as its own session; the namespace/tenant/policy are enforced server-side.
 
+> **Per-agent tool allowlist.** An agent's manifest may carry a `tools` list, in which case the OS-owned
+> MCP server offers only those tools plus a small always-kept core (`report`, `update`, `ask_human`,
+> `check_inbox`, `notify`, `recall`, `remember`). Absent/empty ⇒ the full set below, which is the
+> default everywhere. It shapes context, not permission — `tools/call` is unfiltered and the gateway
+> still governs every effect. See `docs/per-agent-context.md`.
+
+
+## Measuring a tool's latency
+
+Every loopback call carries **`x-aos-tool: <tool>`** (set in `memory-mcp.ts` via an `AsyncLocalStorage`, so
+concurrent tool calls can't mislabel each other). The server records it as a second dimension in
+`src/edge/request-metrics.ts` — in-memory, no DB write — surfaced as `tools[]` on
+`GET /api/metrics/requests` (owner/admin) and as the "Agent tool calls (MCP)" table under
+**Settings → Endpoint timings**. It answers a different question from the route table: a route is what the
+SERVER spends time on, a tool is what an AGENT waits on, and they don't map 1:1.
+
+The header is **telemetry only** — authority is the session secret; the tool map is capped like the route
+map, so a forged header grants nothing and can't unbound the table. Tools that block on a human or a
+delegate by design (`ask_human`, `ask_agent`, `task_wait`) are flagged `blocking` and sorted below real
+work: their clock is a person, not code.
+
+Reference numbers from a 2026-08-27 sweep of all 64 tools against a scrubbed copy of a live 1k-session,
+500-task, 2.2k-memory tenant (p50, end-to-end from the MCP process, ~1.5ms of which is stdio + loopback):
+
+| tool | p50 | note |
+|---|---|---|
+| `recall` | **260ms** | remote automem backend (2 parallel `/recall` calls); **4ms** on the built-in `sqlite` backend |
+| `remember` | **169ms** | one automem write; **2ms** on `sqlite` |
+| `task_list` | 5.9ms | board query + `attachDeps` |
+| `goal_get` | 4.7ms | goal + events + derived progress + linked tasks |
+| `skill_find` | 3.8ms | library + bundled catalog off disk |
+| `session_history` / `session_open` | 3.5ms / 3.1ms | after v0.404.0; 21ms / 19ms before it |
+| everything else | ≤3ms | |
+
+The lesson the sweep encoded: the memory plane's cost is **network geography**, not indexing — a remote
+automem is 60–100× every local tool — while the two local outliers were both "the index exists, the query
+didn't use it". Re-run the sweep after touching a store: `scripts/agent-history-scope-test.cjs` pins the
+scope/parity properties, but not the cost.
+
 ## Tools ↔ routes ↔ stores
 
 | Tool | Route | Server-side | Read/Write | Notes |
@@ -42,7 +81,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `policy_check` | `POST /api/agent/policy/check` | policy preview | R | dry-run, no side effects |
 | `directory_lookup` | `GET /api/agent/directory` | `TeamStore` | R | people + their chat identities |
 | `list_agents` | `GET /api/agent/roster` | `os.agents` (peer claude-code agents) | R | the fleet roster — every OTHER agent you can hand work to (id + description + category), so you pick the right specialist instead of guessing an id (a task/ask to a non-existent agent never runs). The agent-side companion to `directory_lookup` (people); pair it with `ask_agent` (sync Q&A) or `task_create({ assignee:"agent:<id>" })` (durable hand-off) |
-| `task_create` | `POST /api/tasks/create` | `TaskStore.create` | W | files a unit of work; author `agent:<id>`; owner = run-as (delegation passthrough); `mode` headless/interactive for the dispatched run; optional `model` + `effort` (low…max) that PIN the dispatched session's runtime tuning — highest-priority override over the assignee agent's manifest + the workspace default (`resolveRuntimeTuning(agent, defaults, taskOverride)`), validated at the edge with `sanitizeRuntimeTuning`; useful to delegate background work at a cheaper/stronger tier than your own; optional `due` (ISO date) soft deadline; optional `goalId` (link to a strategic goal; a sub-task inherits its parent's `goalId` when omitted) + single-line `goal`/`criteria` (synonyms — the objective that drives a headless dispatch under a `/goal` convergence condition — Slice 2) + `dependsOn` (task ids this is blocked by — won't dispatch until they're done; cycle/self/missing rejected). **Async poke-back**: `poke_on_done:true` (agent→agent hand-off only) stamps the caller's agent id + pinned claude transcript on the task (`caller_agent`/`caller_claude_id`); on the delegate closing the loop (done/blocked) the task notifier hands the outcome to the **wake queue** (`Automations.pokeCaller` → `edge/wakeups.ts`), which delivers it into the caller's own live pane, else another live pane of that agent, else a `--resume` run (provenance `poke:<task>`; audited `agent.poked` with the lane in `via`) and retries anything undeliverable — the fire-and-forget counterpart to `wait` (which blocks). Implies `autoDispatch`. **Self-dispatch is refused**: assigning a task to YOURSELF with `autoDispatch` ends your turn and respawns you with an empty context to do work the session you are in already has loaded — the server rejects it (audited `task.self_dispatch.refused`) and tells you to do it in this turn, `schedule` it for genuinely later, or file it `autoDispatch:false` for the board. Measured on the live fleet before the guard: 104 such tasks in 7 days, 70 dispatched within 2 minutes, $1,330 of pure context reload. A goal-plan run is exempt |
+| `task_create` | `POST /api/tasks/create` | `TaskStore.create` | W | files a unit of work; author `agent:<id>`; owner = run-as (delegation passthrough); `mode` headless/interactive for the dispatched run; optional `model` + `effort` (low…max) that PIN the dispatched session's runtime tuning — highest-priority override over the assignee agent's manifest + the workspace default (`resolveRuntimeTuning(agent, defaults, taskOverride)`), validated at the edge with `sanitizeRuntimeTuning`; useful to delegate background work at a cheaper/stronger tier than your own; optional `due` (ISO date) soft deadline; optional `goalId` (link to a strategic goal; a sub-task inherits its parent's `goalId` when omitted) + single-line `goal`/`criteria` (synonyms — the objective that drives a headless dispatch under a `/goal` convergence condition — Slice 2) + `dependsOn` (task ids this is blocked by — won't dispatch until they're done; cycle/self/missing rejected). **Async poke-back**: `poke_on_done:true` (agent→agent hand-off only) stamps the caller's agent id + pinned claude transcript on the task (`caller_agent`/`caller_claude_id`); on the delegate closing the loop (done/blocked) the task notifier hands the outcome to the **wake queue** (`Automations.pokeCaller` → `edge/wakeups.ts`), which delivers it into the caller's own live pane, else another live pane of that agent, else a `--resume` run (provenance `poke:<task>`; audited `agent.poked` with the lane in `via`) and retries anything undeliverable — the fire-and-forget counterpart to `wait` (which blocks). **The resume lane is priced by what the wake is FOR** (`kind`, docs/tasks-plan.md §3.8): a `done` completion injects into a live caller but is DROPPED at a cold one (audited `agent.poke.skipped`, `reason: 'done-cold-caller'`) — nobody is stuck, the result is on the task and the owner already has the card; a `blocked` hand-back or a delegate whose run died still resumes, since only the caller can move those. Implies `autoDispatch`. **Self-dispatch is refused**: assigning a task to YOURSELF with `autoDispatch` ends your turn and respawns you with an empty context to do work the session you are in already has loaded — the server rejects it (audited `task.self_dispatch.refused`) and tells you to do it in this turn, `schedule` it for genuinely later, or file it `autoDispatch:false` for the board. Measured on the live fleet before the guard: 104 such tasks in 7 days, 70 dispatched within 2 minutes, $1,330 of pure context reload. A goal-plan run is exempt |
 | `task_list` | `GET /api/tasks/list` | `TaskStore.list` | R | `assignee:"me"` → self; board query/FTS |
 | `task_get` | `GET /api/tasks/get` | `TaskStore.withEvents` | R | task + full activity timeline |
 | `task_claim` | `POST /api/tasks/claim` | `TaskStore.claim` | W | atomic take (→ doing); loses if already claimed |

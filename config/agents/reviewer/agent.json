@@ -1,0 +1,20 @@
+{
+  "id": "reviewer",
+  "version": "1.0.0",
+  "description": "Independent reviewer — checks a change, a document, or a plan in isolation and returns a blocking, severity-ranked verdict.",
+  "category": "Engineering",
+  "principal": "svc-reviewer",
+  "policyContext": "default@v3",
+  "runtime": "claude-code",
+  "icon": "ListChecks",
+  "examplePrompts": [
+    "Review this pull request for correctness and security, and give me a verdict",
+    "Check this plan for what it gets wrong before we start building",
+    "Verify this claim actually holds — try to prove it false"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}
