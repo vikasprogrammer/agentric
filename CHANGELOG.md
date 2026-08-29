@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.404.1] - 2026-08-29
+### Fixed
+- **A merged skill proposal now stops asking to be reviewed.** The Skills console acts on the SKILL —
+  publish a draft, apply or discard a parked edit, delete one — and none of those routes ever touched the
+  `skill.proposed` Inbox card they resolve. Since "Needs you" is driven by `messages.status`, every
+  proposal a human had already merged sat there "awaiting review" forever (live tenants were carrying
+  several). The four routes now close the matching card (`POST /api/skills/:name/publish` and
+  `…/edit/apply` → approved; `…/edit/discard` and `DELETE /api/skills/:name` → rejected), matched by the
+  card's `args.skill` plus the `edit` flag that tells the draft and edit lanes apart, and the count is
+  audited alongside the act. Cards left open by the old code are healed once at boot from the library's own
+  state (a published draft reads as approved, a deleted one as rejected, an edit with nothing parked as
+  `resolved` — applied vs discarded is no longer distinguishable); anything genuinely pending is left
+  alone. The Inbox row renders the resolution (`published` / `applied` / `dismissed`) instead of a
+  permanent violet "review in Skills" badge, and names the edit lane for what it is. Pinned by
+  `scripts/skill-edit-proposal-test.cjs` (7 new checks, all of which fail against the old code).
+
 ## [0.404.0] - 2026-08-27
 ### Added
 - **Per-tool latency for every agent-facing MCP tool.** The request-metrics collector already answered

@@ -908,6 +908,39 @@ export class TerminalManager {
     });
     this.refreshTranscriptRoots();
     this.sweepLaunchMarkers();
+    this.sweepStaleSkillProposals();
+  }
+
+  /** One-shot boot heal for review cards left open by the pre-v0.404.1 skills routes, which resolved the
+   *  SKILL but never its 'skill.proposed' card — so a published draft / applied edit sat in "Needs you"
+   *  forever. Re-derives each open card's fate from the library (the only source of truth left): a draft
+   *  that is now published reads as approved, one whose folder is gone as rejected, and an edit card with
+   *  no parked edit as `resolved` (applied vs discarded is no longer distinguishable — and the card is
+   *  dead either way). Anything still genuinely pending is left alone. Cheap: open cards only, once per
+   *  process. */
+  private sweepStaleSkillProposals(): void {
+    try {
+      const rows = this.db
+        .prepare(`SELECT id, args FROM messages WHERE type = 'skill.proposed' AND status = 'open'`)
+        .all<{ id: string; args: string | null }>();
+      if (!rows.length) return;
+      const upd = this.db.prepare(`UPDATE messages SET status = ? WHERE id = ?`);
+      let healed = 0;
+      for (const r of rows) {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { continue; }
+        const name = String(a.skill ?? '');
+        if (!name) continue;
+        const skill = this.os.skills.get(name);
+        let status: string | undefined;
+        if (a.edit === true) { if (!skill || !this.os.skills.pendingEdit(name)) status = 'resolved'; }
+        else if (!skill) status = 'rejected';
+        else if (!skill.proposed) status = 'approved';
+        if (!status) continue;
+        upd.run(status, r.id); healed++;
+      }
+      if (healed) this.audit('-', 'system', 'skill.proposals.healed', { count: healed });
+    } catch { /* advisory — never block boot on a heal */ }
   }
 
   /** Teach the transcript reader where rotated sessions wrote their conversations. Without it the console's
@@ -5780,6 +5813,28 @@ export class TerminalManager {
   /** Mark a 'skill.request' card resolved once a human approved (installed) or dismissed it. */
   setSkillRequestStatus(id: string, status: 'approved' | 'rejected'): void {
     this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'skill.request'`).run(status, id);
+  }
+
+  /** Mark the open 'skill.proposed' review card(s) for a skill resolved once a human acted on it —
+   *  published/dismissed a proposed DRAFT, or applied/discarded a proposed EDIT. Unlike `skill.request`
+   *  (approved by card id) the skills console acts on the SKILL, not the card, so the card is found by
+   *  its payload: `args.skill` plus the `edit` flag that tells the two lanes apart. Without this the
+   *  card sat "awaiting review" in the Inbox forever after the human had already merged it. Returns how
+   *  many cards were closed. */
+  resolveSkillProposals(skill: string, lane: 'new' | 'edit', status: 'approved' | 'rejected'): number {
+    const rows = this.db
+      .prepare(`SELECT id, args FROM messages WHERE type = 'skill.proposed' AND status = 'open'`)
+      .all<{ id: string; args: string | null }>();
+    const upd = this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'skill.proposed'`);
+    let closed = 0;
+    for (const r of rows) {
+      let a: Record<string, unknown> = {};
+      try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate a corrupt payload */ }
+      if (String(a.skill ?? '') !== skill) continue;
+      if ((a.edit === true ? 'edit' : 'new') !== lane) continue;
+      upd.run(status, r.id); closed++;
+    }
+    return closed;
   }
 
   /** Open (unresolved) skill.request cards — the Skills page's agent-request review section. */

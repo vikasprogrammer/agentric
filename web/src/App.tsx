@@ -6449,9 +6449,16 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     detail = m.body
     badge = <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">important</Badge>
   } else if (m.type === 'skill.proposed') {
-    Icon = Sparkles; iconCls = 'text-violet-600'; highlight = true
-    verb = 'proposed a skill'; detail = m.body
-    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
+    // Two lanes on one card type: a NEW draft (published/dismissed on the Skills page) and an EDIT to a
+    // live skill (applied/discarded there). Either way the card carries its own resolution, so a merged
+    // proposal stops asking to be reviewed.
+    const isEdit = (m.args as { edit?: boolean } | undefined)?.edit === true
+    const resolvedS = m.status === 'approved' ? (isEdit ? 'applied' : 'published') : m.status === 'rejected' ? 'dismissed' : ''
+    Icon = Sparkles; iconCls = resolvedS ? 'text-muted-foreground' : 'text-violet-600'; highlight = !resolvedS
+    verb = isEdit ? 'proposed a skill edit' : 'proposed a skill'; detail = m.body
+    badge = resolvedS
+      ? <ResolutionChip status={m.status} word={resolvedS} />
+      : <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
   } else if (m.type === 'host.proposed') {
     Icon = Server; iconCls = 'text-violet-600'; highlight = true
     verb = 'proposed a host'; detail = m.body
