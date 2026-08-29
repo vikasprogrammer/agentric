@@ -5555,7 +5555,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // interactive session, materialise the now-published skill into it + `/reload-skills` instead of
     // waiting for next launch. Bounded to the proposer — a broadcast to the whole fleet would be disruptive.
     const reloaded = proposer ? tm.refreshAgentSkills(proposer).reloaded : 0;
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name, reloaded } });
+    // Close the Inbox review card — the console acts on the skill, so nothing else would ever resolve it.
+    const closed = tm.resolveSkillProposals(name, 'new', 'approved');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name, reloaded, cards: closed } });
     return sendJson(res, 200, { ok: true, skill: os.skills.get(name), reloaded });
   }
   // Apply an agent-proposed EDIT to an existing skill (owner/admin): the parked text becomes the live
@@ -5568,7 +5570,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const applied = os.skills.applyEdit(name);
     if (!applied) return sendJson(res, 404, { error: 'no pending edit for this skill' });
     const reloaded = applied.agent ? tm.refreshAgentSkills(applied.agent).reloaded : 0;
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.applied', data: { skill: name, proposedBy: applied.agent, reloaded } });
+    const closed = tm.resolveSkillProposals(name, 'edit', 'approved');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.applied', data: { skill: name, proposedBy: applied.agent, reloaded, cards: closed } });
     return sendJson(res, 200, { ok: true, skill: os.skills.get(name), reloaded });
   }
   // Discard an agent-proposed edit (owner/admin) — drops the parked text, live skill untouched.
@@ -5578,7 +5581,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const name = skillEditDrop[1];
     const proposer = os.skills.pendingEdit(name)?.agent;
     if (!os.skills.discardEdit(name)) return sendJson(res, 404, { error: 'no pending edit for this skill' });
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.dismissed', data: { skill: name, proposedBy: proposer } });
+    const closed = tm.resolveSkillProposals(name, 'edit', 'rejected');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.dismissed', data: { skill: name, proposedBy: proposer, cards: closed } });
     return sendJson(res, 200, { ok: true });
   }
   // List open agent skill-requests for the Skills page review section (owner/admin).
@@ -5763,7 +5767,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // DELETE — also the "dismiss" action for a proposal (drops the draft folder). Audit the intent.
     const wasProposed = !!os.skills.get(name)?.proposed;
     const ok = os.skills.remove(name);
-    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: wasProposed ? 'skill.proposal.dismissed' : 'skill.deleted', data: { skill: name } });
+    // A deleted skill's review cards are dead either way: a dismissed draft is rejected, and a deleted
+    // published skill can't have its parked edit reviewed (remove() drops that edit with the folder).
+    const closed = ok ? tm.resolveSkillProposals(name, 'new', 'rejected') + tm.resolveSkillProposals(name, 'edit', 'rejected') : 0;
+    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: wasProposed ? 'skill.proposal.dismissed' : 'skill.deleted', data: { skill: name, cards: closed } });
     return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'skill not found' });
   }
 

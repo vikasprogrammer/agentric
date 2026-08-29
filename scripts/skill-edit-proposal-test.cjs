@@ -187,10 +187,49 @@ fs.rmSync(home, { recursive: true, force: true });
   const applyAgain = await (await fetch(base + '/api/skills/wp-version-upgrade/edit/apply', { method: 'POST', headers: { cookie } })).status;
   check('applying with nothing pending 404s', applyAgain === 404);
 
+  // ── the review card is closed by the act that resolves it ───────────────────
+  // The console acts on the SKILL, not the card, so nothing else will ever flip it: a merged proposal
+  // that stays `open` keeps asking to be reviewed in "Needs you" forever (which is what live tenants saw).
+  const cards = () => aos.db.prepare("SELECT id, status, args FROM messages WHERE type = 'skill.proposed' ORDER BY created_at").all()
+    .map((r) => ({ ...r, args: JSON.parse(r.args || '{}') }));
+  const cardFor = (skill, edit) => cards().filter((c) => c.args.skill === skill && (c.args.edit === true) === edit);
+  check('applying an edit closes its inbox card', cardFor('wp-version-upgrade', true).every((c) => c.status === 'approved'));
+  check('...and the new-draft card for another skill is untouched', cardFor('brand-new-skill', false)[0].status === 'open');
+
   await post('/api/skills/propose', { name: 'wp-version-upgrade', body: 'a third revision' });
+  check('a fresh edit proposal opens a new card', cardFor('wp-version-upgrade', true).some((c) => c.status === 'open'));
   const discarded = await asOwner('/api/skills/wp-version-upgrade/edit/discard');
   check('an owner discards an edit', discarded.ok === true);
   check('...leaving the live skill alone', aos.skills.get('wp-version-upgrade').content.includes('PHP check'));
+  check('...and closing the card as rejected', cardFor('wp-version-upgrade', true).every((c) => c.status !== 'open'));
+
+  // publish / dismiss close the OTHER lane's card (a proposed draft, not an edit).
+  const published = await asOwner('/api/skills/brand-new-skill/publish');
+  check('an owner publishes a proposed draft', published.ok === true);
+  check('...which closes its card as approved', cardFor('brand-new-skill', false).every((c) => c.status === 'approved'));
+
+  await post('/api/skills/propose', { name: 'throwaway-draft', description: 'Nope.', body: 'step one' });
+  check('a dismissable draft has an open card', cardFor('throwaway-draft', false)[0].status === 'open');
+  const dropped = await (await fetch(base + '/api/skills/throwaway-draft', { method: 'DELETE', headers: { cookie } })).json();
+  check('deleting a proposed draft is the dismiss action', dropped.ok === true);
+  check('...and closes its card as rejected', cardFor('throwaway-draft', false).every((c) => c.status === 'rejected'));
+
+  // ── boot heal: cards left open by the pre-fix routes ───────────────────────
+  // Simulate the live tenants: an already-merged proposal whose card the old code never touched.
+  const stale = (id, args) => aos.db.prepare("INSERT INTO messages (id, session_id, agent, type, title, body, args, status, created_at) VALUES (?, ?, 'wp-agent', 'skill.proposed', 'stale', 'stale', ?, 'open', ?)")
+    .run(id, session.id, JSON.stringify(args), Date.now());
+  stale('m-stale-edit', { skill: 'wp-version-upgrade', edit: true });   // edit already applied/discarded
+  stale('m-stale-pub', { skill: 'brand-new-skill' });                   // draft already published
+  stale('m-stale-gone', { skill: 'throwaway-draft' });                  // draft already deleted
+  aos.skills.propose({ name: 'still-pending', description: 'Waiting.', body: 'x', agent: 'wp-agent', session: session.id });
+  stale('m-live-draft', { skill: 'still-pending' });                    // genuinely still awaiting review
+  const { TerminalManager } = require(path.join(ROOT, 'dist/terminal.js'));
+  new TerminalManager(aos, base, path.join(serverHome, 'heal.sock'));   // the boot sweep runs in the constructor
+  const byId = Object.fromEntries(aos.db.prepare("SELECT id, status FROM messages WHERE type = 'skill.proposed'").all().map((r) => [r.id, r.status]));
+  check('boot heals a stale edit card (fate no longer knowable → resolved)', byId['m-stale-edit'] === 'resolved');
+  check('boot heals a stale card for a now-published draft as approved', byId['m-stale-pub'] === 'approved');
+  check('boot heals a stale card for a deleted draft as rejected', byId['m-stale-gone'] === 'rejected');
+  check('boot leaves a genuinely pending draft card open', byId['m-live-draft'] === 'open');
 
   server.close();
   fs.rmSync(serverHome, { recursive: true, force: true });
