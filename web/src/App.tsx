@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbosityAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -760,6 +760,22 @@ function IconPicker({ value, onChange }: { value?: string; onChange: (v: string 
   )
 }
 
+/** The workspace's output styles (Claude Code's built-ins + this workspace's custom ones), fetched
+ *  ONCE per page load and shared. Several tuning cards can be mounted at the same time (the agent
+ *  editor, the create form), and the list is small, static and identical for all of them. */
+let outputStylesCache: OutputStylesResp | null = null
+const EMPTY_STYLES: OutputStylesResp = { builtin: [], custom: [], enabled: false }
+function useOutputStyles(): OutputStylesResp {
+  const [data, setData] = useState<OutputStylesResp | null>(outputStylesCache)
+  useEffect(() => {
+    if (outputStylesCache) return
+    api.outputStyles().then((r) => { if (!r.error) { outputStylesCache = r; setData(r) } }).catch(() => {})
+  }, [])
+  return data ?? EMPTY_STYLES
+}
+/** Drop the cache so the next mount refetches — after a style is created or deleted. */
+function invalidateOutputStyles() { outputStylesCache = null }
+
 /** The model / effort / permission-mode trio, reused by the create form, the agent editor, and the
  *  workspace defaults panel. Empty model/effort = "inherit" (the placeholder/option says so). Model +
  *  effort map 1:1 to `claude --model/--effort`; permissionMode maps to `--permission-mode` on the
@@ -782,6 +798,10 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
   runtime?: RuntimeInfo
 }) {
   const selCls = 'h-8 w-full rounded-md border bg-background px-2 text-xs'
+  const styles = useOutputStyles()
+  const selectedStyle = tuning.outputStyle
+    ? [...styles.builtin, ...styles.custom].find((x) => x.name === tuning.outputStyle)
+    : undefined
   const models = runtime?.suggestedModels ?? []
   // A model pinned for ANOTHER runtime is the one mistake worth flagging inline: agents carry a model,
   // so switching runtimes silently hands e.g. `claude-opus-4-8` to `codex --model`. The server rejects
@@ -821,18 +841,31 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
           <p className="text-[11px] text-muted-foreground">Interactive only — headless stays fully skipped. The gate hook governs regardless.</p>
         </div>
       )}
-      <div className="space-y-1">
-        <label className="text-xs font-medium">Output</label>
-        <select className={selCls} value={tuning.verbosity ?? ''} onChange={(e) => onChange({ ...tuning, verbosity: (e.target.value || undefined) as Verbosity | undefined })}>
-          <option value="">{inheritLabel}</option>
-          <option value="normal">normal</option>
-          <option value="terse">terse — compress narration</option>
-        </select>
-        <p className="text-[11px] text-muted-foreground">
-          Terse trims the agent's own commentary (output tokens are the priciest, and are re-billed as input each turn).
-          Code, errors, reports, KB pages and chat replies are never compressed.
-        </p>
-      </div>
+      {runtime && !runtime.capabilities.outputStyle ? (
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-muted-foreground">Output style</label>
+          <div className="flex h-8 items-center rounded-md border border-dashed bg-muted/30 px-2 text-xs text-muted-foreground">not applicable</div>
+          <p className="text-[11px] text-muted-foreground">{runtime.label} has no output styles — shape its voice in the agent prompt instead.</p>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Output style</label>
+          <select className={selCls} value={tuning.outputStyle ?? ''} onChange={(e) => onChange({ ...tuning, outputStyle: e.target.value || undefined })}>
+            <option value="">{inheritLabel}</option>
+            {styles.builtin.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+            {styles.custom.length > 0 && (
+              <optgroup label="Workspace styles">
+                {styles.custom.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+              </optgroup>
+            )}
+          </select>
+          <p className="text-[11px] text-muted-foreground">{selectedStyle?.description || 'Sets the system prompt\'s role, tone and default response shape. Manage custom styles in Settings → Runtime.'}</p>
+          {selectedStyle?.warning && <p className="text-[11px] text-amber-600 dark:text-amber-500">⚠ {selectedStyle.warning}</p>}
+          {selectedStyle && selectedStyle.keepCodingInstructions === false && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-500">⚠ This style drops Claude Code's built-in software-engineering instructions.</p>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -13351,12 +13384,12 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
     // Same for every tuning knob: the server now PATCHES tuning (an absent key keeps its current value),
     // and `JSON.stringify` drops `undefined` — so spreading a tuning with cleared fields would transmit
     // no key and silently fail to clear. This card owns all four knobs, so it states all four.
-    const t0: RuntimeTuningPatch = { model: tuning.model ?? '', effort: tuning.effort ?? '', permissionMode: tuning.permissionMode ?? '', verbosity: tuning.verbosity ?? '' }
+    const t0: RuntimeTuningPatch = { model: tuning.model ?? '', effort: tuning.effort ?? '', permissionMode: tuning.permissionMode ?? '', outputStyle: tuning.outputStyle ?? '' }
     const r = await api.saveAgentConfig(agentId, { runtime, ...t0, description: description.trim(), examplePrompts, shellSecrets, skills, tools, usableSubagents: subagents, spawnableAsSubagent: spawnable, chatReachable, netMode, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     // Mirror back every knob the server echoes — a partial copy blanks the rest of the form until reload.
-    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, verbosity: r.verbosity }
+    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, outputStyle: r.outputStyle }
     const d = r.description ?? ''
     const p = (r.examplePrompts ?? []).join('\n')
     const c = r.category ?? ''
@@ -16954,57 +16987,164 @@ function KillSwitchCard({ me }: { me: Member }) {
   )
 }
 
-/** How far the terse flag has spread across this workspace — counts, not savings.
+/** Which output styles this workspace is actually running — counts, not savings.
  *
- *  This panel used to render cost-per-turn and USD-per-turn deltas in green and amber. Those were
- *  removed in v0.389.0 rather than caveated: `output_tokens` is ~85% tool-call arguments, so the
- *  number never contained the narration the brief acts on, and against real traffic it swung ±50-90%
- *  on tool-use volume alone — reading as a confident verdict either way. Whether terse WORKS is a
- *  question for `npm run bench:verbosity` / `bench:verbosity-turns` (paired, controlled, CI that
- *  refuses a verdict inside the noise), which measured its ceiling at ~1% of spend. What a console
- *  can honestly show is who is running it. */
-function VerbosityAdoptionPanel() {
-  const [data, setData] = useState<VerbosityAdoption | null>(null)
-  useEffect(() => { api.verbosityAdoption().then((r) => { if (!r.error) setData(r) }).catch(() => {}) }, [])
-  if (!data) return null
-  const { normal, terse } = data.sessions
-  if (!normal && !terse) return null // nothing has run under the flag yet
+ *  Two ancestors of this panel rendered cost deltas in green and amber: the verbosity-savings figures
+ *  (retired v0.389.0) and the terse adoption counts that replaced them. `output_tokens` is ~85%
+ *  tool-call arguments, so neither ever contained the narration a style acts on, and against real
+ *  traffic they swung ±50-90% on tool-use volume alone while reading as a confident verdict. Whether a
+ *  style WORKS is a question for `npm run bench:output-style` (paired, controlled, a CI that refuses a
+ *  verdict inside the noise). What a console can honestly show is who is running which. */
+function OutputStyleAdoptionPanel() {
+  const [data, setData] = useState<OutputStyleAdoption | null>(null)
+  useEffect(() => { api.outputStyleAdoption().then((r) => { if (!r.error) setData(r) }).catch(() => {}) }, [])
+  if (!data || !data.sessions.byStyle.length) return null // nothing has run under a style yet
 
   return (
     <div className="space-y-2 border-t pt-4">
-      <label className="text-sm font-medium">Terse output — where it is running, last {data.windowDays} days</label>
+      <label className="text-sm font-medium">Output styles — where they are running, last {data.windowDays} days</label>
       <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
-        <span>Terse runs: <span className="font-mono text-foreground">{terse.toLocaleString()}</span></span>
-        <span>Normal runs: <span className="font-mono text-foreground">{normal.toLocaleString()}</span></span>
+        {data.sessions.byStyle.map((s) => (
+          <span key={s.style}>{s.style}: <span className="font-mono text-foreground">{s.count.toLocaleString()}</span></span>
+        ))}
         {data.sessions.unstamped > 0 && (
           <span>Unstamped: <span className="font-mono">{data.sessions.unstamped.toLocaleString()}</span></span>
         )}
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Counts only. Terse is an output-style preference, not a cost control — measured against a
-        controlled benchmark its effect on spend is around <strong>1%</strong>, because narration is a
-        small share of what an agent emits. Run <code className="font-mono">npm run bench:verbosity</code> to
-        re-measure it; a comparison of live terse and normal runs cannot answer it, which is why the
-        old savings figures were removed.
+        Counts only. An output style shapes the ANSWER, not the bill — measured against a controlled
+        benchmark, narration is roughly <strong>15%</strong> of what an agent emits, so the ceiling on any
+        style's effect on spend is about <strong>1%</strong>. Run{' '}
+        <code className="font-mono">npm run bench:output-style</code> to measure one; a comparison of live
+        runs cannot, which is why the old savings figures were removed.
       </p>
       {data.byAgent.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="text-muted-foreground">
-              <tr className="text-left"><th className="py-1 pr-4 font-medium">Agent</th><th className="py-1 pr-4 font-medium">Terse runs</th><th className="py-1 font-medium">Normal runs</th></tr>
+              <tr className="text-left"><th className="py-1 pr-4 font-medium">Agent</th><th className="py-1 font-medium">Runs by style</th></tr>
             </thead>
             <tbody>
               {data.byAgent.map((a) => (
                 <tr key={a.agent} className="border-t">
                   <td className="py-1 pr-4 font-mono">{a.agent}</td>
-                  <td className="py-1 pr-4 font-mono">{a.terse.toLocaleString()}</td>
-                  <td className="py-1 font-mono">{a.normal.toLocaleString()}</td>
+                  <td className="py-1 font-mono">{a.styles.map((x) => `${x.style} ${x.count}`).join('  ·  ')}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+    </div>
+  )
+}
+
+/** Settings → Runtime → the output-style library: Claude Code's built-ins (read-only) plus this
+ *  workspace's own styles, which are Markdown files materialised into every claude-code agent at
+ *  launch. A style is ROLE / TONE / RESPONSE SHAPE — project conventions belong in the agent prompt,
+ *  and a reusable procedure belongs in a skill. */
+function OutputStyleLibrary({ me }: { me: Member }) {
+  const [data, setData] = useState<OutputStylesResp | null>(null)
+  const [editing, setEditing] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [newName, setNewName] = useState('')
+  const [hint, setHint] = useState('')
+  const [busy, setBusy] = useState(false)
+  const canEdit = me.role === 'owner' || me.role === 'admin'
+
+  const reload = () => api.outputStyles().then((r) => { if (!r.error) setData(r) }).catch(() => {})
+  useEffect(() => { reload() }, [])
+
+  const open = async (name: string) => {
+    setHint(''); setEditing(name)
+    const r = await api.outputStyle(name)
+    setDraft(r.error ? '' : r.content)
+  }
+
+  const save = async (name: string, content?: string) => {
+    setBusy(true); setHint('')
+    const r = await api.saveOutputStyle(name, content === undefined ? {} : { content })
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    // The server warns when the frontmatter leaves out `keep-coding-instructions: true` — that silently
+    // strips Claude Code's software-engineering instructions from any agent using the style.
+    setHint(r.warning ? '⚠ saved — ' + r.warning : 'saved')
+    invalidateOutputStyles(); await reload()
+    if (content === undefined) open(name)
+    setTimeout(() => setHint(''), 6000)
+  }
+
+  const remove = async (name: string) => {
+    setBusy(true); setHint('')
+    const r = await api.deleteOutputStyle(name)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    // A deleted style leaves its name pinned on any agent that selected it, and an unknown style is
+    // silently ignored by the CLI — so those agents quietly fall back to Default. Name them.
+    setHint(r.orphaned.length ? `deleted — ${r.orphaned.join(', ')} now fall back to Default` : 'deleted')
+    if (editing === name) setEditing(null)
+    invalidateOutputStyles(); await reload()
+    setTimeout(() => setHint(''), 6000)
+  }
+
+  if (!data) return null
+
+  return (
+    <div className="space-y-3 border-t pt-4">
+      <div>
+        <label className="text-sm font-medium">Output styles</label>
+        <p className="text-sm text-muted-foreground">
+          A style sets an agent's <strong>role, tone and default response shape</strong> in the system prompt itself —
+          not project context (that's the agent's prompt) and not a procedure (that's a skill). Pick one per agent, or
+          set a fleet default above. <span className="font-mono text-xs">claude-code</span> only.
+        </p>
+      </div>
+
+      <div className="space-y-1">
+        {data.builtin.map((b) => (
+          <div key={b.name} className="rounded-md border px-3 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{b.name}</span>
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">built-in</span>
+            </div>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">{b.description}</p>
+            {b.warning && <p className="mt-0.5 text-[11px] text-amber-600 dark:text-amber-500">⚠ {b.warning}</p>}
+          </div>
+        ))}
+        {data.custom.map((c) => (
+          <div key={c.name} className="rounded-md border px-3 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{c.name}</span>
+              <span className="text-[10px] text-muted-foreground">{c.bytes} bytes</span>
+              {c.keepCodingInstructions === false && (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">no coding instructions</span>
+              )}
+              {canEdit && (
+                <span className="ml-auto flex gap-2">
+                  <button className="text-[11px] underline" onClick={() => (editing === c.name ? setEditing(null) : open(c.name))}>{editing === c.name ? 'close' : 'edit'}</button>
+                  <button className="text-[11px] text-destructive underline" onClick={() => remove(c.name)} disabled={busy}>delete</button>
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">{c.description || <span className="italic">no description</span>}</p>
+            {editing === c.name && (
+              <div className="mt-2 space-y-2">
+                <textarea className="h-64 w-full rounded-md border bg-background p-2 font-mono text-[11px]" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
+                <Button size="sm" onClick={() => save(c.name, draft)} disabled={busy}>Save style</Button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {canEdit && data.enabled && (
+        <div className="flex items-center gap-2">
+          <Input className="h-8 w-56 text-xs" placeholder="New style name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+          <Button size="sm" variant="outline" disabled={busy || !newName.trim()} onClick={() => { const n = newName.trim(); setNewName(''); save(n) }}>Create</Button>
+          {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+        </div>
+      )}
+      {!canEdit && hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
     </div>
   )
 }
@@ -17025,7 +17165,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
   useEffect(() => {
     api.runtimeDefaults().then((r) => {
       if (r.error) return
-      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, verbosity: r.verbosity }
+      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, outputStyle: r.outputStyle }
       setTuning(t); setSaved(t); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
     }).catch(() => {})
     api.subagentDefault().then((r) => { if (!r.error) setSubMode(r.mode) }).catch(() => {})
@@ -17046,7 +17186,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
     if (r.error) return setHint('⚠ ' + r.error)
     // Mirror back every field the server echoes — a partial copy here silently blanks the other knobs
     // in the form until the next reload, which reads as "my setting didn't save".
-    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, verbosity: r.verbosity }
+    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, outputStyle: r.outputStyle }
     setTuning(t); setSaved(t); setHint('saved — applies to every agent that doesn\'t override the field'); setTimeout(() => setHint(''), 3000)
   }
 
@@ -17065,7 +17205,8 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
         </div>
-        <VerbosityAdoptionPanel />
+        <OutputStyleLibrary me={me} />
+        <OutputStyleAdoptionPanel />
         <div className="space-y-1 border-t pt-4">
           <label className="text-sm font-medium">Sub-agents</label>
           <p className="text-sm text-muted-foreground">

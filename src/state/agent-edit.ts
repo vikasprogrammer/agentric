@@ -28,7 +28,7 @@ export function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentCo
   return {
     description: ag.description ?? '',
     category: ag.category, icon: ag.icon,
-    model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity,
+    model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, outputStyle: ag.outputStyle,
     examplePrompts: ag.examplePrompts ?? [], shellSecrets: ag.shellSecrets ?? [],
     skills: ag.skills ?? [], tools: ag.tools ?? [],
     claudeMd,
@@ -186,8 +186,10 @@ export function applyAgentEdit(
   opts: { summary: string; author: string },
 ): { ok: true; rev: number | null; target: string } | { ok: false; error: string } {
   // NB: no `runtime` arg — same as the self-edit and approve routes this shares. An agent-proposed model
-  // is validated by the CLI at launch, not here, so the three lanes stay behaviourally identical.
-  const { tuning, error } = sanitizeRuntimeTuning(runtimeTuningPatch(fields, ag, { fields: ['model', 'effort', 'verbosity'] }));
+  // is validated by the CLI at launch, not here, so the three lanes stay behaviourally identical. The
+  // output-style ALLOWLIST is passed though, because nothing downstream validates it: a name the CLI
+  // doesn't know runs as Default with no error anywhere (see `src/edge/output-styles.ts`).
+  const { tuning, error } = sanitizeRuntimeTuning(runtimeTuningPatch(fields, ag, { fields: ['model', 'effort', 'outputStyle'] }), undefined, { styles: os.outputStyles.names() });
   if (error) return { ok: false, error };
   const before = readAgentSnapshot(ag);
   const description = 'description' in fields ? String(fields.description ?? '').trim() : ag.description;
@@ -200,7 +202,7 @@ export function applyAgentEdit(
   // lists only narrow what it is offered, and the gateway governs every effect regardless.
   const skills = 'skills' in fields ? sanitizeAgentSkills(fields.skills) : ag.skills;
   const tools = 'tools' in fields ? sanitizeAgentTools(fields.tools) : ag.tools;
-  const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, verbosity: tuning.verbosity, category, icon, examplePrompts, shellSecrets, skills, tools };
+  const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, outputStyle: tuning.outputStyle, category, icon, examplePrompts, shellSecrets, skills, tools };
   const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
   fs.writeFileSync(path.join(ag.dir!, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
   if ('claudeMd' in fields) fs.writeFileSync(path.join(ag.dir!, 'CLAUDE.md'), String(fields.claudeMd ?? ''));

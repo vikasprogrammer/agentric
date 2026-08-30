@@ -181,8 +181,23 @@ rm -f .claude/settings.json
 # box, an isolated config dir, or a rotated account dir. It is not a governance change — it suppresses the
 # interactive confirmation of a mode this lane already runs in, and every effect still passes the
 # PreToolUse gate hook, which decides authoritatively regardless of permission mode.
+# OUTPUT STYLE (RuntimeTuning.outputStyle → src/edge/output-styles.ts). Claude Code takes a style as the
+# `outputStyle` SETTING, not a CLI flag, so it rides the same --settings file as everything else here. A
+# built-in name (`Concise`, `Proactive`, …) needs no file; a CUSTOM one is a .md the server materialised
+# into .claude/output-styles/ before launch. Unset (or `Default`) emits no key at all, which leaves any
+# lower settings layer untouched. Belt-and-braces re-filter of the name: it is already validated at the
+# API edge against the installed styles, and this keeps a hand-set env var from breaking the JSON.
+# NOTE: an UNKNOWN style is silently ignored by claude (exit 0, runs as Default) — nothing here can warn.
+OUTPUT_STYLE_LINE=""
+if [ -n "${CLAUDE_OUTPUT_STYLE:-}" ]; then
+  SAFE_STYLE="${CLAUDE_OUTPUT_STYLE//[^A-Za-z0-9 _-]/}"
+  if [ -n "$SAFE_STYLE" ]; then
+    OUTPUT_STYLE_LINE="  \"outputStyle\": \"$SAFE_STYLE\","
+  fi
+fi
 cat > .claude/aos-settings.json <<JSON
 {
+$OUTPUT_STYLE_LINE
   "crossSessionInbound": "refuse",
   "isolatePeerMachines": true,
   "skipDangerousModePermissionPrompt": true,

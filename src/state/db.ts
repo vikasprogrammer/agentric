@@ -1104,13 +1104,21 @@ function migrate(db: Db): void {
   addColumn(db, 'approvals', 'escalated_at', 'INTEGER');       // when the stale-approval reminder fired
   addColumn(db, 'questions', 'escalated_at', 'INTEGER');       // when the stale-question reminder fired
 
-  // Narration verbosity the run LAUNCHED with ('normal' | 'terse'), stamped from the `session.tuning`
-  // audit alongside model/effort. It's the join key the savings comparison groups on — without it on the
-  // row, "did terse actually cost less" needs a JSON scan of the audit stream per session. NULL = a run
-  // from before the flag existed: attributable to neither arm, and deliberately excluded from both.
+  // The Claude Code OUTPUT STYLE the run LAUNCHED with ('Default' | 'Concise' | a library style),
+  // stamped from the `session.tuning` audit alongside model/effort. It is the join key adoption groups
+  // on — without it on the row, "which agents ran which style" needs a JSON scan of the audit stream per
+  // session. NULL = a run from before the knob existed, or one on a runtime with no output styles:
+  // attributable to no style, and deliberately excluded from the counts.
+  addColumn(db, 'term_sessions', 'output_style', 'TEXT');
+  // …and on the revision snapshot, so reverting an agent restores the style it was saved with rather
+  // than silently leaving the current one in place.
+  addColumn(db, 'agent_revisions', 'output_style', 'TEXT');
+  // The columns these replaced — `term_sessions.verbosity` / `agent_revisions.verbosity`, the retired
+  // terse-narration flag (v0.406.0). Left in place rather than dropped: SQLite's DROP COLUMN rewrites
+  // the whole table, and the historical rows are the only surviving record of which live runs launched
+  // under the terse brief. Nothing reads or writes them any more. `addColumn` is a no-op on a fresh DB
+  // where they never existed, which is the correct end state.
   addColumn(db, 'term_sessions', 'verbosity', 'TEXT');
-  // …and on the revision snapshot, so reverting an agent restores the verbosity it was saved with
-  // rather than silently leaving the current one in place.
   addColumn(db, 'agent_revisions', 'verbosity', 'TEXT');
   // Context-shaping allowlists (AgentManifest.skills / .tools) — snapshotted so a revert restores the
   // agent's offer alongside its prompt. JSON arrays; '[]' reads as "everything", matching a manifest
