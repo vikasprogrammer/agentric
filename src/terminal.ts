@@ -684,10 +684,15 @@ export interface MemberNotice {
  *  until an owner happened to open Settings. The registry DMs the `admins` tier — the audience every one of
  *  these cards is already addressed to. `kind` is the card type (drives the DM icon + deep-link); `title`
  *  and `summary` are the card's own heading/body reused verbatim. */
+/** The review kinds that are also a `messages.type` — i.e. everything an AGENT raises. `system.update`
+ *  is deliberately excluded: it is an OS-raised notice delivered as a plain `notification` card, so it
+ *  travels the DM path without inventing a message type nothing renders. */
+export type ReviewCardKind = Exclude<ReviewNotice['kind'], 'system.update'>;
+
 export interface ReviewNotice {
   sessionId: string;
   agent: string;
-  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'goal.update.proposed' | 'connection.request';
+  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'goal.update.proposed' | 'connection.request' | 'system.update';
   title: string;
   summary: string;
   /** Whom to DM. Defaults (in the registry's `notifyReview`) to the `admins` tier — the audience nearly
@@ -4967,6 +4972,57 @@ export class TerminalManager {
   }
 
   /**
+   * Post an inbox card the OS itself raises — no session, no agent behind it. Today's caller is the
+   * self-update watcher (`src/edge/update-watch.ts`): "this box is behind origin", "an update is blocked
+   * by uncommitted changes", "an update was applied/failed". Uses a `system:<topic>` sentinel for
+   * `session_id` (no matching `term_sessions` row) so visibility is decided entirely by the Audience,
+   * exactly like {@link postTaskCard}. Returns the row id so a caller can supersede its own earlier card.
+   *
+   * A `notification` needs no `approvalId`; an `approval` card carries one plus its `level`, which is
+   * what makes the Inbox render Approve/Reject and route it through the normal decide endpoint — the
+   * watcher does not need (and must not have) an approval path of its own.
+   */
+  postSystemCard(input: {
+    topic: string;
+    type: 'notification' | 'approval';
+    title: string;
+    body: string;
+    audience: Audience;
+    args?: Record<string, unknown>;
+    approvalId?: string;
+    level?: string;
+    capability?: string;
+    notify?: boolean;
+  }): string {
+    const id = this.addMessage({
+      type: input.type, sessionId: `system:${input.topic}`, agent: 'system',
+      title: input.title, body: input.body, status: input.type === 'approval' ? 'pending' : 'open',
+      ...(input.args ? { args: input.args } : {}),
+      ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+      ...(input.level ? { level: input.level } : {}),
+      ...(input.capability ? { capability: input.capability } : {}),
+      audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
+    });
+    // A card nobody is logged in to see is the whole problem this solves on a headless box, so the
+    // out-of-band DM is the point rather than a nicety — but it stays advisory: a chat outage must not
+    // stop the card being recorded.
+    if (input.notify !== false) {
+      try { this.reviewNotifier?.({ sessionId: `system:${input.topic}`, agent: 'system', kind: 'system.update', title: input.title, summary: input.body, audience: input.audience, link: { page: 'settings', detail: 'updates', label: 'Settings → Updates' } }); }
+      catch { /* out-of-band push is advisory */ }
+    }
+    return id;
+  }
+
+  /** Close an OS-raised card (the watcher superseding its own earlier notice when origin moves on, or
+   *  retiring one once the update landed). Scoped to `system:` sentinels so it can only touch its own. */
+  closeSystemCards(topic: string, status: 'approved' | 'rejected' | 'cancelled' = 'cancelled', exceptId?: string): number {
+    const r = this.db
+      .prepare(`UPDATE messages SET status = ? WHERE session_id = ? AND status IN ('open','pending') AND id != ?`)
+      .run(status, `system:${topic}`, exceptId ?? '');
+    return Number(r.changes) || 0;
+  }
+
+  /**
    * Post one message into a task's **Discussion** (the task-detail conversation — see
    * `docs/task-rooms-plan.md`). A Discussion message is a `messages` row with `type='task.chat'` +
    * `audience_kind:'task'` on the `task:<id>` sentinel session; it is EXCLUDED from the Inbox feed
@@ -5259,7 +5315,7 @@ export class TerminalManager {
    * fires in ONE place — parity with how approvals/questions/tasks already reach a human. The notifier is
    * advisory: a failed push never wedges the request.
    */
-  private postReviewCard(input: { type: ReviewNotice['kind']; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string; audience?: Audience; link?: ReviewNotice['link'] }): void {
+  private postReviewCard(input: { type: ReviewCardKind; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string; audience?: Audience; link?: ReviewNotice['link'] }): void {
     // Providing/publishing/granting is an owner/admin act — address the review card to the admin tier by
     // default. A caller can override (e.g. a personal connection request, which only its own member can
     // complete) by passing an explicit `audience`.

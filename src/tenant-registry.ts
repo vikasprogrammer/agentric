@@ -705,6 +705,8 @@ const REVIEW_PRESENTATION: Record<ReviewNotice['kind'], { icon: string; page: st
   'agent.update.proposed': { icon: '✏️', page: 'agents' },
   'goal.update.proposed': { icon: '🎯', page: 'goals' },
   'connection.request': { icon: '🔌', page: 'connectors' },
+  // Not an agent's request at all — the OS itself reporting on its own version (see edge/update-watch.ts).
+  'system.update': { icon: '⬆️', page: 'settings/updates' },
 };
 
 /**
@@ -725,7 +727,8 @@ export async function notifyReview(os: AgentOS, slack: Pick<SlackSocket, 'dmUser
   const label = notice.link?.label ?? 'Agentric console';
   const lead = notice.link?.label ? 'Review it on' : 'Review it in the';
   const text = (p: ChatPlatform) =>
-    `${icon} ${notice.title} (agent ${notice.agent})` +
+    // An OS-raised notice has no agent behind it — "(agent system)" would be noise, so drop the byline.
+    `${icon} ${notice.title}${notice.agent && notice.agent !== 'system' ? ` (agent ${notice.agent})` : ''}` +
     (notice.summary && notice.summary !== notice.title ? `\n${notice.summary}` : '') +
     `\n${lead} ${chatLink(p, url, label)}.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);

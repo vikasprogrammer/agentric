@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -16418,6 +16418,85 @@ function StopAllPanel() {
 }
 
 /**
+ * The self-update WATCHER (`src/edge/update-watch.ts`) — whether this box says anything when it falls
+ * behind, and whether it may update itself once an owner approves.
+ *
+ * The panel above only tells you the box is behind while you are LOOKING at it, which on a headless
+ * remote is never — that is how boxes drifted 13+ versions with nothing anywhere saying so. This is the
+ * setting that makes the box speak up on its own.
+ */
+function UpdateWatchControl({ me, watch }: { me: Member; watch?: UpdateWatchConfig }) {
+  const [cfg, setCfg] = useState<UpdateWatchConfig | undefined>(watch)
+  const [busy, setBusy] = useState(false)
+  const [ran, setRan] = useState('')
+  useEffect(() => { setCfg(watch) }, [watch])
+  if (!cfg) return null
+  const isOwner = me.role === 'owner'
+
+  const set = async (mode: UpdateWatchMode) => {
+    setBusy(true); setRan('')
+    const r = await api.setUpdateWatch({ mode })
+    setBusy(false)
+    if (r.watch) setCfg(r.watch)
+  }
+  const runNow = async () => {
+    setBusy(true); setRan('')
+    const r = await api.runUpdateWatch()
+    setBusy(false)
+    setRan(r.error ? `⚠ ${r.error}` : OUTCOME[r.action ?? ''] ?? r.action ?? '')
+  }
+
+  const OPTIONS: Array<{ mode: UpdateWatchMode; label: string; hint: string }> = [
+    { mode: 'off', label: 'Off', hint: 'Never mention it.' },
+    { mode: 'notify', label: 'Tell me', hint: 'Inbox card + DM when this box falls behind. Applies nothing.' },
+    { mode: 'ask', label: 'Ask to update', hint: 'Also raises an approval — approving it updates and restarts this box.' },
+  ]
+
+  return (
+    <div className="space-y-1.5 rounded-md border bg-muted/30 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium">When this box falls behind</span>
+        {isOwner && (
+          <Button size="sm" variant="ghost" className="h-6 gap-1.5 px-2 text-[11px]" disabled={busy} onClick={runNow}>
+            <RefreshCw className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} /> Check now
+          </Button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {OPTIONS.map((o) => (
+          <button
+            key={o.mode}
+            disabled={!isOwner || busy}
+            onClick={() => set(o.mode)}
+            title={o.hint}
+            className={`rounded-md px-2 py-1 text-[11px] ring-1 disabled:opacity-60 ${cfg.mode === o.mode ? 'bg-primary text-primary-foreground ring-primary' : 'bg-background text-muted-foreground ring-border hover:bg-muted'}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        {OPTIONS.find((o) => o.mode === cfg.mode)?.hint}{cfg.mode !== 'off' ? ` Checked every ${cfg.everyHours}h.` : ''}
+        {!isOwner && ' Only an owner can change this.'}
+      </p>
+      {ran && <p className="text-[11px] text-muted-foreground">{ran}</p>}
+    </div>
+  )
+}
+
+/** What one watch pass did, in words — the "Check now" button's feedback. */
+const OUTCOME: Record<string, string> = {
+  'up-to-date': 'This box is up to date.',
+  notified: 'Behind origin — posted a card and DM\'d the owner.',
+  duplicate: 'Behind origin — already carded this update.',
+  blocked: 'Behind origin, but uncommitted changes block the update — carded.',
+  requested: 'Behind origin — raised an approval to update this box.',
+  denied: 'Behind origin — policy denies self-update, so it only notified.',
+  applying: 'An update is already running.',
+  off: 'The watcher is off.',
+}
+
+/**
  * Settings → System → Software — version + self-update + restart. Polls `/api/update` (a cached
  * `git fetch`): shows the running build, whether the checkout is behind origin, and — for the owner —
  * an "Update & restart" (pull + rebuild + bounce) or a plain "Restart" button. After either bounce it
@@ -16524,7 +16603,10 @@ function SoftwarePanel({ me }: { me: Member }) {
                 {status.dirty && !result && (
                   <div className="flex items-start gap-1.5 rounded-md bg-amber-50 p-2 text-[11px] text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
                     <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
-                    <span>The box has uncommitted changes — commit or stash them before updating (a fast-forward pull can't run otherwise).</span>
+                    <span>
+                      The box has uncommitted changes — commit or stash them before updating (a fast-forward pull can't run otherwise).
+                      {status.dirtyFiles?.length ? <> Modified: <span className="font-mono">{status.dirtyFiles.slice(0, 5).join(', ')}</span>{status.dirtyFiles.length > 5 ? ` +${status.dirtyFiles.length - 5} more` : ''}.</> : null}
+                    </span>
                   </div>
                 )}
 
@@ -16560,6 +16642,7 @@ function SoftwarePanel({ me }: { me: Member }) {
             {restarting && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Restarting the server… the console will reconnect automatically.</div>
             )}
+            <UpdateWatchControl me={me} watch={status.watch} />
             {err && <div className="text-[11px] text-red-600">{err}</div>}
           </>
         )}

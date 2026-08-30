@@ -66,6 +66,7 @@ import { planSessionTidy, applySessionTidy } from './edge/session-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
+import { UpdateWatch } from './edge/update-watch';
 import { checkDeps, checkDepUpdates, installDeps, updateNpmDep } from './edge/deps';
 import { CATALOG, redact } from './connectors/connectors';
 import { GithubIdentity } from './edge/github-identity';
@@ -423,6 +424,25 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     } catch { /* never let the janitor crash the process */ }
   }, 5 * 60_000);
   janitorTimer.unref?.();
+  // Self-update watcher (docs/self-update-watch.md). Deliberately BOX-scoped, not per-tenant: the git
+  // checkout is one thing shared by every runtime in this process, so N tenants would card N times for
+  // one fact. It runs against the SEED tenant — whose owner is the person with shell on the box and the
+  // only one who can act on it. Cadence is checked here but enforced by the watcher's own last-run
+  // stamp, matching the dreaming/maintenance pattern.
+  let lastUpdateWatch = 0;
+  const updateWatchTimer = setInterval(() => {
+    const rt = registry.default();
+    if (!rt) return;
+    try {
+      const cfg = rt.os.settings.updateWatch();
+      if (cfg.mode === 'off') return;
+      if (Date.now() - lastUpdateWatch < cfg.everyHours * 3_600_000) return;
+      lastUpdateWatch = Date.now();
+      void new UpdateWatch(rt.os, rt.tm).run().catch(() => { /* the watcher never throws; belt and braces */ });
+    } catch { /* never let the watcher crash the upkeep loop it shares */ }
+  }, 15 * 60_000);
+  updateWatchTimer.unref?.();
+
   // Memory upkeep + self-learning: hourly check per tenant; each is a no-op unless that tenant opted in.
   const lastMaint = new Map<string, number>();
   const lastDream = new Map<string, number>();
@@ -2435,7 +2455,26 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/update') {
     const force = url.searchParams.get('force') === '1' && (me.role === 'owner' || me.role === 'admin');
     const status = await checkForUpdate(force);
-    return sendJson(res, 200, { ...status, canApply: me.role === 'owner' });
+    return sendJson(res, 200, { ...status, canApply: me.role === 'owner', watch: os.settings.updateWatch() });
+  }
+  // The self-update WATCHER's config — whether this box tells anyone it has fallen behind, and whether
+  // it may raise an owner approval that applies the update in place. Owner-only: it decides whether the
+  // box can change itself. See src/edge/update-watch.ts.
+  if (method === 'POST' && p === '/api/update/watch') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const b = await readBody(req);
+    if (b.mode != null && !['off', 'notify', 'ask'].includes(String(b.mode))) return sendJson(res, 400, { error: 'mode must be off, notify or ask' });
+    const watch = os.settings.setUpdateWatch({ mode: b.mode as never, everyHours: b.everyHours != null ? Number(b.everyHours) : undefined }, me.email);
+    os.audit.append({ ts: Date.now(), runId: 'update', tenant: os.tenant, principal: me.email, type: 'update.watch.configured', data: { ...watch } });
+    return sendJson(res, 200, { ok: true, watch });
+  }
+  // Run one watch pass NOW (owner/admin) — the "does this actually work on this box" button, and the
+  // way to get a card immediately instead of waiting out the cadence. `force` also runs it when the
+  // watcher is switched off, so the check itself can be tested without turning it on.
+  if (method === 'POST' && p === '/api/update/watch/run') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const out = await new UpdateWatch(os, tm).run({ force: true });
+    return sendJson(res, 200, out);
   }
   if (method === 'POST' && p === '/api/update/apply') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });

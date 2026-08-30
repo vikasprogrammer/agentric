@@ -47,6 +47,7 @@ const AGENT_PROPOSAL_TRUST_KEY = 'agent_proposal_trust'; // cross-agent edit tie
 /** What the sessions list shows in its money column: dollar cost, token total, or both. */
 export type SessionMetrics = 'cost' | 'tokens' | 'both';
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
+const UPDATE_WATCH_KEY = 'update_watch'; // JSON {mode, everyHours} — the self-update watcher
 const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every agent's prompt (default on)
 const GOALS_AUTOPLAN_KEY = 'goals_autoplan'; // whether the scheduler auto-plans stuck goals (default OFF — opt-in)
 const DIGEST_ENABLED_KEY = 'digest_enabled'; // whether the end-of-day fleet digest posts to Slack ('on'|'off')
@@ -68,6 +69,12 @@ const SETUP_KEY = 'setup_state'; // install-wizard state: dismissal + per-step "
 
 /** Numeric governance caps the policy's never-tier rules reference by name (e.g. `$moneyCapUsd`).
  *  Live-editable in Settings → Governance; resolved at classify time by the policy engine. */
+/** How the self-update watcher behaves on this box. See `Settings.updateWatch`. */
+export type UpdateWatchMode = 'off' | 'notify' | 'ask';
+export interface UpdateWatchConfig { mode: UpdateWatchMode; everyHours: number }
+/** Notify-only, every 6h: the half that cannot break anything, and silence was the actual failure. */
+export const UPDATE_WATCH_DEFAULT: UpdateWatchConfig = { mode: 'notify', everyHours: 6 };
+
 export interface GovernanceThresholds {
   /** A single payment/refund at or below this (USD) may be approved; above it is refused outright. */
   moneyCapUsd: number;
@@ -659,6 +666,40 @@ export class SettingsStore {
   }
   setDreamingState(state: Record<string, unknown>, by?: string): void {
     this.set(DREAMING_STATE_KEY, JSON.stringify(state), by);
+  }
+
+  // ── self-update watcher ──────────────────────────────────────────────────────────
+  // Nothing ever asked "is this box behind?" on a timer — `checkForUpdate` only ran when a human had the
+  // console open, which on a headless remote is never. Boxes therefore drifted for weeks with no signal
+  // (the fleet has repeatedly been found 13+ versions behind). Two modes, because the safe half and the
+  // useful half are different asks:
+  //   notify — post an Inbox card + DM when the checkout falls behind. No apply. The drift alarm.
+  //   ask    — additionally raise an OWNER approval; approving it applies the update on the box itself.
+  //            One tap from a phone replaces an ssh session, and the approval IS the human's choice of
+  //            moment, which is why this tier needs no quiet-window logic.
+  // `off` disables it entirely. Default is `notify`: it is the half that cannot break anything, and
+  // silence was the actual failure.
+
+  /** The self-update watcher's mode + cadence. Defaults to `notify` every 6h. */
+  updateWatch(): UpdateWatchConfig {
+    const raw = this.getRow(UPDATE_WATCH_KEY)?.value;
+    if (!raw) return { ...UPDATE_WATCH_DEFAULT };
+    try {
+      const p = JSON.parse(raw) as Partial<UpdateWatchConfig>;
+      const mode = p.mode === 'off' || p.mode === 'ask' || p.mode === 'notify' ? p.mode : UPDATE_WATCH_DEFAULT.mode;
+      const h = Number(p.everyHours);
+      return { mode, everyHours: Number.isFinite(h) && h > 0 ? Math.floor(h) : UPDATE_WATCH_DEFAULT.everyHours };
+    } catch { return { ...UPDATE_WATCH_DEFAULT }; }
+  }
+
+  setUpdateWatch(cfg: Partial<UpdateWatchConfig>, by?: string): UpdateWatchConfig {
+    const cur = this.updateWatch();
+    const mode = cfg.mode === 'off' || cfg.mode === 'ask' || cfg.mode === 'notify' ? cfg.mode : cur.mode;
+    const h = Number(cfg.everyHours);
+    const everyHours = Number.isFinite(h) && h > 0 ? Math.floor(h) : cur.everyHours;
+    const next: UpdateWatchConfig = { mode, everyHours };
+    this.set(UPDATE_WATCH_KEY, JSON.stringify(next), by);
+    return next;
   }
 
   // ── install wizard ───────────────────────────────────────────────────────────────
