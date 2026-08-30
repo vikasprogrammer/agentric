@@ -34,6 +34,7 @@ import { SqliteApprovals } from './governance/approvals';
 import { TeamStore } from './governance/team';
 import { SettingsStore } from './governance/settings';
 import { SkillsStore } from './governance/skills';
+import { OutputStylesStore } from './edge/output-styles';
 import { Db, openDb } from './state/db';
 import { ArtifactStore } from './state/artifacts';
 import { AppStore } from './state/apps';
@@ -87,6 +88,9 @@ export class AgentOS {
   readonly settings: SettingsStore;
   /** Global skills library — Claude Code Skills materialised into every claude-code agent at launch. */
   readonly skills: SkillsStore;
+  /** Workspace output-style library — custom Claude Code output styles, materialised into every
+   *  claude-code agent at launch. Also the allowlist an `outputStyle` tuning value is validated against. */
+  readonly outputStyles: OutputStylesStore;
   /** The deliverables gallery — artifacts agents publish (PDF/Markdown/image), snapshotted + governed. */
   readonly artifacts: ArtifactStore;
   /** Hosted apps — the on-disk registry of small server-side apps humans + agents build. See apps-plan.md. */
@@ -153,6 +157,7 @@ export class AgentOS {
     this.team = new TeamStore(this.db);
     this.settings = new SettingsStore(this.db);
     this.skills = new SkillsStore(opts.paths?.skills, this.db, opts.paths?.bundledSkills);
+    this.outputStyles = new OutputStylesStore(opts.paths?.outputStyles);
     this.artifacts = new ArtifactStore(this.db, opts.paths?.artifacts);
     // Apps are on-disk folders (like agents), not DB rows — the store just needs the apps dir.
     this.apps = new AppStore(opts.paths?.apps);

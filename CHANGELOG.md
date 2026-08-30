@@ -8,6 +8,78 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.406.0] - 2026-08-30
+### Added
+- **Output styles — the runtime knob for an agent's role, tone and default response shape.**
+  `RuntimeTuning.outputStyle` joins model / effort / permission-mode on the same precedence chain
+  (per-run override → agent manifest → workspace default → `Default`). It is not a CLI flag: the
+  launcher writes it into the session's `--settings` JSON as `outputStyle`, which is how Claude Code
+  takes a style — the system prompt PROPER, plus the CLI's own per-turn style reminder. Claude Code's
+  built-ins (`Default`, `Concise`, `Proactive`, `Explanatory`, `Learning`) need no file; CUSTOM styles
+  are a workspace library at `<home>/output-styles/<Name>.md` (`OutputStylesStore`, `GET|PUT|DELETE
+  /api/output-styles/*`, owner/admin to write), materialised into every claude-code agent's
+  `.claude/output-styles/` at launch exactly like the skills library — whole library, no allowlist,
+  since only the selected style applies. Picker on each agent's runtime card and on
+  **Settings → Runtime defaults**, where the library is also edited. `claude-code` only: the
+  `outputStyle` runtime capability is false for codex and opencode, an inherited style is dropped for
+  them at resolve, and an explicit one is refused at the API edge rather than stored and ignored.
+  Verified against claude 2.1.251 in a fresh untrusted directory (i.e. an agent folder): the style
+  arrives through the `--settings` flag we already write, a project-level `.claude/output-styles/*.md`
+  is discovered with no trust dialog, and a style COEXISTS with `--append-system-prompt-file`, so the
+  company context, persona, dreaming guidance and unattended brief all still land.
+- **Four traps the CLI is silent about, handled here because nothing downstream will be.**
+  (1) An **unknown style name is silently ignored** — `--settings '{"outputStyle":"NoSuchStyle"}'` exits
+  0 and runs Default, with no warning anywhere. So `sanitizeRuntimeTuning` validates against
+  `OutputStylesStore.names()` (built-ins + library); that is the only place a typo is ever caught, and
+  deleting a library style now reports which agents were pinned to it. (2) A custom style **drops Claude
+  Code's built-in software-engineering instructions** unless its frontmatter sets
+  `keep-coding-instructions: true`, and the default is `false` — a silent quality cliff for a coding
+  agent, so the starter template sets it and both the save response and the console flag a style that
+  doesn't. (3) **Subagents don't inherit a style** (they run their own system prompt). (4) A plugin
+  shipping a style with `force-for-plugin` **overrides the user's choice outright** — a fresh instance of
+  the documented "`~/.claude` is an undeclared input to every agent" hazard, and one more reason to run
+  `AOS_CLAUDE_CONFIG_ISOLATION=1`. `Concise` also declares a version floor (claude 2.1.237): an older box
+  silently falls back, so saving one warns instead of pretending.
+- **`npm run bench:output-style`** — the paired, controlled harness, re-pointed rather than retired. The
+  treatment is now `--settings '{"outputStyle":…}'` (the launcher's own mechanism) instead of an appended
+  brief, so the system prompt becomes the CONDITION alone and is identical across arms; `--style` is
+  repeatable and every candidate shares one control arm; `--cwd-styles` measures a custom style through
+  the same discovery path an agent uses. It refuses to start on an unknown style name, because the CLI
+  would accept it silently and the run would compare the control against itself and report a fake 0%.
+
+### Removed
+- **The terse-output feature is gone — `verbosity`, `TERSE_OUTPUT_BRIEF` and `src/edge/verbosity.ts`.**
+  This is evidence-led, and the evidence now lives in the header of `src/edge/output-styles.ts` so it
+  outlives the file. The brief was a compression instruction APPENDED to the system prompt; two quite
+  different wordings were benchmarked head to head against a shared control (504 calls, 6 reps) and BOTH
+  landed inside the noise — every bootstrap CI spanned zero, and the rewrite with the better prior
+  trended worse. Per-call narration length has a ~20-23% coefficient of variation whatever you put in
+  the prompt, so the runs could rule out any effect above ~10%, and did. The multi-turn harness then
+  found the one mechanism that measured — re-asserting the instruction beside each user message,
+  +6.8% [+0.5, +13.3], flat across turn index, i.e. PROXIMITY rather than decay prevention — and it was
+  never wired because it is worth ~$0.13/month fleet-wide. An output style is that same lever done from
+  the other side of the boundary, and Anthropic owns the wording. Also removed:
+  `verbositySavings()`'s successor panel, `GET /api/settings/verbosity-adoption`,
+  `bench:verbosity`/`bench:verbosity-turns` and their fixtures. `term_sessions.verbosity` and
+  `agent_revisions.verbosity` are left on disk unread — SQLite's `DROP COLUMN` rewrites the whole table,
+  and those rows are the only surviving record of which live runs launched under the brief.
+
+### Changed
+- **The console reports output-style ADOPTION, and no cost figure at all.** `outputStyleAdoption()` /
+  `GET /api/settings/output-style-adoption` count sessions per style per agent over a trailing window,
+  stamped from `term_sessions.output_style`. Two ancestors of this panel rendered savings
+  (`verbositySavings()`, retired v0.389.0, and the terse adoption counts that replaced it); the caption
+  now states why neither could work: `output_tokens` is ~85% `tool_use` arguments, so narration is ~15%
+  of it and the ceiling on any style's effect on spend is about 1%. A style is an ANSWER-SHAPE feature —
+  read the benchmark's **completeness** column before its token column, since the only durable finding
+  from the terse work was that per-turn reinforcement made answers shorter *and* more complete
+  (60/90 vs 48/90, p=0.036).
+- **A runtime switch no longer 400s on a knob the new runtime has never heard of.** `runtimeTuningPatch`
+  gains `dropStyle`, the sibling of `dropModel`: moving a claude-code agent to Codex drops its inherited
+  `outputStyle` instead of failing validation on a field the form doesn't even show for that runtime. An
+  explicitly re-stated style is still refused by name — that is a mistake the human just made, not
+  inherited state.
+
 ## [0.405.0] - 2026-08-30
 ### Added
 - **An expired credential has a route that isn't delete-then-add.** `secret_request` gains a third mode,

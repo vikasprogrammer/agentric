@@ -2,7 +2,7 @@
 /* Partial runtime-tuning edits — an omitted knob must be KEPT, not cleared.
  *
  * The agent-config route replaced the tuning fields wholesale while every other field on it patched by
- * presence. So a one-knob save (`{verbosity:'terse'}` from a script, or any future partial caller) blanked
+ * presence. So a one-knob save (`{outputStyle:'Concise'}` from a script, or any future partial caller) blanked
  * the rest: it unpinned the agent's model and dropped it onto the fleet default, with nothing in the
  * response saying so. Hit the live northwind consolidator, which is pinned to opus and quietly wasn't.
  *
@@ -26,15 +26,15 @@ const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${
 const { runtimeTuningPatch, sanitizeRuntimeTuning } = require(path.join(ROOT, 'dist/types.js'));
 
 console.log('\n\x1b[1m1) the merge — absent keeps, present replaces, empty clears\x1b[0m');
-const CURRENT = { model: 'opus', effort: 'high', permissionMode: 'auto', verbosity: 'terse' };
+const CURRENT = { model: 'opus', effort: 'high', permissionMode: 'auto', outputStyle: 'Concise' };
 {
   // THE BUG: a body carrying one knob must not blank the other three.
-  const p = runtimeTuningPatch({ verbosity: 'terse' }, { model: 'opus' });
+  const p = runtimeTuningPatch({ outputStyle: 'Concise' }, { model: 'opus' });
   assert(p.model === 'opus', 'a one-knob body keeps the pinned model', p);
 }
 {
   const p = runtimeTuningPatch({}, CURRENT);
-  assert(p.model === 'opus' && p.effort === 'high' && p.permissionMode === 'auto' && p.verbosity === 'terse',
+  assert(p.model === 'opus' && p.effort === 'high' && p.permissionMode === 'auto' && p.outputStyle === 'Concise',
     'an empty body changes nothing', p);
 }
 {
@@ -54,18 +54,30 @@ const CURRENT = { model: 'opus', effort: 'high', permissionMode: 'auto', verbosi
 
 console.log('\n\x1b[1m2) field allowlist — an agent cannot set its own permission mode\x1b[0m');
 {
-  const p = runtimeTuningPatch({ permissionMode: 'bypassPermissions', verbosity: 'terse' }, CURRENT,
-    { fields: ['model', 'effort', 'verbosity'] });
+  const p = runtimeTuningPatch({ permissionMode: 'bypassPermissions', outputStyle: 'Concise' }, CURRENT,
+    { fields: ['model', 'effort', 'outputStyle'] });
   assert(!('permissionMode' in p), 'permissionMode is not patchable on the self-edit path', p);
-  assert(p.verbosity === 'terse' && p.model === 'opus', 'the allowed knobs still patch normally', p);
+  assert(p.outputStyle === 'Concise' && p.model === 'opus', 'the allowed knobs still patch normally', p);
 }
 
-console.log('\n\x1b[1m3) runtime switch — a foreign model is dropped, not carried into an error\x1b[0m');
+console.log('\n\x1b[1m3) runtime switch — what the new runtime cannot honour is dropped, not fatal\x1b[0m');
 {
-  const p = runtimeTuningPatch({ verbosity: 'terse' }, { model: 'claude-opus-4-8', effort: 'high' }, { dropModel: true });
+  // Moving a claude-code agent to Codex: neither its pinned Claude model nor its output style exists
+  // over there. Both are INHERITED state the human never touched on this form, so carrying them into a
+  // 400 would blame them for a field the form doesn't even show for the target runtime.
+  const cur = { model: 'claude-opus-4-8', effort: 'high', outputStyle: 'Concise' };
+  const p = runtimeTuningPatch({}, cur, { dropModel: true, dropStyle: true });
   assert(!('model' in p), 'switching runtime drops a model the body did not re-state', p);
+  assert(!('outputStyle' in p), 'and drops an output style the new runtime has no concept of', p);
   assert(p.effort === 'high', 'the other knobs still carry across the switch', p);
   assert(!sanitizeRuntimeTuning(p, 'codex').error, 'so the switch validates cleanly', sanitizeRuntimeTuning(p, 'codex'));
+}
+{
+  // An EXPLICIT style for a runtime that has none is still an error — that is a mistake the human just
+  // made, not inherited state, and silently dropping it would show a posture in force nowhere.
+  const p = runtimeTuningPatch({ outputStyle: 'Concise' }, {}, { dropStyle: true });
+  assert(p.outputStyle === 'Concise', 'an explicitly re-stated style survives the drop', p);
+  assert(/has no output styles/.test(sanitizeRuntimeTuning(p, 'codex').error || ''), 'and is then refused by name');
 }
 {
   const p = runtimeTuningPatch({ model: 'gpt-5-codex' }, { model: 'claude-opus-4-8' }, { dropModel: true });
@@ -105,9 +117,9 @@ console.log('\n\x1b[1m4) end to end over the real route\x1b[0m');
     assert((await cfg()).model === 'opus', 'seed: model pinned to opus');
 
     // The exact live regression.
-    await call('PUT', `/api/agents/${id}/config`, { verbosity: 'terse' });
+    await call('PUT', `/api/agents/${id}/config`, { outputStyle: 'Concise' });
     const after = await cfg();
-    assert(after.verbosity === 'terse', 'the one knob in the body is applied', after);
+    assert(after.outputStyle === 'Concise', 'the one knob in the body is applied', after);
     assert(after.model === 'opus', 'and the pinned model SURVIVES a one-knob save', after);
     assert(after.effort === 'high', 'as does effort', after);
     assert(onDisk().model === 'opus', 'agent.json still carries it', onDisk());
@@ -116,12 +128,12 @@ console.log('\n\x1b[1m4) end to end over the real route\x1b[0m');
     await call('PUT', `/api/agents/${id}/config`, { model: '' });
     const cleared = await cfg();
     assert(!cleared.model, "an explicit '' clears the model", cleared);
-    assert(cleared.effort === 'high' && cleared.verbosity === 'terse', 'without touching its neighbours', cleared);
+    assert(cleared.effort === 'high' && cleared.outputStyle === 'Concise', 'without touching its neighbours', cleared);
 
     // A tuning-only save must not disturb the non-tuning fields either (unchanged behaviour, regression-guarded).
     await call('PUT', `/api/agents/${id}/config`, { description: 'patched description' });
     const desc = await cfg();
-    assert(desc.description === 'patched description' && desc.verbosity === 'terse',
+    assert(desc.description === 'patched description' && desc.outputStyle === 'Concise',
       'a description-only save leaves tuning alone', desc);
   }
 

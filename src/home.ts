@@ -30,6 +30,9 @@ export interface Paths {
   connectors: string;
   /** The workspace skills library — global Claude Code Skills materialised into every agent. */
   skills: string;
+  /** The workspace output-style library — custom Claude Code output styles (`<Name>.md`), materialised
+   *  into every claude-code agent's `.claude/output-styles/` at launch. */
+  outputStyles: string;
   /** The deliverables gallery: snapshotted artifacts agents publish (`<id>/<filename>`). */
   artifacts: string;
   /** Files attached to tasks (`<taskId>/<id>-<filename>`). */
@@ -99,6 +102,7 @@ function pathsUnder(baseDir: string, cfg: HomeConfig, home: string): Paths {
     userAgents: path.join(home, 'agents'),
     connectors: path.join(home, 'connectors'),
     skills: path.join(home, 'skills'),
+    outputStyles: path.join(home, 'output-styles'),
     artifacts: path.join(home, 'artifacts'),
     taskAttachments: path.join(home, 'task-attachments'),
     apps: path.join(home, 'apps'),

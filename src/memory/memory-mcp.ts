@@ -2699,7 +2699,7 @@ async function agentGet(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as {
     ok?: boolean; id?: string; self?: boolean; description?: string; category?: string; icon?: string;
-    model?: string; effort?: string; verbosity?: string; examplePrompts?: string[];
+    model?: string; effort?: string; outputStyle?: string; examplePrompts?: string[];
     claudeMd?: string; chars?: number; baseHash?: string; latestRev?: number | null; error?: string;
   };
   if (!d.ok) return `Could not read that agent: ${d.error ?? 'unknown error'}`;

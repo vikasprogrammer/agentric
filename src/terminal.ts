@@ -17,7 +17,7 @@ import { containedPath, mimeOf } from './state/artifacts';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { isolateClaudeConfig } from './edge/config-isolation';
 import { resolveCapability } from './capabilities/normalize';
@@ -38,7 +38,6 @@ import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVide
 import { understandMedia } from './edge/media-understand';
 import { readSessionCost } from './edge/session-cost';
 import { readTranscriptEnd } from './edge/outcome';
-import { TERSE_OUTPUT_BRIEF } from './edge/verbosity';
 import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
 import { readConversation, findTranscript, registerTranscriptRoot, Conversation } from './edge/conversation';
@@ -373,9 +372,10 @@ export interface Session {
    *  per-task overridable, so "what ran this, how hard" reads next to what it cost. */
   model?: string;
   effort?: string;
-  /** Narration verbosity the run launched with ('normal' | 'terse'). Undefined on runs that predate the
-   *  flag — those are excluded from the savings comparison rather than assumed normal. */
-  verbosity?: string;
+  /** Claude Code output style the run launched with ('Default' | 'Concise' | a library style).
+   *  Undefined on runs that predate the knob, and on runtimes that have no output styles — those are
+   *  excluded from the adoption counts rather than assumed Default. */
+  outputStyle?: string;
   /** Total milliseconds the run sat BLOCKED on a human — approval gates plus `ask` questions. The
    *  governed-OS latency no other field captures; a big number next to a small `activeMs` is a run that
    *  mostly waited on people. Undefined until stamped; 0 when it never blocked. */
@@ -575,7 +575,7 @@ interface SessionRow {
   gov_errors: number | null;
   model: string | null;
   effort: string | null;
-  verbosity: string | null;
+  output_style: string | null;
   blocked_ms: number | null;
   artifacts: number | null;
 }
@@ -1274,15 +1274,15 @@ export class TerminalManager {
         .get<{ data: string }>(r.id);
       let model: string | null = null;
       let effort: string | null = null;
-      let verbosity: string | null = null;
+      let outputStyle: string | null = null;
       if (tuning) {
         try {
-          const d = JSON.parse(tuning.data) as { model?: string; effort?: string; verbosity?: string };
+          const d = JSON.parse(tuning.data) as { model?: string; effort?: string; outputStyle?: string };
           model = d.model ?? null;
           effort = d.effort ?? null;
           // Absent on runs launched before the flag shipped — left NULL, which the savings comparison
           // reads as "attributable to neither arm" rather than silently counting it as normal.
-          verbosity = d.verbosity ?? null;
+          outputStyle = d.outputStyle ?? null;
         } catch { /* malformed — leave all null */ }
       }
 
@@ -1318,13 +1318,13 @@ export class TerminalManager {
       r.report_summary = summary;
       r.model = model;
       r.effort = effort;
-      r.verbosity = verbosity;
+      r.output_style = outputStyle;
       r.blocked_ms = blockedMs;
       r.artifacts = artifacts;
       if (live) continue; // still moving — surface it, but don't freeze it onto the row
       this.db
-        .prepare('UPDATE term_sessions SET gov_actions = ?, gov_approvals = ?, gov_denied = ?, gov_errors = ?, outcome = ?, report_summary = ?, model = ?, effort = ?, verbosity = ?, blocked_ms = ?, artifacts = ? WHERE id = ?')
-        .run(actions, approvals, denied, errors, outcome, summary, model, effort, verbosity, blockedMs, artifacts, r.id);
+        .prepare('UPDATE term_sessions SET gov_actions = ?, gov_approvals = ?, gov_denied = ?, gov_errors = ?, outcome = ?, report_summary = ?, model = ?, effort = ?, output_style = ?, blocked_ms = ?, artifacts = ? WHERE id = ?')
+        .run(actions, approvals, denied, errors, outcome, summary, model, effort, outputStyle, blockedMs, artifacts, r.id);
     }
   }
 
@@ -2614,8 +2614,6 @@ export class TerminalManager {
     const mcpJson = await this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer, o.hasClickup, o.hasTelegram);
     const runtime: CodingRuntimeId = isCodingRuntime(manifest.runtime) ? manifest.runtime : 'claude-code';
     const caps = CODING_RUNTIMES[runtime].capabilities;
-    // Resolved BEFORE the company payload is built: `verbosity` rides the appended system prompt rather
-    // than a CLI flag, so buildCompanyMd needs the resolved value (the other knobs are just env below).
     const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults(), o.tuning, runtime);
     // The unattended brief rides the same appended prompt, on exactly the lane `markTurnIdle` tears down
     // at turn-end (headless, non-resident) — a resident chat pane and a member's own session both survive
@@ -2624,12 +2622,15 @@ export class TerminalManager {
     // async launcher — and handed to `buildCompanyMd`, which stays a pure synchronous assembly of the
     // prompt. Keeps every other caller (and four governance tests) on the sync signature.
     const preamble = await this.memoryPreamble(o.agent, o.task);
-    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, tuning.verbosity, !!o.headless && !o.resident, preamble);
+    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, !!o.headless && !o.resident, preamble);
     // Skills + sub-agents are materialised as native filesystem conventions (`.claude/skills`,
     // `.claude/agents`), so they only apply to a runtime that discovers them. Codex has its own
     // (differently-shaped) skills mechanism — not wired yet, so we skip rather than write files it
     // would ignore. The agent still gets its persona + Company context via the launcher's AGENTS.md.
     if (caps.nativeSkills) this.materializeSkills(o.id, o.agent, manifest.dir);
+    // Custom output styles are the same filesystem convention (`.claude/output-styles/`), and only the
+    // SELECTED one applies — so the whole library is synced and no per-agent allowlist is needed.
+    if (caps.outputStyle) this.materializeOutputStyles(o.id, o.agent, manifest.dir);
     if (caps.nativeSubagents) this.materializeSubagents(o.id, o.agent, manifest);
     // Unattended (automation/cron/task) runs are now an attachable interactive TUI, not `claude -p` — so a
     // human can take one over mid-run by simply attaching (no kill, no resume). The launcher's UNATTENDED
@@ -2648,7 +2649,6 @@ export class TerminalManager {
     // we don't wrap the shell in Seatbelt/bubblewrap. Real OS containment is the Linux uid-isolation path.
     // Per-agent model / effort / permission-mode fall back to the workspace default; the launcher maps
     // them onto `--model`/`--effort`/`--permission-mode` (permission-mode on the interactive lane only).
-    // (`tuning` itself is resolved further up — buildCompanyMd needs its `verbosity`.)
     if (runtime === 'codex') {
       // Codex reads model/effort from the config.toml the launcher generates; it has no
       // --permission-mode (Agentric is the sole authority there via approval_policy = "never"), so
@@ -2664,8 +2664,12 @@ export class TerminalManager {
       if (tuning.model) env.CLAUDE_MODEL = tuning.model;
       if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
       if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
+      // Not a CLI flag — the launcher writes it into the `--settings` JSON as `outputStyle`, which is
+      // how Claude Code takes a style. `Default` is left unset: naming it is a no-op, and an absent key
+      // keeps a lower settings layer (or a plugin's forced style) doing whatever it already did.
+      if (tuning.outputStyle && tuning.outputStyle !== 'Default') env.CLAUDE_OUTPUT_STYLE = tuning.outputStyle;
     }
-    this.audit(o.id, o.agent, 'session.tuning', { runtime, model: tuning.model, effort: tuning.effort, permissionMode: caps.permissionMode ? tuning.permissionMode : undefined, verbosity: tuning.verbosity, override: o.tuning ?? null });
+    this.audit(o.id, o.agent, 'session.tuning', { runtime, model: tuning.model, effort: tuning.effort, permissionMode: caps.permissionMode ? tuning.permissionMode : undefined, outputStyle: tuning.outputStyle, override: o.tuning ?? null });
     // Account rotation: if a POOL is configured for this runtime, pick an available account and point the
     // session at its credentials via the runtime's own env vars (CODING_RUNTIMES[runtime].credentialEnv).
     // INERT when the pool is empty — pick() returns null, we set nothing, the CLI uses the box default (i.e.
@@ -4074,7 +4078,7 @@ export class TerminalManager {
    *  We tack on OS-owned operating notes after the user's content. The terminal here is a browser
    *  xterm (over ttyd) running the TUI on the alternate screen with mouse reporting on, so embedded
    *  terminal hyperlinks (OSC 8) aren't clickable — the agent must surface raw URLs as plain text. */
-  private buildCompanyMd(selfAgent?: string, actingMember?: string, verbosity?: Verbosity, unattended = false, preamble = ''): string {
+  private buildCompanyMd(selfAgent?: string, actingMember?: string, unattended = false, preamble = ''): string {
     const company = this.os.settings.company().companyMd.trim();
     // Per-member personal context: free-text the human you run AS chose to inject into their sessions
     // (their working style, standing preferences, domain notes). Self-service, owner-scoped — set on
@@ -4251,15 +4255,11 @@ export class TerminalManager {
         'review as a second opinion, not a verdict: verify each point against the code before acting, and ' +
         'remember every change you make still passes through the gateway.';
     }
-    // Terse mode (Settings → Runtime defaults, per-agent overridable). Placed LAST so its carve-outs —
-    // "never compress a report/kb_write/chat reply" — are read after the sections that tell the agent to
-    // write those things, and so it can't be mistaken for guidance about the company itself.
-    const terse = verbosity === 'terse' ? TERSE_OUTPUT_BRIEF : '';
     // Unattended lane only (see the call site). Placed after the operating notes and the fleet/team
     // sections, because it points at `task_wait` / `ask` / `schedule` / `task_create` as the ways to wait
     // — it reads as a correction to "just wait for it" only once those tools have been introduced.
     const lane = unattended ? UNATTENDED_TURN_BRIEF : '';
-    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, codeReview, goalsSection, fleet, team, preamble, learned, lane, terse]
+    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, codeReview, goalsSection, fleet, team, preamble, learned, lane]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -4424,6 +4424,21 @@ export class TerminalManager {
         });
     } catch (e) {
       this.audit(sessionId, agent, 'skills.error', { error: String(e) });
+    }
+  }
+
+  /**
+   * Sync the workspace output-style library into the agent's `<dir>/.claude/output-styles/` so the
+   * launched claude discovers a CUSTOM style by name (built-ins need no file). Whole library, no
+   * allowlist: an unselected style file is inert, and only `CLAUDE_OUTPUT_STYLE` decides which applies.
+   * Best-effort — a style failure must never block a session.
+   */
+  private materializeOutputStyles(sessionId: string, agent: string, agentDir: string): void {
+    try {
+      const names = this.os.outputStyles.materialize(path.join(agentDir, '.claude'));
+      if (names.length) this.audit(sessionId, agent, 'output-styles.materialized', { count: names.length, styles: names });
+    } catch (e) {
+      this.audit(sessionId, agent, 'output-styles.error', { error: String(e) });
     }
   }
 
@@ -7951,7 +7966,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, verbosity: r.verbosity ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined };
 }
 
 function toMessage(r: MessageRow): FeedMessage {

@@ -1161,15 +1161,6 @@ export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'ma
 export type PermissionMode = 'auto' | 'plan' | 'acceptEdits' | 'manual' | 'dontAsk' | 'bypassPermissions';
 export const PERMISSION_MODES: readonly PermissionMode[] = ['auto', 'plan', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions'];
 
-/** How much prose a session spends on its own narration. `normal` is the runtime's own voice;
- *  `terse` appends a compression brief to the system prompt (see `TERSE_OUTPUT_BRIEF`) that strips
- *  filler from the agent's reasoning and commentary while leaving code, commands, errors and every
- *  durable artifact byte-exact. Output tokens are the priciest per token AND become input + cache-write
- *  on the next turn, so terser narration compounds — but it is a PROMPT instruction, not an enforced
- *  transform: treat the saving as measured (Settings → Runtime defaults), never as assumed. */
-export type Verbosity = 'normal' | 'terse';
-export const VERBOSITIES: readonly Verbosity[] = ['normal', 'terse'];
-
 /** The knobs that tune a claude-code session — settable per-agent (manifest) with a workspace-wide
  *  fallback (Settings → runtime defaults). An undefined field means "inherit". `model`/`effort` apply
  *  to both lanes; `permissionMode` is interactive-only (the headless lane keeps
@@ -1182,9 +1173,13 @@ export interface RuntimeTuning {
   effort?: Effort;
   /** Permission mode (`claude --permission-mode`), interactive lane only. Undefined → `auto`. */
   permissionMode?: PermissionMode;
-  /** Narration verbosity. Undefined → `normal` once resolved. Rides the appended system prompt (both
-   *  runtimes), not a CLI flag — so it applies wherever `buildCompanyMd` reaches. */
-  verbosity?: Verbosity;
+  /** Claude Code output style — the name of a built-in (`Concise`, `Proactive`, …) or of a custom
+   *  style in the workspace library. Undefined → `Default` once resolved. Not a CLI flag: it is written
+   *  into the session's `--settings` JSON as `outputStyle`, so it reaches the system prompt PROPER
+   *  (and the runtime's own per-turn style reminder) rather than being appended after it. claude-code
+   *  only — probe the `outputStyle` capability, and see `src/edge/output-styles.ts` for why an unknown
+   *  name must be rejected here rather than at launch. */
+  outputStyle?: string;
 }
 
 /** Every runtime an agent manifest may declare. `mock` is the in-process demo adapter (no CLI, no
@@ -1232,6 +1227,10 @@ export interface RuntimeCapabilities {
   statusLine: boolean;
   /** Honours {@link RuntimeTuning.permissionMode}. */
   permissionMode: boolean;
+  /** Honours {@link RuntimeTuning.outputStyle} — a named system-prompt style selected through the
+   *  runtime's own settings file. Claude Code only; codex and opencode have no equivalent, so the
+   *  knob is refused for them at the API edge rather than stored and silently ignored. */
+  outputStyle: boolean;
   /** Does the PreToolUse hook intercept FILE WRITES? False → containment is the OS sandbox instead. */
   fileWriteGate: boolean;
   /** Does the PreToolUse hook intercept MCP/connector tool calls? False → those are governed
@@ -1331,7 +1330,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     capabilities: {
       pinnedSessionId: true, resume: true, fork: true, attachableUnattended: true,
       residentChat: true, transcript: true, nativeSkills: true, nativeSubagents: true,
-      statusLine: true, permissionMode: true, fileWriteGate: true, mcpGate: true,
+      statusLine: true, permissionMode: true, outputStyle: true, fileWriteGate: true, mcpGate: true,
       steerOnAllow: true,
     },
   },
@@ -1376,7 +1375,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
       // Codex's rollout JSONL is parsed by src/edge/codex-transcript.ts, so cost / engaged time /
       // turns / tool calls and the friendly chat timeline all work.
       transcript: true, nativeSkills: false, nativeSubagents: false,
-      statusLine: false, permissionMode: false,
+      statusLine: false, permissionMode: false, outputStyle: false,
       // PreToolUse covers Bash, apply_patch AND mcp__* — verified empirically against codex 0.145 (its
       // hook reports Claude's exact tool names). So the gate, not just the sandbox, governs writes and
       // connector calls; the sandbox's `writable_roots` is now defence in depth rather than the only line.
@@ -1430,7 +1429,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
       // Skills/sub-agents are materialised as `.claude/skills` + `.claude/agents`, which opencode does not
       // discover. It has its own agent mechanism; not wired.
       nativeSkills: false, nativeSubagents: false,
-      statusLine: false, permissionMode: false,
+      statusLine: false, permissionMode: false, outputStyle: false,
       // `tool.execute.before` fires for EVERY tool — `write`/`edit`/`patch` and MCP calls included — and a
       // throw blocks the call, so both gates are real here (unlike Codex, where writes lean on the sandbox).
       fileWriteGate: true, mcpGate: true,
@@ -1687,7 +1686,7 @@ export function sanitizeAppDomains(input: unknown): string[] {
  * Build the sanitize input for a PARTIAL tuning edit: **an absent key keeps the agent's current value;
  * a present one (including `''`/null) replaces it.** Every other field on the agent-config route already
  * works this way (`'examplePrompts' in b ? … : ag.examplePrompts`); the tuning fields did not, so a body
- * carrying one knob silently cleared the rest — a `{verbosity:'terse'}` save unpinned an agent's model
+ * carrying one knob silently cleared the rest — a `{outputStyle:'Concise'}` save unpinned an agent's model
  * and dropped it onto the fleet default, with nothing in the response to say so. Found live on the
  * northwind consolidator.
  *
@@ -1696,22 +1695,25 @@ export function sanitizeAppDomains(input: unknown): string[] {
  * they own, empties included — note `JSON.stringify` DROPS `undefined` values, so spreading a
  * `RuntimeTuning` with cleared fields transmits no key at all and would otherwise read as "don't touch".
  *
- * `fields` limits which knobs a caller may patch: the agent self-edit path passes model/effort/verbosity
+ * `fields` limits which knobs a caller may patch: the agent self-edit path passes model/effort/outputStyle
  * only, so an agent can't hand itself a permission mode (governance-sensitive — humans set that).
  * `dropModel` covers the runtime switch: a pinned `claude-*` model can't run on Codex, so when the
  * runtime changes and the body doesn't name a replacement, the inherited one is dropped rather than
- * carried into a validation error the human didn't cause.
+ * carried into a validation error the human didn't cause. `dropStyle` is the same courtesy for
+ * `outputStyle`, which only claude-code has: moving an agent to Codex would otherwise 400 on a style
+ * the human never touched, on a form that doesn't even show the field for that runtime.
  */
 export function runtimeTuningPatch(
   body: Partial<Record<keyof RuntimeTuning, unknown>>,
   current: RuntimeTuning,
-  opts: { fields?: ReadonlyArray<keyof RuntimeTuning>; dropModel?: boolean } = {},
+  opts: { fields?: ReadonlyArray<keyof RuntimeTuning>; dropModel?: boolean; dropStyle?: boolean } = {},
 ): Partial<Record<keyof RuntimeTuning, unknown>> {
-  const fields = opts.fields ?? (['model', 'effort', 'permissionMode', 'verbosity'] as const);
+  const fields = opts.fields ?? (['model', 'effort', 'permissionMode', 'outputStyle'] as const);
   const out: Partial<Record<keyof RuntimeTuning, unknown>> = {};
   for (const f of fields) {
     if (f in body) out[f] = body[f];
     else if (f === 'model' && opts.dropModel) continue; // switching runtime — don't carry a foreign model
+    else if (f === 'outputStyle' && opts.dropStyle) continue; // …nor a style the new runtime has no concept of
     else out[f] = current[f];
   }
   return out;
@@ -1723,10 +1725,13 @@ export function runtimeTuningPatch(
  *  those, and aliases evolve faster than we'd want to hard-code. */
 export function sanitizeRuntimeTuning(
   input: Partial<Record<keyof RuntimeTuning, unknown>>,
-  /** The runtime the tuning will run under. Supplied by the agent-config route so a model or a
-   *  permission-mode that runtime can't honour is rejected at the edge rather than silently ignored
-   *  (or, for a cross-family model, passed to the CLI and breaking every run). */
+  /** The runtime the tuning will run under. Supplied by the agent-config route so a model, a
+   *  permission-mode or an output style that runtime can't honour is rejected at the edge rather than
+   *  silently ignored (or, for a cross-family model, passed to the CLI and breaking every run). */
   runtime?: RuntimeId,
+  /** `styles` is the set of output-style names that actually exist on this box (built-ins + the
+   *  workspace library, i.e. `OutputStylesStore.names()`). Omit it only where no library is reachable. */
+  opts: { styles?: readonly string[] } = {},
 ): { tuning: RuntimeTuning; error?: string } {
   const tuning: RuntimeTuning = {};
   const model = typeof input.model === 'string' ? input.model.trim() : '';
@@ -1750,12 +1755,24 @@ export function sanitizeRuntimeTuning(
     }
     tuning.permissionMode = mode as PermissionMode;
   }
-  const verbosity = typeof input.verbosity === 'string' ? input.verbosity.trim() : '';
-  if (verbosity) {
-    if (!VERBOSITIES.includes(verbosity as Verbosity)) return { tuning, error: `verbosity must be one of: ${VERBOSITIES.join(', ')}` };
-    // An explicit `normal` is kept, not folded back to "inherit": with a terse workspace default it's
-    // the only way an agent whose prose humans actually read opts OUT. Empty string is still inherit.
-    tuning.verbosity = verbosity as Verbosity;
+  const style = typeof input.outputStyle === 'string' ? input.outputStyle.trim() : '';
+  if (style) {
+    // An unknown style name is SILENTLY IGNORED by the CLI (verified: exit 0, runs as Default, no
+    // warning), so this is the only place a typo is ever caught — hence an allowlist rather than the
+    // pass-through `model` gets. `styles` is omitted only where no library is reachable (config-file
+    // load, demo), and there the format check still holds.
+    if (!/^[A-Za-z0-9][A-Za-z0-9 _-]{0,48}[A-Za-z0-9]$/.test(style)) {
+      return { tuning, error: `outputStyle "${style}" is not a valid style name` };
+    }
+    if (opts.styles && !opts.styles.includes(style)) {
+      return { tuning, error: `unknown output style "${style}". Known styles: ${opts.styles.join(', ')}` };
+    }
+    if (runtime && !runtimeSupports(runtime, 'outputStyle')) {
+      return { tuning, error: `${codingRuntime(runtime)?.label ?? runtime} has no output styles — leave it on inherit and shape the voice in the agent prompt instead.` };
+    }
+    // An explicit `Default` is kept, not folded back to "inherit": with a workspace default of
+    // `Concise` it is the only way an agent whose prose humans read opts OUT. '' is still inherit.
+    tuning.outputStyle = style;
   }
   return { tuning };
 }
@@ -1990,7 +2007,11 @@ export function resolveRuntimeTuning(
     permissionMode: override?.permissionMode ?? agent.permissionMode ?? defaults.permissionMode ?? 'auto',
     // Same precedence as the rest, resolved (never left undefined) so callers branch on a real value
     // and the session row records what the run actually launched with — the join key for measurement.
-    verbosity: override?.verbosity ?? agent.verbosity ?? defaults.verbosity ?? 'normal',
+    // A style inherited from the workspace default is dropped on a runtime that has none, for the same
+    // reason a foreign model is: an unhonoured setting the console still displays is a lie.
+    outputStyle: runtime && !runtimeSupports(runtime, 'outputStyle')
+      ? undefined
+      : override?.outputStyle ?? agent.outputStyle ?? defaults.outputStyle ?? 'Default',
   };
 }
 

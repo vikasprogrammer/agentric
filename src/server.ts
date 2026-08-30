@@ -53,7 +53,7 @@ import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
 import { buildInsights } from './edge/insights';
-import { verbosityAdoption } from './edge/verbosity';
+import { BUILTIN_OUTPUT_STYLES, outputStyleAdoption, outputStyleWarning, starterOutputStyle, validOutputStyleName } from './edge/output-styles';
 import { buildImprovements } from './edge/improvements';
 import { Diagnosis, ANALYST_ID } from './edge/diagnosis';
 import { Improver, proposalSlug, IMPROVER_ID } from './edge/improver';
@@ -78,7 +78,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -222,7 +222,7 @@ function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSna
   const next: AgentManifest = {
     ...ag,
     description: snap.description, category: snap.category, icon: snap.icon,
-    model: snap.model, effort: snap.effort, permissionMode: snap.permissionMode, verbosity: snap.verbosity,
+    model: snap.model, effort: snap.effort, permissionMode: snap.permissionMode, outputStyle: snap.outputStyle,
     examplePrompts: snap.examplePrompts.length ? snap.examplePrompts : undefined,
     shellSecrets: snap.shellSecrets.length ? snap.shellSecrets : undefined,
     // Empty ⇒ drop the key ⇒ "everything", which is exactly how a revision predating these fields
@@ -2072,7 +2072,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, {
       ok: true, id, self: id === agent,
       description: snap.description, category: snap.category, icon: snap.icon,
-      model: snap.model, effort: snap.effort, verbosity: snap.verbosity,
+      model: snap.model, effort: snap.effort, outputStyle: snap.outputStyle,
       examplePrompts: snap.examplePrompts,
       claudeMd: snap.claudeMd, chars: snap.claudeMd.length,
       baseHash: contentHash(snap.claudeMd),
@@ -2109,7 +2109,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!resolved.ok) return sendJson(res, 200, { ok: false, outcome: 'refused', error: resolved.error });
     const risk = resolved.text !== undefined ? assessClaudeMdEdit(before.claudeMd, resolved.text) : undefined;
     const fields: Record<string, unknown> = {};
-    for (const k of ['description', 'category', 'model', 'effort', 'icon', 'verbosity', 'examplePrompts', 'shellSecrets', 'skills', 'tools'] as const) {
+    for (const k of ['description', 'category', 'model', 'effort', 'icon', 'outputStyle', 'examplePrompts', 'shellSecrets', 'skills', 'tools'] as const) {
       if (k in b) fields[k] = b[k];
     }
     if (resolved.text !== undefined) fields.claudeMd = resolved.text;
@@ -2135,7 +2135,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = applyAgentEdit(os, ag, fields, { summary: 'agent self-edit', author: `agent:${agent}` });
     if (!out.ok) return sendJson(res, 200, { ok: false, outcome: 'refused', error: out.error });
     const now = os.agents.get(id) ?? ag; // applyAgentEdit re-registered the manifest — log what it IS now
-    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: now.model, effort: now.effort, verbosity: now.verbosity, category: now.category, claudeMd: resolved.text !== undefined, bytesBefore: risk?.bytesBefore, bytesAfter: risk?.bytesAfter, destructive: risk?.destructive ?? false, rev: out.rev, by: `agent:${agent}` } });
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: now.model, effort: now.effort, outputStyle: now.outputStyle, category: now.category, claudeMd: resolved.text !== undefined, bytesBefore: risk?.bytesBefore, bytesAfter: risk?.bytesAfter, destructive: risk?.destructive ?? false, rev: out.rev, by: `agent:${agent}` } });
     // The revert hint names the revision that holds the state we just replaced, so "undo this" is one call.
     const undo = out.rev && out.rev > 1 ? ` Saved as rev ${out.rev}; undo with agent_revert { rev: ${out.rev - 1} }.` : out.rev ? ` Saved as rev ${out.rev}.` : ' Nothing actually changed (identical to the current config).';
     return sendJson(res, 200, {
@@ -4523,7 +4523,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         bin: r.bin, install: r.install.join(' '),
         installed: present.get(r.id)?.installed ?? false, version: present.get(r.id)?.version,
       }));
-      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, skills: ag.skills ?? [], tools: ag.tools ?? [], usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, outputStyle: ag.outputStyle, outputStyles: os.outputStyles.names(), examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, skills: ag.skills ?? [], tools: ag.tools ?? [], usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     // Runtime change (owner/admin). Validate BEFORE the tuning, so the tuning is checked against the
@@ -4541,7 +4541,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // (`''` = clear to inherit) replaces it. Sending one knob used to blank the others — see
     // runtimeTuningPatch. On a runtime switch a model the body doesn't re-state is dropped, since a
     // pinned model belongs to the family being left.
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(runtimeTuningPatch(b, ag, { dropModel: runtime !== ag.runtime }), runtime);
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(runtimeTuningPatch(b, ag, { dropModel: runtime !== ag.runtime, dropStyle: !runtimeSupports(runtime, 'outputStyle') }), runtime, { styles: os.outputStyles.names() });
     if (tErr) return sendJson(res, 400, { error: tErr });
     const before = readAgentSnapshot(ag);
     // Starter prompts + shell secrets + category + icon are only touched when the body carries the field
@@ -4573,13 +4573,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, skills, tools, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, outputStyle: tuning.outputStyle, examplePrompts: prompts, shellSecrets, skills, tools, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
     const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, before.claudeMd), 'edited config', me.email);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, category, shellSecrets: shellSecrets ?? [], skills: skills ?? [], tools: tools ?? [], netMode: netMode ?? 'open', rev } });
-    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, skills, tools, netMode: netMode ?? 'open', category, icon });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, outputStyle: tuning.outputStyle, category, shellSecrets: shellSecrets ?? [], skills: skills ?? [], tools: tools ?? [], netMode: netMode ?? 'open', rev } });
+    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, outputStyle: tuning.outputStyle, warning: tuning.outputStyle ? outputStyleWarning(tuning.outputStyle) : undefined, examplePrompts: prompts, shellSecrets, skills, tools, netMode: netMode ?? 'open', category, icon });
   }
 
   // ── agent config revision history + revert (owner/admin) — the human rollback for a self-editing agent ──
@@ -4614,23 +4614,75 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'PUT' && p === '/api/settings/runtime-defaults') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const b = await readBody(req);
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(b, undefined, { styles: os.outputStyles.names() });
     if (tErr) return sendJson(res, 400, { error: tErr });
     const saved = os.settings.setRuntimeDefaults(tuning, me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.runtimeDefaults.updated', data: { ...tuning } });
-    return sendJson(res, 200, { ok: true, ...saved });
+    // A style this box's `claude` is too old for still saves — boxes get upgraded and a fleet default
+    // must be settable ahead of a rollout — but it is never applied silently. See outputStyleWarning.
+    return sendJson(res, 200, { ok: true, ...saved, warning: tuning.outputStyle ? outputStyleWarning(tuning.outputStyle) : undefined });
   }
 
-  // ── how far has the terse flag actually spread? Counts only. The predecessor route
-  //    (/api/settings/verbosity-savings) reported cost-per-turn deltas and was retired in v0.389.0:
-  //    `output_tokens` is ~85% tool-call arguments, so it could not measure the narration the brief
-  //    acts on, and the console was rendering the result as a saving. The effect question belongs to
-  //    `npm run bench:verbosity` / `bench:verbosity-turns`, not to a query over live traffic.
-  //    Read-only, owner/admin. `days` widens the trailing window.
-  if (method === 'GET' && p === '/api/settings/verbosity-adoption') {
+  // ── which output styles is the fleet actually running? COUNTS ONLY, deliberately. Two ancestors of
+  //    this route reported cost: /api/settings/verbosity-savings (retired v0.389.0 — `output_tokens` is
+  //    ~85% tool-call arguments, so it could not measure the narration it claimed to) and the adoption
+  //    route that replaced it. The effect question belongs to a controlled experiment
+  //    (`npm run bench:output-style`), never to a query over live traffic. Read-only, owner/admin.
+  if (method === 'GET' && p === '/api/settings/output-style-adoption') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const days = Math.max(1, Math.min(Math.floor(Number(url.searchParams.get('days')) || 30), 365));
-    return sendJson(res, 200, verbosityAdoption(os.db, days));
+    return sendJson(res, 200, outputStyleAdoption(os.db, days));
+  }
+
+  // ── the output-style library: Claude Code's built-ins + this workspace's custom styles ──
+  //    A style is a system-prompt shape (role/tone/response format), NOT project context (that's the
+  //    agent prompt) and NOT a procedure (that's a skill). Owner/admin to write, any member to read —
+  //    the picker on an agent's runtime card needs the list.
+  if (method === 'GET' && p === '/api/output-styles') {
+    const custom = os.outputStyles.list();
+    return sendJson(res, 200, {
+      builtin: BUILTIN_OUTPUT_STYLES.map((b) => ({ ...b, warning: outputStyleWarning(b.name) })),
+      custom,
+      enabled: os.outputStyles.enabled,
+    });
+  }
+  if (method === 'GET' && p.startsWith('/api/output-styles/')) {
+    const name = decodeURIComponent(p.slice('/api/output-styles/'.length));
+    const style = os.outputStyles.get(name);
+    if (!style) return sendJson(res, 404, { error: `output style "${name}" not found` });
+    return sendJson(res, 200, style);
+  }
+  if (method === 'PUT' && p.startsWith('/api/output-styles/')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const name = decodeURIComponent(p.slice('/api/output-styles/'.length));
+    if (!validOutputStyleName(name)) return sendJson(res, 400, { error: `"${name}" is not a valid output-style name` });
+    const b = await readBody(req);
+    const content = typeof b.content === 'string' && b.content.trim()
+      ? b.content
+      : starterOutputStyle(name, typeof b.description === 'string' ? b.description : '');
+    try {
+      const saved = os.outputStyles.save(name, content);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'output-style.saved', data: { name, bytes: saved.bytes, keepCodingInstructions: saved.keepCodingInstructions } });
+      // `keep-coding-instructions: false` is the frontmatter DEFAULT, and it removes Claude Code's
+      // software-engineering instructions from every agent that selects this style. Silent in the CLI,
+      // so it is said out loud here.
+      const warning = saved.keepCodingInstructions
+        ? undefined
+        : 'this style omits `keep-coding-instructions: true`, so an agent using it loses Claude Code\'s built-in software-engineering instructions.';
+      return sendJson(res, 200, { ok: true, ...saved, warning });
+    } catch (e) {
+      return sendJson(res, 400, { error: String((e as Error).message || e) });
+    }
+  }
+  if (method === 'DELETE' && p.startsWith('/api/output-styles/')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const name = decodeURIComponent(p.slice('/api/output-styles/'.length));
+    if (!os.outputStyles.remove(name)) return sendJson(res, 404, { error: `output style "${name}" not found` });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'output-style.deleted', data: { name } });
+    // Agents pinned to it keep the name on disk and fall back to Default at launch (an unknown style is
+    // silently ignored). Naming them is what makes that recoverable instead of mysterious.
+    const orphaned = [...os.agents.values()].filter((a) => a.outputStyle === name).map((a) => a.id);
+    return sendJson(res, 200, { ok: true, orphaned });
   }
 
   // ── fleet-wide sub-agent posture ('all' | 'none') — owner/admin only ──

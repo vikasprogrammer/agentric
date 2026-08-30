@@ -158,8 +158,8 @@ console.log('\n\x1b[1m3) the unattended prompt brief\x1b[0m');
 for (const tool of ['task_wait', 'ask', 'schedule', 'task_create', 'report'])
   assert(UNATTENDED_TURN_BRIEF.includes(tool), `names \`${tool}\` — an agent told "don't wait" needs the alternative`);
 assert(/sleep/i.test(UNATTENDED_TURN_BRIEF), 'names the sleep/poll anti-pattern the incident invented');
-const unattendedMd = tm.buildCompanyMd('engineer', undefined, 'normal', true);
-const interactiveMd = tm.buildCompanyMd('engineer', undefined, 'normal', false);
+const unattendedMd = tm.buildCompanyMd('engineer', undefined, true);
+const interactiveMd = tm.buildCompanyMd('engineer', undefined, false);
 assert(unattendedMd.includes(UNATTENDED_TURN_BRIEF), 'injected into an unattended run\'s prompt');
 assert(!interactiveMd.includes(UNATTENDED_TURN_BRIEF), 'NOT injected into an attended/resident one (there it would be false)');
 assert(tm.buildCompanyMd('engineer').indexOf(UNATTENDED_TURN_BRIEF) === -1, 'defaults to off when the lane is not stated');

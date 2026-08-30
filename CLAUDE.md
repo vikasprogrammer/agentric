@@ -188,16 +188,28 @@ Key modules:
   default) and exports `CLAUDE_MODEL`/`CLAUDE_EFFORT`/`CLAUDE_PERMISSION_MODE`, which `claude-launch.sh`
   maps onto `--model`/`--effort`/`--permission-mode` (model+effort both lanes; permission-mode interactive
   only — headless keeps `--dangerously-skip-permissions`; unset → `auto`, which only tunes the fallback for
-  tools the gate hook doesn't govern, never the gate itself). A fourth knob, **`verbosity`**
-  (`normal` | `terse`, same precedence chain), is NOT a CLI flag — `terse` appends `TERSE_OUTPUT_BRIEF`
-  (`src/edge/verbosity.ts`) to the system prompt via `buildCompanyMd`, so it reaches both runtimes. It
-  compresses the agent's NARRATION only; code/errors and every durable artifact (`report`, `remember`,
-  `kb_write`, task notes, chat replies) are explicitly exempt, because terse prose there would degrade the
-  learning loop and the human-facing surface far from the flag that caused it. It's a prompt instruction,
-  not an enforced transform, so it ships with its own falsifier: the resolved level is stamped onto
-  `term_sessions.verbosity` and `verbositySavings()` compares terse vs normal **per turn, per agent**
-  (Settings → Runtime defaults). Never quote a saving from the fleet-wide pair — it mixes different work.
-  It also resolves the agent's opt-in
+  tools the gate hook doesn't govern, never the gate itself). A fourth knob, **`outputStyle`**
+  (same precedence chain, `src/edge/output-styles.ts`), is NOT a CLI flag: the launcher writes it into
+  the session's `--settings` JSON as `outputStyle`, which is how Claude Code takes a style — the system
+  prompt PROPER, plus its own per-turn style reminder. Built-ins (`Default`, `Concise`, `Proactive`,
+  `Explanatory`, `Learning`) need no file; CUSTOM styles live in the workspace library
+  (`<home>/output-styles/<Name>.md`) and are materialised into each agent's `.claude/output-styles/` at
+  launch like skills. **claude-code only** — probe the `outputStyle` capability, never compare runtime ids.
+  Four traps, all verified: an UNKNOWN style name is silently ignored (exit 0, runs Default), so
+  `sanitizeRuntimeTuning` validating against `OutputStylesStore.names()` is the only place a typo is
+  caught; a custom style DROPS Claude Code's built-in software-engineering instructions unless its
+  frontmatter says `keep-coding-instructions: true`; subagents don't inherit a style; and a plugin with
+  `force-for-plugin` overrides the user's choice outright (one more reason for
+  `AOS_CLAUDE_CONFIG_ISOLATION=1`). The resolved style is stamped onto `term_sessions.output_style`, and
+  the console reports **adoption only** — `outputStyleAdoption()`, a count of who ran what. It never
+  reports a saving, deliberately: this knob REPLACED the old `verbosity`/`TERSE_OUTPUT_BRIEF` flag
+  (v0.406.0), whose two ancestors both shipped cost figures that could not mean what they said
+  (`output_tokens` is ~85% tool-call arguments, so narration is ~15% of it and the ceiling on any style's
+  effect on spend is ~1%). Effect belongs to `npm run bench:output-style` — paired, controlled, with a
+  bootstrap CI that refuses a verdict inside the noise — and to its **completeness** column ahead of its
+  token column. The full autopsy is in the header of `src/edge/output-styles.ts`; read it before
+  proposing a prompt-wording lever again.
+  The launcher also resolves the agent's opt-in
   **`shellSecrets`** (manifest list of vault keys, e.g. `["GH_TOKEN"]`) via `injectShellSecrets` and
   exports each as a shell env var (so a plain CLI like `gh` authenticates); connectors still get theirs
   via the MCP bag. Agent-scoped principal (widening to `*`), audited `shell.secret.injected`/`unresolved`.

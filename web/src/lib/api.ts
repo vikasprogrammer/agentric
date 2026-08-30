@@ -39,17 +39,15 @@ export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 /** `claude --permission-mode` choices. Interactive lane only; the gate hook governs regardless. */
 export type PermissionMode = 'auto' | 'plan' | 'acceptEdits' | 'manual' | 'dontAsk' | 'bypassPermissions'
 export const PERMISSION_MODES: PermissionMode[] = ['auto', 'plan', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions']
-/** How much prose a session spends narrating itself. `terse` appends a compression brief to the system
- *  prompt — narration only; code, errors and every human-facing artifact stay in full. */
-export type Verbosity = 'normal' | 'terse'
-export const VERBOSITIES: Verbosity[] = ['normal', 'terse']
 /** Per-agent / workspace runtime tuning for claude-code sessions. Each field optional → inherit
- *  (permissionMode's floor is `auto`, verbosity's is `normal`). */
+ *  (permissionMode's floor is `auto`, outputStyle's is `Default`). */
 export interface RuntimeTuning {
   model?: string
   effort?: Effort
   permissionMode?: PermissionMode
-  verbosity?: Verbosity
+  /** Claude Code output style — a built-in name or a workspace library style. Sets the system prompt's
+   *  role/tone/response shape. claude-code only. */
+  outputStyle?: string
 }
 /** Wire form of a PARTIAL tuning edit (the agent-config route): an omitted key keeps the agent's current
  *  value, `''` clears the knob to inherit. Distinct from RuntimeTuning, whose `undefined` already means
@@ -58,17 +56,41 @@ export type RuntimeTuningPatch = {
   model?: string
   effort?: Effort | ''
   permissionMode?: PermissionMode | ''
-  verbosity?: Verbosity | ''
+  outputStyle?: string
 }
 
-/** How far the terse flag has spread — counts only. The predecessor (`VerbositySavings`) carried
- *  cost-per-turn deltas and was retired in v0.389.0: `output_tokens` is ~85% tool-call arguments, so
- *  it never measured the narration the brief acts on. Whether terse WORKS is answered by
- *  `npm run bench:verbosity` / `bench:verbosity-turns`, not by a query over live traffic. */
-export interface VerbosityAdoption {
+/** A Claude Code output style: a built-in, or a custom one in the workspace library. */
+export interface OutputStyleInfo {
+  name: string
+  description: string
+  /** Set on custom styles. FALSE means the style REPLACES Claude Code's software-engineering
+   *  instructions (the frontmatter default) — worth showing, because the CLI never says so. */
+  keepCodingInstructions?: boolean
+  bytes?: number
+  updatedAt?: number
+  /** Why this style won't take effect on this box (e.g. the CLI is too old). */
+  warning?: string
+}
+export interface OutputStylesResp {
+  builtin: OutputStyleInfo[]
+  custom: OutputStyleInfo[]
+  /** False when there is no data home, so custom styles can't be stored. */
+  enabled: boolean
+  error?: string
+}
+export interface OutputStyleDetail extends OutputStyleInfo {
+  content: string
+  error?: string
+}
+
+/** Which output styles the fleet is running — counts only. Two ancestors of this reported COST
+ *  (`VerbositySavings`, retired v0.389.0, and the terse adoption panel): `output_tokens` is ~85%
+ *  tool-call arguments, so neither ever measured the narration a style acts on. Whether a style works
+ *  is answered by `npm run bench:output-style`, never by a query over live traffic. */
+export interface OutputStyleAdoption {
   windowDays: number
-  sessions: { normal: number; terse: number; unstamped: number }
-  byAgent: Array<{ agent: string; normal: number; terse: number }>
+  sessions: { byStyle: Array<{ style: string; count: number }>; unstamped: number }
+  byAgent: Array<{ agent: string; styles: Array<{ style: string; count: number }> }>
   error?: string
 }
 
@@ -2051,7 +2073,13 @@ export const api = {
   agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
-  verbosityAdoption: (days = 30) => call<VerbosityAdoption>('GET', `/api/settings/verbosity-adoption?days=${days}`),
+  outputStyleAdoption: (days = 30) => call<OutputStyleAdoption>('GET', `/api/settings/output-style-adoption?days=${days}`),
+  outputStyles: () => call<OutputStylesResp>('GET', '/api/output-styles'),
+  outputStyle: (name: string) => call<OutputStyleDetail>('GET', `/api/output-styles/${encodeURIComponent(name)}`),
+  saveOutputStyle: (name: string, body: { content?: string; description?: string }) =>
+    call<OutputStyleDetail & { ok: boolean }>('PUT', `/api/output-styles/${encodeURIComponent(name)}`, body),
+  deleteOutputStyle: (name: string) =>
+    call<{ ok: boolean; orphaned: string[]; error?: string }>('DELETE', `/api/output-styles/${encodeURIComponent(name)}`),
   subagentDefault: () => call<{ mode: 'all' | 'none'; error?: string }>('GET', '/api/settings/subagent-default'),
   saveSubagentDefault: (mode: 'all' | 'none') => call<{ ok: boolean; mode?: 'all' | 'none'; error?: string }>('PUT', '/api/settings/subagent-default', { mode }),
   agentProposalTrust: () => call<{ trust: AgentProposalTrust; error?: string }>('GET', '/api/settings/agent-proposal-trust'),
