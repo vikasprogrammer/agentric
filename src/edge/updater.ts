@@ -51,6 +51,14 @@ export interface UpdateStatus {
   /** TRACKED files modified/staged — an ff-only apply would fail, so the UI disables the button.
    *  Untracked files (the `data` home symlink, logs, stray docs) are deliberately NOT counted. */
   dirty: boolean;
+  /** The paths behind `dirty` (regenerable lockfiles excluded), so a "can't update" notice can NAME
+   *  them. A box that silently never updates because someone hand-patched a file is the failure this
+   *  turns into a fixable one — expresstech carried an out-of-tree Xterm.tsx patch for weeks. */
+  dirtyFiles: string[];
+  /** The upstream commit an update would land on. The stable identity of "this particular update" —
+   *  the watcher dedupes its notifications on it, since `latest` (a version string) repeats across
+   *  commits and `behind` (a count) changes every time origin moves. */
+  head: string;
   /** ms epoch of the last successful `git fetch`. */
   checkedAt: number;
   /** Newest-first commit subjects that would land on update (≤20), as a lightweight changelog. */
@@ -111,7 +119,9 @@ async function doCheck(): Promise<UpdateStatus> {
   const remote = upstream.split('/')[0] || 'origin';
 
   const fetched = git(['fetch', '--quiet', remote], 60_000);
-  const dirty = hasTrackedChanges();
+  const dirtyFiles = dirtyTrackedFiles().filter((f) => !REGENERABLE.has(f));
+  const dirty = dirtyFiles.length > 0;
+  const head = git(['rev-parse', upstream]).out || '';
 
   let behind = 0;
   const rl = git(['rev-list', '--count', `HEAD..${upstream}`]);
@@ -135,6 +145,8 @@ async function doCheck(): Promise<UpdateStatus> {
     branch,
     upstream,
     dirty,
+    dirtyFiles,
+    head,
     checkedAt: Date.now(),
     log,
     error: fetched.ok ? undefined : `git fetch failed: ${fetched.err || 'unknown error'}`,

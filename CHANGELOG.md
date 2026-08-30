@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.407.0] - 2026-08-30
+### Added
+- **The box now tells you when it has fallen behind.** `src/edge/updater.ts` could always answer "is this
+  checkout behind origin?" and apply an update — but nothing ever asked it. Its only callers were console
+  routes, so the check ran exactly when a human had the console open, which on a headless remote is never;
+  boxes drifted 13+ versions with no signal anywhere. `src/edge/update-watch.ts` adds the periodic ask, in
+  two modes (Settings → System → Software, owner-only): **`notify`** (default) posts an Inbox card and DMs
+  the owner when the box falls behind, applying nothing — the drift alarm; **`ask`** additionally raises an
+  **owner approval** whose approval pulls, rebuilds and restarts that box, so one tap from a phone replaces
+  an ssh session. `off` disables it. Box-scoped rather than per-tenant (one checkout, one fact) and run
+  against the seed tenant, whose owner is the person with shell on the box.
+- **A blocked update is now something you hear about.** A dirty tree already refused an ff-only apply,
+  correctly — but silently, so a box hand-patched months ago quietly stopped updating and looked identical
+  to a current one. It now gets its own card naming the files in the way (`UpdateStatus.dirtyFiles`), in
+  `ask` mode too, where there is nothing to approve. A failed apply, and an apply that built but could not
+  restart, likewise each get a card: a self-update that fails silently is worse than one that never ran,
+  because the box looks current from the outside.
+- Governance: applying is classified as **`os.update`** and **floored at ask/owner** — a permissive tenant
+  policy (default `allow`, which the live tenants have) can never turn a self-update into something that
+  applies unattended; policy may only tighten it. A hard `never` on `os.update` disables the apply lane but
+  still notifies, because knowing you are behind is not permission to change the box. Full audit vocabulary
+  in `docs/self-update-watch.md`, which also records why unattended apply is deliberately NOT a mode yet
+  (it needs a canary soak and post-restart rollback verification) and the shared-checkout limit.
+- Notifications dedupe on the upstream **commit** (`UpdateStatus.head`), not the version or behind-count —
+  either would re-card a busy box every tick. A newer commit supersedes the previous card instead of
+  stacking, and the card is retired once the update lands.
+- New falsifier `scripts/update-watch-test.cjs` (52 checks, in `npm run test:governance`).
+
 ## [0.406.0] - 2026-08-30
 ### Added
 - **Output styles — the runtime knob for an agent's role, tone and default response shape.**

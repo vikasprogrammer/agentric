@@ -260,6 +260,12 @@ export interface StateResp {
 }
 /** What the sessions list shows in its money column — a workspace-wide viewing preference. */
 export type SessionMetrics = 'cost' | 'tokens' | 'both'
+/** How the box behaves when it notices it has fallen behind origin.
+ *  `off` — say nothing. `notify` — Inbox card + DM to the owner (the drift alarm; applies nothing).
+ *  `ask` — additionally raise an OWNER approval whose approval applies the update on the box. */
+export type UpdateWatchMode = 'off' | 'notify' | 'ask'
+export interface UpdateWatchConfig { mode: UpdateWatchMode; everyHours: number }
+
 /** Self-update status — the deploy is a git checkout, so this reflects "is the box behind origin?". */
 export interface UpdateStatus {
   current: string
@@ -270,6 +276,12 @@ export interface UpdateStatus {
   upstream: string
   /** Uncommitted changes on the box — an ff-only apply would fail, so the button is disabled. */
   dirty: boolean
+  /** The tracked files behind `dirty`, so the UI can name what is in the way. */
+  dirtyFiles?: string[]
+  /** The upstream commit an update would land on — the watcher's dedupe key. */
+  head?: string
+  /** The self-update watcher's config on this box (see UpdateWatchConfig). */
+  watch?: UpdateWatchConfig
   checkedAt: number
   /** Newest-first commit subjects that would land (a lightweight changelog preview). */
   log: string[]
@@ -1777,6 +1789,8 @@ export const api = {
   checkUpdate: (force = false) => call<UpdateStatus>('GET', '/api/update' + (force ? '?force=1' : '')),
   /** Owner-only: pull + rebuild + restart. Resolves with the step log; the process bounces after. */
   applyUpdate: () => call<UpdateApplyResult>('POST', '/api/update/apply'),
+  setUpdateWatch: (body: Partial<UpdateWatchConfig>) => call<{ ok?: boolean; watch?: UpdateWatchConfig; error?: string }>('POST', '/api/update/watch', body),
+  runUpdateWatch: () => call<{ action?: string; behind?: number; latest?: string; error?: string }>('POST', '/api/update/watch/run'),
   /** Owner-only: plain restart, no pull/rebuild. The process bounces ~1.5s after the response. */
   restart: () => call<RestartResult>('POST', '/api/restart'),
   sessions: (archived?: boolean) => call<Session[]>('GET', '/api/sessions' + (archived ? '?archived=1' : '')),
