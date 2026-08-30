@@ -702,6 +702,17 @@ export interface ReviewNotice {
   link?: { page: string; detail?: string; label?: string };
 }
 
+/** What an agent's `secret_request` is asking a human to do with the KEY it named:
+ *  `provide` (the vault has nothing — type a value), `access` (it exists but is scoped away — grant it),
+ *  `rotate` (the agent CAN read it but the value is being rejected — replace it). Detected server-side
+ *  in {@link TerminalManager.requestSecret}; the agent only says which key and why. */
+export type SecretRequestMode = 'provide' | 'access' | 'rotate';
+
+/** Read a `secret.request` card's stored `mode`, defaulting to 'provide' for an unknown/legacy value. */
+function parseSecretRequestMode(v: unknown): SecretRequestMode {
+  return v === 'access' || v === 'rotate' ? v : 'provide';
+}
+
 /** The spec an agent proposes for a new automation — the subset of `AddAutomationInput` an agent may
  *  suggest. It rides in the `automation.proposed` review-card args and is fed to `Automations.add` only
  *  once a human approves (so an unapproved automation is never created and can never fire). */
@@ -4722,15 +4733,21 @@ export class TerminalManager {
     key: string,
     value: string,
     reasoning: string,
-  ): Promise<{ status: 'stored' | 'denied' | 'error'; detail?: string }> {
+  ): Promise<{ status: 'stored' | 'denied' | 'error'; detail?: string; replaced?: boolean }> {
     if (this.os.settings.killSwitch().engaged) {
       this.audit(sessionId, agent, 'gate.killswitch', { capability: 'secret.put', key });
       return { status: 'denied', detail: 'workspace emergency stop is engaged' };
     }
+    // A put over an EXISTING shared key is a replacement, not a create — every other agent resolving it
+    // starts getting the new value. Say so in the classify args, the card and the audit (metadata only,
+    // still never the value), so an approver can't wave through a clobber of a live credential thinking
+    // they're approving a first write.
+    const prior = this.os.secrets.list(this.os.tenant).find((sec) => sec.principal === '*' && sec.key === key);
+    const replaced = prior !== undefined;
     // Gate on the KEY only — the value is deliberately absent from classify/audit/the approval card.
-    const attempt: ActionAttempt = { capabilityId: 'secret.put', args: { key }, reasoning };
+    const attempt: ActionAttempt = { capabilityId: 'secret.put', args: { key, replaced }, reasoning };
     const decision: Decision = this.os.policy.classify(attempt, this.ctx(sessionId, agent));
-    this.audit(sessionId, agent, 'gate.attempt', { capability: 'secret.put', args: { key }, reasoning });
+    this.audit(sessionId, agent, 'gate.attempt', { capability: 'secret.put', args: { key, replaced }, reasoning });
     this.audit(sessionId, agent, 'gate.decision', { capability: 'secret.put', decision });
     if (decision.effect === 'deny') return { status: 'denied', detail: decision.reason };
     if (decision.effect === 'approve') {
@@ -4751,12 +4768,14 @@ export class TerminalManager {
           type: 'approval',
           sessionId,
           agent,
-          title: `Approval needed — store secret "${key}"`,
-          body: reasoning,
+          title: replaced ? `Approval needed — REPLACE secret "${key}"` : `Approval needed — store secret "${key}"`,
+          body: replaced
+            ? `${reasoning}\n\nThis OVERWRITES the existing shared "${key}" (last set ${prior!.updatedBy ? `by ${prior!.updatedBy} ` : ''}${new Date(prior!.updatedAt).toISOString().slice(0, 10)}). Every agent resolving that key gets the new value.`
+            : reasoning,
           status: 'pending',
           approvalId: req.id,
           capability: 'secret.put',
-          args: { key },
+          args: { key, replaced },
           level: decision.level,
           audienceKind: aud.kind,
           audienceId: audienceIdOf(aud),
@@ -4771,8 +4790,8 @@ export class TerminalManager {
     // green (allow) or approved → write the encrypted row under the shared tenant-wide principal.
     try {
       this.os.secrets.set(this.os.tenant, key, value, { principal: '*', updatedBy: `agent:${agent}` });
-      this.audit(sessionId, agent, 'secret.put', { key, principal: '*' });
-      return { status: 'stored' };
+      this.audit(sessionId, agent, 'secret.put', { key, principal: '*', replaced, ...(prior ? { previousUpdatedAt: prior.updatedAt, previousUpdatedBy: prior.updatedBy } : {}) });
+      return { status: 'stored', replaced };
     } catch (e) {
       return { status: 'error', detail: e instanceof Error ? e.message : String(e) };
     }
@@ -5849,8 +5868,13 @@ export class TerminalManager {
       });
   }
 
+  /** Principals in this tenant's vault that currently hold `key` — metadata only, never a value. */
+  private secretPrincipals(key: string): string[] {
+    return this.os.secrets.list(this.os.tenant).filter((s) => s.key === key).map((s) => s.principal);
+  }
+
   /**
-   * Agent asks a human about a credential KEY it needs (the `secret_request` tool). Auto-detects two
+   * Agent asks a human about a credential KEY it needs (the `secret_request` tool). Auto-detects three
    * modes so the agent doesn't have to know which case it's in:
    *   • **provide** — the key isn't in the vault at all: a human types the value into a secure form
    *     (encrypted at rest) instead of the agent asking them to paste the raw secret into the session
@@ -5858,47 +5882,66 @@ export class TerminalManager {
    *   • **access** — the key already EXISTS in the vault but under a principal this agent can't read
    *     (another agent / a member / a non-shared scope): a human GRANTS access, and the server re-scopes
    *     the existing sealed value to this agent — no value is ever re-typed or exposed.
+   *   • **rotate** — the agent CAN read the key but the value is dead (expired token, revoked key): a
+   *     human types a REPLACEMENT. Without this the `exists` short-circuit below answers "you already
+   *     have this" — useless precisely when the value it has is what's broken, leaving delete-then-add
+   *     by a human as the only route. Reached only on an explicit `rotate`, so a merely forgetful agent
+   *     is still short-circuited rather than nagging someone.
    * Either way it never carries a value — only the KEY and why. Short-circuits if the agent can already
    * resolve the key (it has access) or an identical request is already open, else posts an owner/admin
    * 'secret.request' card tagged with the detected `mode` and audits `secret.requested`. A human resolves
    * it via POST /api/secrets/requests/:id/fulfill. */
-  requestSecret(sessionId: string, agent: string, key: string, reasoning?: string): { ok: boolean; status?: 'requested' | 'exists' | 'duplicate'; mode?: 'provide' | 'access'; error?: string } {
+  requestSecret(
+    sessionId: string,
+    agent: string,
+    key: string,
+    reasoning?: string,
+    opts: { rotate?: boolean } = {},
+  ): { ok: boolean; status?: 'requested' | 'exists' | 'duplicate'; mode?: SecretRequestMode; locations?: string[]; error?: string } {
     const k = (key || '').trim();
     if (!k) return { ok: false, error: 'a secret key is required' };
+    // Where the key lives today decides the mode — and, for a rotation, which rows the replacement lands
+    // on (the fulfill route re-derives this rather than trusting the card, which can be hours stale).
+    const locations = this.secretPrincipals(k);
+    // A rotate for a key the vault doesn't hold has nothing to replace, so it degrades to a provide.
+    const rotating = opts.rotate === true && locations.length > 0;
     // Already resolvable for this agent (its own principal or the shared `*`) → no need to ask a human.
-    if (this.os.secrets.getSync(this.os.tenant, agent, k) !== undefined) return { ok: true, status: 'exists' };
-    // Detect mode: does the key exist ANYWHERE in the vault (a principal this agent just can't read)?
-    // If so this is an access-grant request; otherwise the vault has nothing and a human must provide it.
-    const inVault = this.os.secrets.list(this.os.tenant).some((s) => s.key === k);
-    const mode: 'provide' | 'access' = inVault ? 'access' : 'provide';
+    if (!rotating && this.os.secrets.getSync(this.os.tenant, agent, k) !== undefined) return { ok: true, status: 'exists' };
+    const mode: SecretRequestMode = rotating ? 'rotate' : locations.length ? 'access' : 'provide';
     // Dedupe against an already-open request for the same key from the same agent.
     const open = this.db
       .prepare(`SELECT 1 FROM messages WHERE type = 'secret.request' AND status = 'open' AND agent = ? AND json_extract(args, '$.key') = ?`)
       .get(agent, k);
     if (open) return { ok: true, status: 'duplicate', mode };
-    const defaultBody = mode === 'access'
-      ? `${agent} is requesting access to the existing credential "${k}".`
-      : `${agent} needs the credential "${k}" to continue.`;
+    const defaultBody = mode === 'rotate'
+      ? `${agent} reports the current value of "${k}" is being rejected and needs replacing.`
+      : mode === 'access'
+        ? `${agent} is requesting access to the existing credential "${k}".`
+        : `${agent} needs the credential "${k}" to continue.`;
+    const title = mode === 'rotate'
+      ? `Secret rotation requested — ${k}`
+      : mode === 'access' ? `Secret access requested — ${k}` : `Secret requested — ${k}`;
     this.postReviewCard({
       type: 'secret.request', sessionId, agent,
-      title: mode === 'access' ? `Secret access requested — ${k}` : `Secret requested — ${k}`,
+      title,
       body: (reasoning?.trim() || defaultBody).trim(),
-      args: { key: k, mode, ...(reasoning ? { reasoning } : {}) },
+      args: { key: k, mode, ...(mode === 'rotate' ? { locations } : {}), ...(reasoning ? { reasoning } : {}) },
     });
-    this.audit(sessionId, agent, 'secret.requested', { key: k, mode, reasoning });
-    return { ok: true, status: 'requested', mode };
+    this.audit(sessionId, agent, 'secret.requested', { key: k, mode, ...(mode === 'rotate' ? { locations } : {}), reasoning });
+    return { ok: true, status: 'requested', mode, ...(mode === 'rotate' ? { locations } : {}) };
   }
 
   /** Read a 'secret.request' card's payload (for the fulfill/dismiss routes). undefined if not one.
-   *  `mode` is 'access' (grant an existing key) or 'provide' (a human enters a new value). */
-  secretRequestCard(id: string): { key: string; agent: string; mode: 'provide' | 'access'; reasoning?: string; status: string } | undefined {
+   *  `mode` is 'access' (grant an existing key), 'rotate' (replace a rejected value) or 'provide' (a
+   *  human enters a new value). */
+  secretRequestCard(id: string): { key: string; agent: string; mode: SecretRequestMode; reasoning?: string; status: string } | undefined {
     const row = this.db
       .prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'secret.request'`)
       .get<{ agent: string; args: string | null; status: string }>(id);
     if (!row) return undefined;
     let a: Record<string, unknown> = {};
     try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
-    return { key: String(a.key ?? ''), agent: row.agent, mode: a.mode === 'access' ? 'access' : 'provide', reasoning: a.reasoning ? String(a.reasoning) : undefined, status: row.status };
+    return { key: String(a.key ?? ''), agent: row.agent, mode: parseSecretRequestMode(a.mode), reasoning: a.reasoning ? String(a.reasoning) : undefined, status: row.status };
   }
 
   /** Mark a 'secret.request' card resolved once a human fulfilled (provided/granted) or dismissed it. */
@@ -5907,14 +5950,19 @@ export class TerminalManager {
   }
 
   /** Open (unresolved) secret.request cards — the Secrets settings page's agent-request review section. */
-  openSecretRequests(): { id: string; key: string; agent: string; mode: 'provide' | 'access'; reasoning?: string; createdAt: number }[] {
+  openSecretRequests(): { id: string; key: string; agent: string; mode: SecretRequestMode; locations?: string[]; reasoning?: string; createdAt: number }[] {
     return this.db
       .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'secret.request' AND status = 'open' ORDER BY created_at DESC`)
       .all<{ id: string; agent: string; args: string | null; created_at: number }>()
       .map((r) => {
         let a: Record<string, unknown> = {};
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
-        return { id: r.id, key: String(a.key ?? ''), agent: r.agent, mode: a.mode === 'access' ? 'access' : 'provide', reasoning: a.reasoning ? String(a.reasoning) : undefined, createdAt: r.created_at };
+        const key = String(a.key ?? '');
+        const mode = parseSecretRequestMode(a.mode);
+        // A rotation's blast radius (which principals get overwritten) is re-derived live, not read off
+        // the card — the vault can have changed since the agent asked.
+        const locations = mode === 'rotate' ? this.secretPrincipals(key) : undefined;
+        return { id: r.id, key, agent: r.agent, mode, locations, reasoning: a.reasoning ? String(a.reasoning) : undefined, createdAt: r.created_at };
       });
   }
 

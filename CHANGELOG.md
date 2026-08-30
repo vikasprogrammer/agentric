@@ -8,6 +8,36 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.405.0] - 2026-08-30
+### Added
+- **An expired credential has a route that isn't delete-then-add.** `secret_request` gains a third mode,
+  `rotate`. An agent that HOLDS a key whose value is being rejected (expired token, revoked key, rotated
+  upstream) used to hit the `exists` short-circuit — "you already have this" — which is useless precisely
+  when the value it has is the broken thing; the only fix was a human deleting the key and adding it
+  again. `secret_request({ key, rotate: true, reasoning })` now posts a *rotation* card and an owner/admin
+  types a replacement in **Settings → Secrets**. Still value-free on the agent's side: it sends only the
+  key and why. Three deliberate choices: a rotation overwrites **every principal holding that key**
+  (re-derived at fulfil time), because a half-rotated secret is worse than a missing one — whoever
+  resolves the stale copy fails against a credential that *looks* present; `rotate` outranks `access`,
+  since an agent can hold a key by shell injection *without* `secret_get` rights and must still be able
+  to report it dead; and injection **merges** the requester into the assignment list instead of replacing
+  it, which on a shared key would silently un-inject everyone else. A rotate for a key the vault doesn't
+  hold degrades to `provide`; without `rotate` the old short-circuit is unchanged, so a merely forgetful
+  agent still can't nag a human. Audited `secret.request.rotated` (principals, never the value).
+
+### Changed
+- **`secret_put` over a live key now announces itself as a replacement.** The vault write was always an
+  upsert, so updating a secret never needed a delete first — but nothing said so, and the approval card
+  read `store secret "X"` whether it was a first write or a clobber of a credential the whole fleet
+  resolves. The card now reads `REPLACE secret "X"` and names when and by whom it was last set, `replaced`
+  rides in the classify args (so a workspace can write a policy rule on it) and in the `secret.put` audit
+  alongside the prior `updatedAt`/`updatedBy`, and the tool tells the agent it replaced rather than
+  stored. Metadata only — neither value appears anywhere. The tool description now states that an
+  existing key is updated in place, and points an agent without the new value at `rotate` instead.
+- New falsifier `scripts/secret-rotation-test.cjs` (in `npm run test:governance`) pins all of it: the
+  short-circuit is only bypassed by `rotate`, the mode precedence, whole-key overwrite, assignment merge,
+  the 404 when the key vanished before a human acted, and REPLACE-vs-store on the approval card.
+
 ## [0.404.1] - 2026-08-29
 ### Fixed
 - **A merged skill proposal now stops asking to be reviewed.** The Skills console acts on the SKILL —

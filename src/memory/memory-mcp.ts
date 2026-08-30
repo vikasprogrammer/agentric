@@ -1544,7 +1544,10 @@ const TOOLS = [
       'value is encrypted at rest and is NOT recorded in the audit trail. Storing a secret is a governed, ' +
       'approval-gated action: this call BLOCKS until a human approves it (unless an approver is already ' +
       'attending your run). Keys are shared tenant-wide, so any agent can secret_get them — only store ' +
-      'things that are meant to be shared with the team.',
+      'things that are meant to be shared with the team. UPDATING one is the same call: putting an ' +
+      'existing key REPLACES its value in place (never delete-then-add), and the approver is shown that ' +
+      'it is a replacement. Only do that when you HOLD the new value — if the value is expired and you ' +
+      'do not have a fresh one, use secret_request({ rotate: true }) to have a human replace it.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1585,20 +1588,24 @@ const TOOLS = [
     name: 'secret_request',
     description:
       'Ask a human about a credential KEY you need — an API key, password, token, or connection string. ' +
-      'Two cases, handled automatically: (1) if the vault does NOT have the key, an owner/admin PROVIDES ' +
-      'it by typing the value into a secure form — use this INSTEAD of asking them to paste the secret to ' +
-      'you in chat, where the raw value would end up in this transcript; (2) if the key already EXISTS in ' +
-      'the vault but you cannot read it (it belongs to another agent or person), an owner/admin GRANTS you ' +
-      'ACCESS and the existing value is re-scoped to you — no one re-types it. Either way you pass only the ' +
-      'KEY name and why you need it, never a value. Once resolved: secret_get it by that key, or (if they ' +
-      'inject it) it is a shell env var on your next session. First check secret_list — you may already ' +
-      'have access.',
+      'Three cases, detected automatically: (1) if the vault does NOT have the key, an owner/admin ' +
+      'PROVIDES it by typing the value into a secure form — use this INSTEAD of asking them to paste the ' +
+      'secret to you in chat, where the raw value would end up in this transcript; (2) if the key already ' +
+      'EXISTS in the vault but you cannot read it (it belongs to another agent or person), an owner/admin ' +
+      'GRANTS you ACCESS and the existing value is re-scoped to you — no one re-types it; (3) if you CAN ' +
+      'read the key but the value is dead — the API answers 401/403/"expired"/"revoked" — pass ' +
+      'rotate:true and an owner/admin types a REPLACEMENT over it. Without rotate:true you are simply ' +
+      'told you already have the key, which is useless when the value you have is the broken thing. ' +
+      'Either way you pass only the KEY name and why, never a value. Once resolved: secret_get it by that ' +
+      'key, or (if they inject it) it is a shell env var on your next session. First check secret_list — ' +
+      'you may already have access.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         key: { type: 'string', description: 'The handle you will fetch the credential by — a letter/underscore then letters, digits or underscores, e.g. "STRIPE_API_KEY", "PROD_DB_URL".' },
-        reasoning: { type: 'string', description: 'One line for the human: what this credential is and why you need it (helps them fulfil it quickly).' },
+        reasoning: { type: 'string', description: 'One line for the human: what this credential is and why you need it (helps them fulfil it quickly). For a rotation, say what rejected it — the exact error beats "it did not work".' },
+        rotate: { type: 'boolean', description: 'Set true ONLY when you already have this key and its value is being REJECTED (expired/revoked/rotated upstream) and you want a human to replace it. Do not set it when you simply lack the key.' },
       },
       required: ['key'],
     },
@@ -2888,9 +2895,14 @@ async function secretPut(args: Record<string, unknown>): Promise<string> {
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify({ session: SESSION, key, value, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
   });
-  const d = (await res.json()) as { status?: string; detail?: string; error?: string };
+  const d = (await res.json()) as { status?: string; detail?: string; replaced?: boolean; error?: string };
   if (d.error) return `Could not store the secret: ${d.error}`;
-  if (d.status === 'stored') return `Stored secret "${key}" in the shared vault. Hand it off by NAME — tell the other agent to secret_get "${key}". Never paste the value into a message, memory, or report.`;
+  if (d.status === 'stored') {
+    return (d.replaced
+      ? `REPLACED the shared secret "${key}" — every agent that resolves that key now gets the new value.`
+      : `Stored secret "${key}" in the shared vault.`) +
+      ` Hand it off by NAME — tell the other agent to secret_get "${key}". Never paste the value into a message, memory, or report.`;
+  }
   if (d.status === 'denied') return `Storing "${key}" was not approved${d.detail ? `: ${d.detail}` : ''}.`;
   return `Could not store the secret${d.detail ? `: ${d.detail}` : ''}.`;
 }
@@ -2925,15 +2937,21 @@ async function secretList(): Promise<string> {
 async function secretRequest(args: Record<string, unknown>): Promise<string> {
   const key = String(args.key ?? '').trim();
   if (!key) return 'secret_request needs the key name of the credential you need, e.g. secret_request({ key: "STRIPE_API_KEY" }).';
+  const rotate = args.rotate === true;
   const res = await fetch(AOS_URL + '/api/agent/secret/request', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, key, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
+    body: JSON.stringify({ session: SESSION, key, rotate, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
   });
-  const d = (await res.json()) as { ok?: boolean; status?: string; mode?: string; error?: string };
+  const d = (await res.json()) as { ok?: boolean; status?: string; mode?: string; locations?: string[]; error?: string };
   if (!d.ok) return `Could not request the secret: ${d.error ?? 'unknown error'}`;
-  if (d.status === 'exists') return `"${key}" is already in the vault and available to you — secret_get "${key}".`;
+  // `exists` can't come back on a rotation — that short-circuit is exactly what rotate:true is for.
+  if (d.status === 'exists') return `"${key}" is already in the vault and available to you — secret_get "${key}". If you HAVE it and it is being rejected (expired or revoked), ask for a replacement with secret_request({ key: "${key}", rotate: true, reasoning: "…" }).`;
   if (d.status === 'duplicate') return `A request for "${key}" is already awaiting review.`;
+  if (d.mode === 'rotate') {
+    const n = d.locations?.length ?? 0;
+    return `Requested a ROTATION of "${key}" — an owner/admin will type a replacement value, overwriting the current one${n > 1 ? ` everywhere it is stored (${n} places)` : ''}. Do not keep retrying with the old value; it will not start working. Once rotated, secret_get "${key}" again for the new value (a shell env var only refreshes on your next session).`;
+  }
   if (d.mode === 'access') return `Requested ACCESS to "${key}" — it's already in the vault but scoped away from you. An owner/admin will grant you access (the existing value is re-scoped to you; no one re-types it). Once granted, secret_get "${key}", or it'll be a shell env var on your next session if they inject it.`;
   return `Requested "${key}" — an owner/admin will provide it into the vault (they type the value, you never see it pasted here). Once fulfilled, secret_get "${key}", or it'll be a shell env var on your next session if they inject it.`;
 }

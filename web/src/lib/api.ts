@@ -1280,9 +1280,11 @@ export interface SkillshResp { query: string; hits: SkillshHit[]; error?: string
 export interface SkillRequest { id: string; skill: string; source: string; agent: string; rationale?: string; createdAt: number }
 export interface SkillRequestsResp { requests: SkillRequest[]; error?: string }
 
-/** An agent's `secret_request` awaiting a human. `mode`: 'provide' (enter a new value) or 'access'
- *  (grant the agent an existing vault key — no value typed). No secret value is ever in play here. */
-export interface SecretRequest { id: string; key: string; agent: string; mode: 'provide' | 'access'; reasoning?: string; createdAt: number }
+/** An agent's `secret_request` awaiting a human. `mode`: 'provide' (enter a new value), 'access' (grant
+ *  the agent an existing vault key — no value typed) or 'rotate' (the agent holds the key but the value
+ *  is being rejected — enter a replacement, which overwrites every `locations` principal). No secret
+ *  value is ever in play here. */
+export interface SecretRequest { id: string; key: string; agent: string; mode: 'provide' | 'access' | 'rotate'; locations?: string[]; reasoning?: string; createdAt: number }
 export interface SecretRequestsResp { requests: SecretRequest[]; error?: string }
 
 /** An agent's `connection_request` awaiting a human. `scope` 'personal' (the run's own member completes
