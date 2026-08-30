@@ -204,9 +204,17 @@ export class AutomemMemoryProvider implements MemoryProvider {
 
   async health(): Promise<{ ok: boolean; backend: string; detail?: string }> {
     let count: number | undefined;
+    let degraded: string | undefined;
     try {
-      const res = (await this.req('GET', '/health')) as { status?: string; memory_count?: number };
-      if (res.status !== 'healthy') return { ok: false, backend: 'automem', detail: `unhealthy @ ${this.endpoint}` };
+      const res = (await this.req('GET', '/health')) as { status?: string; memory_count?: number; sync_status?: string };
+      // `degraded` is NOT down. automem reports it while its graph and its vector store disagree — which is
+      // the NORMAL state during a bulk write (the node lands before the vector; its sync worker reconciles
+      // on a timer). Reads and writes both keep working. Treating it as unusable made the migration this
+      // check guards refuse to run against the store it was migrating INTO, one batch after another, and
+      // painted Settings → Memory red mid-import. So: report it, don't fail on it. Only an outright
+      // `unhealthy` (or an unreachable endpoint) is a stop.
+      if (res.status === 'degraded') degraded = res.sync_status ? `degraded (${res.sync_status})` : 'degraded';
+      else if (res.status !== 'healthy') return { ok: false, backend: 'automem', detail: `unhealthy @ ${this.endpoint}` };
       count = res.memory_count;
     } catch (e) {
       return { ok: false, backend: 'automem', detail: e instanceof Error ? e.message : String(e) };
@@ -223,7 +231,7 @@ export class AutomemMemoryProvider implements MemoryProvider {
       // server that `/health` already confirmed up.
       if (msg.includes('→ 401')) return { ok: false, backend: 'automem', detail: 'token rejected (401) — check the token in Settings → Memory' };
     }
-    return { ok: true, backend: 'automem', detail: `${count ?? '?'} memories @ ${this.endpoint}` };
+    return { ok: true, backend: 'automem', detail: `${count ?? '?'} memories @ ${this.endpoint}${degraded ? ` — ${degraded}` : ''}` };
   }
 
   private async req(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', pathName: string, params?: URLSearchParams, body?: unknown): Promise<unknown> {

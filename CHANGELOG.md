@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.407.2] - 2026-08-30
+### Fixed
+- **`degraded` automem is a lag, not an outage.** automem reports `degraded` / `drift_detected` while its
+  graph and its vector store disagree — the normal state during a bulk write (the node lands before the
+  vector; a worker reconciles on a timer), with reads and writes working throughout. The provider failed
+  the health check on it, so the memory migration — which pre-flights health before every batch — refused
+  to write into the store it was importing into, batch after batch, and Settings → Memory went red
+  mid-import. Health now passes on `degraded` and says so in the detail line; only `unhealthy` or an
+  unreachable endpoint is a stop. Pinned by `scripts/automem-health-test.cjs`.
+
 ## [0.407.1] - 2026-08-30
 ### Fixed
 - **Moving a memory backend to a different endpoint is a STORE switch, and now stamps the migration
