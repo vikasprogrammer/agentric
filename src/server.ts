@@ -5529,14 +5529,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
-    const prevBackend = os.settings.memoryConfig()?.backend ?? 'sqlite';
+    const prev = os.settings.memoryConfig();
+    const prevBackend = prev?.backend ?? 'sqlite';
     os.settings.setMemoryConfig(cfg, me.email);
-    // A real backend TYPE switch resets the orphan horizon (existing local rows are from the OLD store, so
-    // they're the ones to migrate up). A same-backend re-save (token/endpoint/ranking edit) must NOT move it,
-    // or already-migrated rows would look like orphans again and re-migrate as duplicates.
-    if (cfg.backend !== prevBackend) {
+    // A change of STORE resets the orphan horizon (existing local rows are from the OLD store, so they're
+    // the ones to migrate up). "Store" is the backend type AND where it points: moving automem from one
+    // endpoint to another lands on an empty deployment exactly like switching backend type did — recall
+    // goes blind while the Memory hub keeps counting the local mirror (the failure this whole reconcile
+    // flow exists for). A same-STORE re-save (token, ranking, preload, maintenance) must NOT move it, or
+    // already-migrated rows would look like orphans again and re-migrate as duplicates.
+    if (memoryStoreIdentity(cfg) !== memoryStoreIdentity(prev)) {
       os.settings.stampMemorySwitch(Date.now(), me.email);
-      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.backend.changed', data: { backend: cfg.backend, from: prevBackend } });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.backend.changed', data: { backend: cfg.backend, from: prevBackend, store: memoryStoreIdentity(cfg), fromStore: memoryStoreIdentity(prev) } });
     } else {
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.config.updated', data: { backend: cfg.backend } });
     }
@@ -7498,6 +7502,21 @@ function parseEmbeddings(eb: any, ep?: EmbeddingsConfig): EmbeddingsConfig | und
  * the migrate button copies up. Anchoring to the switch (not a per-run `Date.now()`) is what makes the
  * migration resume-safe. `null` → no switch on record → treat the ledger as already consistent.
  */
+/**
+ * Which STORE a memory config points at — the identity the orphan horizon keys on. Backend type plus the
+ * location of that backend's data, because those are the two ways a save can leave every existing memory
+ * behind: `automem` → `automem` at a different endpoint is a different store, while a token/ranking edit
+ * on the same endpoint is the same store. Credentials are deliberately NOT part of it: re-keying a store
+ * doesn't move its contents, and treating it as a switch would re-migrate everything as duplicates.
+ */
+function memoryStoreIdentity(cfg?: MemoryConfig | null): string {
+  const backend = cfg?.backend ?? 'sqlite';
+  const at = backend === 'automem' ? cfg?.automem?.endpoint ?? ''
+    : backend === 'libsql' ? cfg?.libsql?.url ?? ''
+    : '';
+  return `${backend}|${at.replace(/\/$/, '')}`;
+}
+
 function memoryOrphanHorizon(os: AgentOS): number | null {
   return os.settings.memorySwitchedAt() ?? null;
 }
