@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.407.1] - 2026-08-30
+### Fixed
+- **Moving a memory backend to a different endpoint is a STORE switch, and now stamps the migration
+  horizon.** Switching backend TYPE stamped `memory_backend_switched_at` (the marker that says which local
+  mirror rows still need migrating up); pointing `automem` at a different endpoint did not — it was filed
+  as a same-backend re-save. But the new deployment is empty in exactly the same way: recall goes blind
+  while the Memory hub keeps counting the local mirror, and Settings → Memory reports "already consistent"
+  over a store holding none of the tenant's memories. The horizon now keys on a store IDENTITY (backend +
+  where its data lives), so an endpoint move reconciles like a backend switch, while a token / ranking /
+  preload re-save on the same endpoint still does NOT move it (that would re-migrate migrated rows as
+  duplicates). The `memory.backend.changed` audit event names both stores. Found while moving instapods
+  off its remote automem pod. Pinned by `scripts/memory-store-switch-test.cjs`.
+
 ## [0.407.0] - 2026-08-30
 ### Added
 - **The box now tells you when it has fallen behind.** `src/edge/updater.ts` could always answer "is this
