@@ -894,8 +894,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   // agent ASKS a human to PROVIDE a credential it lacks (`secret_request`) — the inverse of secret/put:
   // it carries only the KEY + reason, never a value, so the raw secret is typed into a secure form
-  // instead of pasted into the transcript. Posts an owner/admin 'secret.request' card; a human fulfills
-  // it via POST /api/secrets/requests/:id/fulfill. Pre-auth loopback, session-secret gated.
+  // instead of pasted into the transcript. `rotate:true` covers the third case — the agent HAS the key
+  // but its value is dead (expired/revoked) — which the plain "you already have this" short-circuit
+  // otherwise answers uselessly. Posts an owner/admin 'secret.request' card; a human fulfills it via
+  // POST /api/secrets/requests/:id/fulfill. Pre-auth loopback, session-secret gated.
   if (method === 'POST' && p === '/api/agent/secret/request') {
     const b = await readBody(req);
     const session = String(b.session || '');
@@ -904,7 +906,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const key = String(b.key || '').trim();
     if (!ENV_NAME.test(key) || key.length > 64) return sendJson(res, 400, { error: 'key must be a letter/underscore then letters, digits or underscores, ≤64 chars (e.g. STRIPE_API_KEY)' });
-    const out = tm.requestSecret(session, agent, key, b.reasoning != null ? String(b.reasoning) : undefined);
+    // `rotate` = "I can read this key but the value is being rejected" — the only way past the `exists`
+    // short-circuit, so an expired credential has a route that isn't a human deleting and re-adding it.
+    const rotate = b.rotate === true || b.rotate === 'true';
+    const out = tm.requestSecret(session, agent, key, b.reasoning != null ? String(b.reasoning) : undefined, { rotate });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
 
@@ -6674,7 +6679,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   // List open agent secret-requests for the Secrets settings review section (owner/admin). Each is an
   // agent that ran `secret_request`, tagged `mode`: 'provide' (the key isn't in the vault — a human must
-  // enter a value) or 'access' (the key exists but the agent can't read it — a human grants access).
+  // enter a value), 'access' (the key exists but the agent can't read it — a human grants access) or
+  // 'rotate' (the agent reads it fine but the value is rejected — a human types a replacement).
   if (method === 'GET' && p === '/api/secrets/requests') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, { requests: tm.openSecretRequests() });
@@ -6685,7 +6691,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   //  • access — the key already exists under a principal the agent can't read; NO value is typed. We
   //    re-scope the existing sealed value to the requesting agent server-side (read it via the vault,
   //    write a copy under the agent's principal) so it can secret_get — the value is never returned.
-  // Either path optionally injects it into the agent's shell at launch. The VALUE is never audited.
+  //  • rotate — the key exists and the agent CAN read it, but the value is being rejected. The human
+  //    types a replacement and it overwrites every principal holding that key (see below).
+  // Any path optionally injects it into the agent's shell at launch. The VALUE is never audited.
   const secretReqFulfill = p.match(/^\/api\/secrets\/requests\/([\w.-]+)\/fulfill$/);
   if (method === 'POST' && secretReqFulfill) {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -6709,6 +6717,27 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       tm.setSecretRequestStatus(secretReqFulfill[1], 'fulfilled');
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.request.granted', data: { key: card.key, from: src.principal, grantedTo: card.agent, read: grantRead, injected: inject } });
       return sendJson(res, 200, { ok: true, granted: true, injected: inject });
+    }
+    if (card.mode === 'rotate') {
+      // Replace a live-but-rejected credential. The human types the NEW value and it overwrites EVERY
+      // principal currently holding this key: a half-rotated secret is worse than a missing one, because
+      // the agents still resolving the stale copy fail against a credential that LOOKS present (the
+      // GH_TOKEN lesson). Holders are re-derived here — the card may be hours old.
+      const value = b.value != null ? String(b.value) : '';
+      if (!value) return sendJson(res, 400, { error: 'value is required' });
+      const holders = os.secrets.list(os.tenant).filter((s) => s.key === card.key).map((s) => s.principal);
+      if (!holders.length) return sendJson(res, 404, { error: `"${card.key}" is no longer in the vault to rotate` });
+      for (const holder of holders) os.secrets.set(os.tenant, card.key, value, { principal: holder, updatedBy: me.email });
+      if (inject) {
+        // Unlike provide/access (a first assignment), a rotated key may already be injected into OTHER
+        // agents — so ADD the requester rather than replacing the set, which would silently un-inject them.
+        const target = holders.includes(card.agent) ? card.agent : holders.includes('*') ? '*' : holders[0];
+        const already = os.secrets.assignedAgents(os.tenant, target, card.key);
+        if (!already.includes(card.agent)) os.secrets.setAssignedAgents(os.tenant, target, card.key, [...already, card.agent]);
+      }
+      tm.setSecretRequestStatus(secretReqFulfill[1], 'fulfilled');
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.request.rotated', data: { key: card.key, principals: holders, requestedBy: card.agent, injected: inject } });
+      return sendJson(res, 200, { ok: true, rotated: holders.length, principals: holders, injected: inject });
     }
     // provide mode: a human-entered value seals into the vault.
     const value = b.value != null ? String(b.value) : '';
