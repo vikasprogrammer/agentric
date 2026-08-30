@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.407.3] - 2026-08-30
+### Fixed
+- **The browser terminal can be scrolled from a tablet.** A touch drag emits no wheel events, so the
+  wheel bridge in `Xterm.tsx` never fired on an iPad and the scrollback was simply unreachable — the pane
+  could not be scrolled at all. A one-finger vertical drag now translates into the same SGR wheel events
+  (button 64/65) the wheel handler sends while an app wants the mouse — so claude's TUI and tmux scroll
+  identically however you drive them — and into a local `term.scrollLines()` when no app does.
+  `touch-action: none` on the pane is what stops Safari panning the page instead of yielding the gesture;
+  it is restored on teardown. Rescued from a live box, where it had been hand-applied and re-stashed
+  across two deploys — box-local work is one `git reset --hard` from gone.
+
 ## [0.407.2] - 2026-08-30
 ### Fixed
 - **`degraded` automem is a lag, not an outage.** automem reports `degraded` / `drift_detected` while its
