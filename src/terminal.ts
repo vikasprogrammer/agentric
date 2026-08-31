@@ -3204,16 +3204,17 @@ export class TerminalManager {
     // (1) resident warm-chat idle reap. This is what BOUNDS the warm-pane model: a chat session holds a
     // live claude (hundreds of MB) between turns, so it must give the box back when the conversation
     // goes quiet — the next message revives it in place, resuming the same transcript.
-    //   - `status IN ('running','done')`: a chat turn that ends by calling `report` flips the row to
-    //     `done` while its pane keeps running. Reaping only `running` left those panes alive forever
+    //   - `status IN ('running','done','crashed')`: a chat turn that ends by calling `report` flips the
+    //     row to `done` while its pane keeps running. Reaping only `running` left those panes alive forever
     //     (sweep 3, the interactive janitor, excludes `resident = 1`), which is precisely the leak the
-    //     cold-per-turn design never had.
+    //     cold-per-turn design never had. `crashed` rides along for the same reason it does in sweeps 2
+    //     and 3 — see the note there: the status is terminal, the pane isn't necessarily gone.
     //   - `busy_since`: never reap a turn that is actually generating. A long turn's `last_activity` is
     //     the moment the message was delivered, so a slow one would otherwise be killed mid-answer. The
     //     ceiling keeps that from becoming a way to never reap: a "turn" still running after
     //     MID_TURN_MAX_MS is wedged, not working.
     const midTurnFloor = Date.now() - MID_TURN_MAX_MS;
-    const residents = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status IN ('running','done') AND COALESCE(last_activity, created_at) < ? AND (busy_since IS NULL OR busy_since < ?)")
+    const residents = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status IN ('running','done','crashed') AND COALESCE(last_activity, created_at) < ? AND (busy_since IS NULL OR busy_since < ?)")
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(cutoff, midTurnFloor);
     for (const r of residents) {
       try {
@@ -3231,9 +3232,10 @@ export class TerminalManager {
 
     // (2) DONE-ORPHAN + unattended-straggler backstop — the safety net for markTurnIdle. Two ways a run leaks
     // a live pane:
-    //   (a) DONE ORPHAN — an UNATTENDED (chat/automation/task/ask) run that ended via `report`, which flips
+    //   (a) TERMINAL ORPHAN — an UNATTENDED (chat/automation/task/ask) run that ended via `report`, which flips
     //       the row to 'done' while its interactive TUI pane is still live; such a run has no human owning its
-    //       lifecycle, so a done row should hold NO pane — reap on sight. This catches an unattended run whose
+    //       lifecycle, so a terminal row should hold NO pane — reap on sight. `crashed` counts as terminal
+    //       here for the same reason (see the note in the loop). This catches an unattended run whose
     //       Stop beacon never landed. **Excluded here: a MEMBER's own console session** (`headless=0`,
     //       `spawned_by` = a bare member id, no `chat:`/`automation:`/`task:`/`ask:` colon). The human opened
     //       that TUI and owns its lifecycle — calling `report` is a status signal, not "kill my terminal" — so
@@ -3263,16 +3265,23 @@ export class TerminalManager {
     // fires gate.attempt on its first tool (see hasMadeProgress). Settings → Runtime; default 30m, 0 = off.
     const noProgMin = this.os.settings.unattendedNoProgressMinutes();
     const noProgCutoff = noProgMin > 0 ? Date.now() - noProgMin * 60_000 : null;
-    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity, created_at FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
+    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity, created_at FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status IN ('done','crashed') OR (headless = 1 AND status = 'running'))")
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; headless: number; last_activity: number | null; created_at: number }>();
     for (const r of unattended) {
       try {
+        // TERMINAL = the run is over, whichever way it ended. `crashed` used to be missing from every
+        // reaper's query (this one, sweep 1 and sweep 3 alike), and a crashed row is exactly as capable of
+        // holding a live pane as a done one: the sweep marks `crashed` when a liveness poll can't see the
+        // pane, so a TRANSIENT poll failure — or ttyd's auto-reconnect re-running attach.sh afterwards —
+        // leaves a terminal row whose pane is alive and which no query could ever select again. Live
+        // stayflexi (2026-08): a `crashed` row holding a pane and ~430MB of `claude` for 93 HOURS.
+        const terminal = r.status === 'done' || r.status === 'crashed';
         // A MEMBER's own interactive console session is never a done-orphan: the human owns its lifecycle,
         // so its agent calling `report` (which flips the row to 'done') must not cost it its live pane. Its
         // spawn provenance is a bare member id (no colon), unlike chat:/automation:/task:/ask: runs. Leave it
         // to the idle-interactive janitor (sweep 3); reaping it here yanks the TUI out from under an active
         // user seconds after the agent reports. Unattended-lane done runs fall through and are reaped below.
-        if (r.status === 'done' && !r.headless && r.spawned_by && !r.spawned_by.includes(':')) continue;
+        if (terminal && !r.headless && r.spawned_by && !r.spawned_by.includes(':')) continue;
         // A headless run past the hard runtime ceiling is reaped on wall-clock age ALONE — no turn-end beacon
         // required (that's the whole point: it's stuck mid-turn). Headed sessions never reach here (the query
         // only pulls headless running rows besides done orphans), so this can't cut a member mid-work.
@@ -3310,12 +3319,12 @@ export class TerminalManager {
         // tmux pane + ~430MB of `claude` each, the oldest 3 days old, pinned open by cards nobody could
         // deliver an answer to. A finished run cannot consume one — reap it and let teardownUnattended cancel
         // the card, which is what makes it dismissable in the Inbox instead of hanging there.
-        if (!overMaxAge && r.status !== 'done' && this.hasPendingHumanBlock(r.id)) continue;
-        this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : noProgress ? 'stuck-no-progress' : r.status === 'done' ? 'done-orphan' : 'idle-backstop');
+        if (!overMaxAge && !terminal && this.hasPendingHumanBlock(r.id)) continue;
+        this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : noProgress ? 'stuck-no-progress' : r.status === 'crashed' ? 'crashed-orphan' : terminal ? 'done-orphan' : 'idle-backstop');
       } catch { /* one bad row must not stop the sweep */ }
     }
 
-    // (3) idle INTERACTIVE (member) sessions — running OR done. A member's own attachable session holds a
+    // (3) idle INTERACTIVE (member) sessions — running, done OR crashed. A member's own attachable session holds a
     // `claude` process too, but — unlike a resident chat (sweep 1) or an unattended run (turn-end / sweep 2) —
     // nothing else reaps it. It's the ONLY reaper for a member's `done` session now that sweep 2 leaves those
     // to the human (a report-ended member run keeps its live TUI so a follow-up still works). A forgotten,
@@ -3352,11 +3361,12 @@ export class TerminalManager {
       // Widen the scan to the more permissive of the two clocks, then decide per row — otherwise a claim
       // ceiling SHORTER than the idle timeout would never see its own rows.
       const scanCutoff = claimedCutoff == null ? idleCutoff : Math.max(idleCutoff, claimedCutoff);
-      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, claimed_by, last_activity, created_at FROM term_sessions WHERE headless = 0 AND resident = 0 AND status IN ('running','done') AND COALESCE(last_activity, created_at) < ?")
+      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, claimed_by, last_activity, created_at FROM term_sessions WHERE headless = 0 AND resident = 0 AND status IN ('running','done','crashed') AND COALESCE(last_activity, created_at) < ?")
         .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; claimed_by: string | null; last_activity: number | null; created_at: number }>(scanCutoff);
       for (const r of stale) {
         try {
           const idleSince = r.last_activity ?? r.created_at;
+          const terminal = r.status === 'done' || r.status === 'crashed'; // see sweep 2 — a crashed row can still hold a pane
           // Claimed: exempt unless the claim itself has gone stale. Unclaimed: the ordinary idle clock —
           // re-checked here because the scan may have been widened past it for the claimed rows.
           if (r.claimed_by) {
@@ -3367,7 +3377,7 @@ export class TerminalManager {
           // A reaped 'running' row flips to 'stopped' and drops out of the query next tick; a 'done' row keeps
           // its status (below), so skip one whose pane is already gone to avoid re-killing / re-auditing it
           // every tick. Only applies when we can poll liveness (local backend); null → fall through as before.
-          if (r.status === 'done' && alive && !alive.has(r.tmux)) continue;
+          if (terminal && alive && !alive.has(r.tmux)) continue;
           const space = this.spaceFor(r.run_as ?? r.spawned_by);
           if (this.backend.hasClient(space, r.tmux) === true) continue; // someone's attached — it's in use
           // Blocked on a person: leave it — unless nobody has answered inside the ceiling above, at which
@@ -3380,7 +3390,7 @@ export class TerminalManager {
           }
           this.backend.kill(space, r.tmux);
           // Preserve a completed session's outcome — only a still-running one becomes 'stopped'.
-          this.db.prepare("UPDATE term_sessions SET status = ?, busy_since = NULL, updated_at = ? WHERE id = ?").run(r.status === 'done' ? 'done' : 'stopped', Date.now(), r.id);
+          this.db.prepare("UPDATE term_sessions SET status = ?, busy_since = NULL, updated_at = ? WHERE id = ?").run(terminal ? r.status : 'stopped', Date.now(), r.id);
           this.cancelPendingQuestions(r.id, 'system');
           this.cancelPendingApprovals(r.id, 'system');
           this.blockResume(r.id); // stay reaped against a ttyd auto-reconnect; a deliberate Resume clears it

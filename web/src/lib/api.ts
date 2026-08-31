@@ -113,6 +113,8 @@ export interface Concurrency {
   unattendedNoProgressMinutes: number
   /** Close an interactive session waiting this many hours on an unanswered question/approval (0 = off; default 72). */
   blockedMaxHours: number
+  /** Expire a take-over claim untouched for this many hours, so a claimed session stops being immortal (0 = off; default 72). */
+  claimedMaxHours: number
 }
 
 /** One credential set in the runtime rotation pool (never carries the api-key value, only its vault ref). */
@@ -2107,7 +2109,7 @@ export const api = {
   saveAgentProposalTrust: (patch: Partial<AgentProposalTrust>) => call<{ ok: boolean; trust?: AgentProposalTrust; error?: string }>('PUT', '/api/settings/agent-proposal-trust', patch),
   saveSessionMetrics: (value: SessionMetrics) => call<{ ok: boolean; sessionMetrics?: SessionMetrics; error?: string }>('PUT', '/api/settings/session-metrics', { value }),
   concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
-  saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number }>('PUT', '/api/settings/concurrency', body),
+  saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number; claimedMaxHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number; claimedMaxHours?: number }>('PUT', '/api/settings/concurrency', body),
   runtimeAccounts: () => call<RuntimeAccountsResp>('GET', '/api/runtime-accounts'),
   addRuntimeAccount: (body: { runtime: string; name: string; kind: RuntimeAccountKind; configDir?: string; apiKeyRef?: string; token?: string }) => call<{ ok: boolean; error?: string; account?: RuntimeAccount }>('POST', '/api/runtime-accounts', body),
   setRuntimeAccountEnabled: (runtime: string, name: string, enabled: boolean) => call<{ ok: boolean; error?: string }>('PATCH', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`, { enabled }),

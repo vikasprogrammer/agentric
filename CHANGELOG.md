@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.408.1] - 2026-08-31
+### Fixed
+- **A `crashed` session could hold its pane for ever — no reaper's query could see it.** All three sweeps in
+  `sessionSweep` selected `status IN ('running','done')` (or `'done' OR headless running`), so `crashed` fell
+  through every one of them. It is not a harmless omission: the sweep stamps `crashed` when a liveness poll
+  can't find the pane, so a *transient* poll failure — or ttyd's auto-reconnect re-running `attach.sh`
+  afterwards — leaves a terminal row whose pane is very much alive, and which nothing will ever select again.
+  Live stayflexi (2026-08): one such row held a pane and ~430 MB of `claude` for **93 hours**. `crashed` now
+  counts as terminal alongside `done` in all three sweeps — reaped on sight, keeping its status rather than
+  being rewritten to `stopped`, and audited as `crashed-orphan` so it is distinguishable from a done-orphan.
+- **The claim ceiling could not be set from the console.** `claimedMaxHours` had a server handler and was
+  returned by `GET /api/settings/concurrency`, but the console never read or sent it — so the one knob that
+  stops a take-over claim from creating an immortal pane was reachable only by hand-writing a `PUT`. The
+  exact mirror of the `blockedMaxHours` gap fixed earlier. Settings → Runtime now carries the control.
+
 ## [0.408.0] - 2026-08-31
 ### Added
 - **The box now tells you when its agent runtime has fallen behind, too.** `src/edge/runtime-update-watch.ts`
