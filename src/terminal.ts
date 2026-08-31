@@ -38,7 +38,7 @@ import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVide
 import { understandMedia } from './edge/media-understand';
 import { readSessionCost } from './edge/session-cost';
 import { readTranscriptEnd } from './edge/outcome';
-import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF } from './edge/background-work';
+import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF, WAITING_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
 import { readConversation, findTranscript, registerTranscriptRoot, Conversation } from './edge/conversation';
 
@@ -4274,7 +4274,10 @@ export class TerminalManager {
     // sections, because it points at `task_wait` / `ask` / `schedule` / `task_create` as the ways to wait
     // — it reads as a correction to "just wait for it" only once those tools have been introduced.
     const lane = unattended ? UNATTENDED_TURN_BRIEF : '';
-    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, codeReview, goalsSection, fleet, team, preamble, learned, lane]
+    // BOTH lanes. How to wait is not a lane question: the two limits that make a long sleep wrong (the
+    // ~2-minute Bash kill, the ~5-minute cache TTL) apply identically to a member's own interactive
+    // session, and the first two agents caught doing it were one of each.
+    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, codeReview, goalsSection, fleet, team, preamble, learned, lane, WAITING_BRIEF]
       .filter(Boolean)
       .join('\n\n');
   }
