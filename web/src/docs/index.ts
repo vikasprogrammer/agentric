@@ -6,6 +6,7 @@ import gettingStarted from './getting-started.md?raw'
 import useCases from './use-cases.md?raw'
 import coreConcepts from './core-concepts.md?raw'
 import workingWithAgents from './working-with-agents.md?raw'
+import connectors from './connectors.md?raw'
 import automations from './automations.md?raw'
 import goals from './goals.md?raw'
 import sharedPlanes from './shared-planes.md?raw'
@@ -22,6 +23,7 @@ export const docPages: DocPage[] = [
   { slug: 'use-cases', title: 'Use cases', body: useCases },
   { slug: 'core-concepts', title: 'Core concepts', body: coreConcepts },
   { slug: 'working-with-agents', title: 'Working with agents', body: workingWithAgents },
+  { slug: 'connectors', title: 'Connectors & integrations', body: connectors },
   { slug: 'automations', title: 'Automations', body: automations },
   { slug: 'goals', title: 'Goals', body: goals },
   { slug: 'shared-planes', title: 'Memory, Knowledge & Tasks', body: sharedPlanes },
