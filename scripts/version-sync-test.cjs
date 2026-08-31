@@ -14,7 +14,12 @@
  * `npm version <x.y.z> --no-git-tag-version` updates both files and never trips this. Hand-editing
  * `package.json` does. This test is the falsifier for the convention in CLAUDE.md → Versioning.
  *
- *   node scripts/version-sync-test.cjs        # no build needed — it reads the two JSON files
+ * It also guards the version NUMBER, not just the two files agreeing: no duplicate CHANGELOG heading,
+ * the version ahead of everything already shipped, and the changelog ordered newest-first. A bump
+ * computed from a stale read regressed main 0.408.1 -> 0.404.0 (a version already released a few days
+ * earlier) and nothing caught it, because file-sync was all this checked.
+ *
+ *   node scripts/version-sync-test.cjs        # no build needed — it reads the JSON files + CHANGELOG
  */
 const fs = require('fs');
 const path = require('path');
@@ -43,10 +48,51 @@ check(
   lock.name === pkg.name && lock.packages?.['']?.name === pkg.name,
 );
 
+// ── the version must be NEW, and it must be AHEAD ────────────────────────────────────────────────
+// Lockfile sync says the two files agree; it says nothing about whether the number is right. Both
+// ways it can be wrong were hit for real on 2026-08-31: a bump computed from a stale read of an
+// earlier session took main from 0.408.1 DOWN to 0.404.0 — a version that had already shipped on
+// 08-27 — so the changelog grew a second `## [0.404.0]` heading and a deploy would have reported the
+// box as four minors older than the code it was running. `/health` and the console sidebar are how
+// you tell which build a long-running server is holding, so a version that lies breaks the first
+// thing you check when a change "isn't taking".
+//
+// CHANGELOG.md is the source of truth for what has shipped: every released version has a heading.
+const cl = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+const headings = [...cl.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((m) => m[1]);
+const cmp = (a, b) => {
+  const x = a.split('.').map(Number), y = b.split('.').map(Number);
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+};
+// Scoped to the version being shipped, not the whole file: the changelog carries a handful of
+// legacy duplicate headings from before this check existed, and failing the deploy gate on history
+// nobody is going to rewrite would just teach people to skip the gate.
+const mine = headings.filter((v) => v === pkg.version).length;
+check(`CHANGELOG.md has at most one \`## [${pkg.version}]\` heading (found ${mine})`, mine <= 1);
+
+const highest = headings.slice().sort(cmp).pop();
+if (highest) {
+  // The current version either IS the newest heading (this commit bumped it) or is above every
+  // heading (bumped but not yet written up). Anything at or below a PREVIOUS heading is a regression.
+  const priorMax = headings.filter((v) => v !== pkg.version).sort(cmp).pop();
+  check(
+    `package.json version is ahead of every previously released version (pkg=${pkg.version} highest-prior=${priorMax})`,
+    !priorMax || cmp(pkg.version, priorMax) > 0,
+  );
+  // Only the top of the file is asserted — the whole-file ordering has legacy exceptions, but a NEW
+  // entry filed in the wrong place (which is exactly what the 0.404.0 regression produced) shows up
+  // as the first heading not being the highest.
+  check(
+    `CHANGELOG.md's newest entry is the highest version (top=${headings[0]} highest=${highest})`,
+    cmp(headings[0], highest) >= 0,
+  );
+}
+
 if (failures.length) {
   console.error(`version-sync-test: ${failures.length} FAILED (${pass} passed)`);
   for (const f of failures) console.error('  ✗ ' + f);
-  console.error("  fix: npm version " + pkg.version + " --no-git-tag-version --allow-same-version");
+  console.error("  fix: check CHANGELOG.md for the highest shipped version, then");
+  console.error("       npm version <next> --no-git-tag-version   (never hand-edit package.json)");
   process.exit(1);
 }
 console.log(`version-sync-test: ${pass} checks passed — package-lock is in sync at v${pkg.version}`);

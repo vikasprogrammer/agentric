@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.404.0] - 2026-08-31
+## [0.409.0] - 2026-08-31
 ### Added
 - **`WAITING_BRIEF` — every agent, both lanes: short polls, never one long sleep.** Two agents were
   caught blocking inside a single tool call within four days — `watchdog` (unattended, a 600 s wait)
