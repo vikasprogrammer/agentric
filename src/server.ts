@@ -67,6 +67,7 @@ import { Strategist, STRATEGIST_ID } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { UpdateWatch } from './edge/update-watch';
+import { RuntimeUpdateWatch } from './edge/runtime-update-watch';
 import { checkDeps, checkDepUpdates, installDeps, updateNpmDep } from './edge/deps';
 import { CATALOG, redact } from './connectors/connectors';
 import { GithubIdentity } from './edge/github-identity';
@@ -442,6 +443,24 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     } catch { /* never let the watcher crash the upkeep loop it shares */ }
   }, 15 * 60_000);
   updateWatchTimer.unref?.();
+
+  // Agent-runtime CLI watcher (the `claude` binary every session launches). Box-scoped for the same
+  // reason as the self-update watcher — one binary, one fact — and on the same seed-tenant runtime.
+  // Kept as a SEPARATE watcher and setting rather than folded into the one above, because the risk
+  // differs: a CLI upgrade can add tools the gate hook has no routing row for. See edge/runtime-update-watch.ts.
+  let lastRuntimeWatch = 0;
+  const runtimeWatchTimer = setInterval(() => {
+    const rt = registry.default();
+    if (!rt) return;
+    try {
+      const cfg = rt.os.settings.runtimeWatch();
+      if (cfg.mode === 'off') return;
+      if (Date.now() - lastRuntimeWatch < cfg.everyHours * 3_600_000) return;
+      lastRuntimeWatch = Date.now();
+      void new RuntimeUpdateWatch(rt.os, rt.tm).run().catch(() => { /* the watcher never throws; belt and braces */ });
+    } catch { /* never let the watcher crash the upkeep loop it shares */ }
+  }, 15 * 60_000);
+  runtimeWatchTimer.unref?.();
 
   // Memory upkeep + self-learning: hourly check per tenant; each is a no-op unless that tenant opted in.
   const lastMaint = new Map<string, number>();
@@ -5189,7 +5208,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/deps') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     // Presence is local + sync; freshness asks the npm registry, cached for an hour (`?force=1` re-asks).
-    return sendJson(res, 200, await checkDepUpdates(checkDeps(), url.searchParams.get('force') === '1'));
+    const report = await checkDepUpdates(checkDeps(), url.searchParams.get('force') === '1');
+    return sendJson(res, 200, { ...report, watch: os.settings.runtimeWatch(), gateReviewedVersion: os.settings.gateReviewedRuntimeVersion() });
   }
   // Upgrade one npm-installed dep in place (`npm install -g <pkg>@latest`). Owner-gated — it mutates the
   // box's global node prefix — same posture as the package-manager install above.
@@ -5199,8 +5219,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!bin) return sendJson(res, 400, { error: 'bin required' });
     const result = await updateNpmDep(bin);
     const after = result.report.deps.find((d) => d.bin === bin);
+    // An owner upgrading the runtime by hand is the same act of review as approving the watcher's card,
+    // so it stamps the same version. Otherwise the next watch card would tell someone who just upgraded
+    // that the gate was last signed off several versions ago.
+    if (result.ok && bin === 'claude' && after?.version) os.settings.setGateReviewedRuntimeVersion(after.version, me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'system.deps.updated', data: { bin, ok: result.ok, version: after?.version, latest: after?.latest } });
     return sendJson(res, 200, result);
+  }
+  // The agent-runtime CLI WATCHER's config — whether this box says anything when its `claude` falls
+  // behind the registry, and whether it may upgrade in place on an owner's approval. Owner-only: a CLI
+  // upgrade can widen what runs ungoverned (see edge/runtime-update-watch.ts).
+  if (method === 'POST' && p === '/api/runtime/watch') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const b = await readBody(req);
+    if (b.mode != null && !['off', 'notify', 'ask'].includes(String(b.mode))) return sendJson(res, 400, { error: 'mode must be off, notify or ask' });
+    const watch = os.settings.setRuntimeWatch({ mode: b.mode as never, everyHours: b.everyHours != null ? Number(b.everyHours) : undefined }, me.email);
+    os.audit.append({ ts: Date.now(), runId: 'runtime-update', tenant: os.tenant, principal: me.email, type: 'runtime.watch.configured', data: { ...watch } });
+    return sendJson(res, 200, { ok: true, watch });
+  }
+  // Run one runtime-watch pass NOW (owner/admin). `force` runs it even when the watcher is off.
+  if (method === 'POST' && p === '/api/runtime/watch/run') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, await new RuntimeUpdateWatch(os, tm).run({ force: true }));
   }
   // Install the still-missing, package-manager-installable deps (brew/apt/…). Owner-gated (it runs a
   // privileged system install), same posture as the self-update apply below.

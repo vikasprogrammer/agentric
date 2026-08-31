@@ -48,6 +48,8 @@ const AGENT_PROPOSAL_TRUST_KEY = 'agent_proposal_trust'; // cross-agent edit tie
 export type SessionMetrics = 'cost' | 'tokens' | 'both';
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
 const UPDATE_WATCH_KEY = 'update_watch'; // JSON {mode, everyHours} — the self-update watcher
+const RUNTIME_WATCH_KEY = 'runtime_watch'; // JSON {mode, everyHours} — the agent-runtime CLI watcher
+const GATE_REVIEWED_KEY = 'gate_reviewed_runtime_version'; // claude CLI version the gate table was last OK'd against
 const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every agent's prompt (default on)
 const GOALS_AUTOPLAN_KEY = 'goals_autoplan'; // whether the scheduler auto-plans stuck goals (default OFF — opt-in)
 const DIGEST_ENABLED_KEY = 'digest_enabled'; // whether the end-of-day fleet digest posts to Slack ('on'|'off')
@@ -74,6 +76,8 @@ export type UpdateWatchMode = 'off' | 'notify' | 'ask';
 export interface UpdateWatchConfig { mode: UpdateWatchMode; everyHours: number }
 /** Notify-only, every 6h: the half that cannot break anything, and silence was the actual failure. */
 export const UPDATE_WATCH_DEFAULT: UpdateWatchConfig = { mode: 'notify', everyHours: 6 };
+/** Same posture for the runtime CLI, on a slower beat — the npm registry moves less often than a repo. */
+export const RUNTIME_WATCH_DEFAULT: UpdateWatchConfig = { mode: 'notify', everyHours: 12 };
 
 export interface GovernanceThresholds {
   /** A single payment/refund at or below this (USD) may be approved; above it is refused outright. */
@@ -682,24 +686,61 @@ export class SettingsStore {
 
   /** The self-update watcher's mode + cadence. Defaults to `notify` every 6h. */
   updateWatch(): UpdateWatchConfig {
-    const raw = this.getRow(UPDATE_WATCH_KEY)?.value;
-    if (!raw) return { ...UPDATE_WATCH_DEFAULT };
-    try {
-      const p = JSON.parse(raw) as Partial<UpdateWatchConfig>;
-      const mode = p.mode === 'off' || p.mode === 'ask' || p.mode === 'notify' ? p.mode : UPDATE_WATCH_DEFAULT.mode;
-      const h = Number(p.everyHours);
-      return { mode, everyHours: Number.isFinite(h) && h > 0 ? Math.floor(h) : UPDATE_WATCH_DEFAULT.everyHours };
-    } catch { return { ...UPDATE_WATCH_DEFAULT }; }
+    return this.readWatch(UPDATE_WATCH_KEY, UPDATE_WATCH_DEFAULT);
   }
 
   setUpdateWatch(cfg: Partial<UpdateWatchConfig>, by?: string): UpdateWatchConfig {
-    const cur = this.updateWatch();
+    return this.writeWatch(UPDATE_WATCH_KEY, this.updateWatch(), cfg, by);
+  }
+
+  /** Shared parse for a watcher config row — garbage or a missing row falls back to the default. */
+  private readWatch(key: string, fallback: UpdateWatchConfig): UpdateWatchConfig {
+    const raw = this.getRow(key)?.value;
+    if (!raw) return { ...fallback };
+    try {
+      const p = JSON.parse(raw) as Partial<UpdateWatchConfig>;
+      const mode = p.mode === 'off' || p.mode === 'ask' || p.mode === 'notify' ? p.mode : fallback.mode;
+      const h = Number(p.everyHours);
+      return { mode, everyHours: Number.isFinite(h) && h > 0 ? Math.floor(h) : fallback.everyHours };
+    } catch { return { ...fallback }; }
+  }
+
+  /** Shared write for a watcher config row — a partial patch over the current value. */
+  private writeWatch(key: string, cur: UpdateWatchConfig, cfg: Partial<UpdateWatchConfig>, by?: string): UpdateWatchConfig {
     const mode = cfg.mode === 'off' || cfg.mode === 'ask' || cfg.mode === 'notify' ? cfg.mode : cur.mode;
     const h = Number(cfg.everyHours);
-    const everyHours = Number.isFinite(h) && h > 0 ? Math.floor(h) : cur.everyHours;
-    const next: UpdateWatchConfig = { mode, everyHours };
-    this.set(UPDATE_WATCH_KEY, JSON.stringify(next), by);
+    const next: UpdateWatchConfig = { mode, everyHours: Number.isFinite(h) && h > 0 ? Math.floor(h) : cur.everyHours };
+    this.set(key, JSON.stringify(next), by);
     return next;
+  }
+
+  // ── agent-runtime CLI watcher ────────────────────────────────────────────────────
+  // Same two modes as `updateWatch`, over a different subject: the `claude` CLI every session launches.
+  // Deliberately a SEPARATE setting, because the risk is not the same. Updating Agentric moves code we
+  // wrote and test; updating the runtime CLI can add TOOLS — new side-effect channels that the gate
+  // hook's tool→capability table has no row for and that therefore fall to its `*) exit 0` arm
+  // ungoverned (cross-session messaging in claude 2.1.224 was exactly this). So a box may reasonably
+  // want its own code current and its runtime pinned, and there is no unattended tier here at all.
+
+  /** The runtime-CLI watcher's mode + cadence. Defaults to `notify` every 12h. */
+  runtimeWatch(): UpdateWatchConfig {
+    return this.readWatch(RUNTIME_WATCH_KEY, RUNTIME_WATCH_DEFAULT);
+  }
+
+  setRuntimeWatch(cfg: Partial<UpdateWatchConfig>, by?: string): UpdateWatchConfig {
+    return this.writeWatch(RUNTIME_WATCH_KEY, this.runtimeWatch(), cfg, by);
+  }
+
+  /**
+   * The `claude` CLI version the gate hook's tool routing was last signed off against — stamped when an
+   * owner APPROVES a runtime upgrade, since approving IS the review. Lets the next card say "routing was
+   * last checked against X, you are moving to Y" instead of a standing, ignorable warning.
+   */
+  gateReviewedRuntimeVersion(): string {
+    return this.getRow(GATE_REVIEWED_KEY)?.value?.trim() || '';
+  }
+  setGateReviewedRuntimeVersion(version: string, by?: string): void {
+    this.set(GATE_REVIEWED_KEY, version.trim(), by);
   }
 
   // ── install wizard ───────────────────────────────────────────────────────────────
