@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.409.1] - 2026-08-31
+### Fixed
+- **A resurrected session stayed marked `crashed` for ever, while a human worked in it.** A crash mark is
+  a *claim* — "the pane is gone" — and unlike a human `stop` it plants no stay-stopped sentinel, because a
+  crash must remain recoverable. So ttyd's reconnect re-runs `attach.sh`, its `new-session -A` revives the
+  pane, `claude --resume` picks the transcript back up, and the work carries on. Nothing put the ROW back:
+  the only restore path, `restoreRunningAfterDelivery`, is scoped `AND status = 'done'` on purpose. Live
+  insta-ai (2026-08-31): **three** such rows, two with a person attached at that moment and one billing
+  `$313.64`, the oldest crash-marked **577 h** earlier. The cost is not RAM — it is that the console renders
+  live work as dead, `canResume` refuses to reopen it, and the concurrency cap under-counts real load.
+  `restoreResurrectedCrashes` now runs immediately after crash detection and puts such a row back to
+  `running` on either of two independent proofs: a client is **attached**, or `last_activity` is newer than
+  the `updated_at` stamped at the moment of the mark (governed work done *since* being declared dead). Both
+  are needed — a member's interactive session rarely stamps `last_activity`, and a detached-but-working run
+  has no client. It closes the stale "Crashed — <agent>" inbox card and audits `session.restored` with the
+  proof it used. What it does not undo: questions/approvals cancelled by `markCrashed` stay cancelled, and
+  the episode stays written.
+- This deliberately does not fight the crashed-orphan reap from 0.408.1. An **abandoned** crashed pane
+  satisfies neither proof, stays `crashed`, and is still reaped on sight; only a resurrected one is
+  restored, and it then lives or dies by the ordinary idle clock like any other running session. Both
+  paths, and their idempotence across ticks, are pinned by a new section 8 in
+  `scripts/idle-reaper-test.cjs`.
+
 ## [0.409.0] - 2026-08-31
 ### Added
 - **`WAITING_BRIEF` — every agent, both lanes: short polls, never one long sleep.** Two agents were
