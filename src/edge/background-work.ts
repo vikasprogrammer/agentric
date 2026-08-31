@@ -159,6 +159,58 @@ export function pendingBackgroundWork(transcript: string | undefined): PendingBa
  * alone, and it names the alternatives the OS actually provides rather than just prohibiting the
  * pattern: an agent told "don't wait" with no way to wait will invent one.
  */
+/**
+ * Appended to the system prompt (via `buildCompanyMd`) for EVERY run, both lanes.
+ *
+ * {@link UNATTENDED_TURN_BRIEF} already says "do not idle with sleep" — but it says it about the TURN
+ * BOUNDARY ("you cannot yield and wait"), it rides the unattended lane alone, and its remedy is "stay
+ * in the turn and read its result". An agent that reads it and then blocks for ten minutes inside one
+ * `Bash` call has followed it to the letter. This brief covers the case that one does not: waiting is
+ * legitimate and unavoidable (a CDN rule propagating, a 300-domain sweep, a build) — the question is
+ * how, not whether.
+ *
+ * Both numbers here are enforced by something outside the agent's control, which is why they are
+ * stated as limits rather than advice:
+ *
+ *   - A `Bash` tool call is killed at ~2 minutes. A `sleep 240` does not wait 4 minutes; it loses the
+ *     whole call. Measured: cost a watchdog run 120 s for nothing, and the agent's workaround was an
+ *     `until` loop, which dodges the timeout while keeping every second of the wall clock.
+ *   - Prompt caching has a ~5-minute TTL. A single wait past it forces a full re-write of the run's
+ *     context. Measured across three watchdog runs: consolidating into one 600 s wait cut tool calls
+ *     40 -> 29 and RAISED cost $8.37 -> $11.83, with cache_write tripling 0.27M -> 0.73M. Wall clock
+ *     did not improve either (862.7 s -> 892.5 s).
+ *
+ * That second measurement is the reason this brief exists and the reason it has to be explicit. "Fewer
+ * turns is cheaper" is true right up to the cache TTL and false past it, and an agent optimising turn
+ * count in good faith will sail straight through the crossover. Telling it to poll without telling it
+ * why reads as a contradiction of the batching advice it was already given.
+ */
+export const WAITING_BRIEF =
+  '# Waiting: short polls, never one long sleep\n\n' +
+  'Some work genuinely takes minutes and is not yours to speed up — a rule propagating to an edge, a ' +
+  'sweep over hundreds of hosts, a build. Waiting for it is fine. Waiting for it in ONE long call is ' +
+  'not, and two hard limits decide that for you:\n\n' +
+  '- **A `Bash` call is killed at about 2 minutes.** `sleep 240` does not wait four minutes — it loses ' +
+  'the entire call and everything after it in that command. An `until`/`while` loop evades the kill but ' +
+  'keeps the full wall clock, so it is not the fix either.\n' +
+  '- **Prompt caching expires after about 5 minutes.** One wait longer than that re-writes your whole ' +
+  'context at full price. This is why a single 10-minute wait can cost MORE than twenty short polls ' +
+  'despite being far fewer turns.\n\n' +
+  '**So: no single wait longer than ~60-90 seconds.** Start the slow thing in the background, then poll ' +
+  'in short bounded steps that exit as soon as it is done:\n\n' +
+  '```bash\n' +
+  'long-running-thing & \n' +
+  '# ...then, once per turn:\n' +
+  'for i in $(seq 1 12); do [ -f "$DONE_SENTINEL" ] && break; sleep 5; done\n' +
+  '```\n\n' +
+  '**Make each poll earn its turn.** A poll that only sleeps converts model time into wall time and ' +
+  'saves nothing. Read partial results, write the rows that are ready, update the sheet or the ticket, ' +
+  'check the log for the failure you can already act on. If a run of yours is mostly `sleep`, the work ' +
+  'was serialised behind a wait that did not need to block it.\n\n' +
+  '**Do not read this as "batch less".** Pushing a loop over 300 items into one script instead of 300 ' +
+  'turns is still right, and still the largest win available. The rule is narrower: do not let any ' +
+  'SINGLE call sit idle past the limits above. Batch the work; poll the wait.';
+
 export const UNATTENDED_TURN_BRIEF =
   '# This run ends when your turn ends\n\n' +
   'You are running **unattended** — nobody is at this terminal. There is no next prompt: when you stop ' +

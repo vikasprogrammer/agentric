@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.404.0] - 2026-08-31
+### Added
+- **`WAITING_BRIEF` — every agent, both lanes: short polls, never one long sleep.** Two agents were
+  caught blocking inside a single tool call within four days — `watchdog` (unattended, a 600 s wait)
+  and `shield-optimizer` (a member's own interactive session, a 600 s wait plus an `until` loop that
+  held ~74% of a 28-minute run). `UNATTENDED_TURN_BRIEF` already forbids idling, but only on the
+  unattended lane and only as a statement about the turn boundary, so an agent that stays inside its
+  turn and sleeps has obeyed it to the letter. This brief covers how to wait, not whether.
+  - Names both limits the agent cannot see: a `Bash` call is killed at ~2 min (a `sleep 240` loses the
+    whole call — it cost one run 120 s for nothing), and prompt caching expires at ~5 min.
+  - The cache limit is the non-obvious one and it is measured: across three watchdog runs,
+    consolidating waits into one 600 s block cut tool calls 40 → 29 and **raised** cost $8.37 → $11.83,
+    with `cache_write` tripling 0.27M → 0.73M, while wall clock got slightly worse (862.7 s → 892.5 s).
+    "Fewer turns is cheaper" is true up to the cache TTL and false past it, and an agent optimising
+    turn count in good faith sails straight through the crossover.
+  - Explicitly does **not** walk back the batching advice that produced the largest measured win
+    (103 → 29 tool calls): the rule is scoped to a single call sitting idle, not to batching. Pinned by
+    `scripts/waiting-brief-test.cjs`, which fails if a future edit lets it read as "batch less" or
+    re-gates it behind the unattended lane.
+
 ## [0.408.1] - 2026-08-31
 ### Fixed
 - **A `crashed` session could hold its pane for ever — no reaper's query could see it.** All three sweeps in
