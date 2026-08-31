@@ -17463,6 +17463,7 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const [maxRun, setMaxRun] = useState('')  // headless hard runtime ceiling, hours; '0' = off
   const [noProg, setNoProg] = useState('')  // headless no-progress reap, minutes; '0' = off
   const [blocked, setBlocked] = useState('') // interactive blocked-on-a-card ceiling, hours; '0' = off
+  const [claimed, setClaimed] = useState('') // take-over claim ceiling, hours; '0' = off
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner' || me.role === 'admin'
@@ -17475,6 +17476,7 @@ function ConcurrencySettings({ me }: { me: Member }) {
     setMaxRun(String(r.unattendedMaxHours))
     setNoProg(String(r.unattendedNoProgressMinutes))
     setBlocked(String(r.blockedMaxHours))
+    setClaimed(String(r.claimedMaxHours))
   }).catch(() => {})
   useEffect(() => { load() }, [])
 
@@ -17483,15 +17485,17 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const maxRunDirty = data != null && maxRun.trim() !== String(data.unattendedMaxHours)
   const noProgDirty = data != null && noProg.trim() !== String(data.unattendedNoProgressMinutes)
   const blockedDirty = data != null && blocked.trim() !== String(data.blockedMaxHours)
-  const dirty = capDirty || idleDirty || maxRunDirty || noProgDirty || blockedDirty
+  const claimedDirty = data != null && claimed.trim() !== String(data.claimedMaxHours)
+  const dirty = capDirty || idleDirty || maxRunDirty || noProgDirty || blockedDirty || claimedDirty
   const save = async () => {
     setBusy(true); setHint('')
-    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number } = {}
+    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number; claimedMaxHours?: number } = {}
     if (capDirty) body.value = input.trim() === '' ? null : Number(input)
     if (idleDirty) body.idleHours = Number(idle)
     if (maxRunDirty) body.unattendedMaxHours = Number(maxRun)
     if (noProgDirty) body.unattendedNoProgressMinutes = Number(noProg)
     if (blockedDirty) body.blockedMaxHours = Number(blocked)
+    if (claimedDirty) body.claimedMaxHours = Number(claimed)
     const r = await api.saveConcurrency(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
@@ -17607,6 +17611,24 @@ function ConcurrencySettings({ me }: { me: Member }) {
             with no ceiling it waits for ever, holding a <span className="font-mono">claude</span> process and a cap slot. Past this age
             (measured from when the card was raised) the session is closed and the card cancelled, which is what makes it dismissable
             instead of hanging. Someone attached to the session is never cut — they can answer.
+          </p>
+        </div>
+        <div className="space-y-1.5 border-t pt-4">
+          <label className="text-xs font-medium text-muted-foreground">Expire an untouched take-over claim after (hours)</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number" min={0} step={1} value={claimed}
+              onChange={(e) => setClaimed(e.target.value)}
+              placeholder="72"
+              disabled={!canEdit}
+              className="h-8 w-40 font-mono text-xs"
+            />
+            <span className="text-[11px] text-muted-foreground">0 = claim never expires · nobody attached</span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Taking a run over hands its lifecycle to you — so the idle timeout above stops applying. Nothing ever expires a claim, so
+            someone who claims a session and closes the tab creates an immortal pane. Past this age the claim lapses and the janitor
+            reclaims it. Someone actually attached is never cut.
           </p>
         </div>
         <div className="flex items-center gap-3">
