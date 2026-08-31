@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.410.2] - 2026-08-31
+### Fixed
+- **The topic list names subjects again, now that it actually compounds.** v0.402.1 stopped the nightly
+  wipe, and four days of real accumulation showed what the wipe had been masking: instapods' injected
+  guidance read *"the fleet frequently works on: composio, **friday**, **monday**, dataforseo, gmail"* —
+  two of five were days of the week, at 33 each, ranked #2 and #3. Compounding didn't create that; a cron
+  repeats its title verbatim, so a cadence word outruns real subjects. Four rules, each from a class
+  observed on a live tenant: **calendar + cadence words** are stopped (`friday`, `monday`, `weekly`,
+  month names); **formats and protocols** are stopped (`http`, `html`, `json`, `bash`, `urls`, `pngs` —
+  databases and products deliberately are not, so `postgres`, `sqlite`, `stripe`, `wordpress` survive);
+  **generic verbs and state words** that reached the threshold are stopped (`evaluate`, `detect`,
+  `revise`, `success`, `urgent`, `tier`); and **email addresses are stripped before either extractor sees
+  the line**, which kills both the local part (`ahmad.hekma`, `justinhuckaby8`, `sarahmohib8` were all
+  fleet "topics") and the domain half (`gmail.com` at count 8) — a customer's identifier has no business
+  in every agent's system prompt. Plus the **generated `adjective-animal-NN` pod handle** (`proud-ibis-22`,
+  `jolly-owl-72`, `calm-tiger-80`) is no longer an entity. Replayed over the 714 real episodes that
+  produced the bad line, the guidance becomes *"composio, dataforseo, gmail, instapods, instapods.com"* —
+  all five real. `TOPICS_VERSION` → 5, so both tenants rebuild; the fingerprint guard added in v0.402.1
+  caught the un-bumped change on the first run, which is what it was built for.
+
 ## [0.410.1] - 2026-08-31
 ### Added
 - **Per-connector reference docs** — a new `docs/connectors/` set documenting every shipped native
