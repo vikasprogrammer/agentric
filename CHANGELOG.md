@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.408.0] - 2026-08-31
+### Added
+- **The box now tells you when its agent runtime has fallen behind, too.** `src/edge/runtime-update-watch.ts`
+  is the sibling of the self-update watcher, over the `claude` CLI every session launches. The mechanism
+  already existed — `checkDepUpdates()` asks the npm registry, `updateNpmDep()` upgrades in place — but
+  nothing ever asked on a timer, so a box pinned to a months-old runtime reported a green "all dependencies
+  installed" and looked healthy. Same three modes (`off` / `notify`, default, every 12h / `ask`) as a
+  **separate** setting, because a box may reasonably want its own code current and its runtime pinned.
+- **It is deliberately stricter than the OS watcher, and there is no unattended tier.** Updating Agentric
+  moves code we gate with a test suite; updating the runtime CLI can add **tools** — and the gate hook's
+  tool→capability table ends in `*) exit 0`, so a tool it has no row for runs ungoverned. claude 2.1.224's
+  cross-session messaging was exactly that. So the strongest mode is `ask`, floored at ask/owner (an
+  `allow` policy still only asks), the card names the risk in the specific rather than the abstract, and
+  **approving is the review**: the landed version is stamped as the one this box's gate routing has been
+  signed off against, so the next card reports what changed since a human last looked instead of repeating
+  a warning nobody reads. An owner upgrading by hand from Settings → System → Dependencies stamps the same
+  value, so the two paths cannot disagree; a failed upgrade stamps nothing; and the stamp records what
+  LANDED, not what the card named (an upgrade races the registry).
+- Cards say that running sessions keep the CLI they launched with and the new one applies to the next
+  session — which is also when a newly-added tool would first appear.
+- New falsifier `scripts/runtime-update-watch-test.cjs` (49 checks, in `npm run test:governance`), driving
+  the real routes for the manual-upgrade and role-gating paths. `docs/self-update-watch.md` gains the
+  sibling section, including the standing gap: nothing yet *checks* the tool surface — a human reads
+  release notes — and a machine-readable tool list is the prerequisite for ever having an unattended tier.
+
 ## [0.407.3] - 2026-08-30
 ### Fixed
 - **The browser terminal can be scrolled from a tablet.** A touch drag emits no wheel events, so the

@@ -348,6 +348,11 @@ export interface DepStatus {
 /** Native-dependency report for Settings → System (GET /api/deps). */
 export interface DepsReport {
   deps: DepStatus[]
+  /** The runtime-CLI watcher's config on this box (see UpdateWatchConfig). */
+  watch?: UpdateWatchConfig
+  /** The `claude` version this box's gate-hook tool routing was last signed off against — stamped by an
+   *  owner approving a runtime upgrade, or upgrading by hand. '' when nobody has yet. */
+  gateReviewedVersion?: string
   /** True when every required dep is present — sessions can run. */
   ok: boolean
   /** Missing deps a package manager could install (drives the "Install now" button). */
@@ -1789,6 +1794,8 @@ export const api = {
   checkUpdate: (force = false) => call<UpdateStatus>('GET', '/api/update' + (force ? '?force=1' : '')),
   /** Owner-only: pull + rebuild + restart. Resolves with the step log; the process bounces after. */
   applyUpdate: () => call<UpdateApplyResult>('POST', '/api/update/apply'),
+  setRuntimeWatch: (body: Partial<UpdateWatchConfig>) => call<{ ok?: boolean; watch?: UpdateWatchConfig; error?: string }>('POST', '/api/runtime/watch', body),
+  runRuntimeWatch: () => call<{ action?: string; installed?: string; latest?: string; error?: string }>('POST', '/api/runtime/watch/run'),
   setUpdateWatch: (body: Partial<UpdateWatchConfig>) => call<{ ok?: boolean; watch?: UpdateWatchConfig; error?: string }>('POST', '/api/update/watch', body),
   runUpdateWatch: () => call<{ action?: string; behind?: number; latest?: string; error?: string }>('POST', '/api/update/watch/run'),
   /** Owner-only: plain restart, no pull/rebuild. The process bounces ~1.5s after the response. */

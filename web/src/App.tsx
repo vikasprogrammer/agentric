@@ -16053,6 +16053,8 @@ function NativeDepsPanel({ me }: { me: Member }) {
               ))}
             </dl>
 
+            <RuntimeWatchControl me={me} watch={report.watch} reviewed={report.gateReviewedVersion} />
+
             {outdated.length > 0 && (
               <p className="text-[11px] text-muted-foreground">
                 Updating replaces the binary on disk. Sessions already running keep the version they launched with until they restart.
@@ -16415,6 +16417,90 @@ function StopAllPanel() {
       </CardContent>
     </Card>
   )
+}
+
+/**
+ * The agent-runtime CLI watcher (`src/edge/runtime-update-watch.ts`) — the sibling of the self-update
+ * watcher, over the `claude` binary every session launches.
+ *
+ * Kept a separate control from the software one on purpose: a box may reasonably want its own code
+ * current and its runtime pinned. A CLI upgrade can add TOOLS the gate hook has no routing row for,
+ * which run ungoverned — so there is no unattended tier here, and the panel shows which version the gate
+ * routing was last signed off against rather than a standing warning nobody reads.
+ */
+function RuntimeWatchControl({ me, watch, reviewed }: { me: Member; watch?: UpdateWatchConfig; reviewed?: string }) {
+  const [cfg, setCfg] = useState<UpdateWatchConfig | undefined>(watch)
+  const [busy, setBusy] = useState(false)
+  const [ran, setRan] = useState('')
+  useEffect(() => { setCfg(watch) }, [watch])
+  if (!cfg) return null
+  const isOwner = me.role === 'owner'
+
+  const set = async (mode: UpdateWatchMode) => {
+    setBusy(true); setRan('')
+    const r = await api.setRuntimeWatch({ mode })
+    setBusy(false)
+    if (r.watch) setCfg(r.watch)
+  }
+  const runNow = async () => {
+    setBusy(true); setRan('')
+    const r = await api.runRuntimeWatch()
+    setBusy(false)
+    setRan(r.error ? `⚠ ${r.error}` : RUNTIME_OUTCOME[r.action ?? ''] ?? r.action ?? '')
+  }
+
+  const OPTIONS: Array<{ mode: UpdateWatchMode; label: string; hint: string }> = [
+    { mode: 'off', label: 'Off', hint: 'Never mention it.' },
+    { mode: 'notify', label: 'Tell me', hint: 'Inbox card + DM when the runtime CLI falls behind. Upgrades nothing.' },
+    { mode: 'ask', label: 'Ask to upgrade', hint: 'Also raises an approval — approving upgrades the CLI and records that version as reviewed.' },
+  ]
+
+  return (
+    <div className="space-y-1.5 rounded-md border bg-muted/30 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium">When the agent runtime falls behind</span>
+        {isOwner && (
+          <Button size="sm" variant="ghost" className="h-6 gap-1.5 px-2 text-[11px]" disabled={busy} onClick={runNow}>
+            <RefreshCw className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} /> Check now
+          </Button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {OPTIONS.map((o) => (
+          <button
+            key={o.mode}
+            disabled={!isOwner || busy}
+            onClick={() => set(o.mode)}
+            title={o.hint}
+            className={`rounded-md px-2 py-1 text-[11px] ring-1 disabled:opacity-60 ${cfg.mode === o.mode ? 'bg-primary text-primary-foreground ring-primary' : 'bg-background text-muted-foreground ring-border hover:bg-muted'}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        {OPTIONS.find((o) => o.mode === cfg.mode)?.hint}{cfg.mode !== 'off' ? ` Checked every ${cfg.everyHours}h.` : ''}
+        {!isOwner && ' Only an owner can change this.'}
+      </p>
+      <p className="text-[11px] text-muted-foreground">
+        A new CLI can add tools the gate hook doesn't route, which then run ungoverned — so this never upgrades on its own.
+        {reviewed ? <> Gate routing last reviewed against <span className="font-mono">v{reviewed}</span>.</> : <> No version reviewed against this box's gate routing yet.</>}
+      </p>
+      {ran && <p className="text-[11px] text-muted-foreground">{ran}</p>}
+    </div>
+  )
+}
+
+/** What one runtime-watch pass did, in words — the "Check now" button's feedback. */
+const RUNTIME_OUTCOME: Record<string, string> = {
+  'up-to-date': 'The agent runtime is current.',
+  'not-installed': 'No claude CLI on this box — see the rows above.',
+  notified: 'The runtime is behind — posted a card and DM\'d the owner.',
+  duplicate: 'The runtime is behind — already carded this version.',
+  requested: 'The runtime is behind — raised an approval to upgrade it.',
+  denied: 'The runtime is behind — policy denies the upgrade, so it only notified.',
+  applying: 'An upgrade is already running.',
+  off: 'The watcher is off.',
 }
 
 /**
