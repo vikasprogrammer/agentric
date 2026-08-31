@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.410.1] - 2026-08-31
+### Added
+- **Per-connector reference docs** — a new `docs/connectors/` set documenting every shipped native
+  connector as built: [ClickUp](docs/connectors/clickup.md) (webhook ingress via a ClickUp Automation,
+  the comment-id loop-guard, the `/command`-only gate, `clickup_threads` + `clickup_reply`),
+  [Slack](docs/connectors/slack.md) (Socket Mode, filters + channel watch, the three egress tools),
+  [Discord](docs/connectors/discord.md) (Gateway, privileged MESSAGE_CONTENT, real per-mention threads),
+  [Telegram](docs/connectors/telegram.md) (long polling, Group Privacy vs continuity),
+  [GitHub](docs/connectors/github.md) (App-minted bot token vs per-member user token, `github_refresh`)
+  and [Composio](docs/connectors/composio.md) (the minted Tool Router URL, `composio_shares`). Each page
+  carries setup, ingress path, egress tools, data model, audit events and the gotchas that already bit us.
+  The [index](docs/connectors/README.md) holds what every channel shares — run-as resolution, the `/agent`
+  router, thread continuity, governance — and `docs/connectors-and-triggers.md` now points at it.
+
 ## [0.410.0] - 2026-08-31
 ### Changed
 - **Remote Control is off by default for every governed session** — `terminal/claude-launch.sh` now writes

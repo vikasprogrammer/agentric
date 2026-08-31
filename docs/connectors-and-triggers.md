@@ -1,5 +1,10 @@
 # Connectors & Triggers — ingress, egress, and identity
 
+> **Per-connector reference:** [`docs/connectors/`](./connectors/) documents each shipped native connector
+> as built — Slack, Discord, Telegram, ClickUp, GitHub, Composio — with setup, ingress path, egress tools,
+> data model, audit events and gotchas. Start there for "how do I wire up X"; this doc is the design
+> history and the identity model behind all of them.
+
 > **⚠ As-built note (2026-06-29).** This is the *original design spec*; the shipped implementation on
 > `main` **diverged** and is the source of truth. Differences: chat ingress is **native Socket Mode
 > (Slack) / Gateway (Discord)** over an outbound WebSocket — **not** the HTTP `POST /triggers/slack`
