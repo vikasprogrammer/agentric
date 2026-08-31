@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.410.3] - 2026-08-31
+### Added
+- **Console Docs: "Connectors & integrations"** — a new user-facing page in the in-app Docs section
+  (`web/src/docs/connectors.md`, sitting between *Working with agents* and *Automations*). Covers what to
+  connect and why, the shared chat model (address any agent with `/agent-name`, runs act as the sender
+  once their Chat ID is linked, replies thread and follow-ups continue the same conversation), ClickUp's
+  comment-on-a-task flow, per-member GitHub authorship, Composio company-vs-personal apps and what
+  sharing one actually means, and a symptom→cause troubleshooting table for the traps that bite users
+  (Slack Messages Tab, Discord MESSAGE CONTENT, Telegram Group Privacy, `/command`-only ClickUp
+  comments). Complements the engineering reference added in 0.410.1 under `docs/connectors/`.
+
 ## [0.410.2] - 2026-08-31
 ### Fixed
 - **The topic list names subjects again, now that it actually compounds.** v0.402.1 stopped the nightly
