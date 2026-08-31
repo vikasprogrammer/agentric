@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.410.0] - 2026-08-31
+### Changed
+- **Remote Control is off by default for every governed session** — `terminal/claude-launch.sh` now writes
+  `"remoteControlAtStartup": false` into each session's `--settings` file. Remote Control (claude.ai/code
+  and the Claude mobile app driving a local session) normally waits for an explicit `/remote-control`
+  (`/rc`), but auto-connect is a **user-level** toggle: the box owner turning on "Enable Remote Control for
+  all sessions" in their own `~/.claude/settings.json` would silently register EVERY tenant's every
+  interactive session as a remote session on THEIR personal claude.ai account — each transcript mirrored to
+  Anthropic servers for sync, and a phone handed a prompt box into a governed agent. Same undeclared-input
+  class as `enabledPlugins` (see `AOS_CLAUDE_CONFIG_ISOLATION`), and the same fix shape as
+  `crossSessionInbound: "refuse"`: pin it at the settings layer, where a `--settings` value outranks user
+  settings and a project/local `false` outranks even managed settings. Deliberately **not**
+  `disableRemoteControl`, which kills the feature outright — a human attached in the browser terminal can
+  still type `/rc` to connect that one session on purpose.
+
 ## [0.409.1] - 2026-08-31
 ### Fixed
 - **A resurrected session stayed marked `crashed` for ever, while a human worked in it.** A crash mark is
