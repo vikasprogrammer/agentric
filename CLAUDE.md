@@ -720,6 +720,14 @@ drift and prints the one-line fix.
   `terminal/claude-launch.sh` (`crossSessionInbound: "refuse"` + `isolatePeerMachines: true`) rather than
   by denying the tools, since the same `SendMessage` also serves subagents/agent teams inside one session.
   When claude-code updates, diff the tools reference against that routing table.
+- **Remote Control is pinned OFF for every governed session** (`remoteControlAtStartup: false` in
+  `terminal/claude-launch.sh`). It normally needs an explicit `/remote-control` (`/rc`), but auto-connect
+  is a **user-level** setting: the box owner flipping "Enable Remote Control for all sessions" would
+  register every tenant's every interactive session as a remote session on THEIR personal claude.ai
+  account — transcript mirrored to Anthropic servers, phone gets a prompt box into a governed agent.
+  Deliberately NOT `disableRemoteControl` (which kills the feature outright): a human attached in the
+  browser terminal can still type `/rc` on purpose. Same undeclared-input class as the `~/.claude` note
+  below.
 - **The box owner's `~/.claude` is an undeclared input to every agent.** A session runs as the same OS user
   as the human who owns the machine, so it loads their user-scope `settings.json` — `enabledPlugins` above
   all, which drags in a plugin's subagent types, skills, slash commands and **SessionStart prompt hooks**.

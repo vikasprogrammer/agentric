@@ -195,9 +195,20 @@ if [ -n "${CLAUDE_OUTPUT_STYLE:-}" ]; then
     OUTPUT_STYLE_LINE="  \"outputStyle\": \"$SAFE_STYLE\","
   fi
 fi
+# REMOTE CONTROL (claude.ai/code + the Claude mobile app driving a local session) is OFF for governed
+# runs. It only activates on an explicit `/remote-control` (`/rc`) — EXCEPT when auto-connect is on, and
+# auto-connect is a USER-level setting: the box owner flipping "Enable Remote Control for all sessions"
+# in their own ~/.claude/settings.json would silently register EVERY tenant's every interactive session
+# as a remote session on THEIR personal claude.ai account, mirroring each transcript to Anthropic servers
+# and handing a phone a prompt box into a governed agent — the same undeclared-input class as
+# `enabledPlugins` (see AOS_CLAUDE_CONFIG_ISOLATION). So we pin auto-connect off here; a --settings value
+# wins over user settings, and project/local `false` wins even over managed settings, so the safe
+# direction holds. NOT `disableRemoteControl` — that kills the feature outright, and a human who has
+# attached to a session in the browser terminal should still be able to type `/rc` deliberately.
 cat > .claude/aos-settings.json <<JSON
 {
 $OUTPUT_STYLE_LINE
+  "remoteControlAtStartup": false,
   "crossSessionInbound": "refuse",
   "isolatePeerMachines": true,
   "skipDangerousModePermissionPrompt": true,
