@@ -3201,6 +3201,16 @@ export class TerminalManager {
     // `crashed` and fire its (always-on) notification NOW, instead of waiting for the next console poll.
     this.sweepCrashed(alive);
 
+    // (0b) …and the inverse. A crash mark is a CLAIM ("the pane is gone"), and unlike a human `stop` it
+    // plants no stay-stopped sentinel — deliberately, because a crash should be recoverable. So ttyd's
+    // reconnect re-runs `attach.sh`, whose `new-session -A` revives the pane and `claude --resume`s the
+    // transcript, and the work simply carries on. Nothing put the ROW back: the only restore path,
+    // `restoreRunningAfterDelivery`, is scoped `AND status = 'done'` on purpose. The result is a session
+    // that is alive, attached and billing while the console renders it dead, `canResume` refuses it, and
+    // the concurrency cap under-counts it. Live insta-ai (2026-08-31): THREE such rows, two with a human
+    // attached at that moment, the oldest crash-marked 577 h earlier.
+    this.restoreResurrectedCrashes(alive);
+
     // (1) resident warm-chat idle reap. This is what BOUNDS the warm-pane model: a chat session holds a
     // live claude (hundreds of MB) between turns, so it must give the box back when the conversation
     // goes quiet — the next message revives it in place, resuming the same transcript.
@@ -3606,6 +3616,47 @@ export class TerminalManager {
     this.cancelPendingApprovals(sessionId, 'system');
     this.backend.kill(space, tmux);
     this.audit(sessionId, 'system', 'session.reaped', { reason });
+  }
+
+  /**
+   * Put back a `crashed` row whose pane is demonstrably alive AND in use — the crash claim has been
+   * falsified by evidence, exactly as {@link restoreRunningAfterDelivery} does for a `done` row that kept
+   * running. Two independent proofs, either sufficient:
+   *   · a client is ATTACHED — someone is looking at it right now;
+   *   · `last_activity` is NEWER than `updated_at`, which `markCrashed` stamps at the moment of the mark —
+   *     i.e. the session has done governed work SINCE being declared dead.
+   * Both are needed: a member's interactive session rarely stamps `last_activity` (so attachment covers
+   * it), and a detached-but-working run has no client (so the activity clock covers it).
+   *
+   * This deliberately does NOT fight the crashed-orphan reap added alongside it. A genuinely abandoned
+   * crashed pane satisfies neither proof, stays `crashed`, and is reaped on sight; only a resurrected one
+   * is restored, and it then lives or dies by the ordinary idle clock like any other running session.
+   * Requires a real liveness poll — with none we can falsify nothing, so we leave every row alone.
+   *
+   * What it does NOT undo: the questions/approvals `markCrashed` cancelled stay cancelled (someone may
+   * have acted on that), and the episode stays written. Only the row's status, the stale "Crashed" inbox
+   * card, and the audit trail are corrected.
+   */
+  private restoreResurrectedCrashes(alive: Set<string> | null): void {
+    if (!alive) return; // no liveness signal — nothing can be falsified
+    const rows = this.db.prepare("SELECT id, tmux, agent, run_as, spawned_by, last_activity, updated_at FROM term_sessions WHERE status = 'crashed'")
+      .all<{ id: string; tmux: string; agent: string; run_as: string | null; spawned_by: string | null; last_activity: number | null; updated_at: number }>();
+    for (const r of rows) {
+      try {
+        if (!alive.has(r.tmux)) continue;                       // pane really is gone — the mark was right
+        const attached = this.backend.hasClient(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux) === true;
+        const workedSince = r.last_activity != null && r.last_activity > r.updated_at;
+        if (!attached && !workedSince) continue;
+        const restored = this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ? AND status = 'crashed'")
+          .run(Date.now(), r.id);
+        if (!restored.changes) continue;                        // raced with another writer — leave it be
+        // The "Crashed — <agent>" card is now a lie about a live session; close it rather than leave the
+        // owner's Inbox asserting a death that didn't stick.
+        this.db.prepare("UPDATE messages SET status = 'resolved' WHERE session_id = ? AND type = 'completed' AND outcome = 'crashed' AND status = 'open'")
+          .run(r.id);
+        this.audit(r.id, r.agent, 'session.restored', { from: 'crashed', via: attached ? 'attached' : 'activity' });
+      } catch { /* one bad row must not stop the sweep */ }
+    }
   }
 
   /** Is this session blocked on a human right now (a pending question OR a pending approval)? Used to

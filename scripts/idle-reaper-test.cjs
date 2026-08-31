@@ -218,6 +218,68 @@ tm.reapIdleSessions();
 assert(statusOf(claimedShortCeiling) === 'stopped', 'claim ceiling below the idle timeout still applies');
 assert(statusOf(unclaimedSameAge) === 'running', '…and the longer idle timeout still protects unclaimed rows');
 
+console.log('\n\x1b[1m8) crashed rows: reaped when abandoned, RESTORED when resurrected\x1b[0m');
+// A crash mark is a claim, not a fact. It plants no stay-stopped sentinel (a crash must stay
+// recoverable), so ttyd's reconnect re-runs attach.sh, `new-session -A` revives the pane and
+// `claude --resume` carries on — while the row stays `crashed` for ever. Live insta-ai had three such
+// rows, two with a human attached, the oldest marked 577h earlier. The inverse case is stayflexi's:
+// a genuinely abandoned crashed pane holding ~430MB of claude for 93h that no reaper's query could see.
+aos.settings.setInteractiveIdleTimeoutHours(48);
+aos.settings.setClaimedMaxHours(72);
+attached = new Set();
+killed.length = 0;
+
+// Only these rows report a live pane; everything else looks gone, so the older sections stay quiet.
+// A killed pane really disappears here, as it does in tmux — that is what stops the sweep re-reaping and
+// re-auditing a terminal row every tick (the `!alive.has(tmux)` guard is the only thing holding it, since
+// a reaped `crashed`/`done` row deliberately keeps its status).
+const livePanes = new Set();
+tm.backend.aliveNames = () => new Set(livePanes);
+tm.backend.kill = (_space, tmux) => { killed.push(tmux); livePanes.delete(tmux); };
+
+const crashedAt = Date.now() - 90 * H;
+// (a) resurrected + someone attached right now — the insta-ai case
+const resAttached = mkSession({ status: 'crashed', tmux: 'aos-RES-ATTACHED', created_at: Date.now() - 577 * H, updated_at: crashedAt, last_activity: null });
+livePanes.add('aos-RES-ATTACHED'); attached.add('aos-RES-ATTACHED');
+// (b) resurrected + working since the mark, nobody watching
+const resWorking = mkSession({ status: 'crashed', tmux: 'aos-RES-WORKING', created_at: Date.now() - 400 * H, updated_at: crashedAt, last_activity: Date.now() - 1 * H });
+livePanes.add('aos-RES-WORKING');
+// (c) live pane but NOTHING since the mark — genuinely abandoned, the stayflexi case
+const crashedZombie = mkSession({ status: 'crashed', tmux: 'aos-CRASH-ZOMBIE', created_at: Date.now() - 93 * H, updated_at: Date.now() - 1 * H, last_activity: crashedAt });
+livePanes.add('aos-CRASH-ZOMBIE');
+// (d) crashed with the pane truly gone — must be left entirely alone
+const crashedGone = mkSession({ status: 'crashed', tmux: 'aos-CRASH-GONE', created_at: Date.now() - 93 * H, updated_at: crashedAt, last_activity: null });
+
+// The stale "Crashed — <agent>" card the restore has to close.
+aos.db.prepare("INSERT INTO messages (id,type,session_id,agent,title,body,status,outcome,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+  .run('msg_res1', 'completed', resAttached, 'website-bot', 'Crashed — website-bot', 'died', 'open', 'crashed', crashedAt);
+
+tm.reapIdleSessions();
+
+assert(statusOf(resAttached) === 'running', 'crashed + live pane + ATTACHED → restored to running');
+assert(!killed.includes('aos-RES-ATTACHED'), '…and its pane was NOT killed');
+assert(statusOf(resWorking) === 'running', 'crashed + live pane + activity since the mark → restored');
+assert(!killed.includes('aos-RES-WORKING'), '…and its pane was NOT killed');
+// The v0.408.1 reap must survive the restore: neither proof holds here, so it stays terminal and dies.
+assert(statusOf(crashedZombie) === 'crashed', 'crashed + live pane + nothing since the mark → NOT restored');
+assert(killed.includes('aos-CRASH-ZOMBIE'), '…it is reaped on sight, keeping its crashed status');
+assert(statusOf(crashedGone) === 'crashed', 'crashed + pane genuinely gone → left alone');
+assert(!killed.includes('aos-CRASH-GONE'), '…and not re-killed (no re-audit loop every tick)');
+
+const card = aos.db.prepare("SELECT status FROM messages WHERE id='msg_res1'").get();
+assert(card && card.status === 'resolved', 'the stale "Crashed" inbox card is closed on restore');
+const rev = aos.db.prepare("SELECT data FROM audit_events WHERE type='session.restored' AND run_id=? LIMIT 1").get(resAttached);
+assert(rev && JSON.parse(rev.data).via === 'attached', 'audited session.restored with the proof used');
+const rev2 = aos.db.prepare("SELECT data FROM audit_events WHERE type='session.restored' AND run_id=? LIMIT 1").get(resWorking);
+assert(rev2 && JSON.parse(rev2.data).via === 'activity', '…and "activity" for the unattended one');
+
+// Idempotence: a second tick must not re-restore, re-audit or re-kill anything.
+const before = aos.db.prepare("SELECT COUNT(*) c FROM audit_events WHERE type='session.restored'").get().c;
+killed.length = 0;
+tm.reapIdleSessions();
+assert(aos.db.prepare("SELECT COUNT(*) c FROM audit_events WHERE type='session.restored'").get().c === before, 'a second sweep restores nothing again');
+assert(!killed.includes('aos-CRASH-ZOMBIE'), '…and does not re-kill the already-reaped zombie (its pane is gone now)');
+
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}IDLE REAPER: ${pass}/${pass + fail} passed\x1b[0m`);
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
 process.exit(fail === 0 ? 0 : 1);
