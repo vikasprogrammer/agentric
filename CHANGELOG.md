@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.411.2] - 2026-09-01
+### Fixed
+- **Session cost and token counts were roughly double.** Claude Code writes one transcript line per
+  *content block* of an assistant message — `[thinking]`, `[tool_use]`, `[tool_use]` — and every one of
+  those lines repeats the **same `message.id` with a byte-identical `usage` object**. `readSessionCost`
+  summed usage per LINE, so each billed request was counted once per block it happened to emit. On a
+  single live instapods run: **36 usage-bearing lines for 19 distinct message ids**, and the session row
+  read **$4.05** where the agent's own status line showed **$1.88**. Usage is now accumulated once per
+  message id; recomputing that run gives exactly $1.88. This inflated `cost_usd`, `input_tokens`,
+  `output_tokens`, `cache_read_tokens` and `cache_write_tokens` on every session row, so any spend or
+  context figure read from the DB — including the "301k context per call" fleet number — was overstated
+  by a similar factor. `toolCalls` was always correct and is deliberately **not** deduped: the blocks are
+  split across those lines rather than repeated, so per-line counting already counts each call once. A
+  line with no `message.id` is still billed rather than dropped. Pinned by `scripts/session-cost-test.cjs`.
+
 ## [0.411.1] - 2026-09-01
 ### Fixed
 - **The tenant-shared memory pool carries knowledge again, not fleet statistics.** A shared memory reaches
