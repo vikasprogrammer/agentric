@@ -24,7 +24,7 @@ delete process.env.AGENT_OS_SECRET_KEY;
 let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
-const { deriveGuidance, deriveRecommendations, recommendationResolved, topicCounts, TOPICS_VERSION } = require(path.join(ROOT, 'dist/edge/dreaming.js'));
+const { deriveGuidance, deriveRecommendations, recommendationResolved, topicCounts, normalizeState, TOPICS_VERSION } = require(path.join(ROOT, 'dist/edge/dreaming.js'));
 const crypto = require('crypto');
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
 const { detectAlerts } = require(path.join(ROOT, 'dist/edge/alerts.js'));
@@ -232,6 +232,22 @@ console.log('\n\x1b[1mInsights signal — no prompt-injected or DM\'d number off
   assert(TOPICS_VERSION === PINNED.version,
     'TOPICS_VERSION matches the version this fingerprint was taken at',
     `TOPICS_VERSION=${TOPICS_VERSION}, fingerprint pinned at ${PINNED.version}`);
+}
+
+// ── the shared Insight supersedes, it does not accumulate ────────────────────────────────────────────
+// The dreaming pass writes ONE tenant-scoped digest per pass, and every shared memory reaches EVERY
+// agent. With no retirement they piled up: 51 of 72 shared memories on live instapods, 48 of 85 on
+// instawp — two thirds of the whole shared pool, all superseded snapshots of each other.
+{
+  console.log('\n\x1b[1m6) the shared Insight supersedes rather than accumulates\x1b[0m');
+  // `lastInsightId` is what lets pass N+1 retire pass N's digest. Dropping it in normalizeState would
+  // silently restore the pile-up — the exact failure mode topicsVersion already had once.
+  const rt = normalizeState({ firstPass: 1, passes: 3, totals: {}, topics: {}, recent: [], lastInsightId: 'mem_abc' });
+  assert(rt.lastInsightId === 'mem_abc', 'lastInsightId survives normalizeState (else the digests pile up again)', JSON.stringify(rt.lastInsightId));
+  const legacy = normalizeState({ firstPass: 1, passes: 1, totals: {}, topics: {}, recent: [] });
+  assert(legacy.lastInsightId === undefined, 'a state written before the field carries none, and simply has nothing to retire');
+  const junk = normalizeState({ firstPass: 1, passes: 1, totals: {}, topics: {}, recent: [], lastInsightId: 42 });
+  assert(junk.lastInsightId === undefined, 'a non-string id is discarded rather than passed to delete()');
 }
 
 fs.rmSync(HOME, { recursive: true, force: true });

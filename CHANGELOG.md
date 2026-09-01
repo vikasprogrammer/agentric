@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.411.1] - 2026-09-01
+### Fixed
+- **The tenant-shared memory pool carries knowledge again, not fleet statistics.** A shared memory reaches
+  EVERY agent, and the self-learning pass writes one tenant-scoped digest per pass — *"Fleet self-learning
+  (pass 31, since 2026-07-01): 768 sessions, 43% success. Recurring topics: …"* — with nothing retiring
+  it. They accumulated until they **were** the shared pool: **51 of 72 shared memories on instapods, 48 of
+  85 on instawp**. Observed directly while running the loop experiment: an agent with no memories of its
+  own got a launch preamble that was **6 of 8 slots of fleet statistics** and nothing about its task. Two
+  changes. (1) A dreaming digest is now **preamble noise** (`isPreambleNoise`, alongside episodes) on both
+  the task-ranked and salience-fallback paths — it stays fully recallable, since an oversight agent asking
+  "how is the fleet doing" wants exactly this, it is simply not launch context. (2) Each pass now
+  **supersedes** the previous digest instead of appending: the id rides on `dreaming_state.lastInsightId`
+  (preserved through `normalizeState`, the same field-dropping trap `topicsVersion` fell into) and the old
+  one is deleted after the new one is written, so a failure leaves one extra rather than none. A digest is
+  a cumulative snapshot — pass N+1 restates everything pass N said — so keeping both was keeping a stale
+  copy.
+
 ## [0.411.0] - 2026-09-01
 ### Fixed
 - **The session summarizer stopped silently degrading — it now uses the runtime-account pool.** Chasing a
