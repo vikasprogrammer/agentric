@@ -3387,20 +3387,31 @@ export class TerminalManager {
       // still never cut (checked below) — that is what "a human owns it" should have meant all along.
       const claimedHours = this.os.settings.claimedMaxHours();
       const claimedCutoff = claimedHours > 0 ? Date.now() - claimedHours * 3600_000 : null;
-      // Widen the scan to the more permissive of the two clocks, then decide per row — otherwise a claim
-      // ceiling SHORTER than the idle timeout would never see its own rows.
+      // LIFETIME CEILING. Every clock above measures IDLENESS, and `markTurnBusy` stamps `last_activity`
+      // on every tool call — so a session whose agent still works never goes idle, however old it gets,
+      // and none of them can ever see it. Live instawp after the wake-queue fix: 15 interactive sessions
+      // `running` at 1007 h / 266 h / 263 h / 166 h / 120 h, every one reporting 18–24 h idle, skipped on
+      // every tick. Age answers what idleness cannot. See `interactiveMaxHours`.
+      const lifetimeHours = this.os.settings.interactiveMaxHours();
+      const lifetimeCutoff = lifetimeHours > 0 ? Date.now() - lifetimeHours * 3600_000 : null;
+      // Widen the scan to the more permissive of the two IDLE clocks, then decide per row — otherwise a
+      // claim ceiling SHORTER than the idle timeout would never see its own rows. The lifetime ceiling is
+      // ORed in rather than folded into that max: it reads `created_at`, and the rows it exists for are
+      // precisely the ones a `last_activity` filter excludes.
       const scanCutoff = claimedCutoff == null ? idleCutoff : Math.max(idleCutoff, claimedCutoff);
-      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, claimed_by, last_activity, created_at FROM term_sessions WHERE headless = 0 AND resident = 0 AND status IN ('running','done','crashed') AND COALESCE(last_activity, created_at) < ?")
-        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; claimed_by: string | null; last_activity: number | null; created_at: number }>(scanCutoff);
+      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, claimed_by, last_activity, created_at FROM term_sessions WHERE headless = 0 AND resident = 0 AND status IN ('running','done','crashed') AND (COALESCE(last_activity, created_at) < ? OR (? IS NOT NULL AND created_at < ?))")
+        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; claimed_by: string | null; last_activity: number | null; created_at: number }>(scanCutoff, lifetimeCutoff, lifetimeCutoff);
       for (const r of stale) {
         try {
           const idleSince = r.last_activity ?? r.created_at;
           const terminal = r.status === 'done' || r.status === 'crashed'; // see sweep 2 — a crashed row can still hold a pane
           // Claimed: exempt unless the claim itself has gone stale. Unclaimed: the ordinary idle clock —
           // re-checked here because the scan may have been widened past it for the claimed rows.
+          // Past the lifetime ceiling every idle-based exemption is moot — that is the point of it.
+          const overLifetime = lifetimeCutoff != null && r.created_at < lifetimeCutoff;
           if (r.claimed_by) {
-            if (claimedCutoff == null || idleSince >= claimedCutoff) continue;
-          } else if (idleSince >= idleCutoff) {
+            if (!overLifetime && (claimedCutoff == null || idleSince >= claimedCutoff)) continue;
+          } else if (!overLifetime && idleSince >= idleCutoff) {
             continue;
           }
           // A reaped 'running' row flips to 'stopped' and drops out of the query next tick; a 'done' row keeps
@@ -3411,11 +3422,13 @@ export class TerminalManager {
           if (this.backend.hasClient(space, r.tmux) === true) continue; // someone's attached — it's in use
           // Blocked on a person: leave it — unless nobody has answered inside the ceiling above, at which
           // point it is abandoned, not waiting.
-          let reason = r.claimed_by ? 'claimed-abandoned' : 'idle-interactive';
+          let reason = overLifetime ? 'max-lifetime' : r.claimed_by ? 'claimed-abandoned' : 'idle-interactive';
           const blockedAt = this.oldestPendingBlockAt(r.id);
           if (blockedAt !== undefined) {
-            if (blockedCutoff == null || blockedAt >= blockedCutoff) continue;
-            reason = 'blocked-timeout';
+            // Blocked on a person: leave it — unless nobody answered inside the ceiling, or the session is
+            // past its lifetime, at which point it is abandoned rather than waiting.
+            if (!overLifetime && (blockedCutoff == null || blockedAt >= blockedCutoff)) continue;
+            if (!overLifetime) reason = 'blocked-timeout';
           }
           this.backend.kill(space, r.tmux);
           // Preserve a completed session's outcome — only a still-running one becomes 'stopped'.

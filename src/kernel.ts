@@ -239,9 +239,15 @@ export class AgentOS {
     const opts = this.settings.memoryConfig()?.maintenance;
     if (!this.memory.maintain || !opts) return { pruned: 0, merged: 0 };
     const res = await this.memory.maintain(opts);
-    if (res.pruned || res.merged) {
-      this.audit.append({ ts: Date.now(), runId: '-', tenant: this.tenant, principal: by, type: 'memory.maintained', data: { ...res } });
-    }
+    // Audit EVERY pass, including the ones that changed nothing. This used to fire only when something
+    // was deleted, which made "upkeep is running and finding nothing" indistinguishable from "upkeep is
+    // not running at all" — a live instawp check read five days of silence as a broken scheduler when the
+    // store was simply clean. A pass is ~1 event/day/tenant against ~32k gate events/week, so the cost of
+    // saying so is nil, and `removed` is dropped from the payload (the ids are only useful to the caller
+    // replaying them onto a backend, and a long list bloats every row).
+    const { removed, ...summary } = res;
+    void removed;
+    this.audit.append({ ts: Date.now(), runId: '-', tenant: this.tenant, principal: by, type: 'memory.maintained', data: { ...summary, noop: !res.pruned && !res.merged } });
     return res;
   }
 

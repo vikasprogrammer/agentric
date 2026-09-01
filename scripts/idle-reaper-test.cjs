@@ -27,6 +27,11 @@ const { TerminalManager } = require(path.join(ROOT, 'dist/terminal.js'));
 
 const aos = loadAgentOS();
 const tm = new TerminalManager(aos, 'http://127.0.0.1:0', path.join(HOME, 'tmux.sock'));
+// Each section below isolates ONE clock. The AGE ceiling (section 7b) would otherwise fire underneath
+// them — several fixtures are deliberately 200–400h old to exercise an idle/claim/blocked rule — so it
+// stays off until the section that owns it, and is switched off again afterwards.
+assert(aos.settings.interactiveMaxHours() === 168, 'AGE ceiling: unset → 168h (7d) default'); // asserted here, before anything sets it
+aos.settings.setInteractiveMaxHours(0);
 // Stub the backend so the sweep is deterministic without a real tmux server.
 let attached = new Set();               // tmux names with a "client" attached
 const killed = [];
@@ -173,6 +178,56 @@ const blockedForever = mkSession({ created_at: Date.now() - 200 * H });
 askAt(blockedForever, 150);
 tm.reapIdleSessions();
 assert(statusOf(blockedForever) === 'running', '0 → a 150h-old block is never cut');
+
+console.log('\n\x1b[1m7b) the LIFETIME ceiling — the backstop the idle clocks structurally cannot be\x1b[0m');
+{
+  // Every other clock here measures IDLENESS, and `markTurnBusy` stamps `last_activity` on EVERY tool
+  // call. So a session whose agent keeps working never looks idle however old it gets. Live instawp,
+  // measured after the wake-queue fix had already removed the biggest source of that traffic: 15
+  // interactive sessions running at 120–1007h, every one reporting under a day idle, skipped every tick.
+  aos.settings.setInteractiveIdleTimeoutHours(72);
+  aos.settings.setBlockedMaxHours(72);
+  aos.settings.setClaimedMaxHours(72);
+
+  assert(aos.settings.setInteractiveMaxHours(0) === 0, 'set 0 → off');
+  assert(aos.settings.setInteractiveMaxHours(99999) === 24 * 90, 'clamps to 90 days max');
+
+  // off = the old behaviour: age alone never closes anything.
+  aos.settings.setInteractiveMaxHours(0);
+  const ancientOff = mkSession({ created_at: Date.now() - 1007 * H, last_activity: Date.now() - 18 * H });
+  tm.reapIdleSessions();
+  assert(statusOf(ancientOff) === 'running', '0 → a 1007h session with 18h idle is never cut');
+
+  aos.settings.setInteractiveMaxHours(168);
+  // THE LIVE SHAPE: ancient, but recently active — invisible to every idle-based clock.
+  const ancientBusy = mkSession({ created_at: Date.now() - 1007 * H, last_activity: Date.now() - 18 * H });
+  const weekOldBusy = mkSession({ created_at: Date.now() - 266 * H, last_activity: Date.now() - 19 * H });
+  const youngBusy   = mkSession({ created_at: Date.now() - 120 * H, last_activity: Date.now() - 3 * H });
+  tm.reapIdleSessions();
+  assert(statusOf(ancientBusy) === 'stopped', '1007h old + 18h idle → closed on AGE (the live case)');
+  assert(statusOf(weekOldBusy) === 'stopped', '266h old + 19h idle → closed on age');
+  assert(statusOf(youngBusy) === 'running', '120h old is under the 168h ceiling → left alone');
+
+  const ev = aos.db.prepare("SELECT data FROM audit_events WHERE type='session.reaped' AND run_id=? ORDER BY ts DESC LIMIT 1").get(ancientBusy);
+  assert(ev && JSON.parse(ev.data).reason === 'max-lifetime', 'audited as max-lifetime, not idle-interactive', ev && ev.data);
+
+  // It overrides the exemptions the other ceilings honour — past this age the session is abandoned by
+  // definition, whoever claimed it or whatever it is waiting on.
+  const ancientClaimed = mkSession({ created_at: Date.now() - 400 * H, last_activity: Date.now() - 1 * H, claimed_by: 'm_bob' });
+  const ancientBlocked = mkSession({ created_at: Date.now() - 400 * H, last_activity: Date.now() - 1 * H });
+  askAt(ancientBlocked, 1);   // asked an hour ago — nowhere near the blocked ceiling
+  tm.reapIdleSessions();
+  assert(statusOf(ancientClaimed) === 'stopped', 'age overrides an active take-over claim');
+  assert(statusOf(ancientBlocked) === 'stopped', 'age overrides a fresh block on a human');
+
+  // …but never the one rule that matters: somebody is literally attached right now.
+  const ancientAttached = mkSession({ created_at: Date.now() - 1007 * H, last_activity: Date.now() - 1 * H, tmux: 'aos-LIFETIME-ATTACHED' });
+  attached.add('aos-LIFETIME-ATTACHED');
+  tm.reapIdleSessions();
+  assert(statusOf(ancientAttached) === 'running', 'ATTACHED → never cut, whatever the age');
+
+  aos.settings.setInteractiveMaxHours(0); // hand the baton back — later sections own other clocks
+}
 
 console.log('\n\x1b[1m7) the claim ceiling — a take-over expires, it is not a permanent exemption\x1b[0m');
 aos.settings.setInteractiveIdleTimeoutHours(48);

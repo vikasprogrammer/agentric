@@ -4819,11 +4819,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const value = os.settings.maxConcurrentSessions(); // operator override (null = unset)
     const resolved = autos.concurrencyCap();           // effective cap the scheduler enforces (0 = unlimited)
     const source = envLocked ? 'env' : value != null ? 'setting' : 'derived';
-    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), admitted: tm.admissionSessionCount(), parked: tm.parkedSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours(), claimedMaxHours: os.settings.claimedMaxHours() });
+    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), admitted: tm.admissionSessionCount(), parked: tm.parkedSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours(), claimedMaxHours: os.settings.claimedMaxHours(), interactiveMaxHours: os.settings.interactiveMaxHours() });
   }
   if (method === 'PUT' && p === '/api/settings/concurrency') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    const b = await readBody(req) as { value?: unknown; idleHours?: unknown; unattendedMaxHours?: unknown; unattendedNoProgressMinutes?: unknown; blockedMaxHours?: unknown; claimedMaxHours?: unknown };
+    const b = await readBody(req) as { value?: unknown; idleHours?: unknown; unattendedMaxHours?: unknown; unattendedNoProgressMinutes?: unknown; blockedMaxHours?: unknown; claimedMaxHours?: unknown; interactiveMaxHours?: unknown };
     // Cap: `null`/'' clears the override (→ derived default); 0 = unlimited; N>0 = cap. Only touched when the
     // key is present, so a PUT that only sets idleHours leaves the cap alone.
     if ('value' in b) {
@@ -4865,6 +4865,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.blockedMax.updated', data: { blockedMaxHours: savedH } });
     }
     // Claim ceiling (hours): how long a claimed-but-untouched session keeps its take-over exemption. 0 = off.
+    if ('interactiveMaxHours' in b) {
+      const h = Number(b.interactiveMaxHours);
+      if (!Number.isFinite(h) || h < 0) return sendJson(res, 400, { error: 'interactiveMaxHours must be a non-negative number (0 = off)' });
+      const savedH = os.settings.setInteractiveMaxHours(h, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.interactiveMax.updated', data: { interactiveMaxHours: savedH } });
+    }
     if ('claimedMaxHours' in b) {
       const h = Number(b.claimedMaxHours);
       if (!Number.isFinite(h) || h < 0) return sendJson(res, 400, { error: 'claimedMaxHours must be a non-negative number (0 = off)' });

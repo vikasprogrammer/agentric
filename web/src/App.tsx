@@ -17526,6 +17526,7 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const [noProg, setNoProg] = useState('')  // headless no-progress reap, minutes; '0' = off
   const [blocked, setBlocked] = useState('') // interactive blocked-on-a-card ceiling, hours; '0' = off
   const [claimed, setClaimed] = useState('') // take-over claim ceiling, hours; '0' = off
+  const [lifetime, setLifetime] = useState('') // hard AGE ceiling for a detached interactive session; '0' = off
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner' || me.role === 'admin'
@@ -17539,6 +17540,7 @@ function ConcurrencySettings({ me }: { me: Member }) {
     setNoProg(String(r.unattendedNoProgressMinutes))
     setBlocked(String(r.blockedMaxHours))
     setClaimed(String(r.claimedMaxHours))
+    setLifetime(String(r.interactiveMaxHours))
   }).catch(() => {})
   useEffect(() => { load() }, [])
 
@@ -17548,16 +17550,18 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const noProgDirty = data != null && noProg.trim() !== String(data.unattendedNoProgressMinutes)
   const blockedDirty = data != null && blocked.trim() !== String(data.blockedMaxHours)
   const claimedDirty = data != null && claimed.trim() !== String(data.claimedMaxHours)
-  const dirty = capDirty || idleDirty || maxRunDirty || noProgDirty || blockedDirty || claimedDirty
+  const lifetimeDirty = data != null && lifetime.trim() !== String(data.interactiveMaxHours)
+  const dirty = capDirty || idleDirty || maxRunDirty || noProgDirty || blockedDirty || claimedDirty || lifetimeDirty
   const save = async () => {
     setBusy(true); setHint('')
-    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number; claimedMaxHours?: number } = {}
+    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number; claimedMaxHours?: number; interactiveMaxHours?: number } = {}
     if (capDirty) body.value = input.trim() === '' ? null : Number(input)
     if (idleDirty) body.idleHours = Number(idle)
     if (maxRunDirty) body.unattendedMaxHours = Number(maxRun)
     if (noProgDirty) body.unattendedNoProgressMinutes = Number(noProg)
     if (blockedDirty) body.blockedMaxHours = Number(blocked)
     if (claimedDirty) body.claimedMaxHours = Number(claimed)
+    if (lifetimeDirty) body.interactiveMaxHours = Number(lifetime)
     const r = await api.saveConcurrency(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
@@ -17691,6 +17695,26 @@ function ConcurrencySettings({ me }: { me: Member }) {
             Taking a run over hands its lifecycle to you — so the idle timeout above stops applying. Nothing ever expires a claim, so
             someone who claims a session and closes the tab creates an immortal pane. Past this age the claim lapses and the janitor
             reclaims it. Someone actually attached is never cut.
+          </p>
+        </div>
+        <div className="space-y-1.5 border-t pt-4">
+          <label className="text-xs font-medium text-muted-foreground">Close a detached session older than (hours)</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number" min={0} step={1} value={lifetime}
+              onChange={(e) => setLifetime(e.target.value)}
+              placeholder="168"
+              disabled={!canEdit}
+              className="h-8 w-40 font-mono text-xs"
+            />
+            <span className="text-[11px] text-muted-foreground">0 = no age limit · nobody attached</span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Every timeout above measures <em>idleness</em>, and idleness resets on each tool call — so a session whose agent keeps
+            working never looks idle, however old it gets, and none of them can reach it. Measured on a live tenant: fifteen sessions
+            open <span className="font-mono">120–1007 h</span>, every one reporting under a day idle, skipped on every tick. This one
+            asks the honest question instead — has it been open longer than any real piece of work — and overrides the claim and
+            blocked exemptions. Someone actually attached is still never cut.
           </p>
         </div>
         <div className="flex items-center gap-3">

@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.410.5] - 2026-09-01
+### Added
+- **A hard age ceiling for detached interactive sessions** (`interactiveMaxHours`, default **168 h**,
+  Settings → Concurrency). Every existing timeout measures *idleness*, and `markTurnBusy` stamps
+  `last_activity` on **every tool call** — so a session whose agent keeps working never looks idle however
+  old it gets, and none of the idle clocks can reach it. Measured on live instawp *after* the wake-queue
+  fix had already removed the biggest source of that traffic: **18 sessions still running, 15 interactive,
+  at 1007 h / 266 h / 263 h / 166 h / 120 h — every one reporting only 18–24 h idle**, skipped by the 72 h
+  reaper on every tick. The oldest had been open **42 days**. Age is the honest question for those. Like
+  the ceilings beside it, this one overrides the claimed and blocked-on-a-human exemptions (past it the
+  session is abandoned by definition) but **never** cuts one with somebody attached. Clamped 1 h–90 d;
+  `0` disables. Audited `session.reaped` with `reason: 'max-lifetime'`.
+
+### Fixed
+- **Memory upkeep now records that it ran, even when it changed nothing.** `runMemoryMaintenance` audited
+  only `if (res.pruned || res.merged)`, which made "upkeep is running and finding nothing" indistinguishable
+  from "upkeep is not running at all" — a live instawp check read five days of silence as a broken
+  scheduler when the store was simply clean. Every pass now writes `memory.maintained` with a `noop` flag;
+  the `removed` id list is left out of the row (it is only useful to the caller replaying it onto a
+  backend, and would bloat every pass). ~1 event/day/tenant against ~32k gate events/week.
+
 ## [0.410.4] - 2026-09-01
 ### Fixed
 - **`GET /api/sessions` stopped costing the box a fifth of its event loop.** Measured on the live
