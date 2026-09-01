@@ -65,6 +65,13 @@ const MID_TURN_MAX_MS = 2 * 3600_000;
  *  tool call (96% of fleet runs within 30s) — and either one PROMOTES `busy_since` off `created_at`
  *  ({@link markTurnBusy}), which is what makes "unconfirmed" a decidable state rather than a guess. */
 const LAUNCH_TURN_GRACE_MS = 5 * 60_000;
+/** How long after a run goes terminal we keep re-probing for a transcript that isn't on disk before
+ *  concluding it never will be. A run that crashed before its runtime opened a `.jsonl` has no cost to
+ *  read, ever; without a ceiling those rows are re-probed on every sessions poll forever (see the
+ *  no-transcript branch in {@link TerminalManager.backfillCosts}). Generous on purpose — the only thing
+ *  a too-long grace costs is a few more probes, while a too-short one would stamp a zero over a
+ *  transcript that was merely slow to flush. */
+const TRANSCRIPT_SETTLE_MS = 60 * 60_000;
 /** How long an idle INTERACTIVE session keeps its spawn-cap slot after its last turn ended. Long enough
  *  that a human thinking between turns never loses their slot to a scheduled spawn; short enough that a
  *  TUI someone walked away from stops blocking the scheduler. Only affects ADMISSION — the session stays
@@ -1194,12 +1201,24 @@ export class TerminalManager {
         continue;                                       // transcript unreadable — retry on a later poll
       }
       if (!cost) {
-        // No transcript. For an unpriced row that's "not written yet" — retry on a later poll. But a row
-        // that's ALREADY priced and lands here has had its transcript pruned since; we were only after
-        // its shape, so stamp zeros rather than re-probe a file that's never coming back (which would
-        // otherwise eat this budget on every poll forever and starve genuinely new rows).
-        if (r.cost_usd != null) {
-          this.db.prepare('UPDATE term_sessions SET active_ms = 0, turns = 0, tool_calls = 0 WHERE id = ?').run(r.id);
+        // No transcript. Two ways a row lands here, and only one of them is temporary:
+        //
+        //  - the run JUST ended and claude hasn't flushed its `.jsonl` yet — genuinely "not written
+        //    yet", so retry on a later poll;
+        //  - the transcript is never coming. Either it was pruned since (the row is ALREADY priced and
+        //    we were only after its shape) or it was never written at all — a run that crashed before
+        //    claude opened one, which on the live instawp tenant is 25 rows of dead `consolidator` /
+        //    `qa` sessions, every one of them `cost_usd IS NULL`.
+        //
+        // The second case used to be handled ONLY when `cost_usd != null`, so those 25 rows re-probed
+        // forever: `findTranscript` readdirs every project dir under every transcript root, they
+        // consumed the whole 20-parse budget on EVERY list poll, and nothing was ever stamped to stop
+        // them. Age is what separates the two cases — a transcript still absent long after the run went
+        // terminal is not coming — so an unpriced row heals the same way once it is past the grace.
+        const settled = r.cost_usd != null || (r.updated_at ?? r.created_at) < Date.now() - TRANSCRIPT_SETTLE_MS;
+        if (settled) {
+          this.db.prepare('UPDATE term_sessions SET cost_usd = COALESCE(cost_usd, 0), active_ms = 0, turns = 0, tool_calls = 0 WHERE id = ?').run(r.id);
+          r.cost_usd = r.cost_usd ?? 0;
           r.active_ms = 0;
           r.turns = 0;
           r.tool_calls = 0;
