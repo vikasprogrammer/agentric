@@ -3261,7 +3261,13 @@ async function handle(req: JsonRpc): Promise<void> {
     const args = (params?.arguments as Record<string, unknown>) || {};
     // Everything this call does downstream runs inside the tool's name, so each loopback request carries
     // `x-aos-tool` (see H()) and the server can report latency per TOOL, not only per route.
-    return toolContext.run(name ?? 'unknown', async () => {
+    //
+    // `session_open({summary:true})` reports as its OWN bucket. Its clock is a spawned `claude -p`, not
+    // work this process does — 17.9 s on a live tenant — while the same tool WITHOUT `summary` is one
+    // indexed row-test and a by-id build. Sharing a bucket made the tool table rank a deliberate model
+    // call second-slowest in the system and hid any regression on the cheap path behind its average.
+    const label = name === 'session_open' && args.summary ? 'session_open:summary' : name;
+    return toolContext.run(label ?? 'unknown', async () => {
     try {
       const text =
         name === 'recall' ? await recall(args)

@@ -1157,8 +1157,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const meta = { id: target.id, title: target.title, task: target.task, status: target.status, createdAt: target.createdAt, updatedAt: target.updatedAt, rating: target.rating };
     const convo = tm.sessionConversation(id);
     if (url.searchParams.get('summary') === '1') {
-      const out = await summarizeConversation(convo);
-      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'session.summarized', data: { target: id, via: out.via, found: out.found } });
+      // Pool credentials, not the box default — see TerminalManager.outOfBandCredentialEnv. `reason` is
+      // recorded so a fallback says WHY; a `usage_limit` here is a rotation problem, not a summarizer one.
+      const cred = tm.outOfBandCredentialEnv();
+      const out = await summarizeConversation(convo, { credentials: cred?.vars, account: cred?.account });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'session.summarized', data: { target: id, via: out.via, found: out.found, reason: out.reason, account: out.account } });
       return sendJson(res, 200, { meta, ...out });
     }
     // No structured transcript (a headless run tee'd only a raw pane log) → serve the tail of that.
@@ -3356,8 +3359,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
     const convo = tm.sessionConversation(id);
-    const out = await summarizeConversation(convo);
-    os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.summarized', data: { via: out.via, found: out.found } });
+    const cred = tm.outOfBandCredentialEnv();
+    const out = await summarizeConversation(convo, { credentials: cred?.vars, account: cred?.account });
+    os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.summarized', data: { via: out.via, found: out.found, reason: out.reason, account: out.account } });
     return sendJson(res, 200, out);
   }
   // Stop a running session (kill its tmux, keep the row). Per-member: only the session's owner, or
