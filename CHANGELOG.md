@@ -8,6 +8,39 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.410.4] - 2026-09-01
+### Fixed
+- **`GET /api/sessions` stopped costing the box a fifth of its event loop.** Measured on the live
+  instawp tenant (v0.410.3, 4,019 sessions, 598 MB DB) with the v0.404.0 MCP instrumentation: in a
+  51-minute window that one route was called 3,789 times and burned **654 s of handler time — 21% of a
+  single-threaded process** — because the Sessions/Chat views re-fetch the FULL list (3,951 unarchived
+  rows, **5.03 MB**) on the shared 1.5 s poll. The traffic was two people with the Sessions tab open.
+  Three separate causes, fixed in three places, none of them an index — every query plan is clean
+  (`idx_sessions_live`, and `idx_audit_run_type` is covering):
+  - **Compression moved off the main thread.** `zlib.gzipSync` over that payload blocks the event loop
+    for ~38 ms, and `GZIP_CACHE` is keyed by the ETag — which covers derived fields (`alive`, `working`,
+    `blocked`, cost backfills) that move every tick on a tenant with live runs, so nearly every poll was
+    a cache MISS. At ~74 polls/min that is ~2.8 s per minute of hard-stalled loop, and it surfaced as a
+    1.66 s `maxStallMs` on `/health`, `/api/messages` and every other route — the precise misattribution
+    `request-metrics` was built to prevent. Now `zlib.gzip` (libuv threadpool). Measured directly: over
+    53 ms of synchronous compression the loop served **0** timer callbacks; asynchronously it served 9.
+  - **The live overlay is decoupled from the full list.** Live state still refreshes every 1.5 s, but off
+    the cheap `/api/sessions/summary` (the only rows whose state actually moves), merged over the rows
+    already held; the full list — which exists for client-side search/filter/sort/chain-grouping over the
+    whole history — is rebuilt on route entry and every 6 s after. Filters keep their exact meaning, so
+    *"N of 3,951"* stays true. Full-list builds drop ~4×. Deliberately NOT server-side pagination: the
+    Sessions view derives its agent/owner options, chain grouping and select-all from the whole array, so
+    a truncating default would silently narrow them.
+  - **`backfillCosts` stopped re-probing transcripts that will never exist.** 25 rows on that tenant were
+    `cost_usd IS NULL` with a `claude_session_id` and no `.jsonl` on disk — runs that crashed before
+    their runtime opened one. The self-healing "stamp zeros" branch only fired when `cost_usd != null`,
+    so those rows consumed the entire 20-parse budget on EVERY poll, forever, each miss making
+    `findTranscript` readdir every project dir under every transcript root. An unpriced row now heals the
+    same way once it is past a one-hour settle window — long enough that a transcript merely slow to
+    flush is never stamped a premature zero. Pinned by `scripts/sessions-list-perf-test.cjs`, which also
+    holds the compression path to byte-identical output, a still-short-circuiting 304, and untouched
+    identity bytes for the gate hook / MCP loopback callers that send no `accept-encoding`.
+
 ## [0.410.3] - 2026-08-31
 ### Added
 - **Console Docs: "Connectors & integrations"** — a new user-facing page in the in-app Docs section

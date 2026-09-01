@@ -50,6 +50,40 @@ const canApprove = (role: Role, level: 'head' | 'owner'): boolean =>
  *  for the green dot: an interactive session that reported `done` but keeps an attachable pane is live. */
 const isLive = (s: Session): boolean => Boolean(s.alive) || s.status === 'running'
 
+/** How long the Sessions/Chat views may hold a full `/api/sessions` payload before rebuilding it. Live
+ *  state does NOT wait on this — it refreshes every tick off `/api/sessions/summary` (see the feed poll).
+ *  This bounds only the long tail: a row that appeared, was archived, or was deleted in ANOTHER tab. */
+const FULL_LIST_MS = 6_000
+
+/**
+ * Overlay fresh rows onto the full list, in place, preserving order.
+ *
+ * The summary poll returns the rows whose state actually moves (live + the viewer's recent-ended tail).
+ * Those replace their counterparts in the list we already hold; a row the summary doesn't mention keeps
+ * the values from the last full fetch, and a row the summary introduces (a run that STARTED since) is
+ * prepended so it appears immediately rather than waiting for the next full rebuild.
+ *
+ * Returns the previous array unchanged when nothing moved, so React can skip the re-render of a
+ * ~4,000-row list on an idle tick.
+ */
+function mergeSessionRows(prev: Session[], fresh: Session[]): Session[] {
+  if (!fresh.length) return prev
+  const byId = new Map(fresh.map((s) => [s.id, s]))
+  let changed = false
+  const merged = prev.map((s) => {
+    const next = byId.get(s.id)
+    if (!next) return s
+    byId.delete(s.id)
+    if (next === s) return s
+    changed = true
+    return next
+  })
+  // Whatever the summary carried that the list has never seen — newest first, ahead of the old rows.
+  const added = [...byId.values()].sort((a, b) => b.createdAt - a.createdAt)
+  if (!added.length) return changed ? merged : prev
+  return [...added, ...merged]
+}
+
 /** ── THE session status vocabulary ───────────────────────────────────────────────────────────────
  *  One state per session, resolved once and rendered identically everywhere (sidebar, terminal tab
  *  strip, list, cards, chain rail, chat rail, automation runs). Before this there were three parallel
@@ -1381,6 +1415,9 @@ function Console({ me }: { me: Member }) {
     //    The ETag covers the fully-computed response, so any derived change (blocked/crashed/cost/new card)
     //    still flips it — the badge/bells never go stale.
     let sessEtag: string | null = null
+    // The summary poll carries its OWN validator: on a list route the two endpoints now interleave, and
+    // sharing one variable would hand each response the other's ETag and defeat both conditional fetches.
+    let summaryEtag: string | null = null
     let msgEtag: string | null = null
     // The sessions half switches SOURCE by route (Sessions-pagination Phase 2): the Sessions + Chat list
     // views need the FULL list, so they poll `/api/sessions`; every other route polls the cheap
@@ -1389,18 +1426,43 @@ function Console({ me }: { me: Member }) {
     // deps below, so navigating re-runs this effect with the right endpoint, a fresh ETag, and an immediate
     // poll (no stale-endpoint 304, no flash of the wrong data).
     const needFull = route === 'sessions' || route === 'chat'
+    // On the list routes the full payload is big and almost never 304s. `/api/sessions` returns EVERY
+    // unarchived row — 3,951 rows / 5.03 MB on the live instawp tenant — and its ETag covers the derived
+    // fields (`alive`/`working`/`blocked`/cost backfills), so on a tenant with live runs it changes every
+    // tick and the conditional fetch never saves anything. Polling that at 1.5s cost the server ~74
+    // full-list builds/min: 654 s of handler time in a 51-minute window, 21% of a single-threaded event
+    // loop, for what turned out to be two people with the Sessions tab open.
+    //
+    // So the two halves are decoupled: LIVE state still refreshes every tick off the cheap summary
+    // (live rows + the viewer's recent-ended tail — the only rows whose state actually moves), and the
+    // full list, which exists for the client-side search/filter/sort/chain-grouping over the whole
+    // history, is rebuilt on route entry and every FULL_LIST_MS after. Filters keep their exact meaning
+    // — they still run over the complete set, so "N of 3951" stays true — and the cost of the slower
+    // cadence is bounded: a session DELETED in another tab lingers in this one for up to FULL_LIST_MS.
+    // Every mutation path in this app already calls `reloadSessions()`, so that only affects other tabs.
+    let fullAt = 0
     const poll = async () => {
+      const wantFull = needFull && Date.now() - fullAt >= FULL_LIST_MS
       const [s, m] = await Promise.allSettled([
-        needFull ? api.sessionsFeed(sessEtag) : api.sessionsSummaryFeed(sessEtag),
+        wantFull ? api.sessionsFeed(sessEtag) : api.sessionsSummaryFeed(summaryEtag),
         api.messagesFeed(msgEtag),
       ])
       if (!alive) return
       if (s.status === 'fulfilled') {
-        sessEtag = s.value.etag
+        if (wantFull) fullAt = Date.now()
+        if (wantFull) sessEtag = s.value.etag
+        else summaryEtag = s.value.etag
         if ('data' in s.value) {
           const data = s.value.data
-          if (needFull) { if (Array.isArray(data)) setSessions(data) }
-          else if (!Array.isArray(data)) { setSessions(data.rows); setDoneToday(data.doneToday ?? 0) }
+          if (wantFull) { if (Array.isArray(data)) setSessions(data) }
+          else if (!Array.isArray(data)) {
+            setDoneToday(data.doneToday ?? 0)
+            // On a list route the summary is an OVERLAY, not the list: merge its rows over the ones we
+            // already hold (they carry the fresh live state) and keep everything else. Replacing the
+            // array here would collapse the Sessions view to the summary's handful of rows every tick.
+            if (needFull) setSessions((prev) => mergeSessionRows(prev, data.rows))
+            else setSessions(data.rows)
+          }
         }
       }
       if (m.status === 'fulfilled') {

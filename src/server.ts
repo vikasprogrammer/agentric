@@ -7899,13 +7899,34 @@ const GZIP_CACHE_MAX = 64;
  */
 const GZIP_LEVEL_STATIC = 6;
 const GZIP_LEVEL_DYNAMIC = 4;
-function gzipFor(key: string, raw: Buffer, level: number): Buffer {
-  const hit = GZIP_CACHE.get(key);
-  if (hit) return hit;
-  const out = zlib.gzipSync(raw, { level });
-  if (GZIP_CACHE.size >= GZIP_CACHE_MAX) GZIP_CACHE.delete(GZIP_CACHE.keys().next().value as string);
-  GZIP_CACHE.set(key, out);
-  return out;
+/**
+ * Compress `raw`, reusing the cached bytes for an identical body.
+ *
+ * ASYNCHRONOUS on the miss path, and that is the whole point. `zlib.gzipSync` runs on the main thread:
+ * measured on the live globex tenant's 5.03 MB `/api/sessions` payload it blocks the event loop for
+ * **38 ms**, and because the ETag key changes whenever any run does, nearly every 1.5s poll is a miss.
+ * At the observed ~74 full-list polls/min that is ~2.8 s per minute of hard-stalled loop — which is
+ * exactly what `request-metrics` was built to attribute correctly: it showed up as a 1.66 s `maxStallMs`
+ * on `/health`, `/api/messages` and every other route, none of which had done anything wrong.
+ * `zlib.gzip` hands the same work to libuv's threadpool, so the loop keeps serving while it runs.
+ *
+ * The cache is still keyed by the body's content hash, so N tabs polling the same unchanged payload
+ * compress once. A concurrent miss on the same key may compress twice (both callers started before
+ * either finished); that races to the same bytes and is not worth a promise-keyed inflight map.
+ */
+function gzipFor(key: string, raw: Buffer, level: number, done: (out: Buffer) => void): void {
+  const hit = key ? GZIP_CACHE.get(key) : undefined;
+  if (hit) return done(hit);
+  zlib.gzip(raw, { level }, (err, out) => {
+    // A gzip failure is not a reason to fail the request — fall back to the identity bytes. The caller
+    // sets `content-encoding` from what we hand back, so it stays consistent either way.
+    if (err || !out) return done(raw);
+    if (key) {
+      if (GZIP_CACHE.size >= GZIP_CACHE_MAX) GZIP_CACHE.delete(GZIP_CACHE.keys().next().value as string);
+      GZIP_CACHE.set(key, out);
+    }
+    done(out);
+  });
 }
 /**
  * Write a complete in-memory body, negotiating `content-encoding` and (for a cacheable GET) an ETag.
@@ -7931,15 +7952,20 @@ function sendBody(res: http.ServerResponse, status: number, raw: Buffer, content
       return void res.end();
     }
   }
-  let body = raw;
+  const write = (body: Buffer, encoded: boolean): void => {
+    if (encoded) headers['content-encoding'] = 'gzip';
+    headers['content-length'] = String(body.length);
+    res.writeHead(status, headers);
+    res.end(req?.method === 'HEAD' ? undefined : body);
+  };
   if (raw.length >= COMPRESS_MIN && COMPRESSIBLE.test(contentType) && /\bgzip\b/.test(String(req?.headers['accept-encoding'] || ''))) {
     // Only cache keyed by a content hash; without an ETag (a POST reply, an error) compress one-off.
-    body = etag ? gzipFor(etag, raw, level) : zlib.gzipSync(raw, { level });
-    headers['content-encoding'] = 'gzip';
+    // `gzipFor` answers on the same tick for a cache hit and off the threadpool for a miss, so this is
+    // the one place the response completes asynchronously. Callers already `return sendBody(...)` into a
+    // void, and nothing downstream touches `res` after handing it here.
+    return gzipFor(etag, raw, level, (out) => write(out, out !== raw));
   }
-  headers['content-length'] = String(body.length);
-  res.writeHead(status, headers);
-  res.end(req?.method === 'HEAD' ? undefined : body);
+  write(raw, false);
 }
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
   sendBody(res, status, Buffer.from(JSON.stringify(body) ?? 'null', 'utf8'), 'application/json; charset=utf-8', 'no-cache, private');
