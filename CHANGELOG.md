@@ -37,9 +37,10 @@ new version heading in the same commit.
     so those rows consumed the entire 20-parse budget on EVERY poll, forever, each miss making
     `findTranscript` readdir every project dir under every transcript root. An unpriced row now heals the
     same way once it is past a one-hour settle window — long enough that a transcript merely slow to
-    flush is never stamped a premature zero. Pinned by `scripts/sessions-list-perf-test.cjs`, which also
-    holds the compression path to byte-identical output, a still-short-circuiting 304, and untouched
-    identity bytes for the gate hook / MCP loopback callers that send no `accept-encoding`.
+    flush is never stamped a premature zero. Pinned by `scripts/sessions-list-perf-test.cjs` (17
+    assertions), which also holds the compression path to a body that decodes back to the full list, a
+    still-short-circuiting 304, and untouched identity bytes for the gate hook / MCP loopback callers
+    that send no `accept-encoding`.
 
 ## [0.410.3] - 2026-08-31
 ### Added

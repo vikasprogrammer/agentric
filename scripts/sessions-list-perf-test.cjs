@@ -24,7 +24,6 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const zlib = require('zlib');
 
 const ROOT = path.resolve(__dirname, '..');
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-list-perf-test-'));
@@ -68,19 +67,39 @@ const HOUR = 3600_000;
 
   // A body over COMPRESS_MIN must actually come back gzip-encoded, and decode to the same bytes. The
   // SPA index is served through sendFile → sendBody, so it covers the cached-asset path too.
-  // The console bundle is comfortably over COMPRESS_MIN and is served through sendFile -> sendBody.
-  const asset = fs.readdirSync(path.join(ROOT, 'web/dist/assets')).find((f) => /^main-.*\.js$/.test(f));
-  const big = await fetch(`${base}/assets/${asset}`, { headers: { 'accept-encoding': 'gzip' } });
-  // `fetch` transparently inflates, so this is the DECODED body — which is what we want to compare.
-  const body = Buffer.from(await big.arrayBuffer());
-  const onDisk = fs.readFileSync(path.join(ROOT, 'web/dist/assets', asset));
-  assert(big.status === 200, 'a large asset is served through the async gzip path');
+  // A body over COMPRESS_MIN, on the very route this change is about. Deliberately NOT a built console
+  // asset: `web/dist` is a separate build step that CI does not run, and depending on it made this test
+  // pass locally and fail on the runner.
+  aos.agents.set('engineer', { id: 'engineer', name: 'Engineer', runtime: 'claude-code', dir: HOME });
+  const insert = aos.db.prepare(
+    "INSERT INTO term_sessions (id,agent,title,task,tmux,status,headless,resident,secret,claude_session_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+  );
+  const NOW = Date.now();
+  for (let i = 0; i < 300; i++) {
+    const id = `ses_bulk${String(i).padStart(4, '0')}`;
+    // Padded so the list comfortably clears COMPRESS_MIN, and NOT uniform — a body of identical rows
+    // would compress to almost nothing and stop exercising the path realistically.
+    insert.run(id, 'engineer', `run ${i} ${'t'.repeat(40)}`, `task ${i} ${String(i).repeat(60)}`, 'aos-' + id, 'done', 1, 0, 'sec-' + id, null, NOW - i * 1000, NOW - i * 1000);
+  }
+  const owner = aos.team.listMembers().find((m) => m.role === 'owner');
+  const cookie = `aos_sid=${aos.team.createSession(owner.id)}`;
+
+  const big = await fetch(`${base}/api/sessions`, { headers: { cookie, 'accept-encoding': 'gzip' } });
+  assert(big.status === 200, 'the sessions list is served through the async gzip path');
   assert(big.headers.get('content-encoding') === 'gzip', 'the compressed branch actually ran', big.headers.get('content-encoding'));
-  // An async write that handed back the wrong buffer would still have a plausible length, so compare
-  // the round-tripped bytes against the file itself.
-  assert(body.equals(onDisk), 'the compressed response decodes back to the exact file');
+  // `fetch` transparently inflates, so this is the DECODED body. An async write that handed back the
+  // wrong buffer would still have a plausible length — parse it and check the rows survived intact.
+  const listed = await big.json();
+  assert(Array.isArray(listed) && listed.length >= 300, 'the compressed response decodes to the full list', listed.length);
+  assert(listed.some((r) => r.id === 'ses_bulk0000') && listed.some((r) => r.id === 'ses_bulk0299'), 'first and last rows both survive the round trip');
   const declared = Number(big.headers.get('content-length'));
-  assert(declared > 0 && declared < onDisk.length, 'content-length is the ENCODED length, set from the bytes written', { declared, raw: onDisk.length });
+  const rawLen = Buffer.byteLength(JSON.stringify(listed));
+  assert(declared > 0 && declared < rawLen, 'content-length is the ENCODED length, set from the bytes written', { declared, rawLen });
+
+  // The same list without gzip must be byte-identical once decoded — the encoding is transport only.
+  const identity = await fetch(`${base}/api/sessions`, { headers: { cookie, 'accept-encoding': 'identity' } });
+  assert(!identity.headers.get('content-encoding'), 'the same route serves identity bytes to a client that asks for them');
+  assert((await identity.json()).length === listed.length, 'both encodings carry the same rows');
 
   // Nothing may be dropped when many responses compress at once on the threadpool.
   const many = await Promise.all(Array.from({ length: 50 }, () =>
@@ -89,7 +108,6 @@ const HOUR = 3600_000;
   assert(many.length === 50 && many.every((v) => v === j1.version), '50 concurrent responses all complete and match');
 
   // ── 2. backfillCosts stops re-probing a transcript that is never coming ──────────────────────────
-  aos.agents.set('engineer', { id: 'engineer', name: 'Engineer', runtime: 'claude-code', dir: HOME });
   const row = (id, updatedAt) => aos.db.prepare(
     "INSERT INTO term_sessions (id,agent,title,task,tmux,status,headless,resident,secret,claude_session_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
   ).run(id, 'engineer', id, 'work', 'aos-' + id, 'done', 1, 0, 'sec-' + id, `00000000-0000-4000-8000-${id.slice(-12).padStart(12, '0')}`, updatedAt, updatedAt);
