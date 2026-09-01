@@ -30,10 +30,16 @@ const BUCKETS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000
 /** How many distinct route templates to track before lumping the rest into `other`. */
 const MAX_ROUTES = 300;
 
-/** Tools whose duration is a WAIT for a human or a delegate, not work this process is doing. They are
- *  measured like everything else — hiding them would hide a wait that never ends — but flagged, so the
- *  table is never read as "`ask_human` is the slowest endpoint in the system". */
-const BLOCKING_TOOLS = new Set(['ask', 'ask_human', 'ask_agent', 'task_wait']);
+/** Tools whose duration is a WAIT on something outside this process — a human, a delegate, or a spawned
+ *  model — not work this process is doing. They are measured like everything else (hiding them would hide
+ *  a wait that never ends) but flagged, so the table is never read as "`ask_human` is the slowest endpoint
+ *  in the system".
+ *
+ *  `session_open:summary` is its own entry rather than the whole tool: with `summary` it spawns a
+ *  throwaway `claude -p` (17.9 s on a live tenant), without it it is one indexed row-test. Flagging the
+ *  tool outright would hide a real regression on the cheap path; the split label (see memory-mcp.ts)
+ *  keeps both honest. */
+const BLOCKING_TOOLS = new Set(['ask', 'ask_human', 'ask_agent', 'task_wait', 'session_open:summary']);
 
 export interface RouteStat {
   /** `GET /api/sessions/:id` — method + normalized path template. */

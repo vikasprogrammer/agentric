@@ -8,6 +8,37 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.411.0] - 2026-09-01
+### Fixed
+- **The session summarizer stopped silently degrading — it now uses the runtime-account pool.** Chasing a
+  17.9 s `session_open` in the v0.404.0 tool metrics turned up something worse than a slow tool. That call
+  spawns a throwaway `claude -p` (deliberately, so the target session's context is never polluted) and
+  falls back to a deterministic recap when it fails. On live instawp **43 of 97 summaries — 44% — had been
+  falling back**, in one unbroken band from 2026-08-04 to 08-24, and nothing anywhere reported it.
+  - **Root cause:** `summarizeConversation` ran on `{...process.env}` — i.e. always the BOX DEFAULT
+    account — while every governed launch goes through `applyRuntimeAccount` → `runtimeAccounts.pick()`,
+    which skips a limited account. So when the default hit its weekly quota (`runtime.usage_limited`
+    2026-07-30 → 08-15, `runtime.account.limited` from 08-04) every session rotated away and kept working
+    while the summarizer kept calling the exhausted credential for three weeks. New
+    `TerminalManager.outOfBandCredentialEnv()` routes this call through the same pool, fail-open exactly
+    like the launch path (no pool / nothing usable / unresolvable → the box default, as before).
+  - **The reason is no longer swallowed.** A bare `catch {}` discarded the failure, so the only trace was
+    a `via` field in an audit row nobody reads. Failures are now classified — `usage_limit`, `auth`,
+    `not_installed`, `timeout`, `empty_output`, `error` — and recorded on `session.summarized` along with
+    the account the call ran under.
+  - **`session_open:summary` is its own metrics bucket, flagged `blocking`.** Its clock is a spawned
+    model, not work this process does; the same tool WITHOUT `summary` is one indexed row-test. Sharing a
+    bucket ranked a deliberate 17.9 s model call second-slowest in the system — the exact misreading
+    `BLOCKING_TOOLS` exists to prevent — and hid any regression on the cheap path behind its average.
+### Added
+- **A `summarizer-degraded` insight alert.** Fires when session summaries fall back at ≥50% over the last
+  7 days, names the dominant cause and where to fix it, and rides that cause in its key so a different
+  failure re-alerts instead of being suppressed by the previous one's cooldown. Built to the alert rules:
+  a denominator (rate over attempts, with "no transcript yet" excluded), a sample floor (≥5 attempts) and
+  a short present-tense window, so a resolved outage stops alerting. Pinned by
+  `scripts/summarizer-degradation-test.cjs` (23 assertions), including that a LIMITED account is skipped
+  and rotation picks the healthy one.
+
 ## [0.410.5] - 2026-09-01
 ### Added
 - **A hard age ceiling for detached interactive sessions** (`interactiveMaxHours`, default **168 h**,

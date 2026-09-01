@@ -98,6 +98,9 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
   const blocked = schedulerBlocked(os, now);
   if (blocked) out.push(blocked);
 
+  const degraded = summarizerDegraded(os, now);
+  if (degraded) out.push(degraded);
+
   // Approvals piling up on a human.
   const oldestH = ins.friction.oldestPendingAgeMs ? Math.round(ins.friction.oldestPendingAgeMs / 3_600_000) : 0;
   if (ins.friction.pendingApprovals >= 3 && oldestH >= 4) {
@@ -236,6 +239,73 @@ function schedulerBlocked(os: AgentOS, now: number): InsightAlert | null {
       `using. Raising the cap in Settings → Concurrency also clears it, but if the slots are held by parked ` +
       `sessions rather than work, it will fill up again.`,
     route: 'sessions',
+  };
+}
+
+/** Attempts needed before a fallback RATE means anything. Below this it is noise, not a signal. */
+const SUMMARY_MIN_ATTEMPTS = 5;
+/** Fallback share that counts as degraded. Half is generous — a healthy week is 0%. */
+const SUMMARY_FALLBACK_RATE = 0.5;
+/** How far back the rate is computed. An alert must claim the PRESENT, so this is deliberately short:
+ *  the instawp outage ran three weeks, and a 30-day window would have kept firing well after recovery. */
+const SUMMARY_WINDOW_MS = 7 * 24 * 3_600_000;
+
+/**
+ * The out-of-band session summarizer is falling back instead of summarizing.
+ *
+ * `summarizeConversation` degrades to a deterministic recap whenever its throwaway `claude -p` fails, and
+ * for three weeks on live instawp it did exactly that — 43 of 97 calls — with nothing reporting it: the
+ * reason was swallowed by a bare `catch {}` and the only trace was a `via` field in an audit row nobody
+ * reads. Agents kept getting a visibly worse answer and no human knew.
+ *
+ * Denominator, sample floor and a present-tense window, per the alert rules: rate over ATTEMPTS (rows
+ * where a transcript existed — a "nothing to summarize" fallback is not a failure), at least
+ * {@link SUMMARY_MIN_ATTEMPTS} of them, inside {@link SUMMARY_WINDOW_MS}. The dominant `reason` rides the
+ * key so a different cause re-alerts rather than being suppressed by the cooldown of the previous one.
+ */
+function summarizerDegraded(os: AgentOS, now: number): InsightAlert | null {
+  const rows = os.db
+    .prepare("SELECT data FROM audit_events WHERE type = 'session.summarized' AND ts >= ?")
+    .all<{ data: string }>(now - SUMMARY_WINDOW_MS);
+  let attempts = 0;
+  let fell = 0;
+  const reasons = new Map<string, number>();
+  for (const r of rows) {
+    let d: { via?: string; found?: boolean; reason?: string };
+    try { d = JSON.parse(r.data); } catch { continue; }
+    if (d.found === false) continue;            // no transcript yet — nothing was attempted
+    attempts++;
+    if (d.via !== 'fallback') continue;
+    fell++;
+    // A row written before this field existed carries no reason; count it so the rate stays honest, but
+    // don't let `unknown` win the naming when a real cause is present.
+    if (d.reason) reasons.set(d.reason, (reasons.get(d.reason) ?? 0) + 1);
+  }
+  if (attempts < SUMMARY_MIN_ATTEMPTS || fell / attempts < SUMMARY_FALLBACK_RATE) return null;
+
+  const top = [...reasons.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const pct = Math.round((fell / attempts) * 100);
+  const why: Record<string, string> = {
+    usage_limit: 'The account it runs under is out of quota. Sessions rotate off a limited account through the runtime pool; add or re-enable an account in Settings → Runtime accounts so this call has one to pick.',
+    auth: 'Its credential was rejected. Re-link the account in Settings → Runtime accounts.',
+    not_installed: 'The `claude` CLI was not found on the service PATH. A runtime reinstall can move the binary out from under a hardened unit.',
+    timeout: 'The call is exceeding its 90s ceiling — usually a very long transcript or a slow upstream.',
+    empty_output: 'It ran cleanly and returned nothing, which usually means the prompt was refused.',
+    error: 'It is erroring. The `reason` on the `session.summarized` audit rows has the detail.',
+  };
+  return {
+    key: top ? `summarizer-degraded:${top}` : 'summarizer-degraded',
+    severity: 'medium',
+    title: `Session summaries are degrading (${pct}% fell back)`,
+    body:
+      `${fell} of ${attempts} session summaries in the last 7 days returned the deterministic recap instead ` +
+      `of a real one${top ? ` — mostly \`${top}\`` : ''}. Agents calling \`session_open({summary:true})\`, and ` +
+      `anyone using "Summarize" in the console, are getting a visibly worse answer.\n\n` +
+      `${top ? why[top] ?? '' : 'Check the `reason` field on recent `session.summarized` audit events.'}\n\n` +
+      `This degrades silently by design — the feature always returns something — so it will not surface ` +
+      `anywhere else.`,
+    route: 'audit',
+    detail: 'session.summarized',
   };
 }
 

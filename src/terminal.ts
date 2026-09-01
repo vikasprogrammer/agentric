@@ -3817,6 +3817,40 @@ export class TerminalManager {
     return { vars: { [varName]: value }, varName };
   }
 
+  /**
+   * Credential env for an OUT-OF-BAND runtime call that belongs to no session — today, the session
+   * summarizer's throwaway `claude -p`.
+   *
+   * It exists because that call used to run on `{...process.env}`, i.e. always the BOX DEFAULT account,
+   * while every governed launch goes through {@link applyRuntimeAccount} and rotates off an exhausted
+   * one. On live instawp that split silently degraded the summarizer for three weeks: `runtime.usage_limited`
+   * ran 2026-07-30 → 08-15 and `runtime.account.limited` from 08-04, and across exactly that band 43 of
+   * 97 `session.summarized` events came back `via:'fallback'` — sessions kept working on rotated
+   * accounts while the summarizer kept calling the limited default and quietly returned the
+   * deterministic recap instead. `pick()` already skips a limited account, so routing this through the
+   * same pool is the whole fix.
+   *
+   * Fail-open like the launch path: no pool, nothing usable, or an unresolvable credential → null, and
+   * the caller runs on the box default exactly as before. Audited under a synthetic run id so a pool
+   * that can't serve this call is visible rather than inferred from a fallback rate.
+   */
+  outOfBandCredentialEnv(runtime: CodingRuntimeId = 'claude-code'): { vars: Record<string, string>; account: string } | null {
+    try {
+      // `pick` already restricts to the runtime's `liveCredentialKinds` and can only be narrowed, never
+      // widened — for claude-code that is `['oauth']`, i.e. the same credential DIRS the TUI lane rotates
+      // through, which is exactly what we want here. The extra narrowing drops a static `token` on
+      // runtimes that do accept one: it carries no refresh token, and a summarizer that trips "OAuth
+      // access token has expired" is the same silent degradation this method exists to end.
+      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), { kinds: ['oauth', 'apikey'] });
+      if (!acct) return null;
+      const resolved = this.credentialEnvFor(acct, runtime, '-', 'summarizer');
+      if (!resolved) return null;
+      return { vars: resolved.vars, account: acct.name };
+    } catch {
+      return null; // rotation must never break an out-of-band call — fall through to the box default
+    }
+  }
+
   /** Snapshot a live pane's scrollback to `<connectors>/session-<id>.log` (0600) so the console's
    *  transcript view survives the pane being killed — the replacement for the old headless `-p` tee.
    *  Best-effort: no paths, an unreachable socket, or a launcher backend (capturePane → null) → skip. */
