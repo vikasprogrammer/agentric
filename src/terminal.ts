@@ -4163,7 +4163,7 @@ export class TerminalManager {
           }),
           timeout,
         ]);
-        lines = distinctLines(hits.filter((h) => !isEpisodeRecord(h)).map((h) => h.content), n);
+        lines = distinctLines(hits.filter((h) => !isPreambleNoise(h)).map((h) => h.content), n);
         relevant = lines.length > 0;
       } catch {
         /* fall through to the salience ordering below */
@@ -4182,6 +4182,7 @@ export class TerminalManager {
               `SELECT content FROM memories
                WHERE tenant = ? AND (scope = 'tenant' OR (scope = 'agent' AND agent_id = ?))
                  AND COALESCE(tags, '') NOT LIKE '%"episode"%'
+                 AND COALESCE(tags, '') NOT LIKE '%"dreaming"%'
                ORDER BY COALESCE(importance, 0.5) DESC, COALESCE(last_recalled_at, created_at) DESC
                LIMIT ?`,
             )
@@ -8103,6 +8104,29 @@ function composeEpisode(
 export function isEpisodeRecord(r: { content?: string; tags?: string[] }): boolean {
   if (r.tags?.includes('episode')) return true;
   return /^\s*Task:/.test(r.content ?? '');
+}
+
+/**
+ * Is this record unfit to be SEEDED into a working agent's prompt?
+ *
+ * Two classes, both real memories that belong in the store and neither of which helps someone about to do
+ * a job:
+ *  - an **episode** — a transcript of a past assignment (see {@link isEpisodeRecord});
+ *  - a **dreaming summary** — the self-learning pass's own tenant-scoped digest, "Fleet self-learning
+ *    (pass 31, since 2026-07-01): 768 sessions, 43% success. Recurring topics: …". That is a statistic
+ *    ABOUT the fleet, not knowledge FOR the work, and one is written per pass, so they accumulate.
+ *
+ * Measured on live tenants: the tenant-shared pool was **51 of 72 memories on instapods and 48 of 85 on
+ * instawp** — two thirds of everything shared across the fleet — and because shared memories reach every
+ * agent, an agent thin on its own memories got a preamble that was **6 of 8 slots of fleet statistics**.
+ * Observed directly: a zero-memory agent's launch preamble carried six pass summaries and nothing about
+ * its task.
+ *
+ * They stay recallable (an oversight agent asking "how is the fleet doing" wants exactly this, and the
+ * Memory hub counts them) — they are simply not launch context.
+ */
+export function isPreambleNoise(r: { content?: string; tags?: string[] }): boolean {
+  return isEpisodeRecord(r) || !!r.tags?.includes('dreaming');
 }
 
 /** Collapse near-identical entries and cap at `limit`. Two memories that open the same ~80 characters say

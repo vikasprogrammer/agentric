@@ -40,6 +40,10 @@ interface DreamState {
    *  fall into the gap between a pass's `until` and the next `since` and be silently skipped. Absent on
    *  states written before this field existed → we fall back to the old marker (see `dream`). */
   watermark?: number;
+  /** The tenant-shared Insight this pass wrote, so the NEXT pass can retire it. One summary per pass,
+   *  each superseding the last — without this they accumulate: live instapods held 51 and instawp 48,
+   *  two thirds of everything in the shared pool. */
+  lastInsightId?: string;
   /** Which topic EXTRACTOR produced `topics`. Bumped when the extractor changes meaning; a state carrying
    *  an older version has its topic map reset on the next pass (see TOPICS_VERSION). */
   topicsVersion?: number;
@@ -295,6 +299,18 @@ export class DreamingEngine {
       const topTopics = topTopicList(state.topics, 6).filter(([, v]) => v.count >= MIN_TOPIC_COUNT).map(([k]) => k).join(', ') || '—';
       const summary = `Fleet self-learning (pass ${state.passes}, since ${new Date(state.firstPass).toISOString().slice(0, 10)}): ${t.sessions} sessions — ${t.success} reported success, ${t.unknown} never reported an outcome. Recurring topics: ${topTopics}. Friction so far: ${t.rejected} approvals rejected, ${t.budgetStops} budget stops, ${t.errors} errors. Details: [[${DREAM_SECTION}/${DREAM_SLUG}]].`;
       const rec = await this.os.memory.store({ tenant: this.os.tenant, agentId: 'dreamer', content: summary, tags: ['dreaming', 'learned'], type: 'Insight', importance: 0.6, scope: 'tenant', metadata: { passes: state.passes, window, sessions: win.sessions } });
+      // SUPERSEDE the previous pass's summary. It is a cumulative snapshot — pass N+1 restates everything
+      // pass N said, over a longer window — so keeping both is keeping a stale copy. One per pass with no
+      // retirement is how the shared pool filled with them (51 of 72 on instapods, 48 of 85 on instawp),
+      // and a shared memory reaches EVERY agent. Best-effort and ordered after the write, so a failure
+      // leaves one extra summary rather than none.
+      const prior = state.lastInsightId;
+      state.lastInsightId = rec.id;
+      this.os.settings.setDreamingState(state as unknown as Record<string, unknown>, by);
+      if (prior && prior !== rec.id) {
+        try { await this.os.memory.delete({ tenant: this.os.tenant, agentId: 'dreamer', id: prior, admin: true }); }
+        catch { /* the next pass will try again */ }
+      }
       insightId = rec.id;
     } catch { /* best-effort */ }
 
@@ -331,7 +347,10 @@ export function normalizeState(raw: Record<string, unknown>): DreamState {
   // permanently below the bar — its "the fleet frequently works on …" guidance line never fired once, and
   // the fleet Insight every agent recalls read "Recurring topics: —".
   const topicsVersion = Number.isFinite(Number(raw.topicsVersion)) ? Number(raw.topicsVersion) : undefined;
-  return { firstPass: num(raw.firstPass, Date.now()), passes: num(raw.passes, 0), totals, topics, recent, watermark, topicsVersion };
+  // Carried for the same reason as `topicsVersion`, and dropped here would fail the same way: the pass
+  // would forget which Insight it wrote and stop superseding it, so they would pile up again.
+  const lastInsightId = typeof raw.lastInsightId === 'string' && raw.lastInsightId ? raw.lastInsightId : undefined;
+  return { firstPass: num(raw.firstPass, Date.now()), passes: num(raw.passes, 0), totals, topics, recent, watermark, topicsVersion, lastInsightId };
 }
 
 function zeroTally(): Tally {
