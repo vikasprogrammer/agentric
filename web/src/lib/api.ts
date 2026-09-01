@@ -115,6 +115,9 @@ export interface Concurrency {
   blockedMaxHours: number
   /** Expire a take-over claim untouched for this many hours, so a claimed session stops being immortal (0 = off; default 72). */
   claimedMaxHours: number
+  /** Hard AGE ceiling (hours) for a detached interactive session — the backstop the idle clocks cannot be,
+   *  since idleness resets on every tool call (0 = off; default 168). */
+  interactiveMaxHours: number
 }
 
 /** One credential set in the runtime rotation pool (never carries the api-key value, only its vault ref). */

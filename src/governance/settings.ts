@@ -98,6 +98,7 @@ const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency c
 const INTERACTIVE_IDLE_HOURS_KEY = 'interactive_idle_timeout_hours'; // auto-close a detached member session idle past this; unset → 48h, 0 → off
 const UNATTENDED_MAX_HOURS_KEY = 'unattended_max_runtime_hours'; // hard runtime ceiling for a headless/unattended run (stuck-mid-turn backstop); unset → 24h, 0 → off
 const BLOCKED_MAX_HOURS_KEY = 'blocked_max_hours'; // force-close an interactive session waiting this long on an unanswered card; unset → 72h, 0 → off
+const INTERACTIVE_MAX_HOURS_KEY = 'interactive_max_hours'; // hard AGE ceiling for a detached interactive session; unset → 168h, 0 → off
 const CLAIMED_MAX_HOURS_KEY = 'claimed_max_hours'; // force-close a CLAIMED interactive session idle this long; unset → 72h, 0 → off (permanent take-over exemption)
 const UNATTENDED_NO_PROGRESS_MIN_KEY = 'unattended_no_progress_minutes'; // reap a headless run that never made a tool call (never-started: rate-limit/trust-hang/lost-prompt); unset → 30m, 0 → off
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
@@ -1203,6 +1204,40 @@ export class SettingsStore {
     if (!Number.isFinite(n)) return 72; // unset → default
     if (n <= 0) return 0;               // explicit 0 → disabled (permanent take-over exemption)
     return Math.min(Math.max(Math.round(n), 1), 24 * 30);
+  }
+
+  /**
+   * Hard AGE ceiling for a detached interactive session, measured from `created_at` — the backstop the
+   * idle clock cannot be.
+   *
+   * Every other ceiling in this family measures IDLENESS, and idleness is stamped by `markTurnBusy` on
+   * **every tool call**. So a session whose agent is still working — or is woken periodically — never goes
+   * idle, however old it gets, and {@link interactiveIdleTimeoutHours} never sees it. Live instawp,
+   * measured after the wake-queue fix had already removed the largest source of that activity: 18 sessions
+   * still `running`, 15 of them interactive, ages **1007 h / 266 h / 263 h / 166 h / 120 h** — and every
+   * one reporting only 18–24 h idle, so the 72 h reaper skipped them on every tick. The oldest had been
+   * open **42 days**.
+   *
+   * Age is the honest question for those: not "has it been quiet long enough" but "has this been open
+   * longer than any real piece of work". Like the ceilings above it, this one **overrides** the claimed and
+   * blocked-on-a-human exemptions — past it the session is abandoned by definition — but it never cuts one
+   * with somebody **attached**, which remains the only unconditional exemption in the sweep.
+   *
+   * Default **168 h** (7 days): comfortably longer than the 72 h idle/claim/blocked ceilings, so it only
+   * ever catches what they structurally cannot. Clamped 1 h–90 d; `0` disables.
+   */
+  interactiveMaxHours(): number {
+    const n = Number(this.getRow(INTERACTIVE_MAX_HOURS_KEY)?.value);
+    if (!Number.isFinite(n)) return 168; // unset → default
+    if (n <= 0) return 0;                // explicit 0 → disabled
+    return Math.min(Math.max(Math.round(n), 1), 24 * 90);
+  }
+
+  setInteractiveMaxHours(hours: number, by?: string): number {
+    const n = Number(hours);
+    const clamped = !Number.isFinite(n) || n < 0 ? 168 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 90);
+    this.set(INTERACTIVE_MAX_HOURS_KEY, String(clamped), by);
+    return this.interactiveMaxHours();
   }
 
   setClaimedMaxHours(hours: number, by?: string): number {
