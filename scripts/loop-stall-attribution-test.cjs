@@ -77,6 +77,28 @@ const stalls = () => requestMetrics.snapshot(5).loop.stalls;
   assert(threw, 'phase() rethrows');
   assert(!stalls().some((s) => s.phase === 'test:throws') || stalls().every((s) => s.ms > 0), 'a throwing phase is closed, not left open forever');
 
+  // A long-poll (`task_wait`, `ask`) is open across everything on a busy tenant. Being open is not being
+  // at fault: the live recorder's first named stall was pinned on `POST /api/tasks/wait`, whose own
+  // handler never exceeds 20 ms.
+  console.log('\nblocking-by-design phases are never the suspect');
+  requestMetrics.reset();
+  const endWait = requestMetrics.beginPhase('route:POST /api/tasks/wait', { attributable: false });
+  await tick(60);
+  block(1200);
+  await tick(200);
+  endWait();
+  const parked = stalls()[0];
+  assert(parked && parked.phase === 'unattributed', 'an unattributable phase never takes the blame', JSON.stringify(stalls()));
+
+  requestMetrics.reset();
+  const endOpen = requestMetrics.beginPhase('route:GET /api/slow');
+  await tick(400);
+  block(1200);
+  await tick(200);
+  endOpen();
+  const aged = stalls()[0];
+  assert(aged && aged.phase === 'route:GET /api/slow' && aged.openMs >= 300, 'a blamed phase reports how long it had been open — a big openMs means it was merely present', JSON.stringify(stalls()));
+
   console.log('\nbounds');
   requestMetrics.reset();
   for (let i = 0; i < 24; i++) { requestMetrics.phase(`test:ring${i}`, () => block(1010)); await tick(120); }
