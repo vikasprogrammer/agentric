@@ -14,7 +14,7 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice, ReviewNotice } from './terminal';
+import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice } from './terminal';
 import { Automations } from './edge/automations';
 import { WAKE_KIND_DONE } from './edge/wakeups';
 import { AppSupervisor } from './edge/app-supervisor';
@@ -303,6 +303,9 @@ export class TenantRegistry {
     // the run's owner IF they opted into `dm` notifications (default off — the inbox bell already covers
     // it). The complete/waiting/crashed twin of the always-on approval/question DMs above.
     tm.setSessionEventNotifier((notice) => { void notifySessionEvent(os, tm, slack, discord, consoleOrigin, notice); });
+    // Session hand-off: when a run is transferred to another member, DM the new owner — they inherit
+    // accountability for something they didn't start, so it can't only land in a console view.
+    tm.setTransferNotifier((notice) => { void notifySessionTransferred(os, tm, slack, discord, consoleOrigin, notice); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
     return { record: rec, os, tm, autos, apps, slack, discord, telegram, clickup, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
@@ -760,6 +763,26 @@ export async function notifySessionEvent(os: AgentOS, tm: Pick<TerminalManager, 
   // the moment a human wants to say "retry it" or "now do the other half" (see Automations.continueSessionDm).
   bindDmRecipients(os, targets, (provider, externalId, memberId) => tm.bindSessionDm(notice.sessionId, provider, externalId, memberId));
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'session.event.notified', data: { kind: notice.kind, agent: notice.agent, targets: targets.length, dms } });
+}
+
+/**
+ * DM the member a session was just handed off to. Always-on (unlike the routine session-event beats,
+ * which respect the `dm` pref): a transfer is one person deliberately making another accountable for a
+ * run, so it's an ask, not a lifecycle notification. Single named recipient — never a broadcast; the
+ * previous owner isn't notified (they performed or authorised the hand-off). The DM is bound to the
+ * session so the new owner can reply straight into the conversation they just inherited. Best-effort,
+ * audited.
+ */
+export async function notifySessionTransferred(os: AgentOS, tm: Pick<TerminalManager, 'bindSessionDm'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: TransferNotice): Promise<void> {
+  const targets = resolveRecipients(os, { kind: 'member', id: notice.to });
+  if (!targets.length) return;
+  const what = notice.title ? `“${notice.title}” (${notice.agent})` : `a ${notice.agent} session`;
+  const url = consolePage(consoleOrigin, 'sessions', notice.sessionId);
+  const text = (p: ChatPlatform) => `🤝 ${notice.byName} handed you ${what} — you're now the owner.
+_Reply here to pick it up with ${notice.agent}_, or open it in the ${chatLink(p, url, 'Agentric console')}.`;
+  const dms = await deliverDM(slack, discord, os, targets, text);
+  bindDmRecipients(os, targets, (provider, externalId, memberId) => tm.bindSessionDm(notice.sessionId, provider, externalId, memberId));
+  os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'session.transfer.notified', data: { to: notice.to, agent: notice.agent, dms } });
 }
 
 /**

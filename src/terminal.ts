@@ -766,6 +766,22 @@ export interface SessionEventNotice {
   message: string;
 }
 
+/** What the transfer sink receives when a session is handed off to another member ({@link
+ *  TerminalManager.transferSession}). The new owner inherits accountability for a run they didn't start,
+ *  so the registry DMs them out-of-band on their linked Slack/Discord — a hand-off nobody sees is a
+ *  hand-off nobody picks up. Always-on (not gated on the `dm` pref): a deliberate person-to-person
+ *  reassignment is a direct ask, not a lifecycle beat. */
+export interface TransferNotice {
+  sessionId: string;
+  agent: string;
+  /** Member id of the new owner (the session's new `run_as`). */
+  to: string;
+  /** The human who performed the hand-off. */
+  byName: string;
+  /** Session display title, when it has one. */
+  title?: string;
+}
+
 /** Everything the runtime launcher needs for ONE launch of a session row. Named (rather than inline)
  *  because the launch is now scheduled and executed in two steps — see `launchAgentRuntime`. */
 interface LaunchSpec {
@@ -909,6 +925,11 @@ export class TerminalManager {
    *  once the chat sockets exist; absent = no push (the inbox card is always written regardless). */
   private sessionEventNotifier?: (notice: SessionEventNotice) => void;
   setSessionEventNotifier(fn: (notice: SessionEventNotice) => void): void { this.sessionEventNotifier = fn; }
+  /** Optional sink notified when a session is handed off to another member, so the registry can DM the
+   *  new owner. Set by the registry once the chat sockets exist; absent = no push (the transfer itself
+   *  still happens and is audited regardless). */
+  private transferNotifier?: (notice: TransferNotice) => void;
+  setTransferNotifier(fn: (notice: TransferNotice) => void): void { this.transferNotifier = fn; }
   private fireSessionEvent(sessionId: string, agent: string, kind: SessionEventNotice['kind'], title: string, message: string): void {
     try { this.sessionEventNotifier?.({ sessionId, agent, kind, title, message }); } catch { /* advisory — never let a push wedge the caller */ }
   }
@@ -7843,14 +7864,18 @@ export class TerminalManager {
    *  real member; a no-op transfer (already owned by them) succeeds quietly. Audited `session.transferred`.
    *  The caller applies the ownership gate (owner/admin or current owner). */
   transferSession(sessionId: string, by: Member, toMemberId: string): { ok: boolean; error?: string; runAs?: string } {
-    const r = this.db.prepare('SELECT id, agent, run_as FROM term_sessions WHERE id = ?')
-      .get<{ id: string; agent: string; run_as: string | null }>(sessionId);
+    const r = this.db.prepare('SELECT id, agent, run_as, title FROM term_sessions WHERE id = ?')
+      .get<{ id: string; agent: string; run_as: string | null; title: string | null }>(sessionId);
     if (!r) return { ok: false, error: 'unknown session' };
     const target = this.os.team.getMember(toMemberId);
     if (!target) return { ok: false, error: 'unknown member' };
     if (r.run_as === target.id) return { ok: true, runAs: target.id };
     this.db.prepare('UPDATE term_sessions SET run_as = ?, updated_at = ? WHERE id = ?').run(target.id, Date.now(), sessionId);
     this.audit(sessionId, by.email, 'session.transferred', { from: r.run_as, to: target.id, agent: r.agent });
+    // Tell the new owner out-of-band (Slack/Discord DM) — they now own a run they didn't start, and the
+    // inbox alone doesn't reach someone who isn't looking at the console. Advisory: never fail the
+    // transfer on a notification.
+    try { this.transferNotifier?.({ sessionId, agent: r.agent, to: target.id, byName: by.name || by.email, title: r.title ?? undefined }); } catch { /* advisory */ }
     return { ok: true, runAs: target.id };
   }
 
