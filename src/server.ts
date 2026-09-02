@@ -2753,7 +2753,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/agents/proposals') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
     const target = url.searchParams.get('target') || undefined;
-    return sendJson(res, 200, { proposals: tm.openAgentUpdateProposals(target), canApprove: true });
+    // Stamp `stale` on every card whose pinned baseHash no longer matches the target's CLAUDE.md. Several
+    // agents proposing on ONE target is normal (the 10-card cap is per-proposer, and only an identical delta
+    // from the same proposer is deduped), and each card carries a FULL replacement prompt — so approving a
+    // second one silently reverts the first. The approve route already detects that and warns; surfacing it
+    // in the LIST is what lets a reviewer avoid the clobber instead of being told about it afterwards.
+    const claudeMdNow = new Map<string, string>();
+    const proposals = tm.openAgentUpdateProposals(target).map((pr) => {
+      if (!pr.baseHash || !('claudeMd' in pr.fields)) return { ...pr, stale: false };
+      if (!claudeMdNow.has(pr.target)) {
+        const ag = os.agents.get(pr.target);
+        claudeMdNow.set(pr.target, ag ? readAgentSnapshot(ag).claudeMd : '');
+      }
+      return { ...pr, stale: contentHash(claudeMdNow.get(pr.target) ?? '') !== pr.baseHash };
+    });
+    return sendJson(res, 200, { proposals, canApprove: true });
   }
   const agUpdApprove = p.match(/^\/api\/agents\/proposals\/([\w.-]+)\/approve$/);
   if (method === 'POST' && agUpdApprove) {
