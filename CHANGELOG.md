@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.414.0] - 2026-09-02
+### Added
+- **Handing a session to another member now DMs them.** `POST /api/sessions/:id/transfer` reassigns a
+  run's `run_as` — the new owner inherits accountability for something they didn't start — but the only
+  trace was an audit event and a row that quietly changed owner in someone else's console. A hand-off
+  nobody sees is a hand-off nobody picks up, so `transferSession` now fires a `TransferNotice` and the
+  registry DMs the new owner on their linked Slack/Discord (one line: who handed it over, the session
+  title, a console deep link). Always-on rather than gated on the `dm` preference — a transfer is one
+  person deliberately making another accountable, an ask rather than a lifecycle beat. The DM is bound to
+  the session, so replying in chat picks the conversation up with the agent. Audited
+  `session.transfer.notified`.
+
 ## [0.413.5] - 2026-09-02
 ### Fixed
 - **The prompt told agents to call a tool that doesn't exist.** `ask` was renamed `ask_human`, and three
