@@ -14,6 +14,7 @@ import { newId } from './id';
 import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
+import { clipText } from './state/session-activity';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
@@ -5308,24 +5309,74 @@ export class TerminalManager {
     return row?.n ?? 0;
   }
 
-  /** Per-task Discussion rollups for the board/list cards (unread for `viewer`, last-message preview,
-   *  participant set), keyed by task id. One scan over the tenant's `task.chat` rows. */
-  taskDiscussionSummaries(viewer: Member): Record<string, TaskDiscussionSummary> {
-    const rows = this.db
-      .prepare(`SELECT m.session_id AS sid, m.source AS source, m.agent AS agent, m.body AS body, m.created_at AS at, ms.read_at AS read_at
+  /**
+   * Per-task Discussion rollups for the board/list cards (unread for `viewer`, last-message preview,
+   * participant set), keyed by task id.
+   *
+   * AGGREGATED IN SQL, and scoped to the tasks the caller is actually rendering. The row-by-row version
+   * read every `task.chat` message in the tenant with its FULL body to keep only the last one per task:
+   * on live instawp that was 6,879 rows / 12.6 MB materialised per poll, and it shipped **2.07 MB of the
+   * 2.4 MB `/api/tasks` response** — rollups for 1,986 tasks when the board renders 500, each carrying an
+   * unclipped body that the card renders as one `truncate`d line.
+   *
+   * @param taskIds restrict to these tasks (the page's own list). Omitted = every task, as before.
+   * @param bodyClip clip the preview body to N chars (the card truncates it to one line anyway).
+   */
+  taskDiscussionSummaries(viewer: Member, taskIds?: string[], bodyClip?: number): Record<string, TaskDiscussionSummary> {
+    // Scope clause shared by both queries. `session_id` is `task:<id>`, so an id list becomes an IN over
+    // exact keys; an empty list means "nothing to render", not "everything".
+    const sids = taskIds?.map((id) => `task:${id}`);
+    if (sids && !sids.length) return {};
+    const scope = sids ? ` AND m.session_id IN (${sids.map(() => '?').join(',')})` : '';
+    const args = sids ?? [];
+    // Read a PREFIX rather than the whole body — the preview is one truncated line. `clipText` collapses
+    // whitespace before it counts, and collapsing only ever shortens, so a 4× prefix is what makes the
+    // clipped result identical to clipping the full body (it would take >3/4 of the prefix being runs of
+    // whitespace to differ). Verified byte-for-byte against the unclipped path on the live instawp board.
+    const body = bodyClip && bodyClip > 0 ? `substr(m.body, 1, ${bodyClip * 4 + 16})` : 'm.body';
+
+    const out: Record<string, TaskDiscussionSummary> = {};
+    const entry = (sid: string): TaskDiscussionSummary => {
+      const taskId = sid.slice('task:'.length);
+      return out[taskId] ?? (out[taskId] = { unread: 0, participants: [] });
+    };
+
+    // 1. participants + unread, one row per (task, participant). `firstAt` preserves the old
+    //    first-appearance ordering of the participant list, which the avatar rail reads as arrival order.
+    for (const r of this.db
+      .prepare(`SELECT m.session_id AS sid,
+                       COALESCE(m.source, CASE WHEN m.agent IS NOT NULL THEN 'agent:' || m.agent ELSE 'system' END) AS who,
+                       MIN(m.created_at) AS firstAt,
+                       SUM(CASE WHEN ms.read_at IS NULL AND (m.source IS NULL OR m.source != ?) THEN 1 ELSE 0 END) AS unread
                   FROM messages m
                   LEFT JOIN message_state ms ON ms.message_id = m.id AND ms.member_id = ?
-                 WHERE m.type = 'task.chat' AND m.session_id LIKE 'task:%'
-                 ORDER BY m.created_at ASC`)
-      .all<{ sid: string; source: string | null; agent: string | null; body: string; at: number; read_at: number | null }>(viewer.id);
-    const out: Record<string, TaskDiscussionSummary> = {};
-    for (const r of rows) {
-      const taskId = r.sid.slice('task:'.length);
-      const e = out[taskId] ?? (out[taskId] = { unread: 0, participants: [] });
-      const who = r.source ?? (r.agent ? `agent:${r.agent}` : 'system');
-      e.last = { body: r.body, author: who, agentId: r.agent || undefined };
-      if (!e.participants.includes(who)) e.participants.push(who);
-      if (r.read_at === null && r.source !== viewer.id) e.unread++;
+                 WHERE m.type = 'task.chat' AND m.session_id LIKE 'task:%'${scope}
+                 GROUP BY sid, who
+                 ORDER BY firstAt ASC`)
+      .all<{ sid: string; who: string; firstAt: number; unread: number }>(viewer.id, viewer.id, ...args)) {
+      const e = entry(r.sid);
+      if (!e.participants.includes(r.who)) e.participants.push(r.who);
+      e.unread += r.unread;
+    }
+
+    // 2. the newest message per task, for the one-line preview. Joined against each task's MAX(created_at)
+    //    rather than ordering the whole table; ties (same millisecond) resolve by rowid = insertion order,
+    //    which is what "last write wins" meant when this walked the rows in ASC order.
+    for (const r of this.db
+      .prepare(`SELECT m.session_id AS sid, ${body} AS body, m.source AS source, m.agent AS agent, m.rowid AS rid
+                  FROM messages m
+                  JOIN (SELECT session_id, MAX(created_at) AS mx FROM messages
+                         WHERE type = 'task.chat' AND session_id LIKE 'task:%'
+                         GROUP BY session_id) last
+                    ON last.session_id = m.session_id AND m.created_at = last.mx
+                 WHERE m.type = 'task.chat' AND m.session_id LIKE 'task:%'${scope}
+                 ORDER BY m.created_at ASC, m.rowid ASC`)
+      .all<{ sid: string; body: string; source: string | null; agent: string | null; rid: number }>(...args)) {
+      entry(r.sid).last = {
+        body: bodyClip ? clipText(r.body, bodyClip) : r.body,
+        author: r.source ?? (r.agent ? `agent:${r.agent}` : 'system'),
+        agentId: r.agent || undefined,
+      };
     }
     return out;
   }

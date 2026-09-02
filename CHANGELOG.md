@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.413.3] - 2026-09-02
+### Fixed
+- **The Agents page stopped blocking the whole server for two seconds.** `GET /api/agents/stats` —
+  the fleet maturity roll-up the Agents page fetches on mount — measured **1,966 ms average** on the
+  live instawp tenant (576k audit rows) and was, in the process metrics, the slowest handler in the
+  product by 25×. It counted governed actions by SELECTing every matching audit ROW and JSON.parsing
+  each one: 386k rows carrying **238 MB of `data`**, on the single-threaded event loop, every time the
+  page opened — so it stalled every OTHER request too. It now aggregates in SQL over a new covering
+  index `(type, run_id)` and never touches `data` for the seven event types that only need a count; the
+  two whose verdict lives in the payload are read separately, and policy denies (~0.2% of
+  `gate.decision`) come off a new PARTIAL index. Measured against a copy of the live DB: **1,972 ms →
+  49 ms, byte-identical output for all 49 agents.** Pinned by `scripts/agent-stats-rollup-test.cjs`.
+- **The Tasks board stopped shipping 2 MB of chat prose it doesn't render.** `GET /api/tasks` was
+  **2.4 MB / 780 ms** live, of which **2.07 MB was `discussions`** — a per-task rollup built by walking
+  every `task.chat` message in the tenant (6,879 rows / 12.6 MB materialised) to keep the last one per
+  task, for all 1,986 tasks that have a discussion when the board renders 500, each with a full
+  unclipped body behind a one-line `truncate`. It is now two aggregate queries, scoped to the tasks in
+  the response and reading only a prefix of the preview body: **2.07 MB → 27 KB, 86 ms → 23 ms**,
+  identical rollups for every board task. The board's PR-link scan is scoped the same way (it filtered
+  in JS after reading 8.4 MB of bodies): **83 ms → 14 ms**, identical output. Pinned by
+  `scripts/task-discussion-rollup-test.cjs`.
 ## [0.413.2] - 2026-09-02
 ### Added
 - **Settings → Memory shows the backend's actual vitals.** The provider collapsed automem's whole
