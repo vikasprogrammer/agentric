@@ -221,14 +221,20 @@ export function taskPrRefsBulk(db: Db, tasks: Array<Pick<Task, 'id' | 'title' | 
     if (t.title) push(t.id, { text: t.title, at: t.createdAt, source: 'body' });
     if (t.body) push(t.id, { text: t.body, at: t.createdAt, source: 'body' });
   }
+  // Both scans are scoped to the CALLER'S tasks in SQL, not filtered afterwards in JS: the board renders
+  // 500 of the tenant's 3k tasks, and every row these return carries a full body (8.4 MB of prose per poll
+  // on live instawp before the `IN`). `known` stays as the exactness guard.
+  const ids = [...known];
+  const inTask = ids.map(() => '?').join(',');
+  const inSession = ids.map(() => '?').join(',');
   for (const r of db
-    .prepare(`SELECT task_id, kind, body, created_at FROM task_events WHERE ${MENTIONS_PR_SQL}`)
-    .all<{ task_id: string; kind: string; body: string; created_at: number }>()) {
+    .prepare(`SELECT task_id, kind, body, created_at FROM task_events WHERE task_id IN (${inTask}) AND ${MENTIONS_PR_SQL}`)
+    .all<{ task_id: string; kind: string; body: string; created_at: number }>(...ids)) {
     if (known.has(r.task_id)) push(r.task_id, { text: r.body, at: r.created_at, source: r.kind === 'comment' ? 'discussion' : 'activity' });
   }
   for (const r of db
-    .prepare(`SELECT session_id, body, created_at FROM messages WHERE session_id LIKE 'task:%' AND type IN ('task.chat','task','task.mention') AND ${MENTIONS_PR_SQL}`)
-    .all<{ session_id: string; body: string; created_at: number }>()) {
+    .prepare(`SELECT session_id, body, created_at FROM messages WHERE session_id IN (${inSession}) AND type IN ('task.chat','task','task.mention') AND ${MENTIONS_PR_SQL}`)
+    .all<{ session_id: string; body: string; created_at: number }>(...ids.map((id) => `task:${id}`))) {
     const taskId = r.session_id.slice('task:'.length);
     if (known.has(taskId)) push(taskId, { text: r.body, at: r.created_at, source: 'discussion' });
   }

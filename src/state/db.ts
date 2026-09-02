@@ -1194,6 +1194,21 @@ function migrate(db: Db): void {
   // Also serves the retention sweep, which deletes by `ts` alone.
   db.exec('CREATE INDEX IF NOT EXISTS idx_audit_type_ts ON audit_events(type, ts)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)');
+
+  // audit_events by (type, run_id) — the shape the per-agent maturity roll-up asks for, and the reason
+  // `GET /api/agents/stats` measured **1,966 ms average** on the live instawp tenant (576k audit rows):
+  // it read every `gate.attempt`/`gate.decision` ROW to count them, materialising 238 MB of `data` JSON
+  // per call and JSON.parsing all of it. Grouped in SQL over this COVERING index the same roll-up is a
+  // 40 ms index-only scan and the `data` column is never touched. (It is a separate index from
+  // idx_audit_type_ts because a `ts` second column can't answer "count per run".)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_type_run ON audit_events(type, run_id)');
+  // The one predicate the roll-up still can't answer from a count: WHICH runs hit a policy deny. Denies
+  // are ~0.2% of `gate.decision` rows, so a PARTIAL index over just those is tiny — and the predicate is
+  // a LIKE, deliberately NOT json_extract: an index build that parses JSON would abort the whole
+  // migration on the first malformed `data` row ever written. The LIKE is a pre-filter; the caller
+  // re-checks each of the few matches with a real JSON.parse, so a false positive can't skew a stat.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_deny ON audit_events(run_id)
+             WHERE type = 'gate.decision' AND data LIKE '%"effect":"deny"%'`);
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */
