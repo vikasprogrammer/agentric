@@ -16,6 +16,7 @@ import { TenantRegistry, TenantRuntime, notifyLoginLink, notifyInsightAlert } fr
 import { ProcessJanitor } from './edge/process-janitor';
 import { hostMetrics, availableBytes } from './edge/host-metrics';
 import { pruneAuditMirror } from './governance/audit';
+import { readToolUsage, toolUsage } from './edge/tool-usage';
 import { requestMetrics, normalizePath, isBlockingTool } from './edge/request-metrics';
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
@@ -326,6 +327,13 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
       // advisory (it buys no authority), and the tool map is capped like the route map.
       const tool = String(req.headers['x-aos-tool'] || '').trim();
       if (tool) requestMetrics.observeTool(tool, res.statusCode, ms, arrivalStall);
+      // …and the same header pair, counted per agent per day (src/edge/tool-usage.ts). This is the only
+      // place a READ tool is observable at all: the loopback tools sit before the member-auth gate, so
+      // the PreToolUse hook never sees them, and only the writing ones audit anything. A Map bump here,
+      // never a write — the flush timer in startServer does the I/O.
+      const usageAgent = String(req.headers['x-aos-agent'] || '').trim();
+      const usageTenant = String(req.headers['x-aos-tenant'] || '').trim() || registry.default()?.os.tenant || '';
+      if (tool && usageAgent) toolUsage.record(usageTenant, usageAgent, tool);
     });
     // Superadmin control plane — host-independent (bearer-gated), so it sits before tenant routing.
     if ((req.url || '').split('?')[0].startsWith('/api/admin/')) {
@@ -445,6 +453,16 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     registry.forEach((rt) => { if (rt.os.paths?.tmuxSocket) live.add(rt.os.paths.tmuxSocket); });
     return live;
   });
+  // Tool-usage flush. Counters accumulate in memory on the request path and land here — one write per
+  // tenant per interval instead of one per agent tool call. 60s bounds what a crash loses to a single
+  // interval of a usage histogram, which is not worth a synchronous write on the hot path.
+  const usageTimer = setInterval(() => {
+    registry.forEach((rt) => {
+      try { toolUsage.flush(rt.os.tenant, rt.os.db); } catch { /* a histogram must never crash the box */ }
+    });
+  }, 60_000);
+  usageTimer.unref?.();
+
   const janitorTimer = setInterval(() => {
     try {
       const r = requestMetrics.phase('janitor:sweep', () => janitor.sweep());
@@ -4846,6 +4864,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 40));
     return sendJson(res, 200, requestMetrics.snapshot(limit));
+  }
+  // Per-agent tool usage, the DURABLE counterpart to the in-memory request metrics above. Answers "which
+  // tools does this agent actually use" — including the READ tools nothing else can see, since the
+  // loopback tools bypass the gate and only the writing ones audit. Flushed on a timer, so the newest
+  // minute may be missing; `?flush=1` forces the pending counts down first for an exact read.
+  if (method === 'GET' && p === '/api/metrics/tools') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (url.searchParams.get('flush') === '1') { try { toolUsage.flush(os.tenant, os.db); } catch { /* best-effort */ } }
+    const days = Math.min(365, Math.max(1, Number(url.searchParams.get('days')) || 30));
+    const rows = readToolUsage(os.db, os.tenant, days);
+    // Roll the day buckets up per (agent, tool) and per tool, so the caller gets the two questions it
+    // actually asks without re-summing client-side.
+    const byAgent: Record<string, Record<string, number>> = {};
+    const byTool: Record<string, number> = {};
+    for (const r of rows) {
+      (byAgent[r.agent] ??= {})[r.tool] = (byAgent[r.agent]?.[r.tool] ?? 0) + r.n;
+      byTool[r.tool] = (byTool[r.tool] ?? 0) + r.n;
+    }
+    return sendJson(res, 200, { days, agents: Object.keys(byAgent).length, tools: Object.keys(byTool).length, byTool, byAgent, pending: toolUsage.pendingCount() });
   }
   if (method === 'POST' && p === '/api/metrics/requests/reset') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });

@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.414.6] - 2026-09-02
+### Added
+- **Per-agent MCP tool-usage counters — the read tools are finally visible.** The `mcp__agentos__*` tools
+  are loopback calls sitting *before* the member-auth gate, so the PreToolUse hook never sees them, and
+  only the ones that WRITE something audit anything. Every read tool — `recall`, `kb_search`, `kb_read`,
+  `task_list`, `check_inbox`, `list_capabilities`, `session_history` — recorded nothing at all. Asked in
+  2026-09 whether the 77 KB tool schema could be gated per agent, the honest answer was **no**: write-tool
+  usage was measurable (engineer 18 of 31 on instawp, typical agents 5–13) but roughly half the schema was
+  invisible, and gating on a measurement that cannot see reads would have stripped the tools agents lean
+  on hardest. `src/edge/tool-usage.ts` closes that: the MCP client already stamped `x-aos-tool` on every
+  request for latency bucketing, so it now also stamps `x-aos-agent`, and the server counts the pair per
+  day. Read at `GET /api/metrics/tools` (owner/admin; `?days=`, `?flush=1` to force pending counts down
+  first).
+
+  **Counters, not events, and never on the hot path.** A row per `(tenant, agent, tool, day)`, not an
+  audit event per call — the question is *which tools does this agent use*, not what happened in one call,
+  and auditing reads would roughly double audit volume on a busy tenant (instapods already writes ~33k
+  gate events a week). `record()` bumps an in-memory Map; a 60s timer does the writing, per tenant,
+  because the DB file is the tenant boundary. A crash loses at most one interval of a histogram — not
+  worth a synchronous SQLite write on the one path every agent call passes through. The headers are
+  agent-supplied and advisory: they buy no authority, over-long or empty identifiers are refused, and the
+  accumulator is capped. Pinned by `scripts/tool-usage-test.cjs`, including end-to-end through a real
+  request and that a failed call still counts — what the agent reached for is the measurement, not whether
+  it worked.
+
 ## [0.414.5] - 2026-09-02
 ### Fixed
 - **The Claude Code Notification hook has never once fired — a second route was sitting on its path.**

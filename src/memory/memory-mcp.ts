@@ -52,10 +52,11 @@ const toolContext = new AsyncLocalStorage<string>();
 
 /** Headers for a loopback agent call: the session bearer + tenant route, plus any extras (e.g. JSON). */
 function H(extra: Record<string, string> = {}): Record<string, string> {
-  // `x-aos-tool` is TELEMETRY only — the server buckets per-tool latency by it (request-metrics.ts) and
-  // grants nothing on it. Authority stays with the session secret above.
+  // `x-aos-tool` and `x-aos-agent` are TELEMETRY only — the server buckets per-tool latency by the
+  // first (request-metrics.ts) and counts per-agent tool usage by the pair (tool-usage.ts). Neither
+  // grants anything. Authority stays with the session secret above.
   const tool = toolContext.getStore();
-  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...(tool ? { 'x-aos-tool': tool } : {}), ...extra };
+  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...(AGENT ? { 'x-aos-agent': AGENT } : {}), ...(tool ? { 'x-aos-tool': tool } : {}), ...extra };
 }
 
 interface JsonRpc {
