@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.412.1] - 2026-09-02
+### Changed
+- **Console dependency refresh (lockfile only).** Batched the ten open Dependabot bumps for `web/` into
+  one update — `hono` 4.12.25→4.13.5, `@hono/node-server` 1.19.14→1.19.17, `nanoid` 3.3.12→3.3.18,
+  `js-yaml` 4.2.0→4.3.2, `postcss` 8.5.15→8.5.26, `fast-uri` 3.1.2→3.1.6, `ip-address` 10.2.0→10.7.0,
+  `brace-expansion` 5.0.6→5.0.9, `body-parser` 2.2.2→2.3.0, `browserslist` 4.28.2→4.28.8. All are
+  transitive (none appear in `web/package.json`), so only `web/package-lock.json` moves. `npm audit`
+  reports 0 vulnerabilities and the console bundle builds clean.
+
 ## [0.412.0] - 2026-09-02
 ### Fixed
 - **A locked macOS login keychain silently killed every run for 17 hours.** On instapods the login
