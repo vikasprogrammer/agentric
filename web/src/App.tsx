@@ -51,9 +51,14 @@ const canApprove = (role: Role, level: 'head' | 'owner'): boolean =>
 const isLive = (s: Session): boolean => Boolean(s.alive) || s.status === 'running'
 
 /** How long the Sessions/Chat views may hold a full `/api/sessions` payload before rebuilding it. Live
- *  state does NOT wait on this — it refreshes every tick off `/api/sessions/summary` (see the feed poll).
- *  This bounds only the long tail: a row that appeared, was archived, or was deleted in ANOTHER tab. */
-const FULL_LIST_MS = 6_000
+ *  state does NOT wait on this — it refreshes every tick off `/api/sessions/summary` (see the feed poll),
+ *  and a row that DROPS OUT of the summary is re-read by id on the same tick (`reconcileEnded` below), so
+ *  a run that finishes is never left reading "running" while this timer runs down. This bounds only the
+ *  long tail: a row that appeared, was archived, was deleted, or was retitled/rated in ANOTHER tab.
+ *  A full rebuild costs ~180 ms of a single-threaded server and 1.3 MB gzipped on the live instawp
+ *  tenant (4,122 rows), so the cadence is the whole cost of holding it — 6 s of it was 10 rebuilds/min
+ *  PER OPEN TAB for a list that changes structurally a few times an hour. */
+const FULL_LIST_MS = 30_000
 
 /**
  * Overlay fresh rows onto the full list, in place, preserving order.
@@ -1317,6 +1322,11 @@ const DEFAULT_PINNED_NAV: NavKey[] = ['feed', 'cockpit', 'goals', 'tasks', 'arti
 function Console({ me }: { me: Member }) {
   const [state, setState] = useState<StateResp | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
+  // What the poll below currently holds. The poll effect is keyed on `route` alone (re-running it per
+  // sessions-state change would restart the interval on every tick), so it reads the held rows through
+  // this ref rather than through a stale closure.
+  const sessionsRef = useRef<Session[]>([])
+  useEffect(() => { sessionsRef.current = sessions }, [sessions])
   // Done-since-server-midnight count from the Phase-2 summary poll — the one Overview KPI a live+recent
   // set can't derive (Overview is owner-only, so a global count is correct). Only refreshed on the routes
   // that poll the summary (not the full-list Sessions/Chat views), which is fine — Overview is one of them.
@@ -1460,8 +1470,22 @@ function Console({ me }: { me: Member }) {
             // On a list route the summary is an OVERLAY, not the list: merge its rows over the ones we
             // already hold (they carry the fresh live state) and keep everything else. Replacing the
             // array here would collapse the Sessions view to the summary's handful of rows every tick.
-            if (needFull) setSessions((prev) => mergeSessionRows(prev, data.rows))
-            else setSessions(data.rows)
+            if (needFull) {
+              setSessions((prev) => mergeSessionRows(prev, data.rows))
+              // A row we hold as LIVE that the summary no longer carries has ended (the summary is
+              // live + the viewer's recent-ended tail, so a run that finishes leaves it — and when it
+              // was someone ELSE's run, nothing brings it back until the next full rebuild). Re-read
+              // exactly those by id, the Phase-1 batch fetch: usually zero ids, a handful at worst, and
+              // it is what lets the full rebuild run on a lazy cadence without a row reading "running"
+              // long after it stopped.
+              const liveIds = new Set(data.rows.map((r) => r.id))
+              const endedIds = sessionsRef.current.filter((s) => isLive(s) && !liveIds.has(s.id)).map((s) => s.id)
+              if (endedIds.length) {
+                api.sessionsByIds(endedIds.slice(0, 60))
+                  .then((fresh) => { if (alive && fresh.length) setSessions((prev) => mergeSessionRows(prev, fresh)) })
+                  .catch(() => {})
+              }
+            } else setSessions(data.rows)
           }
         }
       }
