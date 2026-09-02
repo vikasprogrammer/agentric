@@ -7,6 +7,16 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Changed
+- **README trimmed by a quarter and brought back in step with the code.** It still claimed **two**
+  runtimes (opencode has been the third since v0.391.0), never mentioned the setup wizard, runtime
+  install/update management, the self-update watcher, per-agent skills/tools allowlists, Telegram and
+  ClickUp triggers, Slack content filters and channel watch, or secret rotation — and it credited
+  approvals to chat surfaces that cannot answer them. 3,444 → 2,552 words with wider coverage: the six
+  feature tables collapse to five with one clause per row, the "Humans and agents on the same team"
+  section folds into *Why it exists*, and the deployment/status-line prose loses its repetition. Both
+  console screenshots, the gateway diagram, the data-home tree and both code samples stay.
+
 
 ## [0.412.2] - 2026-09-02
 ### Fixed
