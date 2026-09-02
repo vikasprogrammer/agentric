@@ -6341,7 +6341,10 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
       const r = approve ? await api.approveAgentUpdateProposal(m.id) : await api.rejectAgentUpdateProposal(m.id)
       setBusy(false)
       if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
-      setHint(approve ? 'applied' : 'rejected')
+      // A stale approve replaced text that landed after this card was written. The server says so; passing
+      // that through is the only notice the reviewer gets that they just undid a newer edit.
+      const clobbered = (r as { warning?: string }).warning // only the approve response carries one
+      setHint(approve ? (clobbered ? '⚠ applied — ' + clobbered : 'applied') : 'rejected')
     }
     return (
       <div className="rounded-lg border border-violet-300 bg-violet-50/40 px-3 py-2.5">
@@ -13806,19 +13809,31 @@ function AgentUpdateProposalsCard({ agentId, onApplied }: { agentId: string; onA
   const [expanded, setExpanded] = useState<string | null>(null)
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
+  const [warn, setWarn] = useState('')            // a clobber notice — sticky, unlike `hint`
   const load = () => api.agentUpdateProposals(agentId).then((r) => setProps(r.error ? [] : (r.proposals ?? []))).catch(() => setProps([]))
-  useEffect(() => { setProps(null); setHint(''); setExpanded(null); load(); api.agentClaude(agentId).then((r) => setCurrent(r.content ?? '')).catch(() => {}) }, [agentId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setProps(null); setHint(''); setWarn(''); setExpanded(null); load(); api.agentClaude(agentId).then((r) => setCurrent(r.content ?? '')).catch(() => {}) }, [agentId]) // eslint-disable-line react-hooks/exhaustive-deps
   const act = async (id: string, approve: boolean) => {
-    if (approve && !window.confirm(`Apply this edit to ${agentId}?\n\nIt rewrites the agent's listing/CLAUDE.md and records a revision (revertable below). The change applies on the agent's next session.`)) return
-    setBusy(id); setHint('')
+    const pr = (props ?? []).find((x) => x.id === id)
+    // A stale card's full replacement prompt would revert whatever landed after it was written — say so
+    // BEFORE the click, since the server applies it and only warns afterwards.
+    const confirmText = pr?.stale
+      ? `Apply this OUT-OF-DATE edit to ${agentId}?\n\n${agentId}'s CLAUDE.md has changed since this was proposed. This card carries a full replacement prompt, so applying it REPLACES that newer text.\n\nUsually you want Reject instead, and let ${pr.agent} redo the edit on the current prompt. The revision is revertable below either way.`
+      : `Apply this edit to ${agentId}?\n\nIt rewrites the agent's listing/CLAUDE.md and records a revision (revertable below). The change applies on the agent's next session.`
+    if (approve && !window.confirm(confirmText)) return
+    setBusy(id); setHint(''); setWarn('')
     const r = approve ? await api.approveAgentUpdateProposal(id) : await api.rejectAgentUpdateProposal(id)
     setBusy('')
     if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
     setHint(approve ? 'applied — see Revision history' : 'rejected')
+    const clobbered = (r as { warning?: string }).warning // only the approve response carries one
+    if (approve && clobbered) setWarn(clobbered)   // sticky: a silent clobber is the bug this card exists to prevent
     load(); if (approve) { onApplied(); api.agentClaude(agentId).then((x) => setCurrent(x.content ?? '')).catch(() => {}) }
     setTimeout(() => setHint(''), 3000)
   }
   if (!props || props.length === 0) return null // silent for non-owners and when nothing is pending
+  // Two+ cards rewriting the same prompt collide by construction: each holds a FULL replacement, so the
+  // second approval undoes the first. Name that up front rather than letting the reviewer discover it.
+  const promptCards = props.filter((pr) => 'claudeMd' in pr.fields).length
   const FIELD_LABEL: Record<string, string> = { description: 'description', claudeMd: 'CLAUDE.md (system prompt)', category: 'category', model: 'model', effort: 'effort', icon: 'icon', examplePrompts: 'starter prompts' }
   return (
     <Card className="border-violet-300 bg-violet-50/40">
@@ -13827,6 +13842,12 @@ function AgentUpdateProposalsCard({ agentId, onApplied }: { agentId: string; onA
           <div className="flex items-center gap-2 text-xs font-medium text-violet-800"><Pencil className="h-3.5 w-3.5" /> Proposed edits from other agents ({props.length})</div>
           {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
         </div>
+        {promptCards > 1 && (
+          <div className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+            {promptCards} of these rewrite the CLAUDE.md, and each carries the <em>whole</em> prompt as it stood when proposed. Approving more than one replaces the earlier one’s text. Approve the best, reject the rest, and let their authors redo them against the new prompt.
+          </div>
+        )}
+        {warn && <div className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">⚠ {warn}</div>}
         {props.map((pr) => {
           const keys = Object.keys(pr.fields)
           const isExp = expanded === pr.id
@@ -13835,7 +13856,9 @@ function AgentUpdateProposalsCard({ agentId, onApplied }: { agentId: string; onA
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Bot className="h-3 w-3 shrink-0" /><span className="font-medium text-foreground">{pr.agent}</span>
                 <span>· {new Date(pr.createdAt).toLocaleString()}</span>
+                {pr.stale && <Badge variant="outline" className="border-amber-400 px-1.5 py-0 text-[10px] font-normal text-amber-800">out of date</Badge>}
               </div>
+              {pr.stale && <div className="text-[11px] text-amber-800">The CLAUDE.md changed after this was written — applying it replaces that newer text with the “Proposed” side below.</div>}
               {pr.rationale && <div className="text-sm">{pr.rationale}</div>}
               <div className="flex flex-wrap gap-1">
                 {keys.map((k) => <Badge key={k} variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{FIELD_LABEL[k] ?? k}</Badge>)}
@@ -13857,8 +13880,9 @@ function AgentUpdateProposalsCard({ agentId, onApplied }: { agentId: string; onA
                 </div>
               )}
               <div className="flex items-center gap-2 pt-1">
-                <Button size="sm" disabled={!!busy} onClick={() => act(pr.id, true)}>Approve & apply</Button>
-                <Button size="sm" variant="outline" disabled={!!busy} onClick={() => act(pr.id, false)}>Reject</Button>
+                {/* On a stale card the safe move is Reject, so that is the one that carries the weight. */}
+                <Button size="sm" variant={pr.stale ? 'outline' : 'default'} disabled={!!busy} onClick={() => act(pr.id, true)}>Approve & apply</Button>
+                <Button size="sm" variant={pr.stale ? 'default' : 'outline'} disabled={!!busy} onClick={() => act(pr.id, false)}>Reject</Button>
               </div>
             </div>
           )

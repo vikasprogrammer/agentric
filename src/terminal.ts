@@ -6606,15 +6606,22 @@ export class TerminalManager {
   setAgentUpdateProposalStatus(id: string, status: 'approved' | 'rejected'): void {
     this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'agent.update.proposed'`).run(status, id);
   }
-  /** Open agent-edit proposals (all targets, or just one when `target` is given) — for the console review list. */
-  openAgentUpdateProposals(target?: string): { id: string; agent: string; target: string; fields: Record<string, unknown>; rationale?: string; preview?: string; createdAt: number }[] {
+  /**
+   * Open agent-edit proposals (all targets, or just one when `target` is given) — for the console review list.
+   *
+   * `baseHash` rides along so the caller can tell the reviewer, BEFORE they click Approve, that the target's
+   * CLAUDE.md moved since this card was written (several agents proposing on one target is normal — the cap
+   * is per-proposer — and each card carries a FULL replacement text, so approving two in a row makes the
+   * second silently revert the first).
+   */
+  openAgentUpdateProposals(target?: string): { id: string; agent: string; target: string; fields: Record<string, unknown>; rationale?: string; preview?: string; baseHash?: string; createdAt: number }[] {
     return this.db
       .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'agent.update.proposed' AND status = 'open' ORDER BY created_at DESC`)
       .all<{ id: string; agent: string; args: string | null; created_at: number }>()
       .map((r) => {
         let a: Record<string, unknown> = {};
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
-        return { id: r.id, agent: r.agent, target: String(a.target ?? ''), fields: (a.fields ?? {}) as Record<string, unknown>, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
+        return { id: r.id, agent: r.agent, target: String(a.target ?? ''), fields: (a.fields ?? {}) as Record<string, unknown>, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, baseHash: a.baseHash ? String(a.baseHash) : undefined, createdAt: r.created_at };
       })
       .filter((p) => p.target && (!target || p.target === target.trim().toLowerCase()));
   }

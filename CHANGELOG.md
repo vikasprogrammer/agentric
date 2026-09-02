@@ -7,6 +7,23 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.413.0] - 2026-09-02
+### Fixed
+- **A stale cross-agent edit proposal no longer clobbers a newer prompt silently.** Several agents
+  proposing edits to ONE agent is by design (the 10-card cap is per-proposer; only an identical delta
+  from the same proposer is deduped), but every `agent.update.proposed` card carries a **full
+  replacement** CLAUDE.md resolved when it was written — so approving a second card reverts the first.
+  The approve route already detected that (`baseHash` mismatch) and returned `staleBase` + a warning,
+  but `web/src/lib/api.ts` didn't type either field, so the console dropped them: an owner clicking
+  Approve on three queued cards saw three successes and never learned two were undone. Now
+  `GET /api/agents/proposals` stamps `stale` on each card whose pinned `baseHash` no longer matches the
+  target's prompt, the target's settings page badges those cards **out of date** (with Reject as the
+  weighted button and a confirm dialog that spells out the replacement), a banner names the collision
+  whenever more than one queued card rewrites the prompt, and the post-approve warning is surfaced —
+  stickily on the agent page, inline on the Inbox card. Pinned by a new section 4 in
+  `scripts/proposal-surfacing-test.cjs`.
+
 ### Changed
 - **README trimmed by a quarter and brought back in step with the code.** It still claimed **two**
   runtimes (opencode has been the third since v0.391.0), never mentioned the setup wizard, runtime

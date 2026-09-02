@@ -1059,6 +1059,10 @@ export interface AgentUpdateProposal {
   fields: { description?: string; claudeMd?: string; category?: string; model?: string; effort?: string; icon?: string; examplePrompts?: string[] }
   rationale?: string
   preview?: string
+  /** The target's CLAUDE.md changed after this card was written, so its full replacement text would revert
+   *  that newer change. Set by the server per card — the reviewer's cue to reject it and let the proposer
+   *  redo the edit on the current text. Only ever true for a `claudeMd` proposal. */
+  stale?: boolean
   createdAt: number
 }
 export interface GoalUpdateProposal {
@@ -1966,7 +1970,10 @@ export const api = {
   approveAutomationProposal: (id: string, runAs?: string) => call<{ ok: boolean; automation?: Automation; error?: string }>('POST', `/api/automations/proposals/${id}/approve`, runAs !== undefined ? { runAs } : {}),
   rejectAutomationProposal: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/automations/proposals/${id}/reject`),
   agentUpdateProposals: (target?: string) => call<{ proposals: AgentUpdateProposal[]; canApprove?: boolean; error?: string }>('GET', '/api/agents/proposals' + (target ? '?target=' + encodeURIComponent(target) : '')),
-  approveAgentUpdateProposal: (id: string) => call<{ ok: boolean; target?: string; rev?: number; error?: string }>('POST', `/api/agents/proposals/${id}/approve`),
+  // `staleBase`/`warning`: the target's CLAUDE.md had moved since this edit was proposed, so applying it
+  // replaced that newer text. Surface the warning — it is the only notice the reviewer gets that an earlier
+  // approval was just undone (rev is revertable from the agent's History).
+  approveAgentUpdateProposal: (id: string) => call<{ ok: boolean; target?: string; rev?: number; staleBase?: boolean; warning?: string; error?: string }>('POST', `/api/agents/proposals/${id}/approve`),
   rejectAgentUpdateProposal: (id: string, note?: string) => call<{ ok: boolean; error?: string }>('POST', `/api/agents/proposals/${id}/reject`, { note }),
   goalUpdateProposals: (goal?: string) => call<{ proposals: GoalUpdateProposal[]; canApprove?: boolean; error?: string }>('GET', '/api/goals/proposals' + (goal ? '?goal=' + encodeURIComponent(goal) : '')),
   approveGoalUpdateProposal: (id: string) => call<{ ok: boolean; goalId?: string; status?: GoalStatus; error?: string }>('POST', `/api/goals/proposals/${id}/approve`),
