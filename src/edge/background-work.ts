@@ -225,7 +225,7 @@ export const UNATTENDED_TURN_BRIEF =
   '**When you genuinely have to wait, use the OS instead of the turn:**\n' +
   '- `task_wait` (or `task_create({ wait: true })`) — blocks until a delegated agent finishes and ' +
   'resumes you with its result. This is the supported hand-off; it survives your turn ending.\n' +
-  '- `ask` — blocks on a person and keeps your session alive while their Inbox card is pending.\n' +
+  '- `ask_human` — blocks on a person and keeps your session alive while their Inbox card is pending.\n' +
   '- `schedule` — defers a FUTURE run of yourself (minutes to days out) when the thing you need cannot ' +
   'happen inside this run at all. Report what you did first; the scheduled run picks it up.\n' +
   '- `task_create` — park the remainder as durable work rather than holding a session open for it.\n\n' +
