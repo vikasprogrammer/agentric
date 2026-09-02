@@ -121,7 +121,7 @@ import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
 import { guidanceStale } from './edge/dreaming';
 import { GithubIdentity } from './edge/github-identity';
-import { credentialDirHasLogin } from './edge/runtime-account-check';
+import { credentialDirHasLogin, preflightCredential } from './edge/runtime-account-check';
 import type { RuntimeAccount } from './state/runtime-accounts';
 import { RuntimeLoginManager } from './edge/runtime-login';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -2703,6 +2703,13 @@ export class TerminalManager {
     // Then, only if rotation left the credentials on the box default, swap the USER-SCOPE config layer for
     // a tenant-owned one (opt-in) — see applyConfigIsolation.
     this.applyConfigIsolation(env, o.id, o.agent, runtime);
+    // Credentials are now settled (pool account, isolated dir, or the box default) — so this is the one
+    // place that can ask the question that actually matters: can this environment authenticate? A locked
+    // macOS login keychain answers no for every claude run on the box, and answers it INVISIBLY unless we
+    // check: the CLI starts, burns a turn, exits at $0, and the pool badge still shows the usage snapshot
+    // it took before the lock. Refuse instead — one crashed session that says why beats an unbounded run
+    // of them that don't. See preflightCredential.
+    if (!this.assertCredentialsUsable(env, o, runtime)) return;
     if (caps.pinnedSessionId) {
       // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
       // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
@@ -3752,6 +3759,55 @@ export class TerminalManager {
     // `detached` credentials / `own` projects are the two ways this degrades silently — a divergent token
     // and transcripts the console can't resolve. Both are visible in the audit rather than inferred later.
     this.audit(sessionId, agent, 'claude.config.isolated', { dir: r.dir, credentials: r.credentials, projects: r.projects });
+  }
+
+  /** Wall-clock of the last keychain-locked alert, so a locked box pings the owner once rather than once
+   *  per spawn. In-memory on purpose: a restart re-alerting is the correct behaviour, since a restart is
+   *  also the moment an operator is most likely to believe the box was fixed. */
+  private lastCredentialAlertAt = 0;
+  private static readonly CREDENTIAL_ALERT_COOLDOWN_MS = 30 * 60_000;
+
+  /** Launch pre-flight for the run's credentials. True = proceed. False = the launch was REFUSED and the
+   *  session has already been marked crashed and explained to its owner; the caller must return.
+   *
+   *  Fails CLOSED, unlike every other credential path here, because the alternative isn't a degraded run —
+   *  it's a run that cannot authenticate at all. Falling through to the box default (the fail-open move
+   *  everywhere else) does not help either: on macOS the box default reads through the SAME locked
+   *  keychain. */
+  private assertCredentialsUsable(env: Record<string, string>, o: { id: string; agent: string }, runtime: CodingRuntimeId): boolean {
+    let blocked: { dir: string; service: string } | null = null;
+    try { blocked = preflightCredential(runtime, env); }
+    catch { return true; }                              // a probe that can't run must never block a launch
+    if (!blocked) return true;
+    const why = `the macOS login keychain is locked, so ${CODING_RUNTIMES[runtime].label} cannot read the credential for ${blocked.dir} — this run would start, authenticate as nobody and end with no work done`;
+    this.audit(o.id, o.agent, 'session.launch.refused', { runtime, reason: 'credential unreadable: keychain locked', dir: blocked.dir, service: blocked.service });
+    this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), o.id);
+    this.addMessage({ type: 'completed', sessionId: o.id, agent: o.agent, title: `Could not start — ${o.agent}`, body: `Did not launch: ${why}.`, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: o.id });
+    // Badge the pool row this dir belongs to, so Settings → Runtime shows the cause where an operator
+    // would go looking for it rather than only in one session's card.
+    try {
+      const acct = this.os.runtimeAccounts.list().find((a) => a.runtime === runtime && a.configDir === blocked!.dir);
+      if (acct) this.os.runtimeAccounts.recordCheck(runtime, acct.name, { ok: false, note: 'macOS login keychain is locked — the credential cannot be read from this security session' });
+    } catch { /* badging is a nicety */ }
+    this.alertCredentialsLocked(blocked.dir);
+    return false;
+  }
+
+  /** Tell a human, once per cooldown. This is the half the 2026-09-01 incident was missing: the refusal
+   *  above makes each run honest, but nothing about a crashed session reaches someone who is not looking. */
+  private alertCredentialsLocked(dir: string): void {
+    const now = Date.now();
+    if (now - this.lastCredentialAlertAt < TerminalManager.CREDENTIAL_ALERT_COOLDOWN_MS) return;
+    this.lastCredentialAlertAt = now;
+    try {
+      this.postSystemCard({
+        topic: 'credentials-locked',
+        type: 'notification',
+        title: 'Agent runs are blocked — the macOS login keychain is locked',
+        body: `Claude Code stores this box's logins in the macOS Keychain, and its value cannot be read right now, so no session can authenticate (${dir}). Runs are being refused rather than started and left to fail silently. Unlock it on the box itself:\n\n    security unlock-keychain ~/Library/Keychains/login.keychain-db\n\nThen re-run the check from Settings → Runtime → Runtime accounts.`,
+        audience: { kind: 'admins' },
+      });
+    } catch { /* the audit line above is the durable record */ }
   }
 
   /** Select a rotation-pool account for this runtime and point the session's credentials at it, via the

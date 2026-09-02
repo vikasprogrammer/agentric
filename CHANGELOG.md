@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.412.0] - 2026-09-02
+### Fixed
+- **A locked macOS login keychain silently killed every run for 17 hours.** On instapods the login
+  keychain auto-locked overnight (2026-09-01 ~17:30Z); the server kept spawning sessions until the next
+  morning. Eight runs, every one **$0 and one turn**, three left `running`, and no alert anywhere — the
+  pool badge still showed the usage snapshot taken before the lock, so the console read healthy. Two
+  causes, both fixed:
+  - Every existing check asked whether a login *exists*. On macOS a Keychain item's **presence** is
+    readable (metadata lookup, exit 0) while its **value** is not, so `credentialDirHasLogin` passed and
+    the launch proceeded. New `credentialReadiness` asks the question the spawned CLI will actually ask —
+    it reads the value — and distinguishes `keychain_locked` from `missing`.
+  - Falling through to the box default, the fail-open move used everywhere else in the credential path,
+    does not help: the box default reads through the *same* locked keychain. So the launch now **fails
+    closed** on `keychain_locked` (`preflightCredential` → `session.launch.refused`, session marked
+    crashed with a card to its owner) instead of starting a run that authenticates as nobody. A `missing`
+    credential keeps its fail-open behaviour — only an unreadable one is certain enough to refuse.
+  - The pool row is badged with the cause, and admins get one Inbox card + DM per 30 min (not one per
+    spawn) carrying the unlock command.
+  - Also corrected a claim in `runtime-account-check.ts`: claude does **not** fall back to the plaintext
+    `.credentials.json` when the keychain is locked. Its credential store classifies that failure as
+    transient and skips the fallback (`primary_transient_skip_fallback`), which is why a locked keychain
+    is a hard stop rather than a degradation.
+  - Pinned by `scripts/credential-preflight-test.cjs` (15 assertions, in `npm run test:governance`),
+    including the box-default case: `~/.claude` is stored under the **bare** `Claude Code-credentials`
+    service name, so probing it under a path-hashed name would report "no login" for a signed-in box.
+
 ## [0.411.2] - 2026-09-01
 ### Fixed
 - **Session cost and token counts were roughly double.** Claude Code writes one transcript line per
