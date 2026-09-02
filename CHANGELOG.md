@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.413.5] - 2026-09-02
+### Fixed
+- **The prompt told agents to call a tool that doesn't exist.** `ask` was renamed `ask_human`, and three
+  injected instructions still named the old one — twice in the operating notes, once in the
+  unattended-turn brief. A prompt that names a missing tool teaches agents to fail. Nothing caught it:
+  `scripts/context-injection-test.cjs` is the only thing that checks the prompt and **it was never wired
+  into `npm run test:governance`**, so it had been failing silently — six assertions, since
+  `buildCompanyMd`'s signature changed under it. It is now wired in, its stale assertions rewritten
+  against the current contract, and it carries a new guard: **every tool the prompt names must exist**.
+
+### Changed
+- **The memory-vs-KB rule now splits by KIND of knowledge, not audience.** The prompt said *"memory is
+  for facts only you reuse; the KB is for the whole fleet"* — a test the agent cannot apply at write
+  time, because it asks them to predict who will need a fact later. Reading **22 live runs that wrote to
+  both stores** showed what agents had already converged on, and it *is* decidable: the **KB gets the
+  finding** (a root cause, a measured result, a runbook — *"proven end-to-end against production"*,
+  *"measured on 1026/1026 zones"*), **memory gets the technique** (*dev10 is the only box with Stripe
+  keys*; *psysh evaluates line by line*; *a `return 404` guard cannot be canaried by status code*). 19 of
+  22 pairs were complementary, 1 a pointer to the page, 2 near-duplicates. The prompt now states the rule
+  they were already following.
+- **`shared: true` is no longer advertised.** 22 of 2,523 memories on one live tenant used it, 37 of
+  10,907 on another — while `kb_write` did the same job. The capability remains in the tool schema; the
+  prompt stops offering a third destination nobody picks.
+
 ## [0.413.4] - 2026-09-02
 ### Fixed
 - **The Sessions view stopped rebuilding the whole history every six seconds.** `GET /api/sessions` is
@@ -27,7 +51,6 @@ new version heading in the same commit.
   paid 6 × (rows). Same six lookups, now `run_id IN (…)` + GROUP BY, chunked at 400. Byte-identical
   output over all 4,124 rows of a copy of the live DB; the summary path drops 21 → 17.9 ms. Pinned by
   `scripts/session-insights-stamp-test.cjs`.
-
 ## [0.413.3] - 2026-09-02
 ### Fixed
 - **The Agents page stopped blocking the whole server for two seconds.** `GET /api/agents/stats` —
