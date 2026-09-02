@@ -13,7 +13,9 @@
  *   - a phase that CLOSED just before the sampler tick still gets the blame (the common case — the
  *     blocking call returns, then the tick fires);
  *   - the sink fires (that is what writes the audit row for a stall nobody was watching);
- *   - nested phases resolve to the outermost open one, and `phase()` closes on throw;
+ *   - nested phases resolve to the INNERMOST open one — which is what makes it safe to mark a whole
+ *     request as a phase (a timer that blocks while the request awaits is blamed on the timer);
+ *   - `phase()` closes on throw;
  *   - the ring is bounded and reset clears it. */
 const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
@@ -55,7 +57,17 @@ const stalls = () => requestMetrics.snapshot(5).loop.stalls;
   requestMetrics.reset();
   requestMetrics.phase('test:outer', () => requestMetrics.phase('test:inner', () => block(1200)));
   await tick(200);
-  assert(stalls().some((s) => s.phase === 'test:outer'), 'nested phases resolve to the outermost open one', JSON.stringify(stalls()));
+  assert(stalls().some((s) => s.phase === 'test:inner'), 'nested phases resolve to the INNERMOST open one — the code actually holding the loop', JSON.stringify(stalls()));
+
+  // The case that makes it safe to mark a whole REQUEST as a phase: a request parked on an await is
+  // open while a timer blocks inside it, and the timer must take the blame, not the request.
+  requestMetrics.reset();
+  const endRequest = requestMetrics.beginPhase('route:GET /api/whatever');
+  await tick(60);
+  requestMetrics.phase('timer:blocking', () => block(1200));
+  await tick(200);
+  endRequest();
+  assert(stalls().some((s) => s.phase === 'timer:blocking'), 'a timer blocking inside an awaiting request is blamed on the timer', JSON.stringify(stalls()));
 
   requestMetrics.reset();
   let threw = false;

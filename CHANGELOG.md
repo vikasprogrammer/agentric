@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.414.2] - 2026-09-02
+### Fixed
+- **A stall caused by a request now names the request.** The first stall the new recorder caught on the
+  live tenant read `unattributed` — a 1,028 ms block whose cause was sitting in the table right beside it
+  (`POST /api/tasks/update`, max 1,117 ms), unnamed only because requests weren't phases. They are now,
+  and attribution picks the **innermost** phase — the one begun last — rather than the outermost, which is
+  what makes marking a whole request safe: a request parked on an await is open while a timer blocks
+  inside it, and the timer, not the route, gets the blame. Both cases are pinned in
+  `scripts/loop-stall-attribution-test.cjs`.
+
 ## [0.414.1] - 2026-09-02
 ### Fixed
 - **The hand-off chain rail stopped scanning the whole session table per node.** `GET /api/sessions/:id/chain`

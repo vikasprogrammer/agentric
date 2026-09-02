@@ -35,7 +35,7 @@ const STALL_MS = 1_000;
 /** How many stalls to keep. Small on purpose: this is a lead, not a log. */
 const STALL_RING = 20;
 /** Closed phases kept for attribution — a stall that ends just before the tick still has a suspect. */
-const RECENT_PHASES = 8;
+const RECENT_PHASES = 32;
 
 /** Tools whose duration is a WAIT on something outside this process — a human, a delegate, or a spawned
  *  model — not work this process is doing. They are measured like everything else (hiding them would hide
@@ -180,9 +180,11 @@ export class RequestMetrics {
   private loopHist = new Array(BUCKETS.length).fill(0);
   /** Phases currently open, outermost first. A blocking phase is SYNCHRONOUS, so at most one is open
    *  when the loop is blocked — the stack exists so a nested marker can't orphan its parent. */
-  private openPhases: Array<{ label: string; at: number }> = [];
+  private openPhases: Array<{ label: string; at: number; seq: number }> = [];
+  /** Monotonic begin counter — the tie-break for "innermost" when two phases share a millisecond. */
+  private phaseSeq = 0;
   /** Recently CLOSED phases, newest last — a stall that ended microseconds before the tick that saw it. */
-  private closedPhases: Array<{ label: string; at: number; end: number }> = [];
+  private closedPhases: Array<{ label: string; at: number; end: number; seq: number }> = [];
   private stalls: StallRecord[] = [];
   private stallSink?: (s: StallRecord) => void;
   /** Lag of the most recent loop sample — what a request arriving now was plausibly delayed by. */
@@ -220,7 +222,7 @@ export class RequestMetrics {
    * because it wraps things that run on every request.
    */
   beginPhase(label: string): () => void {
-    const entry = { label, at: Date.now() };
+    const entry = { label, at: Date.now(), seq: ++this.phaseSeq };
     this.openPhases.push(entry);
     let closed = false;
     return () => {
@@ -228,7 +230,7 @@ export class RequestMetrics {
       closed = true;
       const i = this.openPhases.lastIndexOf(entry);
       if (i >= 0) this.openPhases.splice(i, 1);
-      this.closedPhases.push({ label: entry.label, at: entry.at, end: Date.now() });
+      this.closedPhases.push({ label: entry.label, at: entry.at, end: Date.now(), seq: entry.seq });
       if (this.closedPhases.length > RECENT_PHASES) this.closedPhases.shift();
     };
   }
@@ -245,14 +247,29 @@ export class RequestMetrics {
     this.stallSink = sink;
   }
 
-  /** Attribute a blocked interval to the phase that spanned it. An OPEN phase that began before the
-   *  interval is the answer; otherwise the most recent phase that overlapped it; otherwise nothing
-   *  declared itself, which narrows the hunt to code with no marker. */
+  /**
+   * Attribute a blocked interval to the phase that spanned it. The INNERMOST open phase wins, not the
+   * outermost: phases nest by containment (a request is open while it awaits, and a timer that fires
+   * during that await opens INSIDE it), so the newest one is the code actually holding the loop — and
+   * for genuinely nested synchronous work it is also the more specific answer. Failing an open phase,
+   * the most recent one that overlapped the interval (the common case: the blocking call returns, then
+   * the tick fires). Failing both, nothing declared itself — which narrows the hunt to unmarked code.
+   */
   private recordStall(at: number, ms: number): void {
     const end = at + ms;
-    const open = this.openPhases.find((p) => p.at <= end);
-    const overlapping = [...this.closedPhases].reverse().find((p) => p.end >= at && p.at <= end);
-    const rec: StallRecord = { at, ms: Math.round(ms), phase: open?.label ?? overlapping?.label ?? 'unattributed' };
+    // Candidates: every phase that was open at any point inside the blocked interval — still open, or
+    // closed during it (the common case, since the blocking call returns before the tick that sees it).
+    let best: { label: string; seq: number } | undefined;
+    const consider = (p: { label: string; at: number; end?: number; seq: number }) => {
+      if (p.at > end) return;                        // began after the block ended
+      if (p.end !== undefined && p.end < at) return; // ended before it began
+      // Innermost = begun LAST. `seq` rather than `at`, because two nested phases routinely share a
+      // millisecond and a timestamp comparison would then pick by iteration order — i.e. at random.
+      if (!best || p.seq > best.seq) best = { label: p.label, seq: p.seq };
+    };
+    for (const p of this.openPhases) consider(p);
+    for (const p of this.closedPhases) consider(p);
+    const rec: StallRecord = { at, ms: Math.round(ms), phase: best?.label ?? 'unattributed' };
     this.stalls.push(rec);
     if (this.stalls.length > STALL_RING) this.stalls.shift();
     try { this.stallSink?.(rec); } catch { /* a sink must never break the sampler */ }
