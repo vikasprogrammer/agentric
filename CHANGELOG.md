@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.412.2] - 2026-09-02
+### Fixed
+- **A hosted app's dispatch is owned by a real human again** (#559). `POST /api/app/dispatch` looked the
+  run-as identity up by email only and stored an **email** in `tasks.owner` — two defects in three lines.
+  The forwarded `X-Aos-Member` is an email, but `manifest.owner` (written by `app_create`) is a member
+  **id**, so the documented "else the app's accountable owner" fallback never resolved and a background
+  dispatch was created ownerless. And every consumer reads that column as an id: the task notifier
+  (`resolveRecipients` → `getMember`) delivered to nobody, `t.owner === me.id` never matched the owner's
+  own board, and the value rode through `dispatchTask` into the session's `run_as`. The route now
+  resolves **both forms** and stores the id.
+### Changed
+- **One definition of the both-forms member lookup** — `TeamStore.resolveMemberRef(ref)` (id **or**
+  email → member). It replaces the four hand-rolled `getMember(raw) ?? getMemberByEmail(raw)` pairs in
+  `server.ts`, `terminal.ts` (×2) and `task-reconcile.ts`; behaviour is unchanged at those call sites.
+- **Migration: `tasks.owner` emails are canonicalised to member ids**, the sibling of the `run_as` sweep
+  from v0.307.1. An email matching no member is left alone rather than discarded. `scripts/run-as-identity-test.cjs`
+  grows a fourth section covering the lookup, the delivery consequence and the migration (36 checks).
+
 ## [0.412.1] - 2026-09-02
 ### Changed
 - **Console dependency refresh (lockfile only).** Batched the ten open Dependabot bumps for `web/` into

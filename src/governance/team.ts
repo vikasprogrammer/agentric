@@ -54,6 +54,20 @@ export class TeamStore {
     const r = this.db.prepare('SELECT * FROM members WHERE email = ?').get<MemberRow>(email.toLowerCase());
     return r ? toMember(r) : undefined;
   }
+  /**
+   * Resolve a member REFERENCE in either of the two forms that reach us — a member id or an email —
+   * without the caller having to know which it holds. Both are in circulation by design: the console
+   * and manifests carry ids, while a forwarded `X-Aos-Member` header, an invite and a chat identity
+   * carry emails. Every id-only lookup on a reference that might be an email (or the reverse) has the
+   * same silent failure mode: `undefined`, an ownerless record, and a notification delivered to nobody
+   * — #559 was exactly that, an email-only lookup applied to an app manifest's member-id owner.
+   * Callers that persist the result should store `.id`, the canonical form.
+   */
+  resolveMemberRef(ref: string): Member | undefined {
+    const raw = (ref ?? '').trim();
+    if (!raw) return undefined;
+    return this.getMember(raw) ?? this.getMemberByEmail(raw);
+  }
   count(): number {
     return this.db.prepare('SELECT COUNT(*) AS n FROM members').get<{ n: number }>()!.n;
   }

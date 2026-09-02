@@ -201,7 +201,7 @@ function endedByHuman(os: AgentOS, sessionId: string): boolean {
     .get<{ principal: string | null }>(sessionId);
   const by = row?.principal;
   if (!by || by === 'system') return false;
-  return !!(os.team.getMemberByEmail(by) ?? os.team.getMember(by));
+  return !!os.team.resolveMemberRef(by);
 }
 
 export function sweepStrandedTasks(

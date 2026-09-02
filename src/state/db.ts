@@ -1161,6 +1161,16 @@ function migrate(db: Db): void {
              WHERE run_as IS NOT NULL AND instr(run_as, '@') > 0
                AND EXISTS (SELECT 1 FROM members m WHERE m.email = lower(term_sessions.run_as))`);
 
+  // Same shape, one table over: `tasks.owner` is the accountable human and is read as a MEMBER id
+  // everywhere (`resolveRecipients` → `getMember`, `t.owner === me.id` on the board, `dispatchTask`
+  // passing it through as the session's run-as). `POST /api/app/dispatch` stored an EMAIL there, so a
+  // run triggered from a hosted app notified nobody and never matched its own owner's board. The route
+  // now stores an id; this canonicalises the rows already written, on the same terms as the sweep above
+  // — an email that resolves to no member is left alone rather than discarded.
+  db.exec(`UPDATE tasks SET owner = (SELECT m.id FROM members m WHERE m.email = lower(tasks.owner))
+             WHERE owner IS NOT NULL AND instr(owner, '@') > 0
+               AND EXISTS (SELECT 1 FROM members m WHERE m.email = lower(tasks.owner))`);
+
   // WHEN an approval was decided (epoch ms), NULL while pending. `questions` already records `answered_at`;
   // this brings approvals to parity so the unified feed (src/state/feed.ts) can order a RESOLVED decision
   // by when you decided it, not by when it was raised — without a per-row scan of `audit_events`.

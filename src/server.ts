@@ -2354,9 +2354,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!goal) return sendJson(res, 400, { error: 'goal is required' });
     // Run-as: the human currently using the app (forwarded from the trusted X-Aos-Member the app got),
     // else the app's accountable owner. Validate it resolves to a real member; unknown → ownerless.
+    // BOTH FORMS on the way in, a member ID on the way out — the two halves of one bug (#559). The
+    // forwarded `X-Aos-Member` is an EMAIL while `manifest.owner` is a member id, so an email-only
+    // lookup left every ownerless-by-manifest dispatch with no accountable human at all; and storing
+    // `.email` put an address into `tasks.owner`, which every consumer reads as an id — the task
+    // notifier (`resolveRecipients` → `getMember`) delivered to nobody, `t.owner === me.id` never
+    // matched its own board, and the value rode through `dispatchTask` into the session's `run_as`.
     const wantRunAs = String(b.runAsMember || manifest.owner || '').trim();
-    const runAsMember = wantRunAs ? os.team.getMemberByEmail(wantRunAs) : undefined;
-    const owner = runAsMember?.email;
+    const runAsMember = wantRunAs ? os.team.resolveMemberRef(wantRunAs) : undefined;
+    const owner = runAsMember?.id;
     const mode = b.mode === 'interactive' ? 'interactive' : 'headless';
     const task = os.tasks.create({
       tenant: os.tenant, title: goal.slice(0, 80), body: goal, assignee: `agent:${agent}`,
@@ -2709,7 +2715,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const raw = String(ab.runAs || '').trim();
       if (!raw) runAs = undefined;
       else {
-        const m = os.team.getMember(raw) ?? os.team.getMemberByEmail(raw);
+        const m = os.team.resolveMemberRef(raw);
         if (!m) return sendJson(res, 400, { error: `unknown member "${raw}" for runAs` });
         runAs = m.id;
       }
