@@ -7,7 +7,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 
 > **Per-agent tool allowlist.** An agent's manifest may carry a `tools` list, in which case the OS-owned
 > MCP server offers only those tools plus a small always-kept core (`report`, `update`, `ask_human`,
-> `check_inbox`, `notify`, `recall`, `remember`). Absent/empty ⇒ the full set below, which is the
+> `check_inbox`, `recall`, `remember`). Absent/empty ⇒ the full set below, which is the
 > default everywhere. It shapes context, not permission — `tools/call` is unfiltered and the gateway
 > still governs every effect. See `docs/per-agent-context.md`.
 
@@ -63,7 +63,6 @@ scope/parity properties, but not the cost.
 | `check_inbox` | `GET /api/inbox` | `TerminalManager.sessionInbox` | R | non-blocking pull of this session's feed |
 | `report` | `POST /api/report` | messages | W | `outcome` enum |
 | `update` | `POST /api/update` | messages | W | non-blocking progress note (session-owner scoped) |
-| `notify` | `POST /api/notify` | messages + member DM | W | notify ONE named teammate (`to` = name/email); inbox card addressed to them + Slack/Discord DM; the escape hatch from session-owner scoping — see below. **Does not block and carries no question**: for an ANSWER use `ask_human` with `to`. The DM is nonetheless repliable — it binds the run in `session_dms`, so a reply lands back in this session (`continueSessionDm`) instead of spawning a fresh one |
 | `publish` | `POST /api/publish` | `ArtifactStore` | W | snapshots the file to the **Library**; optional `folder` path (`reports/2024`) files it into a Library folder. **Upsert** keyed on `(agent, folder, filename)`: re-publishing the same file from the same folder overwrites that artifact in place (id + Library/`/shared` link + share flags preserved) instead of adding a duplicate; audited `artifact.updated` (vs `artifact.published` for a new one), and `publishArtifact`/the tool return `updated` |
 | `skill_propose` | `POST /api/skills/propose` | `SkillsStore.propose` / `SkillsStore.proposeEdit` + messages | W | **create OR update, chosen by the name.** A NEW name drafts a `.aos-proposed` skill (never materialised) + posts a `skill.proposed` card; audited `skill.proposed`; human publishes via `POST /api/skills/:name/publish` (owner/admin) or dismisses via `DELETE /api/skills/:name`. An EXISTING name proposes an **edit**: the full replacement text is parked at `<home>/skills/.proposed-edits/<name>.json` — deliberately OUTSIDE the skill folder, since `copySkill` ships a skill's whole folder to every agent — so the LIVE skill is untouched; posts the same `skill.proposed` card (`args.edit = true`), audited `skill.edit.proposed`; human applies via `POST /api/skills/:name/edit/apply` (owner/admin; overwrites SKILL.md + same-session `refreshAgentSkills` for the proposer, audited `skill.edit.applied`) or drops it via `…/edit/discard` (`skill.edit.dismissed`). One pending edit per skill: the same agent replaces its own, a different agent is refused rather than clobbering an un-reviewed draft. Refining the proposer's OWN unpublished draft rewrites it in place (nothing live to gate; audited `skill.draft.updated`). The body REPLACES the whole SKILL.md — pair with `skill_get`. The human-facing outcome sentence is composed server-side and echoed by the tool |
 | `skill_get` | `GET /api/agent/skill/read` | `TerminalManager.readSkill` → `SkillsStore.get` | R | one library skill's full SKILL.md + whether it's active for this agent, whether it's an unpublished proposal, and whether an edit is already awaiting review. The read counterpart to proposing an edit (an edit replaces the whole body, so revise the real text — the `agent_get` clobber lesson). Under `/api/agent/…` so it can't shadow a skill literally named `read` on the console's `/api/skills/:name` route |
@@ -160,7 +159,7 @@ treat every vendor call as fallible:
   appends whether a plain retry is worthwhile. So the agent retries the transient ones and fixes the input
   on the terminal ones instead of guessing.
 
-### `notify` — deliberately looping in one teammate (inbox scoping)
+### Inbox scoping — a session's cards are addressed to its owner
 
 Every session's inbox cards — an agent's `update`/`report`, its `ask` question, a `notification`
 ("Claude is waiting"), a published `artifact`, and the approval card the gate raises — are **addressed
@@ -174,12 +173,12 @@ owner alone when they hold approval authority for the level (an admin self-appro
 else they escalate to the full approver tier — so admins stop DMing each other about self-approvable
 sessions.
 
-`notify` is the **escape hatch**: when a run genuinely needs someone *other* than its owner to know,
-the agent calls `notify({ to, message, important? })` with a teammate's name or email. It writes an
-inbox card addressed to that one member (`member` audience → lands in their `mine` feed) and DMs them
-on their linked Slack/Discord (`TerminalManager.setMemberNotifier` → `notifyMember` in the registry).
-It is **one named recipient only** — there is deliberately no team-wide broadcast — and it's
-allow+audit (`member.notified`), no policy gate, same posture as `slack_send`.
+**Reaching someone other than the owner** is `ask_human` with `to` set to that teammate: it writes a
+card addressed to them, DMs them, and — unlike the retired one-way `notify` — is answerable, so the run
+gets the reply back. `notify` existed for the fire-and-forget case and was used **22 times in 2,523
+memories on one live tenant and 37 in 10,907 on another**: agents reached for the tool that could not
+strand them. It was retired in v0.414.5, which also un-shadowed the Notification-hook route it had been
+sitting on since v0.95.0 (see `POST /api/notify` below).
 
 ### Review requests → the admin tier gets DMed (one centralized path)
 

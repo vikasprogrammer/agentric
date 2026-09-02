@@ -1340,19 +1340,6 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   // agent deliberately notifies a specific teammate (the `notify` tool) — the escape hatch from the
   // session-owner-scoped default: an inbox card addressed to that member + an out-of-band DM.
-  if (method === 'POST' && p === '/api/notify') {
-    const b = await readBody(req);
-    const session = String(b.session || '');
-    const agent = tm.sessionAgent(session);
-    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
-    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
-    const to = String(b.to || '').trim();
-    const message = String(b.message || '').trim();
-    if (!to) return sendJson(res, 400, { error: 'to is required' });
-    if (!message) return sendJson(res, 400, { error: 'message is required' });
-    const out = tm.notifyMember(session, agent, to, message, b.important === true || b.important === 'true');
-    return sendJson(res, out.ok ? 200 : 400, out);
-  }
   // agent publishes a deliverable to the Artifacts gallery (→ snapshot + inbox card + audit). The
   // file path is resolved under the agent's own folder by the store; only that session may publish.
   if (method === 'POST' && p === '/api/publish') {

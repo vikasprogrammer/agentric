@@ -6966,27 +6966,6 @@ export class TerminalManager {
     return sb.startsWith('task:') ? sb.slice('task:'.length) : undefined;
   }
 
-  /**
-   * Agent deliberately notifies a specific teammate (the `notify` MCP tool) — the "this task needs
-   * someone else to know" escape hatch from the session-owner-scoped default. Resolves `to` (a member
-   * id, email, or display name), posts an inbox card ADDRESSED to that member (so it lands in their
-   * `mine` feed regardless of who owns the session), fires the out-of-band DM sink, and audits it.
-   * Never routes to the whole team — one named recipient, deliberately chosen by the agent.
-   */
-  notifyMember(sessionId: string, agent: string, to: string, message: string, important = false): { ok: boolean; to?: string; error?: string } {
-    const body = (message || '').trim();
-    if (!body) return { ok: false, error: 'message is required' };
-    const target = this.resolveMember(to);
-    if (!target) return { ok: false, error: `no teammate matches "${to}"` };
-    this.addMessage({
-      type: 'update', sessionId, agent, title: `Note from ${agent}`, body, status: 'open',
-      args: important ? { important: true } : undefined,
-      audienceKind: 'member', audienceId: target.id,
-    });
-    this.audit(sessionId, agent, 'member.notified', { to: target.id, important, message: body });
-    try { this.memberNotifier?.({ sessionId, agent, to: target.id, message: body, important }); } catch { /* advisory */ }
-    return { ok: true, to: target.email };
-  }
 
   /** Resolve a person the agent named — by member id, email (case-insensitive), or display name — to a
    *  member. Used by {@link notifyMember}; returns undefined when nothing matches unambiguously. */

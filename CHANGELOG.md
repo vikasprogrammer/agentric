@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.414.5] - 2026-09-02
+### Fixed
+- **The Claude Code Notification hook has never once fired — a second route was sitting on its path.**
+  `terminal/notify-hook.sh` posts `{sessionId, agent, kind, message}` to `POST /api/notify`; that is how
+  "Claude needs you" — a permission prompt, an idle wait, `agent_needs_input` — becomes an inbox card.
+  Since **v0.95.0 (2026-07-10)** the `notify` tool registered a *second* `POST /api/notify` **above** it,
+  reading `b.session`. Routes match in order, so the tool's route swallowed every hook post, read an empty
+  session, and returned **404** — and the hook is fail-open, so nothing surfaced. Live instapods:
+  `session.notified` fired **0 times in 30 days**, and all 26 notification cards ever came from other
+  paths. Retiring `notify` (below) removes the shadow; `scripts/notify-hook-route-test.cjs` posts the
+  hook's exact payload and pins that it is handled, so a future duplicate route fails the build instead of
+  silently eating the signal. All 4 of its assertions fail on the previous code.
+
+### Removed
+- **The `notify` tool is retired.** It sent a one-way, *unanswerable* FYI to one named teammate — and its
+  own description told agents to use `ask_human` with `to` instead whenever they needed a reply, which is
+  nearly always. Usage bears that out: **22 of 2,523 memories-era runs on one live tenant, 37 of 10,907 on
+  another**, and it appears in the never-used set on both. Agents reached for the tool that could not
+  strand them. `ask_human({ to })` reaches the same person, writes the same card, sends the same DM, and
+  is answerable. Removing it also drops `TerminalManager.notifyMember`, whose only caller was the
+  shadowing route. 64 → 63 tools.
+
 ## [0.414.4] - 2026-09-02
 ### Changed
 - **`task_create`'s schema is 20% smaller.** Every tool schema is re-sent on every API call, and
@@ -22,7 +44,6 @@ new version heading in the same commit.
 
   Honest scale: this is **~1.3% of the 77 KB schema**, not the 15–20% an earlier estimate suggested — that
   figure assumed also dropping never-used tools, which is deliberately not done here.
-
 ## [0.414.3] - 2026-09-02
 ### Fixed
 - **A parked long-poll no longer collects the blame for other code's stalls.** The first stall the
