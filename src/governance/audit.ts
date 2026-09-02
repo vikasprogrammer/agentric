@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AuditEvent, AuditSink } from '../types';
 import { Db } from '../state/db';
+import { requestMetrics } from '../edge/request-metrics';
 
 /** Keeps events in memory — handy for tests, demos, and the Console to read back. */
 export class InMemoryAuditSink implements AuditSink {
@@ -94,6 +95,9 @@ export function pruneAuditMirror(db: Db, days: number, now = Date.now(), limit =
 export class TeeAuditSink implements AuditSink {
   constructor(private readonly sinks: AuditSink[]) {}
   append(event: AuditEvent): void {
-    for (const s of this.sinks) s.append(event);
+    // NAMED for the loop-stall recorder: every sink here is synchronous (a SQLite insert, an
+    // `appendFileSync` per run file), this runs on the path of every governed action, and an unnamed
+    // block is exactly what the 156-second stall hunt could not attribute. Two array writes per event.
+    requestMetrics.phase('audit:append', () => { for (const s of this.sinks) s.append(event); });
   }
 }

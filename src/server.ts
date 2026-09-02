@@ -1958,7 +1958,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         error: 'Say what this is blocked on: call task_update again with blockedOn:"human" (only a person can decide or approve), "agent" (another agent owes you something) or "external" (a third party, build or vendor). It decides who gets woken — "human" alerts the task owner instead of resuming the agent that handed you this.',
       });
     }
-    const task = os.tasks.update(id, {
+    const task = requestMetrics.phase('task:update.store', () => os.tasks.update(id, {
       status: typeof b.status === 'string' ? (b.status as TaskStatus) : undefined,
       assignee: b.assignee === null ? null : (b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' ? b.assignee : undefined)),
       priority: typeof b.priority === 'number' ? b.priority : undefined,
@@ -1973,7 +1973,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       blockedOn: b.blockedOn === null ? null : (TASK_BLOCKED_ON as readonly string[]).includes(String(b.blockedOn)) ? (b.blockedOn as TaskBlockedOn) : undefined,
       note: typeof b.note === 'string' ? b.note : undefined,
       by: `agent:${agent}`,
-    });
+    }));
     if (!task) return sendJson(res, 200, { ok: false, error: 'task not found' });
     os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: task.status === 'done' ? 'task.completed' : 'task.updated', data: { id: task.id, status: task.status } });
     return sendJson(res, 200, { ok: true, task });
