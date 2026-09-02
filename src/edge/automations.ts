@@ -9,6 +9,7 @@
  * engine. Zero-dependency cron: a minimal 5-field parser below (minute hour dom month dow).
  */
 import { randomBytes } from 'crypto';
+import { requestMetrics } from './request-metrics';
 import { newId } from '../id';
 import * as os from 'os';
 import * as path from 'path';
@@ -1834,7 +1835,7 @@ export class Automations {
   /** Check every ~20s; fire each due cron automation at most once per matching minute. */
   start(intervalMs = 20_000): void {
     this.stop();
-    this.timer = setInterval(() => this.tick(new Date()), intervalMs);
+    this.timer = setInterval(() => requestMetrics.phase('automations:tick', () => this.tick(new Date())), intervalMs);
     this.timer.unref?.(); // never keep the process alive just for the scheduler
   }
   stop(): void {

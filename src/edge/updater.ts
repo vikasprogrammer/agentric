@@ -30,6 +30,8 @@
  * module-level singleton rather than per-tenant.
  */
 import { spawnSync, spawn } from 'child_process';
+import { runCommand } from './exec';
+import { requestMetrics } from './request-metrics';
 import * as path from 'path';
 import { VERSION } from '../version';
 
@@ -77,7 +79,11 @@ export interface ApplyResult {
 }
 
 function git(args: string[], timeout = 30_000): { ok: boolean; out: string; err: string } {
-  const r = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', timeout });
+  // Still synchronous — the callers are sync helpers and a local git command is milliseconds — but
+  // `git fetch` talks to a remote, so it is NAMED: a network hiccup here blocks the loop for up to the
+  // timeout, and an unnamed stall is the thing this instrumentation exists to stop producing.
+  const r = requestMetrics.phase(`spawn:git ${args[0]}`, () =>
+    spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', timeout }));
   return { ok: r.status === 0, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
 }
 
@@ -172,11 +178,14 @@ function restartCommand(tenant: string): string | null {
 /** Pull + rebuild (server + web), then schedule the restart after the response is sent. */
 export async function applyUpdate(tenant: string): Promise<ApplyResult> {
   const steps: ApplyStep[] = [];
-  const run = (label: string, cmd: string, args: string[], cwd = REPO_ROOT): boolean => {
-    const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024 });
+  // AWAITED, never `spawnSync`: these five steps are a git pull, two npm installs and two builds — minutes
+  // of wall clock. Run synchronously they held the whole process (every tenant on the box, every poll,
+  // every gate decision) for that entire time, which is the biggest single blocking budget in the codebase.
+  const run = async (label: string, cmd: string, args: string[], cwd = REPO_ROOT): Promise<boolean> => {
+    const r = await runCommand(cmd, args, { cwd });
     const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
     // Keep the tail — installs/builds are chatty and the UI only needs the outcome + last lines.
-    steps.push({ cmd: label, ok: r.status === 0, out: out.slice(-4000) });
+    steps.push({ cmd: label, ok: r.status === 0, out: (r.timedOut ? `${out}\n[timed out]` : out).slice(-4000) });
     return r.status === 0;
   };
 
@@ -184,15 +193,15 @@ export async function applyUpdate(tenant: string): Promise<ApplyResult> {
   if (hasTrackedChanges())
     return { ok: false, steps, restarting: false, error: 'tracked files have uncommitted changes — commit or stash them on the box first' };
 
-  if (!run('git pull --ff-only', 'git', ['pull', '--ff-only'])) return { ok: false, steps, restarting: false, error: 'git pull failed' };
+  if (!(await run('git pull --ff-only', 'git', ['pull', '--ff-only']))) return { ok: false, steps, restarting: false, error: 'git pull failed' };
   // --include=dev is mandatory: the build step below needs `tsc` (a devDependency), and the service
   // this runs under sets NODE_ENV=production, which would otherwise make npm omit devDependencies →
   // "sh: tsc: not found". Same for the web build (vite/tsc live in web's devDependencies).
-  if (!run('npm install', 'npm', ['install', '--include=dev', '--no-audit', '--no-fund'])) return { ok: false, steps, restarting: false, error: 'npm install failed' };
-  if (!run('npm run build', 'npm', ['run', 'build'])) return { ok: false, steps, restarting: false, error: 'server build failed' };
+  if (!(await run('npm install', 'npm', ['install', '--include=dev', '--no-audit', '--no-fund']))) return { ok: false, steps, restarting: false, error: 'npm install failed' };
+  if (!(await run('npm run build', 'npm', ['run', 'build']))) return { ok: false, steps, restarting: false, error: 'server build failed' };
   const web = path.join(REPO_ROOT, 'web');
-  if (!run('npm install (web)', 'npm', ['install', '--include=dev', '--no-audit', '--no-fund'], web)) return { ok: false, steps, restarting: false, error: 'web npm install failed' };
-  if (!run('npm run build (web)', 'npm', ['run', 'build'], web)) return { ok: false, steps, restarting: false, error: 'web build failed' };
+  if (!(await run('npm install (web)', 'npm', ['install', '--include=dev', '--no-audit', '--no-fund'], web))) return { ok: false, steps, restarting: false, error: 'web npm install failed' };
+  if (!(await run('npm run build (web)', 'npm', ['run', 'build'], web))) return { ok: false, steps, restarting: false, error: 'web build failed' };
 
   cache = null; // the running version is about to change — force a fresh check after the bounce.
   const cmd = restartCommand(tenant);

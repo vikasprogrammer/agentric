@@ -1186,6 +1186,15 @@ function migrate(db: Db): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_last_session ON tasks(last_session_id)');
 
+  // The hand-off CHAIN's three lookups — every one of them a full SCAN of `term_sessions`/`tasks` before
+  // this, repeated ONCE PER NODE of the walk (`GET /api/sessions/:id/chain` measured 66 ms average on the
+  // live instawp tenant, 4,193 sessions, and the walk re-runs the same scans for the climb and again for
+  // every child). A conversation is `claude_session_id`, a delegation is `spawned_by = task:<id>`/`ask:<id>`,
+  // and the caller one level up is `tasks.caller_claude_id`.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_claude ON term_sessions(claude_session_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_spawned_by ON term_sessions(spawned_by)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_caller ON tasks(caller_claude_id)');
+
   // audit_events by TYPE. The existing index is (run_id, type, ts) — useless to the many callers that ask
   // "when did this type last happen" / "how many since T" WITHOUT a run: the digest, the alert staleness
   // checks, dreaming's watermark, measurement, the Audit page's type filter. Those were full scans of the

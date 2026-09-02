@@ -19,6 +19,8 @@
  * route, same posture as the self-update apply.
  */
 import { spawnSync } from 'child_process';
+import { runCommand } from './exec';
+import { requestMetrics } from './request-metrics';
 import * as fs from 'fs';
 import * as path from 'path';
 import { claudeBinCandidates, parseVersion, atLeastVersion } from './claude-cli';
@@ -126,7 +128,8 @@ export interface DepsReport {
 
 /** Resolve a binary's absolute path via `command -v` (portable across sh); '' when not found. */
 function whichBin(bin: string): string {
-  const r = spawnSync('sh', ['-c', `command -v ${bin} 2>/dev/null`], { encoding: 'utf8', timeout: 5000 });
+  const r = requestMetrics.phase(`spawn:which ${bin}`, () =>
+    spawnSync('sh', ['-c', `command -v ${bin} 2>/dev/null`], { encoding: 'utf8', timeout: 5000 }));
   return (r.stdout || '').trim().split('\n')[0] || '';
 }
 
@@ -160,7 +163,8 @@ function resolveDep(d: Dep): { path: string; offPath: boolean } {
 
 /** Best-effort version string — first line of `<bin> <versionArg>` (stdout or stderr); undefined if none. */
 function binVersion(bin: string, versionArg = '--version'): string | undefined {
-  const r = spawnSync(bin, [versionArg], { encoding: 'utf8', timeout: 5000 });
+  const r = requestMetrics.phase(`spawn:version ${bin}`, () =>
+    spawnSync(bin, [versionArg], { encoding: 'utf8', timeout: 5000 }));
   const out = `${r.stdout || ''}${r.stderr || ''}`.trim().split('\n')[0].trim();
   return out || undefined;
 }
@@ -294,7 +298,7 @@ export interface InstallResult {
  * We run the resolved manager directly (not via `sh -c`) so a hung network can't wedge a shell; brew is
  * invoked without sudo (it refuses to run as root), the Linux managers with it.
  */
-export function installDeps(): InstallResult {
+export async function installDeps(): Promise<InstallResult> {
   const before = checkDeps();
   if (before.ok && !before.installable.length)
     return { ok: true, steps: [], report: before, error: undefined };
@@ -306,24 +310,26 @@ export function installDeps(): InstallResult {
     return { ok: false, steps: [], report: before, error: 'nothing installable is missing (remaining gaps need a manual install — see each dependency\'s hint)' };
 
   const steps: InstallStep[] = [];
-  const run = (label: string, cmd: string, args: string[]): boolean => {
-    const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024 });
+  // AWAITED for the same reason as `updateNpmDep` above: a package install is minutes, and running it
+  // synchronously stopped the event loop for all of them.
+  const run = async (label: string, cmd: string, args: string[]): Promise<boolean> => {
+    const r = await runCommand(cmd, args);
     const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
-    steps.push({ cmd: label, ok: r.status === 0, out: out.slice(-4000) });
+    steps.push({ cmd: label, ok: r.status === 0, out: (r.timedOut ? `${out}\n[timed out]` : out).slice(-4000) });
     return r.status === 0;
   };
 
   let ok = true;
   if (manager === 'brew') {
-    ok = run(`brew install ${pkgs.join(' ')}`, 'brew', ['install', ...pkgs]);
+    ok = await run(`brew install ${pkgs.join(' ')}`, 'brew', ['install', ...pkgs]);
   } else if (manager === 'apt-get') {
     // apt needs its index fresh before an install can resolve the packages.
-    run('sudo apt-get update', 'sudo', ['apt-get', 'update']);
-    ok = run(`sudo apt-get install -y ${pkgs.join(' ')}`, 'sudo', ['apt-get', 'install', '-y', ...pkgs]);
+    await run('sudo apt-get update', 'sudo', ['apt-get', 'update']);
+    ok = await run(`sudo apt-get install -y ${pkgs.join(' ')}`, 'sudo', ['apt-get', 'install', '-y', ...pkgs]);
   } else if (manager === 'dnf' || manager === 'yum' || manager === 'zypper') {
-    ok = run(`sudo ${manager} install -y ${pkgs.join(' ')}`, 'sudo', [manager, 'install', '-y', ...pkgs]);
+    ok = await run(`sudo ${manager} install -y ${pkgs.join(' ')}`, 'sudo', [manager, 'install', '-y', ...pkgs]);
   } else if (manager === 'pacman') {
-    ok = run(`sudo pacman -S --noconfirm ${pkgs.join(' ')}`, 'sudo', ['pacman', '-S', '--noconfirm', ...pkgs]);
+    ok = await run(`sudo pacman -S --noconfirm ${pkgs.join(' ')}`, 'sudo', ['pacman', '-S', '--noconfirm', ...pkgs]);
   }
 
   const report = checkDeps();
@@ -367,7 +373,9 @@ export async function updateNpmDep(bin: string): Promise<InstallResult> {
   if (!npm) return fail(`no \`npm\` found on this box — update by hand: ${dep.hint || `npm install -g ${dep.npmPkg}@latest`}`);
 
   const spec = `${dep.npmPkg}@latest`;
-  const r = spawnSync(npm, ['install', '-g', spec], { encoding: 'utf8', timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024 });
+  // AWAITED: a global npm install is minutes of network + disk. Run with `spawnSync` it froze the whole
+  // process — every tenant, every poll, every gate decision — for the duration.
+  const r = await runCommand(npm, ['install', '-g', spec]);
   const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
   const ok = r.status === 0;
   const steps: InstallStep[] = [{ cmd: `${npm} install -g ${spec}`, ok, out: out.slice(-4000) }];

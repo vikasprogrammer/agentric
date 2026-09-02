@@ -1585,11 +1585,19 @@ export class TerminalManager {
     if (viewer && !this.canViewRow(seed.spawned_by, seed.run_as, viewer)) return null;
 
     const threadOf = (r: SessionRow): string => r.claude_session_id ?? r.id;
+    // MEMOIZED for the walk: the climb re-reads the same thread on every hop and the descent reads each
+    // child's thread again to decide whether to visit it, so an unmemoized read ran this query several
+    // times per node. The rows are a snapshot either way — the whole walk is one response.
+    const threadRows = new Map<string, SessionRow[]>();
     const rowsOfThread = (threadId: string): SessionRow[] => {
+      const hit = threadRows.get(threadId);
+      if (hit) return hit;
       const rows = this.db
         .prepare('SELECT * FROM term_sessions WHERE claude_session_id = ? OR (claude_session_id IS NULL AND id = ?) ORDER BY created_at ASC')
         .all<SessionRow>(threadId, threadId);
-      return viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+      const out = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+      threadRows.set(threadId, out);
+      return out;
     };
     // The task a conversation was dispatched FOR (its first `task:`/`ask:` run), and from it the caller
     // conversation one level up.
@@ -1618,6 +1626,7 @@ export class TerminalManager {
     const nodes: ChainNode[] = [];
     const seen = new Set<string>();
     const alive = this.backend.aliveNames(); // one tmux poll for the whole walk, not one per node
+    const pendingApprovals = this.os.approvals.pending(this.os.tenant); // one read for the whole walk too
     const visit = (threadId: string, depth: number, parentThreadId?: string): void => {
       if (seen.has(threadId) || nodes.length >= CHAIN_MAX_NODES || depth > CHAIN_MAX_DEPTH) return;
       const rows = rowsOfThread(threadId);
@@ -1634,7 +1643,7 @@ export class TerminalManager {
       // the newest row is the wrong label for the conversation. Prefer the freshest real verdict — and
       // take the outcome from the SAME run as the summary, or a conversation whose last resume ended
       // quietly reads "no report" right beside the report it filed.
-      const pending = this.chainPending(rows);
+      const pending = this.chainPending(rows, pendingApprovals);
       const voice = [...rows].reverse();
       const reported = voice.find((r) => r.report_summary?.trim());
       const summary = reported?.report_summary ?? undefined;
@@ -1695,7 +1704,7 @@ export class TerminalManager {
   /** What a chain node is waiting on a human for: its unanswered `ask` questions and unresolved approval
    *  gates, over every run of the conversation. This is what makes the rail actionable — a delegate's
    *  question is answered from the CALLER's pane, instead of being hunted down in the Inbox. */
-  private chainPending(rows: SessionRow[]): ChainPending[] {
+  private chainPending(rows: SessionRow[], pendingApprovals?: ReturnType<AgentOS['approvals']['pending']>): ChainPending[] {
     const ids = rows.map((r) => r.id);
     if (!ids.length) return [];
     const out: ChainPending[] = [];
@@ -1706,7 +1715,9 @@ export class TerminalManager {
       out.push({ kind: 'question', id: q.id, sessionId: q.run_id, agent: q.agent, text: q.prompt, createdAt: q.created_at });
     }
     const own = new Set(ids);
-    for (const a of this.os.approvals.pending(this.os.tenant)) {
+    // The caller passes the tenant's pending set once for a whole chain walk; alone (the single-run
+    // callers) this still reads it itself.
+    for (const a of pendingApprovals ?? this.os.approvals.pending(this.os.tenant)) {
       if (!own.has(a.runId)) continue;
       out.push({ kind: 'approval', id: a.id, sessionId: a.runId, agent: rows.find((r) => r.id === a.runId)?.agent ?? '', text: a.reason || a.attempt.capabilityId, capability: a.attempt.capabilityId, level: a.level, createdAt: a.createdAt });
     }
