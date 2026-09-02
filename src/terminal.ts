@@ -1259,50 +1259,111 @@ export class TerminalManager {
    * Mutates the rows in place, so the same response carries what it just computed.
    */
   private stampInsights(rows: SessionRow[]): void {
-    for (const r of rows) {
-      const live = r.status === 'running';
-      // Fully stamped = both tiers present (`artifacts` is the tier-2 marker, like `gov_approvals` for
-      // tier-1). A row stamped by an older build carries the gov_* set but NULL tier-2 columns, so it
-      // re-stamps once to fill them, then this guard retires it. Terminal state can no longer change.
-      if (!live && r.gov_approvals != null && r.artifacts != null) continue;
+    // Fully stamped = both tiers present (`artifacts` is the tier-2 marker, like `gov_approvals` for
+    // tier-1). A row stamped by an older build carries the gov_* set but NULL tier-2 columns, so it
+    // re-stamps once to fill them, then this guard retires it. Terminal state can no longer change.
+    const todo = rows.filter((r) => r.status === 'running' || r.gov_approvals == null || r.artifacts == null);
+    if (!todo.length) return;
+    // BATCHED, not per row: this used to fire six point queries for EVERY row it stamped, and the live
+    // rows re-stamp on every poll — so the 1.5 s summary poll paid ~6 × (live rows) queries forever.
+    // Each lookup below is the same query with `run_id IN (…)` + GROUP BY, chunked so the parameter list
+    // stays bounded. Same indexes (`idx_audit_run_type`), same numbers, one round of work.
+    const ids = todo.map((r) => r.id);
+    const chunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += 400) chunks.push(ids.slice(i, i + 400));
+    const each = <T>(sql: (holes: string) => string, fn: (row: T) => void): void => {
+      for (const page of chunks) {
+        for (const row of this.db.prepare(sql(page.map(() => '?').join(','))).all<T>(...page)) fn(row);
+      }
+    };
 
-      const counts = this.db.prepare(`SELECT
+    interface Counts { actions: number; approvals: number; denied: number; errors: number }
+    const counts = new Map<string, Counts>();
+    each<{ run_id: string; actions: number | null; approvals: number | null; gateDenied: number | null; rejected: number | null; errors: number | null }>(
+      (h) => `SELECT run_id,
           SUM(type = 'gate.decision') AS actions,
           SUM(type = 'approval.requested') AS approvals,
           SUM(type = 'gate.decision' AND data LIKE '%"effect":"deny"%') AS gateDenied,
           SUM(type = 'approval.resolved' AND data LIKE '%"approved":false%') AS rejected,
           SUM(type = 'session.error') AS errors
-        FROM audit_events WHERE run_id = ?`)
-        .get<{ actions: number | null; approvals: number | null; gateDenied: number | null; rejected: number | null; errors: number | null }>(r.id);
-      const actions = counts?.actions ?? 0;
-      const approvals = counts?.approvals ?? 0;
-      const denied = (counts?.gateDenied ?? 0) + (counts?.rejected ?? 0);
-      const errors = counts?.errors ?? 0;
+        FROM audit_events WHERE run_id IN (${h}) GROUP BY run_id`,
+      (c) => counts.set(c.run_id, {
+        actions: c.actions ?? 0,
+        approvals: c.approvals ?? 0,
+        denied: (c.gateDenied ?? 0) + (c.rejected ?? 0),
+        errors: c.errors ?? 0,
+      }),
+    );
 
-      // The agent's own end-of-session verdict. Latest wins — a resumed run can report more than once.
-      const report = this.db
-        .prepare("SELECT data FROM audit_events WHERE run_id = ? AND type = 'session.reported' ORDER BY ts DESC LIMIT 1")
-        .get<{ data: string }>(r.id);
+    // The agent's own end-of-session verdict, and the tuning the run launched with. Latest wins — a
+    // resumed run can report more than once — which the ASC scan expresses as last-write-wins.
+    const reported = new Map<string, string>();
+    const tuned = new Map<string, string>();
+    each<{ run_id: string; type: string; data: string }>(
+      (h) => `SELECT run_id, type, data FROM audit_events
+               WHERE run_id IN (${h}) AND type IN ('session.reported', 'session.tuning') ORDER BY ts ASC`,
+      (e) => (e.type === 'session.reported' ? reported : tuned).set(e.run_id, e.data),
+    );
+
+    // Human-wait: `ask` questions (own table carries the answered timestamp) + approval gates (no
+    // resolved_at column, so pair the audit spans by approvalId). Only closed waits count — a still-
+    // pending block hasn't cost a measurable duration yet, and this run is terminal by here anyway.
+    const qWait = new Map<string, number>();
+    each<{ run_id: string; ms: number }>(
+      (h) => `SELECT run_id, COALESCE(SUM(answered_at - created_at), 0) AS ms FROM questions
+               WHERE run_id IN (${h}) AND answered_at IS NOT NULL GROUP BY run_id`,
+      (q) => qWait.set(q.run_id, q.ms),
+    );
+    const apWait = new Map<string, number>();
+    const requestedAt = new Map<string, number>(); // approvalId → ts, across the whole scan
+    each<{ run_id: string; ts: number; type: string; data: string }>(
+      (h) => `SELECT run_id, ts, type, data FROM audit_events
+               WHERE run_id IN (${h}) AND type IN ('approval.requested', 'approval.resolved') ORDER BY ts ASC`,
+      (e) => {
+        let id: string | undefined;
+        try { id = (JSON.parse(e.data) as { approvalId?: string }).approvalId; } catch { /* skip */ }
+        if (!id) return;
+        if (e.type === 'approval.requested') { requestedAt.set(id, e.ts); return; }
+        const t0 = requestedAt.get(id);
+        if (t0 == null) return;
+        apWait.set(e.run_id, (apWait.get(e.run_id) ?? 0) + Math.max(0, e.ts - t0));
+        requestedAt.delete(id);
+      },
+    );
+
+    const artifactCounts = new Map<string, number>();
+    each<{ session_id: string; n: number }>(
+      (h) => `SELECT session_id, COUNT(*) AS n FROM artifacts WHERE session_id IN (${h}) GROUP BY session_id`,
+      (a) => artifactCounts.set(a.session_id, a.n),
+    );
+
+    const write = this.db.prepare('UPDATE term_sessions SET gov_actions = ?, gov_approvals = ?, gov_denied = ?, gov_errors = ?, outcome = ?, report_summary = ?, model = ?, effort = ?, output_style = ?, blocked_ms = ?, artifacts = ? WHERE id = ?');
+    for (const r of todo) {
+      const live = r.status === 'running';
+      const c = counts.get(r.id);
+      const actions = c?.actions ?? 0;
+      const approvals = c?.approvals ?? 0;
+      const denied = c?.denied ?? 0;
+      const errors = c?.errors ?? 0;
+
       let outcome = live ? null : 'unknown';
       let summary: string | null = null;
+      const report = reported.get(r.id);
       if (report) {
         try {
-          const d = JSON.parse(report.data) as { outcome?: string; summary?: string };
+          const d = JSON.parse(report) as { outcome?: string; summary?: string };
           if (d.outcome) outcome = d.outcome;
           if (d.summary) summary = d.summary.trim() || null;
         } catch { /* malformed audit payload — fall back to 'unknown' */ }
       }
 
-      // Runtime tuning the run launched with (set once at launch — present even while live).
-      const tuning = this.db
-        .prepare("SELECT data FROM audit_events WHERE run_id = ? AND type = 'session.tuning' ORDER BY ts DESC LIMIT 1")
-        .get<{ data: string }>(r.id);
       let model: string | null = null;
       let effort: string | null = null;
       let outputStyle: string | null = null;
+      const tuning = tuned.get(r.id);
       if (tuning) {
         try {
-          const d = JSON.parse(tuning.data) as { model?: string; effort?: string; outputStyle?: string };
+          const d = JSON.parse(tuning) as { model?: string; effort?: string; outputStyle?: string };
           model = d.model ?? null;
           effort = d.effort ?? null;
           // Absent on runs launched before the flag shipped — left NULL, which the savings comparison
@@ -1311,29 +1372,8 @@ export class TerminalManager {
         } catch { /* malformed — leave all null */ }
       }
 
-      // Human-wait: `ask` questions (own table carries the answered timestamp) + approval gates (no
-      // resolved_at column, so pair the audit spans by approvalId). Only closed waits count — a still-
-      // pending block hasn't cost a measurable duration yet, and this run is terminal by here anyway.
-      const qWait = this.db
-        .prepare('SELECT COALESCE(SUM(answered_at - created_at), 0) AS ms FROM questions WHERE run_id = ? AND answered_at IS NOT NULL')
-        .get<{ ms: number }>(r.id)?.ms ?? 0;
-      const apEvents = this.db
-        .prepare("SELECT ts, type, data FROM audit_events WHERE run_id = ? AND type IN ('approval.requested', 'approval.resolved') ORDER BY ts ASC")
-        .all<{ ts: number; type: string; data: string }>(r.id);
-      const requestedAt = new Map<string, number>();
-      let apWait = 0;
-      for (const e of apEvents) {
-        let id: string | undefined;
-        try { id = (JSON.parse(e.data) as { approvalId?: string }).approvalId; } catch { /* skip */ }
-        if (!id) continue;
-        if (e.type === 'approval.requested') requestedAt.set(id, e.ts);
-        else { const t0 = requestedAt.get(id); if (t0 != null) { apWait += Math.max(0, e.ts - t0); requestedAt.delete(id); } }
-      }
-      const blockedMs = qWait + apWait;
-
-      const artifacts = this.db
-        .prepare('SELECT COUNT(*) AS n FROM artifacts WHERE session_id = ?')
-        .get<{ n: number }>(r.id)?.n ?? 0;
+      const blockedMs = (qWait.get(r.id) ?? 0) + (apWait.get(r.id) ?? 0);
+      const artifacts = artifactCounts.get(r.id) ?? 0;
 
       r.gov_actions = actions;
       r.gov_approvals = approvals;
@@ -1347,9 +1387,7 @@ export class TerminalManager {
       r.blocked_ms = blockedMs;
       r.artifacts = artifacts;
       if (live) continue; // still moving — surface it, but don't freeze it onto the row
-      this.db
-        .prepare('UPDATE term_sessions SET gov_actions = ?, gov_approvals = ?, gov_denied = ?, gov_errors = ?, outcome = ?, report_summary = ?, model = ?, effort = ?, output_style = ?, blocked_ms = ?, artifacts = ? WHERE id = ?')
-        .run(actions, approvals, denied, errors, outcome, summary, model, effort, outputStyle, blockedMs, artifacts, r.id);
+      write.run(actions, approvals, denied, errors, outcome, summary, model, effort, outputStyle, blockedMs, artifacts, r.id);
     }
   }
 

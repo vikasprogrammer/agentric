@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.413.4] - 2026-09-02
+### Fixed
+- **The Sessions view stopped rebuilding the whole history every six seconds.** `GET /api/sessions` is
+  now the most expensive route on the live instawp tenant (186 ms average, 4,122 rows, **1.29 MB
+  gzipped per call**), and the console's Sessions/Chat views re-fetched all of it every `FULL_LIST_MS`
+  — ten times a minute, per open tab, for a list whose live half already arrives every 1.5 s on the
+  cheap summary poll. The cadence is now **30 s**, and the reason it could not be raised before is
+  fixed rather than tolerated: a row the client holds as LIVE that drops out of the summary (a run that
+  ended — invisible to the summary when it was somebody else's, since its ended tail is viewer-scoped)
+  is re-read **by id** on that same tick, using the Phase-1 batch fetch. Verified in a headless browser
+  against a scratch tenant: **2 full rebuilds in 15 s → 0**, and another member's run still flipped out
+  of "ready" **2.1 s** after it ended, off a single by-id fetch.
+- **Session insight stamping is batched instead of six queries per row.** `stampInsights` — the
+  governance fingerprint, verdict, tuning, human-wait and deliverable count each list row carries —
+  fired six point queries for every row it touched, and a LIVE row re-stamps on every poll, so the
+  1.5 s summary poll paid 6 × (live rows) queries forever and a first list over an unstamped history
+  paid 6 × (rows). Same six lookups, now `run_id IN (…)` + GROUP BY, chunked at 400. Byte-identical
+  output over all 4,124 rows of a copy of the live DB; the summary path drops 21 → 17.9 ms. Pinned by
+  `scripts/session-insights-stamp-test.cjs`.
+
 ## [0.413.3] - 2026-09-02
 ### Fixed
 - **The Agents page stopped blocking the whole server for two seconds.** `GET /api/agents/stats` —
