@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.413.1] - 2026-09-02
+### Fixed
+- **The resume path could still start an un-authenticated run.** v0.412.0 refuses a launch whose credential
+  can't be read, but a *resurrection* never passes through the server's launch path: `attach.sh` re-execs
+  `claude-launch.sh` with `RESUME=1`, which sources the persisted env and starts the runtime directly. On
+  instapods that gap produced a session at 05:44Z — 34 minutes after the operator believed the box was
+  fixed — that came up `Not logged in`, burned a turn and ended at $0. The launcher now asks the server
+  first, over the same loopback + session-secret channel it already uses for `/api/ended`
+  (`POST /api/credential-check` → `TerminalManager.checkResumeCredentials`), so detection stays in ONE
+  implementation instead of being rewritten in bash. Fails **open** by construction: no `AOS_URL`, an
+  unreachable server, a 5 s timeout or any unparseable answer proceeds exactly as before — only an explicit
+  `ok:false` stops the launch. A refusal holds the pane open with a shell rather than exiting, since ttyd
+  re-dials the instant a pane dies and would otherwise spin the refusal in a loop.
+- The launch and resume refusals now share one `refuseForLockedCredential` path (audit, crashed row, owner
+  card, pool badge, cooldown alert), so they cannot drift apart. Nine new assertions in
+  `scripts/credential-preflight-test.cjs`.
+
 ## [0.413.0] - 2026-09-02
 ### Fixed
 - **A stale cross-agent edit proposal no longer clobbers a newer prompt silently.** Several agents

@@ -1623,6 +1623,22 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok });
   }
   // attach-wrapper signal that a stopped session was resurrected (→ mark running again).
+  // Resume pre-flight: the launcher asks, before exec'ing the runtime, whether this environment can
+  // authenticate at all. A resurrection (attach.sh → claude-launch.sh with RESUME=1) never passes through
+  // the server's launch path, so without this a locked-keychain box quietly resurrects panes that come up
+  // "Not logged in" and burn a turn each. Answering here — rather than re-implementing the probe in bash —
+  // keeps ONE implementation of what "usable credential" means. Fails OPEN by construction: only an
+  // explicit `blocked` verdict stops a launch, so a server blip can never wedge the fleet.
+  if (method === 'POST' && p === '/api/credential-check') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const runtime = String(b.runtime || 'claude-code') as RuntimeId;
+    if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `unknown runtime: ${runtime}` });
+    const blocked = tm.checkResumeCredentials(session, String(b.configDir || ''), runtime);
+    return sendJson(res, 200, blocked ? { ok: false, ...blocked } : { ok: true });
+  }
   if (method === 'POST' && p === '/api/resumed') {
     const b = await readBody(req);
     const session = String(b.session || '');

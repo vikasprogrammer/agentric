@@ -328,6 +328,38 @@ RUNTIME_ARGS=()
 # expands to nothing when MCP_ARGS/SYS_ARGS are empty instead of tripping "unbound variable".
 COMMON_ARGS=(--settings .claude/aos-settings.json "${MCP_ARGS[@]+"${MCP_ARGS[@]}"}" "${SYS_ARGS[@]+"${SYS_ARGS[@]}"}" "${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"}")
 
+# RESUME pre-flight. A resurrection (attach.sh → this script with RESUME=1) never passes through the
+# server's launch path, so the credential check that guards a fresh spawn has never seen it: on a box whose
+# macOS login keychain is locked, claude comes up "Not logged in", burns a turn and ends at $0 — the exact
+# silent failure the launch pre-flight exists to stop. Ask the server, which owns the one implementation of
+# "is this credential readable", over the same loopback + session-secret channel as /api/ended.
+#
+# Fails OPEN on purpose: no AOS_URL, an unreachable server, a timeout or any unparseable answer proceeds
+# exactly as before. Only an explicit ok:false stops the launch, so this can never wedge a fleet.
+preflight_credentials() {
+  [ -n "${AOS_URL:-}" ] && [ -n "${SESSION:-}" ] || return 0
+  local body out msg
+  body=$(node -e 'console.log(JSON.stringify({session:process.argv[1],configDir:process.argv[2]||""}))' \
+    "$SESSION" "${CLAUDE_CONFIG_DIR:-}" 2>/dev/null) || return 0
+  out=$(curl -s -m 5 -X POST "$AOS_URL/api/credential-check" -H 'content-type: application/json' \
+    -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" -d "$body" 2>/dev/null) || return 0
+  msg=$(printf '%s' "$out" | node -e '
+    let s = "";
+    process.stdin.on("data", (d) => { s += d; });
+    process.stdin.on("end", () => {
+      try { const j = JSON.parse(s); if (j && j.ok === false) process.stdout.write(String(j.message || "credentials are not readable")); } catch {}
+    });' 2>/dev/null) || return 0
+  [ -n "$msg" ] || return 0
+  red "Not started — $msg"
+  dim "Fix the credential (Settings → Runtime → Runtime accounts), then reopen this session."
+  return 1
+}
+if [ "$RESUMED_FROM_ENV" = "1" ] && ! preflight_credentials; then
+  # Hold the pane open rather than exiting: ttyd re-dials the instant a pane dies, which would spin this
+  # same refusal in a loop. A shell lets the human read the reason and close the tab.
+  exec bash
+fi
+
 if [ "${RESIDENT:-}" = "1" ] || [ "${UNATTENDED:-}" = "1" ]; then
   # UNATTENDED lane — the single path for every run with no human at the keyboard: automation/cron/task
   # runs (UNATTENDED=1) AND warm chat sessions (RESIDENT=1). An INTERACTIVE, ATTACHABLE claude (NOT

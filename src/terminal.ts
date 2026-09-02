@@ -3779,18 +3779,52 @@ export class TerminalManager {
     try { blocked = preflightCredential(runtime, env); }
     catch { return true; }                              // a probe that can't run must never block a launch
     if (!blocked) return true;
-    const why = `the macOS login keychain is locked, so ${CODING_RUNTIMES[runtime].label} cannot read the credential for ${blocked.dir} — this run would start, authenticate as nobody and end with no work done`;
-    this.audit(o.id, o.agent, 'session.launch.refused', { runtime, reason: 'credential unreadable: keychain locked', dir: blocked.dir, service: blocked.service });
-    this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), o.id);
-    this.addMessage({ type: 'completed', sessionId: o.id, agent: o.agent, title: `Could not start — ${o.agent}`, body: `Did not launch: ${why}.`, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: o.id });
+    this.refuseForLockedCredential(o.id, o.agent, runtime, blocked.dir, blocked.service);
+    return false;
+  }
+
+  /**
+   * The same question, asked by the RESUME path instead of the launch path.
+   *
+   * A resurrection does not go through `launch()` at all: `attach.sh` re-execs `claude-launch.sh` with
+   * `RESUME=1`, which sources the persisted env file and starts claude directly — pure shell, no server
+   * decision in the middle. So the launch pre-flight cannot see it, and on 2026-09-02 a session
+   * resurrected that way came up `Not logged in` and burned a turn 34 minutes after the operator believed
+   * the box was fixed. The launcher now asks HERE, over the same loopback + session-secret channel it
+   * already uses for `/api/ended` and `/api/resumed`, so detection stays in one implementation rather
+   * than being re-written in bash.
+   *
+   * `configDir` is whatever the resumed environment carries (empty → the box default). Returns the
+   * blocking condition, having already recorded it, or null to proceed.
+   */
+  checkResumeCredentials(sessionId: string, configDir: string, runtime: CodingRuntimeId = 'claude-code'): { reason: 'keychain_locked'; dir: string; message: string } | null {
+    const agent = this.sessionAgent(sessionId) ?? 'system';
+    let blocked: { dir: string; service: string } | null = null;
+    try { blocked = preflightCredential(runtime, configDir ? { [CODING_RUNTIMES[runtime].credentialEnv.configDirVar]: configDir } : {}); }
+    catch { return null; }
+    if (!blocked) return null;
+    this.refuseForLockedCredential(sessionId, agent, runtime, blocked.dir, blocked.service);
+    return { reason: 'keychain_locked', dir: blocked.dir, message: TerminalManager.lockedCredentialWhy(runtime, blocked.dir) };
+  }
+
+  private static lockedCredentialWhy(runtime: CodingRuntimeId, dir: string): string {
+    return `the macOS login keychain is locked, so ${CODING_RUNTIMES[runtime].label} cannot read the credential for ${dir} — this run would start, authenticate as nobody and end with no work done`;
+  }
+
+  /** Record a refused run: audit, crash the row, tell its owner, badge the pool account, alert admins.
+   *  Shared by the launch and resume pre-flights so the two can never disagree about what a refusal is. */
+  private refuseForLockedCredential(sessionId: string, agent: string, runtime: CodingRuntimeId, dir: string, service: string): void {
+    const why = TerminalManager.lockedCredentialWhy(runtime, dir);
+    this.audit(sessionId, agent, 'session.launch.refused', { runtime, reason: 'credential unreadable: keychain locked', dir, service });
+    this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    this.addMessage({ type: 'completed', sessionId, agent, title: `Could not start — ${agent}`, body: `Did not launch: ${why}.`, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: sessionId });
     // Badge the pool row this dir belongs to, so Settings → Runtime shows the cause where an operator
     // would go looking for it rather than only in one session's card.
     try {
-      const acct = this.os.runtimeAccounts.list().find((a) => a.runtime === runtime && a.configDir === blocked!.dir);
+      const acct = this.os.runtimeAccounts.list().find((a) => a.runtime === runtime && a.configDir === dir);
       if (acct) this.os.runtimeAccounts.recordCheck(runtime, acct.name, { ok: false, note: 'macOS login keychain is locked — the credential cannot be read from this security session' });
     } catch { /* badging is a nicety */ }
-    this.alertCredentialsLocked(blocked.dir);
-    return false;
+    this.alertCredentialsLocked(dir);
   }
 
   /** Tell a human, once per cooldown. This is the half the 2026-09-01 incident was missing: the refusal

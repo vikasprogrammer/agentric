@@ -137,6 +137,31 @@ console.log('\nLaunch pre-flight');
   setPlatform('darwin');
 }
 
+console.log('\nResume path (attach.sh → claude-launch.sh)');
+{
+  // The resume lane re-execs the launcher directly from a persisted env file — no server decision in the
+  // middle — so the launch pre-flight never sees it. These pin the contract that closes that gap without
+  // a SECOND implementation of "is this credential readable" living in bash.
+  const server = fs.readFileSync(path.join(ROOT, 'src/server.ts'), 'utf8');
+  const launcher = fs.readFileSync(path.join(ROOT, 'terminal/claude-launch.sh'), 'utf8');
+
+  const route = server.slice(server.indexOf("p === '/api/credential-check'"), server.indexOf("p === '/api/resumed'"));
+  assert(route.length > 0, 'the server exposes POST /api/credential-check');
+  assert(route.includes('sessionSecretOk(session)'), 'the route is gated by the session secret, like every other loopback route');
+  assert(route.includes('checkResumeCredentials'), 'the route delegates to the ONE shared readiness check');
+
+  assert(/preflight_credentials\(\)/.test(launcher), 'the launcher defines a resume pre-flight');
+  assert(/RESUMED_FROM_ENV" = "1" \] && ! preflight_credentials/.test(launcher),
+    'the pre-flight runs on the RESUME lane only — a fresh spawn was already checked server-side');
+  // Fail-open is the whole safety argument for putting a network call in front of every resurrection.
+  const fn = launcher.slice(launcher.indexOf('preflight_credentials() {'), launcher.indexOf('if [ "$RESUMED_FROM_ENV"'));
+  assert((fn.match(/return 0/g) || []).length >= 4, 'every failure mode inside the pre-flight returns 0 (proceed)', `${(fn.match(/return 0/g) || []).length} found`);
+  assert(fn.includes('-m 5'), 'the probe is time-bounded, so an unresponsive server cannot hang a resurrection');
+  assert(fn.includes('j.ok === false'), 'only an EXPLICIT ok:false refuses — an unparseable answer proceeds');
+  assert(/! preflight_credentials; then\n(.|\n)*?exec bash/.test(launcher),
+    'a refusal holds the pane open with a shell rather than exiting into ttyd\'s reconnect loop');
+}
+
 setPlatform(realPlatform);
 child.spawnSync = realSpawnSync;
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
