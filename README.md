@@ -4,9 +4,9 @@
 
 ### Run AI agents unattended, without handing them the keys to everything.
 
-Agentric is a self-hosted control plane for AI agents. Give an agent a job and walk away. Every action
-it takes in the real world goes through one gate you control, where risky moves pause for your
-approval, budgets are enforced, and everything is written to an append-only audit log.
+Agentric is a self-hosted control plane for AI agents. Give an agent a job and walk away. Everything it
+does in the real world goes through one gate you control: risky moves pause for your approval, budgets
+are enforced, and every effect lands in an append-only audit log.
 
 [agentric.io](https://agentric.io)
 
@@ -29,24 +29,17 @@ approval, budgets are enforced, and everything is written to an append-only audi
 
 ## Why it exists
 
-Letting an AI agent run on its own is easy. Letting it run on its own safely is the hard part. Today
-that means babysitting a terminal and hoping the agent does not run `rm -rf`, refund the wrong
-customer, or burn your API budget at 3am.
+Letting an agent run on its own is easy. Letting it run on its own *safely* is the hard part — which
+usually means babysitting a terminal and hoping it doesn't `rm -rf`, refund the wrong customer, or burn
+the budget at 3am.
 
-Agentric puts a governed boundary between your agents and the outside world, then wraps it in a web
-console you can run a team from.
+Agentric puts a governed boundary between your agents and the outside world, and a console around it
+you can run a team from. You leave agents running; risky calls suspend until a human answers in the
+Inbox or by Slack/Discord DM, then the run resumes. One policy decides what is auto-allowed, what needs
+sign-off, and what is refused outright. Everything is logged. Agents share a task queue, a knowledge
+base and a memory with the people they work with.
 
-- You can leave agents running. Risky actions suspend and wait for a human, and the run resumes the
-  moment you approve from your Inbox, Slack, or Discord.
-- You stay in control. One policy file, or the in-console editor, decides what is auto-allowed, what
-  needs sign-off, and what is forbidden. Budgets stop runaway spend.
-- You can see what happened. Every effect lands in an append-only log with the agent's reasoning and
-  the result.
-- You can run a fleet. Reach any agent by name from Slack or Discord, hand work to a shared task
-  queue, and let agents build shared memory and a living knowledge base as they go.
-
-It runs on your laptop with `npm run serve`, and scales to a multi-tenant server behind Tailscale or
-nginx.
+Runs on a laptop with `npm run serve`; scales to a multi-tenant box behind Tailscale or nginx.
 
 ---
 
@@ -56,35 +49,27 @@ nginx.
 git clone https://github.com/vikasprogrammer/agentric
 cd agentric
 npm install && npm run build
-npm run serve          # web console at http://localhost:3010
+npm run serve          # console at http://localhost:3010
 ```
 
-Open http://localhost:3010. On first boot the server prints an owner login link to the console and to
-`data/server.log`. Click it and you are in.
+First boot prints an owner login link to the console and `data/server.log`; click it and a setup wizard
+walks the rest — runtime credential, company context, chat channel, GitHub, memory, team, first agents.
+`npm run demo` shows the governance layer before you wire up any keys.
 
-To see the governance layer before wiring up any API keys:
+Real agents need [Claude Code](https://claude.com/claude-code), Codex or opencode (Settings → Runtime
+installs them for you), plus `tmux` and `ttyd` for the browser terminal.
 
-```bash
-npm run demo           # a scripted run showing approvals, budgets, dedupe and policy denies
-```
-
-Running real agents needs [Claude Code](https://claude.com/claude-code) or Codex installed, plus
-`tmux` and `ttyd` for the browser terminal (`brew install tmux ttyd`, or your distro's packages).
-
-A note on the name: the product is Agentric, and the plumbing is still called `agent-os`. That covers
-the npm package and CLI (`agent-os serve`), the `AGENT_OS_*` env vars, the service units, and the data
-home. Running deployments have those names baked in, so they keep them on purpose.
+*On the name:* the product is Agentric, the plumbing is still `agent-os` — the npm package and CLI
+(`agent-os serve`), `AGENT_OS_*` env vars, service units and data home. Live deployments have those
+baked in, so they keep them.
 
 ---
 
 ## The one rule
 
-Everything in Agentric rests on a single invariant:
-
 > Every side effect an agent has on the outside world passes through one mediated gateway.
 
-That gateway is the whole trust story. Remove it and policies, budgets, and audit logs are just
-documentation. Keep it and you can walk away from a running agent.
+That gateway is the whole trust story. Remove it and policy, budgets and audit are just documentation.
 
 ```
   Agent wants to act  --->  +--------- THE GATEWAY ----------+  --->  the real world
@@ -99,20 +84,20 @@ documentation. Keep it and you can walk away from a running agent.
                             +--------------------------------+
 ```
 
-When an agent tries something risky, such as `rm`, a deploy, a Stripe refund, or anything touching
-production, the gateway pauses the run and drops an approval card in your Inbox. It also DMs whoever
-can approve it. You approve or reject, and the run picks up where it left off.
+Hit something risky — `rm`, a deploy, a Stripe refund, anything touching production — and the run
+suspends with an approval card in your Inbox and a DM to whoever can clear it. Answer, and it picks up
+where it left off.
 
-The same gate covers real CLI agents. A Claude Code or Codex session runs inside the agent's own
-folder with a `PreToolUse` hook wired in, so every shell command and every MCP tool call is classified
-by the same policy engine that governs native capabilities.
+Real CLI agents go through the same gate: a session runs in the agent's own folder with a `PreToolUse`
+hook wired in, so every shell command and MCP tool call is classified by the same policy engine as a
+native capability.
 
 <div align="center">
 
 <img src="docs/assets/console-session.jpg" alt="Agentric console: a live agent session in the browser terminal, with other running sessions in tabs alongside it" width="900">
 
-<sub>A live session in the browser terminal. Every run is a real CLI agent in a tmux pane you can
-watch, take over, and hand back.</sub>
+<sub>A live session in the browser terminal — a real CLI agent in a tmux pane you can watch, take over,
+and hand back.</sub>
 
 </div>
 
@@ -122,113 +107,83 @@ watch, take over, and hand back.</sub>
 
 ### Governance and trust
 
-| Feature | What it does |
+| | |
 |---|---|
-| Mediated gateway | One boundary for every effect: classify, approve, budget, identity, dedupe, execute, audit. Native capabilities and CLI agent tool calls both pass through it. |
-| Policy engine | JSON rules matched by capability glob plus argument conditions (`amountUsd > 1000`), first match wins. Risk classes are green, yellow, red, and deny. Edited in the console, hot-reloaded into running sessions, persisted to your data home. |
-| Human-in-the-loop approvals | A risky call suspends the run until a person answers, from the Inbox, Slack, or Discord. Owners can answer "Always approve", which appends a durable allow rule after every deny rule, so guardrails survive. |
-| Policy history and proposals | Every applied policy edit snapshots a revision you can revert in one click. Agents can propose tightening-only changes (`policy_propose`); loosening, hard-deny edits, and new allow rules are refused by construction, and an owner still has to approve. |
-| Budgets | Per-run dollar and token caps that stop an agent before it overspends. Media and model calls are cost-metered as they go. |
-| Audit trail | Append-only JSONL per run is the system of record, mirrored into SQLite for queries, and browsable in the console Audit page with filters for session, event type, and principal. |
-| File-write guard | Enforced in the engine, not only in JSON: crown-jewel paths are always denied, and writes outside the working directory can be routed to approval. |
-| Secrets vault | AES-256-GCM at rest with a workspace master key. Connectors resolve `secret:KEY` references at launch, agents get values as shell env vars, and agents can request a credential they lack without a value ever reaching the transcript. |
-| Identity and run-as | A session records who triggered it and which person it acts as. Chat-triggered runs act as the sender, and a linked GitHub account means commits and PRs are authored by the real human. |
-| Teams and roles | Magic-link login, owner, admin and member roles, per-agent assignment, and approval levels that map to real people. Self-service login recovery is rate-limited and never reveals whether an email is a member. |
+| **Mediated gateway** | One boundary for every effect — native capabilities and CLI tool calls alike. |
+| **Policy engine** | JSON rules by capability glob plus argument conditions (`amountUsd > 1000`), first match wins, risk classes green/yellow/red/deny. Edited in the console, hot-reloaded into live sessions. |
+| **Approvals** | A risky call blocks until a person answers in the Inbox or by Slack/Discord DM. "Always approve" registers that one action *shape*, not the capability, and is revocable. |
+| **History and proposals** | Every policy edit is a revertable revision. Agents may propose tightening-only changes; loosening and new allows are refused by construction, and an owner still approves. |
+| **Budgets** | Per-run dollar and token caps that stop an agent before it overspends. |
+| **Audit trail** | Append-only JSONL per run, mirrored into SQLite, browsable by session, type and principal. |
+| **File-write guard** | Engine-level, not just policy: crown jewels always denied, writes outside the working directory routed to approval. |
+| **Secrets vault** | AES-256-GCM at rest, resolved into connectors and agent shells at launch. An agent can request a credential, or a rotation, without a value touching the transcript. |
+| **Identity and run-as** | Each session records who triggered it and who it acts as; a linked GitHub account authors commits and PRs as the real human. |
+| **Teams and roles** | Magic-link login, owner/admin/member, per-agent assignment, approval levels mapped to real people. |
 
 ### Running agents
 
-| Feature | What it does |
+| | |
 |---|---|
-| Agents are folders | An agent is a directory with an `agent.json` manifest and a `CLAUDE.md` system prompt. Create, edit, and delete them from the console or with the CLI. |
-| Two real runtimes | Claude Code and Codex, both governed by the same gate hook. Call sites probe declared runtime capabilities instead of comparing runtime ids, so a runtime that lacks attach or resident chat degrades cleanly. |
-| Browser terminal | Sessions are tmux panes served over ttyd inside the console, gated by the same login. You can watch a live run, take it over losslessly, and hand it back. |
-| Headless and interactive lanes | Unattended runs are still attachable TUIs, closed by the server at turn end unless a human took over or the run is blocked on a person. Interactive runs stay live until closed. |
-| Per-agent runtime tuning | Model, effort, permission mode, and Claude Code **output style** resolve from the agent manifest, then a workspace default, then the CLI default. A style sets the agent's role, tone and default response shape — pick a built-in (`Concise`, `Proactive`, …) or write your own into the workspace library. |
-| Session lifecycle | Status comes from Claude Code hooks rather than guesswork, so the console can tell running from blocked from rate-limited from crashed, and reap what died. |
-| Hand-off chains | Runs fold into conversations by transcript, and conversations nest under the caller that delegated them. A chain rail beside the terminal shows the tree and answers a delegate's pending question in place. |
-| Self-improving agents | An agent edits its own listing and prompt (`agent_update`), reads any agent's config (`agent_get`), and reverts a bad self-edit. Cross-agent edits are routed by the proposer's maturity: refused, human-approved, or auto-applied at the top tier, always revertable. |
-| Trust and maturity | Per-agent stats combine autonomy, denial rate, human ratings, and volume confidence into a maturity score that gates what an agent is allowed to propose. |
+| **Agents are folders** | An `agent.json` manifest plus a `CLAUDE.md` prompt, managed from the console or the CLI. |
+| **Three runtimes** | Claude Code, Codex and opencode under the same gate; call sites probe declared runtime capabilities, so a runtime lacking attach or resident chat degrades cleanly. |
+| **Runtime management** | Install a missing CLI from Settings, pick the runtime per agent, and hear when the runtime — or Agentric — has fallen behind, with a one-tap owner update. |
+| **Browser terminal** | Sessions are tmux panes in the console behind the same login: watch a run, take it over losslessly, hand it back, or reopen a finished one and resume. |
+| **Two lanes** | Unattended runs are attachable TUIs closed at turn end unless a human took over, a person is blocking, or background work is live; interactive runs stay until closed, with age ceilings and idle reaping. |
+| **Per-agent tuning** | Model, effort, permission mode and output style resolve manifest → workspace default → CLI default. Skills and OS tools take allowlists that shape context, never the gate. |
+| **Session lifecycle** | Status comes from runtime hooks, not guesswork — running, blocked, rate-limited, crashed — and dead panes get reaped. |
+| **Hand-off chains** | Runs fold into conversations and nest under the caller that delegated them; a chain rail shows the tree and answers a delegate's question in place. |
+| **Self-improving agents** | An agent edits its own prompt and reverts a bad self-edit. Cross-agent edits route by the proposer's maturity — refused, human-approved, or auto-applied at the top tier, always revertable. |
 
-### Work: goals, tasks, automations
+### Work
 
-| Feature | What it does |
+| | |
 |---|---|
-| Goals | The strategic layer above tasks. Agents read goals, propose new ones as drafts, and link tasks to them; progress is derived from the linked tasks. |
-| Shared task queue | A Kanban backlog humans and agents drain together, with status, priority, labels, assignee, owner, due dates, dependencies, and an append-only activity log. |
-| Agent to agent delegation | Assign a task to an agent and it auto-dispatches a governed session. `task_wait` makes the hand-off synchronous, poke-back resumes the caller's transcript when the delegate finishes, and `ask_agent` is a short synchronous question with no board entry. |
-| Task discussion | A threaded conversation on a task. `@mentions` reach a person by DM or resume an agent on that task, and a human's reply is typed into the live run working it. |
-| Automations | Cron, webhook, Slack, and Discord triggers spawn governed sessions unattended, running as the person who triggered them, with a pile-up guard so a slow run is not stacked on. |
-| Scheduled self-runs | An agent defers a future run of itself with `schedule`, bounded to between one minute and thirty days and cancellable by a human. |
-| Inbox | One feed for approvals, questions, progress updates, completions, and proposals. Read and dismiss state is per member, and cards addressed to a person also arrive as a DM. |
-| Ask a human | `ask_human` blocks the run until someone answers, either in the console or by replying to the Slack or Discord DM. Optionally it targets a specific teammate instead of the run's operator. |
-| Library | Agents publish finished deliverables (Markdown, PDF, images, video) into a governed gallery. Files are snapshotted on publish, scoped by provenance, and previewed in the console. |
-| Apps | Small server-side apps built by humans or agents, running as supervised child processes behind the login-gated proxy, with default-deny capabilities, secrets, scale-to-zero, and optional custom domains. |
+| **Goals** | The strategic layer above tasks; progress is derived from the tasks linked to them. |
+| **Task queue** | A Kanban backlog humans and agents drain together — priority, labels, assignee, owner, due dates, dependencies, and an activity log naming every agent that worked it. |
+| **Delegation** | An agent-assigned task auto-dispatches a governed session. `task_wait` makes the hand-off synchronous, poke-back resumes the caller when the delegate finishes. |
+| **Task discussion** | A thread on the task where `@mentions` DM a person or resume an agent, and a human's reply is typed into the live run. |
+| **Automations** | Cron, webhook, Slack, Discord, Telegram and ClickUp triggers spawn sessions unattended, as the person who triggered them, with a pile-up guard. Agents can schedule a future run of themselves. |
+| **Inbox** | One feed for approvals, questions, progress and proposals — per-member read state, addressed cards also DM'd. `ask_human` blocks a run until someone answers. |
+| **Library** | Deliverables (Markdown, PDF, images, video) published into a governed gallery, snapshotted and scoped by provenance. |
+| **Apps** | Small server-side apps built by humans or agents, supervised behind the login-gated proxy, with default-deny capabilities, secrets, scale-to-zero and custom domains. |
 
 ### Knowledge and learning
 
-| Feature | What it does |
+| | |
 |---|---|
-| Memory | Per-agent and workspace-shared `remember` and `recall`, with `revise` and `forget` for self-correction. Three backends (SQLite, libSQL vectors, automem) switch live in Settings. |
-| Recall quality | FTS5 keyword search, optional hybrid semantic recall through OpenAI-compatible or local Ollama embeddings, recency and importance re-ranking, retrieval reinforcement, and scheduled prune plus dedupe. |
-| Episodic self-query | An agent lists its own past runs and reopens one as a timeline or a recap, so it can answer "have I done this before" from the run history rather than guessing. |
-| Knowledge base | A tenant-wide living wiki agents and humans co-author, stored as markdown on disk with an FTS mirror. Every write snapshots a revision, so any edit is revertable instead of gated. |
-| Skills | A global library in Claude Code's native `.claude/skills` format, synced into agents at launch and scoped per agent. Import from a bundled catalog, any public GitHub repo, the skills.sh directory, or a zip. |
-| Agent-requested skills | Agents discover skills with `skill_find` and ask for one with `skill_request`. They never install a skill themselves; an owner or admin does, and an approved skill lands in a live session immediately. |
-| Procedural memory | Agents draft their own playbooks with `skill_propose`. A proposal stays invisible to the fleet until a human publishes it. |
-| Insights and self-learning | A periodic reflect pass compounds recent episodes, outcomes, and friction into cumulative state, renders a living KB page, injects distilled guidance into agent prompts, and proposes config changes for a human to apply or dismiss. |
-| Measurement | Before and after success rates per applied intervention, with an explicit verdict and sample size, withheld below a minimum sample. It is correlational and says so. |
-| Company context | One markdown document appended to every agent's system prompt, so shared conventions live in one place instead of in every `CLAUDE.md`. |
+| **Memory** | Per-agent and shared `remember`/`recall`, with `revise`/`forget`, over three live-switchable backends (SQLite, libSQL vectors, automem). |
+| **Recall quality** | FTS5 keyword search, optional hybrid semantic recall (OpenAI-compatible or Ollama embeddings), recency/importance re-ranking, retrieval reinforcement, scheduled prune and dedupe, and a launch preamble ranked against the task. |
+| **Episodic self-query** | An agent lists its own past runs and reopens one as a timeline or recap. |
+| **Knowledge base** | A tenant-wide wiki agents and humans co-author, markdown on disk with an FTS mirror; every write is a revertable revision. |
+| **Skills** | A `.claude/skills` library synced into agents at launch and scoped per agent, imported from a catalog, a GitHub repo, skills.sh or a zip. Agents find and request skills, and draft their own playbooks; only a human publishes one. |
+| **Insights** | A reflect pass compounds episodes, outcomes and friction into cumulative state, writes a living KB page, injects distilled guidance into prompts, and proposes config changes. Interventions get before/after measurement with a sample size — correlational, and it says so. |
+| **Company context** | One markdown document appended to every agent's prompt. |
 
-### Integrations
+### Integrations and operations
 
-| Feature | What it does |
+| | |
 |---|---|
-| Slack, native | One company app over Socket Mode, so a private box with outbound access works with no public URL. Mentions and DMs fire automations as the sending member, and threads keep context across replies. |
-| Discord, native | The same path over the Discord Gateway, including a real thread branched off a guild mention. |
-| Chat router | A message that matches no automation still reaches the fleet: address any agent by name (`/pod-troubleshooter why is pod X down`) and it spawns a governed one-off run that replies in the thread. |
-| Proactive chat egress | Agents post to any channel or DM any person on Slack and Discord, off-thread and unattended, audited rather than gated. |
-| MCP connectors | A catalog of stdio and remote MCP servers materialised into each session's `.mcp.json`. Every connector call is classified by the gate, with mutation verbs routed to approval. |
-| Composio | One remote connector fronting 850 or more apps, with a fresh pre-signed session URL minted per launch and scoped to the acting member. |
-| GitHub per member | A member links their own GitHub account and their token overrides the bot's for their runs, so git history shows the person, not a shared bot. Agents recover a stale token mid-run with `github_refresh`. |
-| Media | Image generation and editing (prompt edit, upscale, background removal), text-to-video and image-to-video with an async job model, and video understanding. Outputs land in the Library, cost-metered and audited. |
+| **Slack, Discord, Telegram** | Native, each over an outbound socket, so a private box with no public URL works. Mentions and DMs fire automations as the sender and threads keep context; Slack automations filter on content and can watch a channel nobody @mentions. |
+| **Chat router** | A message matching no automation still reaches the fleet — address any agent by name (`/pod-troubleshooter why is pod X down`). Agents can also post or DM proactively, audited rather than gated. |
+| **MCP connectors** | stdio and remote MCP servers materialised per session, every call classified by the gate. Composio fronts 850+ apps behind a per-launch URL scoped to the acting member. |
+| **GitHub per member** | A member's own token overrides the bot's for their runs; a stale one is recovered mid-run. |
+| **Media** | Image generation and editing, text-to-video, image-to-video and video understanding — outputs land in the Library, cost-metered and audited. |
+| **Zero runtime dependencies** | A plain Node HTTP server and built-in `node:sqlite`; one SQLite file per data home, no database service. |
+| **Software and data are separate** | This repo is the software; your agents, policy, audit and state live in a data home that can be its own private repo. |
+| **Multi-tenancy** | One process per tenant, or many in one process routed by subdomain — the DB file is the boundary either way. |
+| **Self-hosted anywhere** | macOS or Linux: a laptop, a Mac Mini behind Tailscale, or a hardened systemd box behind nginx, with optional per-user OS isolation on Linux. |
+| **Console** | Overview, Inbox, Agents, Sessions, Cockpit, Chat, Goals, Tasks, Library, Automations, Knowledge, Memory, Insights, Skills, Apps, Connections, Team, Files, Audit, Settings — plus an in-app manual. |
 
-### Operations
-
-| Feature | What it does |
-|---|---|
-| Zero runtime dependencies | A plain Node HTTP server, Node's built-in `node:sqlite`, and no database service to install. One SQLite file per data home holds everything the console touches. |
-| Software and data are separate | This repo is the software. Your agents, policy, audit log, and state live in a configurable data home that can be its own private repo. |
-| Multi-tenancy | Run one process per tenant, or many tenants in one process routed by subdomain, with the DB file as the tenant boundary either way. |
-| Self-hosted anywhere | macOS or Linux, on a laptop, a Mac Mini behind Tailscale, or a hardened systemd box behind nginx. Optional per-user OS isolation on Linux uses systemd DynamicUser and slices. |
-| Console surfaces | Overview, Inbox, Agents, Sessions, Cockpit, Chat, Goals, Tasks, Library, Automations, Knowledge, Memory, Insights, Skills, Apps, Connections, Team, Files, Audit, and Settings. |
-
-Pillar-by-pillar implementation status, including the gaps, is in [`docs/PILLARS.md`](docs/PILLARS.md).
-The full list of tools agents can call is in [`docs/agent-mcp-tools.md`](docs/agent-mcp-tools.md).
-
----
-
-## Humans and agents on the same team
-
-Agentric is not a fire-and-forget bot runner. Agents and people share one task queue, one knowledge
-base, and one approval loop, so work moves back and forth instead of over a wall.
-
-- Assign a task to an agent and it dispatches a governed session, then closes its own ticket.
-- Agents and teammates co-author the same wiki, and every edit is versioned and revertable.
-- An agent that hits something risky pauses and asks instead of guessing, and you decide.
-- An agent can delegate to another agent while the accountable human stays attached to the whole
-  chain.
+Pillar-by-pillar status, gaps included, is in [`docs/PILLARS.md`](docs/PILLARS.md); every tool agents can
+call is in [`docs/agent-mcp-tools.md`](docs/agent-mcp-tools.md).
 
 ---
 
 ## How it works
 
-Each agent is a directory with an `agent.json` manifest and a `CLAUDE.md` system prompt. Point it at
-the `claude-code` runtime and Agentric opens a real Claude session inside that folder, with the
-`PreToolUse` gate hook wired in.
-
-This repo is the software. Your agents, policies, and runtime state are your data, and they live in a
-separate data home you configure. Keep that home in its own private repo and you can contribute to the
-open-source software without ever committing your agents.
+Each agent is a directory. Point it at a runtime and Agentric opens a real CLI session inside that
+folder with the gate hook wired in. The software is this repo; your agents and state live elsewhere, so
+you can contribute here without ever committing your fleet.
 
 ```
 agent-os/                        # the software (this repo, where you contribute)
@@ -243,22 +198,20 @@ $AGENT_OS_HOME  (default ./data, can be its own private repo)
   audit/  agent-os.db  tmux.sock #   audit log, SQLite state, live sessions
 ```
 
-Scaffold your own home and run it:
-
 ```bash
 agent-os init ./my-brand
 AGENT_OS_HOME=./my-brand agent-os serve --port=3010
 ```
 
-One home plus one port is one isolated instance. Run several side by side, or fan out to many tenants.
-See [`docs/scoping-model.md`](docs/scoping-model.md).
+One home plus one port is one isolated instance. Run several side by side, or fan out to many tenants —
+see [`docs/scoping-model.md`](docs/scoping-model.md).
 
 ---
 
 ## Extending it
 
-To add a capability, implement `Capability` and register it. The gateway governs it automatically and
-the policy file decides its risk.
+Implement `Capability` and register it; the gateway governs it automatically and policy decides its
+risk.
 
 ```ts
 const sendInvoice: Capability = {
@@ -268,15 +221,13 @@ const sendInvoice: Capability = {
   estimateCost: () => ({ usd: 0.002, tokens: 0 }),
   async invoke(args, ctx) {
     const key = await ctx.secrets.get(ctx.run.tenant, ctx.run.principal, 'BILLING_API_KEY');
-    // ... perform the effect ...
     return { ok: true, data: { invoiceId: 'inv_123' } };
   },
 };
 os.registerCapabilities([sendInvoice]);
 ```
 
-To change policy without touching code, edit the JSON. First match wins, so put the specific rule
-first:
+Policy needs no code — first match wins, so the specific rule goes first:
 
 ```jsonc
 { "match": { "capability": "billing.sendInvoice", "when": { "arg": "amountUsd", "op": "gt", "value": 500 } }, "risk": "red" },
@@ -287,39 +238,31 @@ first:
 
 ## Deployment
 
-- Local or self-hosted on macOS or Linux: `npm run serve` runs a single Node process fronting the app,
-  the API, and the browser terminal. Put it behind Tailscale or nginx for HTTPS. The built-in cookie
-  login gates everything, so you do not need extra basic auth.
-- Production on Linux with systemd: the bundled [`agent-os.service`](agent-os.service) is configured so
-  agent sessions survive a restart. Several nginx and systemd traps will bite anyone hand-rolling a
-  unit, and they are documented with fixes in [`CLAUDE.md`](CLAUDE.md).
-- Multi-tenant: a process per tenant ([`docs/process-per-tenant.md`](docs/process-per-tenant.md)), or
-  many tenants in one process routed by subdomain ([`docs/scoping-model.md`](docs/scoping-model.md)).
+- **Local or self-hosted:** `npm run serve` is one Node process fronting the app, the API and the
+  browser terminal. Put Tailscale or nginx in front for HTTPS — the cookie login gates everything, so
+  no extra basic auth.
+- **Linux with systemd:** the bundled [`agent-os.service`](agent-os.service) keeps sessions alive across
+  a restart. The nginx and systemd traps that bite anyone hand-rolling a unit are documented with fixes
+  in [`CLAUDE.md`](CLAUDE.md).
+- **Multi-tenant:** a process per tenant ([`docs/process-per-tenant.md`](docs/process-per-tenant.md)) or
+  many in one process routed by subdomain ([`docs/scoping-model.md`](docs/scoping-model.md)).
 
 ---
 
 ## The status line, on any machine
 
-Agentric renders a status line at the bottom of every governed agent TUI: branch or agent id, folder,
-model and effort, a context-window meter, weekly usage, cost, diff churn — and the two things only
-Agentric knows, the human identity the run acts as and how many approvals it is blocked on.
-
-The same renderer works in a plain `claude` session that Agentric never launched. One command, no
-checkout and no npm install:
+Every governed TUI carries a status line: branch or agent id, folder, model and effort, context meter,
+weekly usage, cost, diff churn — plus the two things only Agentric knows, the human the run acts as and
+how many approvals it's blocked on. The same renderer works in a plain `claude` session Agentric never
+launched — no checkout, no install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vikasprogrammer/agentric/main/scripts/install-statusline.sh | bash
+# undo, restoring whatever status line you had:  … | bash -s -- --uninstall
 ```
 
-It copies the renderer into your claude config dir (`$CLAUDE_CONFIG_DIR`, default `~/.claude`) and
-points `settings.json` → `statusLine` at it, leaving every other key alone and backing the file up
-first. Outside Agentric there is no session to ask about, so the governance half stays silent and the
-head of the bar carries the git branch instead. To undo — it restores whatever status line you had
-before:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/vikasprogrammer/agentric/main/scripts/install-statusline.sh | bash -s -- --uninstall
-```
+It points your `settings.json` → `statusLine` at the copied renderer, leaves other keys alone, and backs
+the file up first. Outside Agentric the governance half stays silent and the bar leads with git.
 
 ---
 
@@ -327,14 +270,15 @@ curl -fsSL https://raw.githubusercontent.com/vikasprogrammer/agentric/main/scrip
 
 | Doc | What is in it |
 |---|---|
-| [`web/src/docs/use-cases.md`](web/src/docs/use-cases.md) | What to automate first — proven agent shapes, triggers, and safety postures (also in the console under **Docs → Use cases**) |
+| [`web/src/docs/use-cases.md`](web/src/docs/use-cases.md) | What to automate first — proven agent shapes, triggers and safety postures (also in the console under **Docs → Use cases**, with a one-click "create this agent") |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The design rationale and the gateway spine |
 | [`docs/PILLARS.md`](docs/PILLARS.md) | Every product pillar and its real implementation status |
 | [`docs/governance-model.md`](docs/governance-model.md) | Policy, approvals, budgets, identity |
 | [`docs/agent-mcp-tools.md`](docs/agent-mcp-tools.md) | Every tool agents can call, with its route and governance notes |
-| [`docs/memory-model.md`](docs/memory-model.md) | How agents capture, recall, distil, and apply what they learn |
-| [`docs/tasks-plan.md`](docs/tasks-plan.md) | The task queue, dispatch, and delegation model |
-| [`docs/codex-runtime.md`](docs/codex-runtime.md) | Running Codex under the same invariant |
+| [`docs/memory-model.md`](docs/memory-model.md) | How agents capture, recall, distil and apply what they learn |
+| [`docs/tasks-plan.md`](docs/tasks-plan.md) | The task queue, dispatch and delegation model |
+| [`docs/connectors/`](docs/connectors/) | Per-connector reference for every native integration |
+| [`docs/codex-runtime.md`](docs/codex-runtime.md) · [`docs/opencode-runtime.md`](docs/opencode-runtime.md) | Running the other two runtimes under the same invariant |
 | [`docs/process-per-tenant.md`](docs/process-per-tenant.md) | Running multiple isolated tenants |
 | [`CLAUDE.md`](CLAUDE.md) | Build and run notes plus the production deployment runbook |
 
@@ -342,4 +286,4 @@ curl -fsSL https://raw.githubusercontent.com/vikasprogrammer/agentric/main/scrip
 
 ## License
 
-[MIT](LICENSE). The mechanisms (kernel, gateway, governance, console) are open and yours to build on.
+[MIT](LICENSE). The mechanisms — kernel, gateway, governance, console — are open and yours to build on.
