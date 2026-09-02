@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.413.2] - 2026-09-02
+### Added
+- **Settings → Memory shows the backend's actual vitals.** The provider collapsed automem's whole
+  `/health` body into a single `detail` string, so everything an operator needs during an incident was
+  invisible. A by-hand fleet sweep surfaced, from that discarded body: a **775-row store/mirror gap**, an
+  enrichment queue nobody could see, and **25% of instawp's memories truncated at the backend's 2000-char
+  cap** — none of it in the product. `MemoryHealthResult.diagnostics` now carries round-trip latency,
+  backend memory + vector counts, sync status, dependency reachability (falkordb/qdrant), embedding width,
+  and the enrichment queue; Settings → Memory renders them beside the existing drift banner. Vectors
+  trailing memories and a non-`synced` state are amber, and an embedding-width **mismatch** gets its own
+  callout because it silently degrades every recall. Every field is optional — a backend that cannot
+  answer is rendered as absent rather than as zero, and `sqlite` shows nothing at all. The one-line
+  `detail` is unchanged, so nothing that read it regresses. Pinned by `scripts/automem-health-test.cjs`.
+
+  Not included: **automem exposes no version over its API** (neither `/health` nor `/stats`), so a
+  version-vs-upstream check isn't buildable from the product. Both deployments are currently on 0.16.1
+  against upstream 0.16.2, and that gap is only visible by reading the CHANGELOG on the box.
+
 ## [0.413.1] - 2026-09-02
 ### Fixed
 - **The resume path could still start an un-authenticated run.** v0.412.0 refuses a launch whose credential

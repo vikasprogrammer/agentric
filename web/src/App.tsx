@@ -18358,6 +18358,67 @@ function MemorySettings({ me }: { me: Member }) {
         )}
       </div>
 
+      {/* Backend vitals. Everything here comes from the backend's own /health; a field it doesn't answer is
+          simply not rendered. Before this the whole body was collapsed into one badge tooltip, so an
+          indexing backlog, a dimension mismatch or a store/mirror gap were invisible until someone ssh'd in. */}
+      {view?.health?.diagnostics && (
+        <div className="rounded-md border p-3 text-xs">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="font-medium">Backend vitals</span>
+            {view.health.diagnostics.latencyMs != null && (
+              <span className="text-muted-foreground">{view.health.diagnostics.latencyMs} ms</span>
+            )}
+          </div>
+          <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
+            {view.health.diagnostics.memoryCount != null && (
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">In the backend</span>
+                <span className="font-mono">{view.health.diagnostics.memoryCount.toLocaleString()}</span>
+              </div>
+            )}
+            {view.localCount != null && (
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">In the local ledger</span>
+                <span className="font-mono">{view.localCount.toLocaleString()}</span>
+              </div>
+            )}
+            {/* vectors BEHIND memories means indexing is catching up: recall can miss the newest rows */}
+            {view.health.diagnostics.vectorCount != null && (
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Indexed vectors</span>
+                <span className={'font-mono' + (view.health.diagnostics.memoryCount != null && view.health.diagnostics.vectorCount < view.health.diagnostics.memoryCount ? ' text-amber-600' : '')}>
+                  {view.health.diagnostics.vectorCount.toLocaleString()}
+                </span>
+              </div>
+            )}
+            {view.health.diagnostics.syncStatus && (
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Sync</span>
+                <span className={'font-mono' + (view.health.diagnostics.syncStatus !== 'synced' ? ' text-amber-600' : '')}>{view.health.diagnostics.syncStatus}</span>
+              </div>
+            )}
+            {Object.entries(view.health.diagnostics.services ?? {}).map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-3">
+                <span className="text-muted-foreground">{k}</span>
+                <span className={'font-mono' + (v === 'connected' || v === 'healthy' ? '' : ' text-amber-600')}>{v}</span>
+              </div>
+            ))}
+          </div>
+          {/* a dimension mismatch silently degrades EVERY recall, so it gets a sentence, not a cell */}
+          {view.health.diagnostics.vectorDimensions?.mismatch && (
+            <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-700">
+              Embedding width mismatch — configured {view.health.diagnostics.vectorDimensions.configured}, in use{' '}
+              {view.health.diagnostics.vectorDimensions.effective}. Recall quality is degraded until the store is re-embedded.
+            </div>
+          )}
+          {view.health.diagnostics.enrichment && (
+            <div className="mt-2 text-muted-foreground">
+              Enrichment: {Object.entries(view.health.diagnostics.enrichment).map(([k, v]) => `${k} ${v}`).join(' · ')}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* drift banner — local ledger has rows the active external store doesn't (migrate or clear) */}
       {(view?.drift ?? 0) > 0 && (
         <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">

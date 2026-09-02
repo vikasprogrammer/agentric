@@ -17,7 +17,9 @@
  *   GET  /recall?query=&tags=&tag_mode=all&limit=                                     → { results[] }
  *   GET  /health
  */
-import { DeleteInput, MemoryProvider, MemoryRecord, MemoryScope, RecallQuery, StoreInput, UpdateInput } from '../types';
+import {
+  MemoryDiagnostics,
+  MemoryHealthResult, DeleteInput, MemoryProvider, MemoryRecord, MemoryScope, RecallQuery, StoreInput, UpdateInput } from '../types';
 
 const TIMEOUT_MS = 8000;
 // automem hard-rejects content over 2000 chars (`POST /memory → 400 "Content exceeds maximum length"`).
@@ -202,11 +204,37 @@ export class AutomemMemoryProvider implements MemoryProvider {
     }
   }
 
-  async health(): Promise<{ ok: boolean; backend: string; detail?: string }> {
+  async health(): Promise<MemoryHealthResult> {
     let count: number | undefined;
     let degraded: string | undefined;
+    // Everything automem already tells us and we used to throw away. See MemoryDiagnostics for why.
+    let diagnostics: MemoryDiagnostics | undefined;
+    const t0 = Date.now();
     try {
-      const res = (await this.req('GET', '/health')) as { status?: string; memory_count?: number; sync_status?: string };
+      const res = (await this.req('GET', '/health')) as {
+        status?: string; memory_count?: number; sync_status?: string; vector_count?: number; version?: string;
+        vector_dimensions?: { configured?: number; effective?: number; mismatch?: boolean };
+        enrichment?: Record<string, number | string>;
+        [k: string]: unknown;
+      };
+      // Dependency reachability arrives as loose top-level strings (`falkordb: "connected"`), so collect
+      // the string-valued keys that aren't part of the known shape rather than hard-coding a service list —
+      // a backend that grows a third dependency then shows up without a code change.
+      const known = new Set(['status', 'sync_status', 'version', 'timestamp']);
+      const services: Record<string, string> = {};
+      for (const [k, v] of Object.entries(res)) {
+        if (typeof v === 'string' && !known.has(k)) services[k] = v;
+      }
+      diagnostics = {
+        latencyMs: Date.now() - t0,
+        memoryCount: res.memory_count,
+        vectorCount: res.vector_count,
+        syncStatus: res.sync_status,
+        services: Object.keys(services).length ? services : undefined,
+        vectorDimensions: res.vector_dimensions,
+        enrichment: res.enrichment,
+        version: res.version,
+      };
       // `degraded` is NOT down. automem reports it while its graph and its vector store disagree — which is
       // the NORMAL state during a bulk write (the node lands before the vector; its sync worker reconciles
       // on a timer). Reads and writes both keep working. Treating it as unusable made the migration this
@@ -214,10 +242,10 @@ export class AutomemMemoryProvider implements MemoryProvider {
       // painted Settings → Memory red mid-import. So: report it, don't fail on it. Only an outright
       // `unhealthy` (or an unreachable endpoint) is a stop.
       if (res.status === 'degraded') degraded = res.sync_status ? `degraded (${res.sync_status})` : 'degraded';
-      else if (res.status !== 'healthy') return { ok: false, backend: 'automem', detail: `unhealthy @ ${this.endpoint}` };
+      else if (res.status !== 'healthy') return { ok: false, backend: 'automem', detail: `unhealthy @ ${this.endpoint}`, diagnostics };
       count = res.memory_count;
     } catch (e) {
-      return { ok: false, backend: 'automem', detail: e instanceof Error ? e.message : String(e) };
+      return { ok: false, backend: 'automem', detail: e instanceof Error ? e.message : String(e), diagnostics: { latencyMs: Date.now() - t0 } };
     }
     // `/health` is UNAUTHENTICATED on automem, so a wrong/stale token still reports "healthy" here — and only
     // surfaces as a 401 on the first authenticated write (store / migrate). Validate the token with a cheap
@@ -229,9 +257,9 @@ export class AutomemMemoryProvider implements MemoryProvider {
       const msg = e instanceof Error ? e.message : String(e);
       // Only a 401 means the token is bad; any other read quirk (e.g. a query-less 400) shouldn't mask a live
       // server that `/health` already confirmed up.
-      if (msg.includes('→ 401')) return { ok: false, backend: 'automem', detail: 'token rejected (401) — check the token in Settings → Memory' };
+      if (msg.includes('→ 401')) return { ok: false, backend: 'automem', detail: 'token rejected (401) — check the token in Settings → Memory', diagnostics };
     }
-    return { ok: true, backend: 'automem', detail: `${count ?? '?'} memories @ ${this.endpoint}${degraded ? ` — ${degraded}` : ''}` };
+    return { ok: true, backend: 'automem', detail: `${count ?? '?'} memories @ ${this.endpoint}${degraded ? ` — ${degraded}` : ''}`, diagnostics };
   }
 
   private async req(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', pathName: string, params?: URLSearchParams, body?: unknown): Promise<unknown> {

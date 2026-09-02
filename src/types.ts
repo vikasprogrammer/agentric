@@ -555,7 +555,7 @@ export interface MemoryProvider {
    * as company knowledge (provenance only). Returns how many were removed. Optional: a backend may no-op.
    */
   forgetAgent?(tenant: string, agentId: string): Promise<number>;
-  health(): Promise<{ ok: boolean; backend: string; detail?: string }>;
+  health(): Promise<MemoryHealthResult>;
   /**
    * Optional: how many memories the backend holds (for the backend-switch **drift banner** — compared
    * against the local `memories` table). SQLite/libsql count their table for the tenant; automem reports
@@ -596,6 +596,45 @@ export interface MemoryMaintenance {
   dedupeThreshold?: number;
   /** How often the scheduler runs a pass, in hours. Default 24. */
   everyHours?: number;
+}
+
+/**
+ * What a backend reports about itself. `ok`/`backend`/`detail` are the original contract and every
+ * caller still reads only those; `diagnostics` is the optional structured half.
+ *
+ * It exists because the one-line `detail` string hid every fact an operator needs during an incident.
+ * Sweeping the fleet by hand on 2026-09-02 surfaced, from the raw `/health` body: both automem
+ * deployments a patch behind upstream, one image six weeks stale, 25% of instawp's memories truncated at
+ * the backend's 2000-char cap, and a 775-row store/mirror drift — none of it visible anywhere in the
+ * product. A number the console cannot show is a number nobody checks.
+ */
+export interface MemoryHealthResult {
+  ok: boolean;
+  backend: string;
+  detail?: string;
+  diagnostics?: MemoryDiagnostics;
+}
+
+/** Backend-reported vitals. Every field optional: a backend that cannot answer simply omits it, and the
+ *  console renders what it gets rather than inventing zeros. */
+export interface MemoryDiagnostics {
+  /** Round-trip to the backend's health endpoint, ms. */
+  latencyMs?: number;
+  /** Rows the BACKEND holds (the mirror count is the caller's own business). */
+  memoryCount?: number;
+  /** Vectors it holds — a gap against `memoryCount` means indexing is behind. */
+  vectorCount?: number;
+  /** automem's own reconciliation state: `synced` | `syncing` | … */
+  syncStatus?: string;
+  /** Dependency reachability, e.g. `{ falkordb: 'connected', qdrant: 'connected' }`. */
+  services?: Record<string, string>;
+  /** Embedding width actually in use, and whether it disagrees with the configured one — a mismatch
+   *  silently degrades every recall, so it is worth its own field rather than prose. */
+  vectorDimensions?: { configured?: number; effective?: number; mismatch?: boolean };
+  /** Enrichment/indexing backlog: pending, in-flight, failed, processed. */
+  enrichment?: Record<string, number | string>;
+  /** Version the backend reports, when it does. */
+  version?: string;
 }
 
 /** Which memory backend an instance uses. Default: sqlite (no external services). */

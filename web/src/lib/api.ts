@@ -1197,6 +1197,18 @@ export interface MemoryHealth {
   ok: boolean
   backend: string
   detail?: string
+  /** Backend-reported vitals. Absent for a backend that has none (sqlite) — render what arrives. */
+  diagnostics?: MemoryDiagnostics
+}
+export interface MemoryDiagnostics {
+  latencyMs?: number
+  memoryCount?: number
+  vectorCount?: number
+  syncStatus?: string
+  services?: Record<string, string>
+  vectorDimensions?: { configured?: number; effective?: number; mismatch?: boolean }
+  enrichment?: Record<string, number | string>
+  version?: string
 }
 export type MemoryBackend = 'sqlite' | 'libsql' | 'automem'
 export interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
