@@ -16421,6 +16421,25 @@ function EndpointTimingsPanel() {
                 ? ` — blocked over 1s ${snap.loop.overOneSecond}× . Every route below was queued behind it; look for a timer, not an endpoint.`
                 : ' — healthy, so the handler times below are the routes\' own cost.'}
             </div>
+            {/* WHAT blocked it. A lag number with no subject ends an investigation at "something blocked
+                the loop for 156 seconds"; each synchronous phase in the process names itself, so a stall
+                arrives with a suspect. `unattributed` is itself the finding: code with no marker. */}
+            {!!snap.loop.stalls?.length && (
+              <div className="rounded-md border p-2 text-xs">
+                <div className="mb-1 font-medium">Worst blocks, and what was running</div>
+                <table className="w-full">
+                  <tbody>
+                    {snap.loop.stalls.slice(0, 6).map((st) => (
+                      <tr key={`${st.at}-${st.phase}`} className="border-t first:border-t-0">
+                        <td className="py-1 pr-3 font-medium tabular-nums text-red-500">{ms(st.ms)}</td>
+                        <td className="py-1 pr-3 font-mono">{st.phase}</td>
+                        <td className="py-1 text-right text-muted-foreground">{new Date(st.at).toLocaleTimeString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead className="text-muted-foreground">

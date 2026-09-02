@@ -398,12 +398,26 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   // Event-loop lag sampler. Always on: it is two numbers per tick, and its whole value is being already
   // running when someone asks "why is everything slow" — the question that took an ssh session last time.
   requestMetrics.start();
+  // A stall that happened while nobody had the metrics page open is still worth knowing about, and the
+  // ring is memory-only — so anything past this bar is also written to the audit stream, with the phase
+  // that caused it. Deliberately not every stall over 1s (a busy box has those, and an audit row per
+  // second of lag is its own problem): only the multi-second blocks that make the console feel dead.
+  const STALL_AUDIT_MS = 5_000;
+  requestMetrics.onStall((stall) => {
+    if (stall.ms < STALL_AUDIT_MS) return;
+    const os = registry.default()?.os;
+    if (!os) return;
+    try {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'loop.stall', data: { ms: stall.ms, phase: stall.phase, at: stall.at } });
+      console.log(`  [loop] blocked ${(stall.ms / 1000).toFixed(1)}s during ${stall.phase}`);
+    } catch { /* never let the recorder break the sampler */ }
+  });
 
   // Shared, process-wide upkeep timers — each fans out across every tenant runtime.
   // Idle GC (A5): reclaim idle members' uids/ttyds. No-op under the local backend, so always-on is safe.
   const reaper = setInterval(() => registry.forEach((rt) => {
-    try { rt.tm.reapIdleSpaces(); } catch { /* never let the sweep crash */ }
-    try { rt.tm.reapIdleSessions(); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
+    try { requestMetrics.phase('reaper:idleSpaces', () => rt.tm.reapIdleSpaces()); } catch { /* never let the sweep crash */ }
+    try { requestMetrics.phase('reaper:idleSessions', () => rt.tm.reapIdleSessions()); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
   }), 60_000);
   reaper.unref?.();
   // Process janitor: reap ttyd/tmux left behind pointing at tmux sockets that no longer exist, plus agent
@@ -417,7 +431,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   });
   const janitorTimer = setInterval(() => {
     try {
-      const r = janitor.sweep();
+      const r = requestMetrics.phase('janitor:sweep', () => janitor.sweep());
       if (r.ttyd === 0 && r.tmux === 0 && r.shell === 0) return;
       const os = registry.default()?.os;
       console.log(`  [janitor] reaped ${r.ttyd} orphaned ttyd + ${r.tmux} orphaned tmux (unreachable sockets) + ${r.shell} orphaned agent shells (reparented to init)`);
@@ -473,7 +487,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     // drains over the next few hours. Audited — a sweep that silently deletes rows is not auditable.
     try {
       const days = os.settings.auditRetentionDays();
-      const dropped = pruneAuditMirror(os.db, days);
+      const dropped = requestMetrics.phase('upkeep:auditRetention', () => pruneAuditMirror(os.db, days));
       if (dropped > 0) {
         os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'audit.mirror.pruned', data: { rows: dropped, keepDays: days } });
       }
@@ -516,7 +530,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     if (os.settings.insightsAlertsEnabled()) {
       try {
         const origin = registry.consoleOrigin(os.tenant);
-        for (const alert of pendingAlerts(os)) {
+        for (const alert of requestMetrics.phase('upkeep:alerts', () => pendingAlerts(os))) {
           rt.tm.postInsightAlert(alert);
           os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'insights.alert', data: { key: alert.key, severity: alert.severity } });
           void notifyInsightAlert(os, rt.slack, rt.discord, origin, alert).catch(() => { /* DM is best-effort */ });
@@ -5292,7 +5306,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // privileged system install), same posture as the self-update apply below.
   if (method === 'POST' && p === '/api/deps/install') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
-    const result = installDeps();
+    const result = await installDeps();
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'system.deps.installed', data: { ok: result.ok, steps: result.steps.map((s) => ({ cmd: s.cmd, ok: s.ok })) } });
     // Hand back a freshness-annotated report so the panel re-renders in one round-trip, same as GET.
     return sendJson(res, 200, { ...result, report: await checkDepUpdates(result.report) });

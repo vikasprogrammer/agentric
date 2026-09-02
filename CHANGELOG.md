@@ -8,6 +8,37 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.414.1] - 2026-09-02
+### Fixed
+- **The hand-off chain rail stopped scanning the whole session table per node.** `GET /api/sessions/:id/chain`
+  (66 ms average on live instawp, 4,193 sessions) resolved a conversation by `claude_session_id`, its
+  delegated runs by `spawned_by`, and the caller above it by `tasks.caller_claude_id` — three columns with
+  **no index between them**, so every one of those was a full `SELECT *` scan, repeated for the climb and
+  again for each node of the descent. Three indexes (`idx_sessions_claude`, `idx_sessions_spawned_by`,
+  `idx_tasks_caller`) plus per-walk memoisation of the thread reads and one read of the tenant's pending
+  approvals instead of one per node: **63 ms → 1.4 ms per chain**, byte-identical output over 40 live
+  chains. Pinned by a new section in `scripts/chain-model-test.cjs`.
+
+### Added
+- **Event-loop stalls now say what caused them.** The lag sampler reported a **156-second** block on the
+  live instawp tenant and nothing else — no route had a handler time near it, the audit stream had no
+  burst, the WAL was 26 MB, the disk idle, the journal empty. A number with no subject is not a lead. Every
+  long synchronous phase in the process now names itself (`upkeep:auditRetention`, `automations:tick`,
+  `reaper:idleSessions`, `janitor:sweep`, `spawn:git fetch`, `spawn:composio-mint`, …), a stall is
+  attributed to the phase open across it, and the worst blocks are listed under Settings → System →
+  Endpoint timings. Anything past 5 s also lands in the audit stream as `loop.stall`, so a block that
+  happened while nobody was watching survives the restart that clears the in-memory ring. `unattributed`
+  is a finding in itself: it means the blocker is code with no marker. Pinned by
+  `scripts/loop-stall-attribution-test.cjs`.
+
+### Fixed
+- **Nothing that shells out for minutes runs on the event loop any more.** The self-update apply
+  (`git pull` + two `npm install`s + two builds), the dependency installer and the npm-dep upgrade all used
+  `spawnSync` with a **ten-minute** timeout — the largest blocking budget in the codebase by two orders of
+  magnitude. One click froze the entire process for the duration: every tenant on the box, every poll, every
+  gate decision, every scheduler tick. They now await a promise-based `runCommand` (`src/edge/exec.ts`).
+  The short probes (`command -v`, `--version`, `tmux list-sessions`) stay synchronous — that is what they
+  were chosen for — but are named, so they can never be an anonymous stall either.
 ## [0.414.0] - 2026-09-02
 ### Added
 - **Handing a session to another member now DMs them.** `POST /api/sessions/:id/transfer` reassigns a

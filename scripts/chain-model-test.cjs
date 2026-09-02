@@ -214,6 +214,20 @@ console.log('\n\x1b[1msteering a live delegate\x1b[0m');
   assert(aos.db.prepare('SELECT COUNT(*) AS c FROM term_sessions').get().c === before, 'no rival session was spawned');
 }
 
+// ── the walk's three lookups must be INDEXED ─────────────────────────────────────────────────────
+// Each one was a full scan of `term_sessions`/`tasks`, and the walk repeats them per node — measured
+// 63 ms per chain on the live instawp tenant (4,193 sessions), 1.4 ms with these indexes. A future
+// migration dropping one would put that straight back with nothing failing.
+{
+  console.log('\nchain lookups are indexed');
+  const idx = aos.db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name IN ('idx_sessions_claude','idx_sessions_spawned_by','idx_tasks_caller')").all().map((r) => r.name).sort();
+  assert(idx.join() === 'idx_sessions_claude,idx_sessions_spawned_by,idx_tasks_caller', 'migration creates all three chain indexes', idx.join());
+  const plan = (sql, ...args) => aos.db.prepare('EXPLAIN QUERY PLAN ' + sql).all(...args).map((r) => r.detail).join(' ');
+  assert(/USING (COVERING )?INDEX idx_sessions_claude/.test(plan("SELECT * FROM term_sessions WHERE claude_session_id = 'x' OR (claude_session_id IS NULL AND id = 'x')")), 'a conversation is found by index, not a scan');
+  assert(/USING (COVERING )?INDEX idx_sessions_spawned_by/.test(plan("SELECT * FROM term_sessions WHERE spawned_by = 'a' OR spawned_by = 'b'")), 'the runs dispatched for a task are found by index');
+  assert(/USING (COVERING )?INDEX idx_tasks_caller/.test(plan("SELECT id FROM tasks WHERE caller_claude_id = 'x'")), 'the caller one level up is found by index');
+}
+
 console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
 fs.rmSync(HOME, { recursive: true, force: true });
 process.exit(fail ? 1 : 0);

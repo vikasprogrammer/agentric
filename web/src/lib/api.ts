@@ -240,8 +240,16 @@ export interface RequestMetricsSnapshot {
   routes: RouteStat[]
   /** Per-MCP-tool timings; empty until an agent session has called one since the last restart. */
   tools?: ToolStat[]
-  loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number }
+  loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number; stalls?: StallRecord[] }
   error?: string
+}
+
+/** One event-loop stall with the synchronous phase that was open across it — see request-metrics.ts. */
+export interface StallRecord {
+  at: number
+  ms: number
+  /** `upkeep:auditRetention`, `automations:tick`, `spawn:git fetch`, … or `unattributed`. */
+  phase: string
 }
 
 export interface StateResp {
