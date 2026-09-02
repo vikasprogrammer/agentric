@@ -48,6 +48,13 @@ const RECENT_PHASES = 32;
  *  keeps both honest. */
 const BLOCKING_TOOLS = new Set(['ask', 'ask_human', 'ask_agent', 'task_wait', 'session_open:summary']);
 
+/** Is this MCP tool one whose clock is a human/delegate rather than code? Also decides whether its
+ *  request may be BLAMED for an event-loop stall: a request that is parked on a wait is open across
+ *  every block that happens meanwhile, and being open is not being at fault. */
+export function isBlockingTool(tool: string): boolean {
+  return BLOCKING_TOOLS.has(tool);
+}
+
 export interface RouteStat {
   /** `GET /api/sessions/:id` — method + normalized path template. */
   route: string;
@@ -86,6 +93,10 @@ export interface StallRecord {
   at: number;
   /** How long the loop was blocked (ms). */
   ms: number;
+  /** How long the blamed phase had ALREADY been open when the block started. A few ms means the phase
+   *  is almost certainly the cause; many seconds means it was merely open across it (a long-poll), and
+   *  the real blocker is unmarked code running inside that window. */
+  openMs?: number;
   /** The phase open across the stall — `route:GET /api/sessions`, `upkeep:dreaming`, … or `unattributed`
    *  when nothing declared itself (which is itself a finding: the blocker is code with no marker). */
   phase: string;
@@ -180,11 +191,11 @@ export class RequestMetrics {
   private loopHist = new Array(BUCKETS.length).fill(0);
   /** Phases currently open, outermost first. A blocking phase is SYNCHRONOUS, so at most one is open
    *  when the loop is blocked — the stack exists so a nested marker can't orphan its parent. */
-  private openPhases: Array<{ label: string; at: number; seq: number }> = [];
+  private openPhases: Array<{ label: string; at: number; seq: number; attributable: boolean }> = [];
   /** Monotonic begin counter — the tie-break for "innermost" when two phases share a millisecond. */
   private phaseSeq = 0;
   /** Recently CLOSED phases, newest last — a stall that ended microseconds before the tick that saw it. */
-  private closedPhases: Array<{ label: string; at: number; end: number; seq: number }> = [];
+  private closedPhases: Array<{ label: string; at: number; end: number; seq: number; attributable: boolean }> = [];
   private stalls: StallRecord[] = [];
   private stallSink?: (s: StallRecord) => void;
   /** Lag of the most recent loop sample — what a request arriving now was plausibly delayed by. */
@@ -221,8 +232,8 @@ export class RequestMetrics {
    * (or use {@link phase}). Cheap by construction — two array writes, no timers, no allocation per tick —
    * because it wraps things that run on every request.
    */
-  beginPhase(label: string): () => void {
-    const entry = { label, at: Date.now(), seq: ++this.phaseSeq };
+  beginPhase(label: string, opts: { attributable?: boolean } = {}): () => void {
+    const entry = { label, at: Date.now(), seq: ++this.phaseSeq, attributable: opts.attributable !== false };
     this.openPhases.push(entry);
     let closed = false;
     return () => {
@@ -230,7 +241,7 @@ export class RequestMetrics {
       closed = true;
       const i = this.openPhases.lastIndexOf(entry);
       if (i >= 0) this.openPhases.splice(i, 1);
-      this.closedPhases.push({ label: entry.label, at: entry.at, end: Date.now(), seq: entry.seq });
+      this.closedPhases.push({ label: entry.label, at: entry.at, end: Date.now(), seq: entry.seq, attributable: entry.attributable });
       if (this.closedPhases.length > RECENT_PHASES) this.closedPhases.shift();
     };
   }
@@ -259,17 +270,19 @@ export class RequestMetrics {
     const end = at + ms;
     // Candidates: every phase that was open at any point inside the blocked interval — still open, or
     // closed during it (the common case, since the blocking call returns before the tick that sees it).
-    let best: { label: string; seq: number } | undefined;
-    const consider = (p: { label: string; at: number; end?: number; seq: number }) => {
+    let best: { label: string; seq: number; at: number } | undefined;
+    const consider = (p: { label: string; at: number; end?: number; seq: number; attributable: boolean }) => {
+      if (!p.attributable) return;                   // a long-poll that is merely OPEN, not running
       if (p.at > end) return;                        // began after the block ended
       if (p.end !== undefined && p.end < at) return; // ended before it began
       // Innermost = begun LAST. `seq` rather than `at`, because two nested phases routinely share a
       // millisecond and a timestamp comparison would then pick by iteration order — i.e. at random.
-      if (!best || p.seq > best.seq) best = { label: p.label, seq: p.seq };
+      if (!best || p.seq > best.seq) best = { label: p.label, seq: p.seq, at: p.at };
     };
     for (const p of this.openPhases) consider(p);
     for (const p of this.closedPhases) consider(p);
     const rec: StallRecord = { at, ms: Math.round(ms), phase: best?.label ?? 'unattributed' };
+    if (best) rec.openMs = Math.max(0, at - best.at);
     this.stalls.push(rec);
     if (this.stalls.length > STALL_RING) this.stalls.shift();
     try { this.stallSink?.(rec); } catch { /* a sink must never break the sampler */ }

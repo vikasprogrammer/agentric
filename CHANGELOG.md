@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.414.3] - 2026-09-02
+### Fixed
+- **A parked long-poll no longer collects the blame for other code's stalls.** The first stall the
+  recorder named on the live tenant was a 1,153 ms block pinned on `POST /api/tasks/wait` — a route whose
+  own handler time never exceeds 20 ms. `task_wait`/`ask` park their request for as long as a human or a
+  delegate takes, so on a busy tenant one is open across every block that happens meanwhile, and being
+  open is not being at fault. Blocking-by-design requests are now marked unattributable, and every stall
+  reports `openMs` — how long the blamed phase had already been open when the block began — so a phase
+  that was merely present is visible as such in Settings → System rather than reading as the culprit.
+
 ## [0.414.2] - 2026-09-02
 ### Fixed
 - **A stall caused by a request now names the request.** The first stall the new recorder caught on the

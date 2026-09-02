@@ -248,6 +248,9 @@ export interface RequestMetricsSnapshot {
 export interface StallRecord {
   at: number
   ms: number
+  /** How long the blamed phase had already been open when the block began — a big number means it was
+   *  merely open across the stall (a long-poll), not the thing running. */
+  openMs?: number
   /** `upkeep:auditRetention`, `automations:tick`, `spawn:git fetch`, … or `unattributed`. */
   phase: string
 }

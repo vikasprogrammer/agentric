@@ -16,7 +16,7 @@ import { TenantRegistry, TenantRuntime, notifyLoginLink, notifyInsightAlert } fr
 import { ProcessJanitor } from './edge/process-janitor';
 import { hostMetrics, availableBytes } from './edge/host-metrics';
 import { pruneAuditMirror } from './governance/audit';
-import { requestMetrics, normalizePath } from './edge/request-metrics';
+import { requestMetrics, normalizePath, isBlockingTool } from './edge/request-metrics';
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { governedCapabilities } from './capabilities/normalize';
@@ -303,7 +303,16 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
     // rather than reading `unattributed`. Safe to hold across the handler's awaits because attribution
     // takes the INNERMOST open phase: a timer that blocks while this request is parked on an await
     // opened later, so it — not this route — is named.
-    const endPhase = requestMetrics.beginPhase(`route:${req.method || 'GET'} ${normalizePath((req.url || '/').split('?')[0])}`);
+    // A tool that BLOCKS by design (`task_wait`, `ask`, …) parks its request for as long as a human or a
+    // delegate takes, so it is open across everything — and being open is not being at fault. It is marked
+    // unattributable, or it would collect the blame for every stall on a busy tenant purely by being there.
+    // Live proof: the first named stall after this shipped was a 1,153 ms block pinned on
+    // `POST /api/tasks/wait`, whose own handler time never exceeds 20 ms.
+    const reqTool = String(req.headers['x-aos-tool'] || '').trim();
+    const endPhase = requestMetrics.beginPhase(
+      `route:${req.method || 'GET'} ${normalizePath((req.url || '/').split('?')[0])}`,
+      { attributable: !isBlockingTool(reqTool) },
+    );
     res.once('close', endPhase);
     res.once('finish', () => {
       endPhase();

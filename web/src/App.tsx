@@ -16432,7 +16432,7 @@ function EndpointTimingsPanel() {
                     {snap.loop.stalls.slice(0, 6).map((st) => (
                       <tr key={`${st.at}-${st.phase}`} className="border-t first:border-t-0">
                         <td className="py-1 pr-3 font-medium tabular-nums text-red-500">{ms(st.ms)}</td>
-                        <td className="py-1 pr-3 font-mono">{st.phase}</td>
+                        <td className="py-1 pr-3 font-mono">{st.phase}{st.openMs != null && st.openMs > 2000 && <span className="ml-1 text-muted-foreground" title="the phase was already open this long when the block began — it was probably present, not guilty">(open {ms(st.openMs)} first)</span>}</td>
                         <td className="py-1 text-right text-muted-foreground">{new Date(st.at).toLocaleTimeString()}</td>
                       </tr>
                     ))}
