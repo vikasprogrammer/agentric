@@ -339,7 +339,7 @@ const TOOL_ALLOW: Set<string> | null = (() => {
 // its inbox and records what it learned — strand an agent without them and the governance surface goes
 // dark (no completion, no blocking question, no lesson) while the run still burns quota. A manifest
 // typo must degrade the context saving, never the agent.
-const AGENT_CORE_TOOLS = ['report', 'update', 'ask_human', 'check_inbox', 'notify', 'recall', 'remember'];
+const AGENT_CORE_TOOLS = ['report', 'update', 'ask_human', 'check_inbox', 'recall', 'remember'];
 
 /** Apply the per-agent allowlist to a tool list. Core tools always survive. */
 function offered<T extends { name: string }>(tools: T[]): T[] {
@@ -566,30 +566,6 @@ const TOOLS = [
         important: { type: 'boolean', description: 'Highlight this as a key milestone or heads-up. Default false.' },
       },
       required: ['message'],
-    },
-  },
-  {
-    name: 'notify',
-    description:
-      'Notify a SPECIFIC teammate — the person who should know about something on this run, when that is ' +
-      'someone OTHER than the operator you already report to. By default your progress/updates go only to ' +
-      'the human who owns this session; use `notify` to deliberately loop in someone else: ' +
-      '"@alex the deploy you asked about is live", "flagging this to the on-call admin". Pass `to` (their ' +
-      'name or email) and a one-line `message`. They get an Inbox card + a DM. This does NOT block — keep ' +
-      'working. Use it purposefully for the RIGHT person, not to broadcast; there is no team-wide notify. ' +
-      'IMPORTANT — `notify` is ONE-WAY: the human CANNOT reply to it. If you need an ANSWER or a decision ' +
-      'from that person, use `ask_human` with `to` set to them instead: it blocks, it is answerable from ' +
-      'their Inbox or straight from the DM, and their reply comes back to you. Never post a question via ' +
-      '`notify` and then wait — nobody can respond, so you will wait forever.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        to: { type: 'string', description: "The teammate to notify — their name or email (e.g. \"Alex Rivera\" or \"alex@acme.com\")." },
-        message: { type: 'string', description: 'One line: what you want them to know.' },
-        important: { type: 'boolean', description: 'Flag as urgent/high-priority. Default false.' },
-      },
-      required: ['to', 'message'],
     },
   },
   {
@@ -2141,20 +2117,6 @@ async function update(args: Record<string, unknown>): Promise<string> {
   return d.ok ? 'Progress posted to the inbox.' : `Could not post update: ${d.error ?? 'unknown error'}`;
 }
 
-async function notify(args: Record<string, unknown>): Promise<string> {
-  const to = String(args.to ?? '').trim();
-  const message = String(args.message ?? '').trim();
-  if (!to) return 'Who should I notify? (`to` is required — a teammate name or email.)';
-  if (!message) return 'Nothing to send (message is required).';
-  const res = await fetch(AOS_URL + '/api/notify', {
-    method: 'POST',
-    headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, to, message, important: args.important === true }),
-  });
-  const d = (await res.json()) as { ok?: boolean; to?: string; error?: string };
-  return d.ok ? `Notified ${d.to ?? to} (inbox + DM).` : `Could not notify: ${d.error ?? 'unknown error'}`;
-}
-
 async function publish(args: Record<string, unknown>): Promise<string> {
   const filePath = String(args.path ?? '').trim();
   if (!filePath) return 'Nothing to publish (path is required).';
@@ -3284,7 +3246,6 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'answer' ? await answer(args)
         : name === 'report' ? await report(args)
         : name === 'update' ? await update(args)
-        : name === 'notify' ? await notify(args)
         : name === 'publish' ? await publish(args)
         : name === 'skill_propose' ? await skillPropose(args)
         : name === 'skill_get' ? await skillGet(args)

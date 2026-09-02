@@ -113,7 +113,7 @@ function toolsList(env) {
   });
 }
 
-const CORE = ['report', 'update', 'ask_human', 'check_inbox', 'notify', 'recall', 'remember'];
+const CORE = ['report', 'update', 'ask_human', 'check_inbox', 'recall', 'remember']; // notify retired in v0.414.5
 
 (async () => {
   const all = await toolsList({});
