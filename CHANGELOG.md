@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.414.4] - 2026-09-02
+### Changed
+- **`task_create`'s schema is 20% smaller.** Every tool schema is re-sent on every API call, and
+  `task_create` was the largest at **5,034 bytes** — 6× the median tool. The bulk was not its description
+  (898 bytes) but its 18 parameter descriptions, led by `poke_on_done` at **688 bytes** explaining the
+  whole delivery contract: which wake-ups reach a cold caller and which do not. That is documentation, and
+  it already lives in `docs/agent-mcp-tools.md`; repeating it in the schema billed it to every request.
+  Seven parameters rewritten to keep only what changes a caller's decision — `poke_on_done` still states
+  the one asymmetry an agent cannot guess (a hand-back wakes you after you exit, a plain completion does
+  not), `effort`/`model` stop restating their own enums. **5,034 → 4,030 bytes.** Behaviour is unchanged:
+  these are descriptions, not validation.
+
+  Honest scale: this is **~1.3% of the 77 KB schema**, not the 15–20% an earlier estimate suggested — that
+  figure assumed also dropping never-used tools, which is deliberately not done here.
+
 ## [0.414.3] - 2026-09-02
 ### Fixed
 - **A parked long-poll no longer collects the blame for other code's stalls.** The first stall the
@@ -70,7 +85,6 @@ new version heading in the same commit.
   person deliberately making another accountable, an ask rather than a lifecycle beat. The DM is bound to
   the session, so replying in chat picks the conversation up with the agent. Audited
   `session.transfer.notified`.
-
 ## [0.413.5] - 2026-09-02
 ### Fixed
 - **The prompt told agents to call a tool that doesn't exist.** `ask` was renamed `ask_human`, and three
