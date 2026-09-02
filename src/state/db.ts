@@ -413,6 +413,18 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_video_jobs_status ON video_jobs(status);
 
+    -- Per-agent MCP tool usage, counted not evented (src/edge/tool-usage.ts). The loopback tools bypass
+    -- the gate and only the writing ones audit anything, so READ tools were invisible; this is the
+    -- histogram that makes "which tools does this agent use" answerable without doubling audit volume.
+    CREATE TABLE IF NOT EXISTS tool_usage (
+      tenant TEXT NOT NULL,
+      agent  TEXT NOT NULL,
+      tool   TEXT NOT NULL,
+      day    TEXT NOT NULL,          -- YYYY-MM-DD, UTC
+      n      INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (tenant, agent, tool, day)
+    );
+
     -- A queryable mirror of the audit event stream (JSONL remains the durable system of record).
     CREATE TABLE IF NOT EXISTS audit_events (
       id        INTEGER PRIMARY KEY AUTOINCREMENT,
