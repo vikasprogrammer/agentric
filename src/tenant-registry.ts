@@ -30,6 +30,7 @@ import { Audience, approvalAudience, resolveRecipients } from './governance/reci
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { TenantRecord, TenantStore } from './state/control';
+import { requestMetrics } from './edge/request-metrics';
 
 export interface TenantRuntime {
   record: TenantRecord;
@@ -537,7 +538,8 @@ export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'po
   if (!recipients.length) return;
   const t = notice.task;
   const agentLabel = t.assignee?.startsWith('agent:') ? t.assignee.slice('agent:'.length) : 'tasks';
-  tm.postTaskCard({ taskId: t.id, agent: agentLabel, title: card.title, body: t.title, audience: card.audience, event: card.event });
+  requestMetrics.phase('task:notify.card', () =>
+    tm.postTaskCard({ taskId: t.id, agent: agentLabel, title: card.title, body: t.title, audience: card.audience, event: card.event }));
   // Deep-link straight to the task's permalink (`#/tasks/<id>`), so the DM is one tap from the board.
   const url = consolePage(consoleOrigin, 'tasks', t.id);
   const text = (p: ChatPlatform) => `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen it in the ${chatLink(p, url, 'Agentric console')}.`;

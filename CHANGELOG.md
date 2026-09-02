@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.414.7] - 2026-09-02
+### Added
+- **Named the three synchronous steps behind the one route that still blocks the loop.** With the
+  recorder running for an hour, `POST /api/tasks/update` is the only remaining loop-blocker on the live
+  tenant — three stalls of 1.00–1.05 s, each with an `openMs` of 44–87 ms, i.e. the phase had just begun
+  when the block started, so it IS the cause (unlike the parked `task_wait` false positive #766 fixed).
+  Its own store call is 0.5–1.5 ms measured against a copy of the live DB, so the second is spent
+  somewhere else on that path: the audit sink (`audit:append` — a SQLite insert plus an `appendFileSync`
+  per run file, on the path of every governed action), the task store write (`task:update.store`) or the
+  Inbox card the notifier writes inline (`task:notify.card`). All three now name themselves, so the next
+  occurrence says which — rather than another round of reading code and guessing.
+
 ## [0.414.6] - 2026-09-02
 ### Added
 - **Per-agent MCP tool-usage counters — the read tools are finally visible.** The `mcp__agentos__*` tools
