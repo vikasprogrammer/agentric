@@ -16,6 +16,11 @@
  *   2. The consequence at launch: a prefixed-provenance run gets the company-bot GH_TOKEN untouched
  *      rather than a garbage principal — and the same run with a real run-as member gets THEIR token.
  *   3. The one-time migration NULLs colon-bearing run_as rows already on disk, and leaves member ids.
+ *   4. The same identity contract one table over: `tasks.owner` (#559). `POST /api/app/dispatch` looked
+ *      the run-as up by EMAIL only and stored an EMAIL — so a hosted app's dispatch was ownerless
+ *      whenever it fell back to the manifest's member-id owner, and when it did resolve, the address it
+ *      stored matched no consumer (the task notifier resolves an owner by id). Covers the both-forms
+ *      lookup, the delivery consequence, and the migration over rows already written.
  *
  * Usage:  npm run build && node scripts/run-as-identity-test.cjs
  */
@@ -112,6 +117,36 @@ async function main() {
   assert(runAsOf('s_gone') === 'ex-staff@test', 'an email matching no member is left alone (not discarded)');
   assert(db.prepare('SELECT spawned_by FROM term_sessions WHERE id = ?').get('s_chat').spawned_by === 'chat:triage',
     'provenance (spawned_by) is untouched — only the identity column is cleaned');
+
+  // ─── 4) tasks.owner — the same contract, one table over (#559) ─────────────
+  console.log('\n\x1b[1m4) tasks.owner is a member id (app dispatch)\x1b[0m');
+  const { resolveRecipients } = require(path.join(ROOT, 'dist/governance/recipients.js'));
+  const email = osx.team.getMember(memberId).email;
+
+  // The lookup the route performs. BOTH forms must resolve — an app forwards `X-Aos-Member` as an
+  // email, while `manifest.owner` (written by app_create) is a member id.
+  assert(osx.team.resolveMemberRef(email)?.id === memberId, 'resolveMemberRef: an email → the member id');
+  assert(osx.team.resolveMemberRef(memberId)?.id === memberId, 'resolveMemberRef: a member id → itself (the manifest.owner case)');
+  assert(osx.team.resolveMemberRef('  ' + email.toUpperCase() + '  ')?.id === memberId, 'resolveMemberRef: trimmed + case-insensitive');
+  assert(osx.team.resolveMemberRef('nobody@nowhere') === undefined, 'resolveMemberRef: an unknown reference → undefined (ownerless, not a bogus owner)');
+  assert(osx.team.resolveMemberRef('') === undefined, 'resolveMemberRef: an empty reference → undefined');
+
+  // The consequence: a task's owner is only notified when the column holds an id.
+  const mk = (id, owner) => osx.db.prepare(
+    'INSERT INTO tasks (id, tenant, title, body, status, priority, labels, assignee, owner, created_by, created_at, updated_at, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+  ).run(id, osx.tenant, 't', 'b', 'todo', 2, '[]', 'agent:triage', owner, 'app:notes', Date.now(), Date.now(), 'app:notes');
+  mk('tsk_id', memberId);
+  mk('tsk_email', email);
+  mk('tsk_gone', 'ex-staff@test');
+  assert(resolveRecipients(osx, { kind: 'task', id: 'tsk_id' }).length === 1, 'a member-id owner resolves to a recipient');
+  assert(resolveRecipients(osx, { kind: 'task', id: 'tsk_email' }).length === 0, 'an EMAIL owner resolves to nobody — the silent cost the route used to write');
+
+  openDb(path.join(HOME, 'agent-os.db')); // re-runs migrate() over the same file
+  const ownerOf = (id) => osx.db.prepare('SELECT owner FROM tasks WHERE id = ?').get(id).owner;
+  assert(ownerOf('tsk_email') === memberId, 'migration CANONICALISES an email task owner to the member id');
+  assert(ownerOf('tsk_id') === memberId, 'migration LEAVES a real member id alone');
+  assert(ownerOf('tsk_gone') === 'ex-staff@test', 'an email matching no member is left alone (not discarded)');
+  assert(resolveRecipients(osx, { kind: 'task', id: 'tsk_email' }).length === 1, 'the migrated row now reaches its owner');
 
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
   fs.rmSync(HOME, { recursive: true, force: true });

@@ -1785,7 +1785,7 @@ export class TerminalManager {
     const asMember = (v?: string): string | undefined => {
       const raw = (v ?? '').trim();
       if (!raw) return undefined;
-      return (this.os.team.getMember(raw) ?? this.os.team.getMemberByEmail(raw))?.id;
+      return this.os.team.resolveMemberRef(raw)?.id;
     };
     return asMember(runAs) ?? asMember(spawnedBy);
   }
@@ -6385,7 +6385,7 @@ export class TerminalManager {
     let runAs: string | undefined;
     if ((spec.runAs || '').trim()) {
       const raw = String(spec.runAs).trim();
-      const m = this.os.team.getMember(raw) ?? this.os.team.getMemberByEmail(raw);
+      const m = this.os.team.resolveMemberRef(raw);
       if (!m) return { ok: false, error: `unknown member "${raw}" for runAs — pass a member id or email (use directory_lookup), or omit runAs to run as the company identity` };
       runAs = m.id;
     }
