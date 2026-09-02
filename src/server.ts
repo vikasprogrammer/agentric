@@ -16,7 +16,7 @@ import { TenantRegistry, TenantRuntime, notifyLoginLink, notifyInsightAlert } fr
 import { ProcessJanitor } from './edge/process-janitor';
 import { hostMetrics, availableBytes } from './edge/host-metrics';
 import { pruneAuditMirror } from './governance/audit';
-import { requestMetrics } from './edge/request-metrics';
+import { requestMetrics, normalizePath } from './edge/request-metrics';
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { governedCapabilities } from './capabilities/normalize';
@@ -299,7 +299,14 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
     // behind a blocking timer isn't mistaken for a slow route. One counter update, no I/O, no DB write.
     const startedNs = process.hrtime.bigint();
     const arrivalStall = requestMetrics.currentStallMs();
+    // Name the request as a PHASE too, so a stall caused by a handler is attributed to that handler
+    // rather than reading `unattributed`. Safe to hold across the handler's awaits because attribution
+    // takes the INNERMOST open phase: a timer that blocks while this request is parked on an await
+    // opened later, so it — not this route — is named.
+    const endPhase = requestMetrics.beginPhase(`route:${req.method || 'GET'} ${normalizePath((req.url || '/').split('?')[0])}`);
+    res.once('close', endPhase);
     res.once('finish', () => {
+      endPhase();
       const ms = Number(process.hrtime.bigint() - startedNs) / 1e6;
       const pathname = (req.url || '/').split('?')[0];
       requestMetrics.observe(req.method || 'GET', pathname, res.statusCode, ms, arrivalStall);
