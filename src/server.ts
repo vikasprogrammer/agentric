@@ -76,6 +76,7 @@ import { PrCache, taskPrRefs, taskPrRefsBulk, prSummary, type PrToken } from './
 import { convertAppManifest, userInstallationStatus } from './connectors/github';
 import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
+import { supersededExpired } from './connectors/composio-identity';
 import { JsonPolicyEngine, PolicyDocument, applyProposal, validatePolicyDocument } from './governance/policy';
 import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
@@ -6549,14 +6550,64 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     });
     // `mine` rows carry their own share state so the row can render Share / Unshare directly.
     const sharedIds = os.composioShares.sharedIdsFor(me.email);
+    // The account BEHIND each connection (composio-identity.ts). Composio's entity id is a shelf, not an
+    // identity: a company app can be an individual's personal login, which is how a sheet ended up owned
+    // by a teammate nobody had asked. Served from the cache so the page stays fast; the refresh below
+    // keeps that cache honest.
+    const identities = os.composioIdentities.byConnection([
+      serviceUserId(os.tenant), me.email, ...owners,
+    ]);
+    const withAccount = <T extends { id: string }>(a: T): T & { account: string } =>
+      ({ ...a, account: identities.get(a.id)?.account ?? '' });
     return sendJson(res, 200, {
       keySet: true,
-      company,
-      mine: mine.map((a) => ({ ...a, shared: sharedIds.has(a.id) })),
-      teamShared,
+      company: company.map(withAccount),
+      mine: mine.map((a) => withAccount({ ...a, shared: sharedIds.has(a.id) })),
+      teamShared: teamShared.map(withAccount),
       me: me.email,
       companyEntity: serviceUserId(os.tenant),
     });
+  }
+  // Re-resolve WHOSE account is behind each connection, and what has expired. A live probe (a mint plus
+  // two round trips per entity), so it is an explicit action rather than something every page load pays
+  // for: the Connections page offers it, and a launch fires it in the background at most every 6h.
+  // Any member may refresh their own shelf + the company one; nobody else's.
+  if (method === 'POST' && p === '/api/connections/refresh') {
+    if (!os.settings.composioApiKey()) return sendJson(res, 400, { error: 'no Composio API key' });
+    const out = await tm.refreshComposioConnections([
+      { userId: serviceUserId(os.tenant) },
+      { userId: me.email, ownerMemberId: me.id },
+    ]);
+    return sendJson(res, 200, { ok: true, ...out });
+  }
+  // Clear SUPERSEDED expired connections — an expired account for an (entity, toolkit) that also has a
+  // live one. Deliberately not "delete everything expired": an expired connection with no replacement is
+  // the only record that a capability is missing, and deleting it would erase the very thing that tells
+  // a human to reconnect. Owner/admin, and scoped to the company shelf + the caller's own.
+  if (method === 'POST' && p === '/api/connections/prune') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'only an owner or admin can prune connections' });
+    const key = os.settings.composioApiKey();
+    if (!key) return sendJson(res, 400, { error: 'no Composio API key' });
+    const MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000; // a just-superseded row stays visible for a week
+    const [company, mine] = await Promise.all([
+      listConnectedAccounts(key, serviceUserId(os.tenant)),
+      listConnectedAccounts(key, me.email),
+    ]);
+    const doomed = supersededExpired([...company, ...mine], MIN_AGE_MS);
+    const removed: string[] = [];
+    for (const a of doomed) {
+      const r = await deleteConnectedAccount(key, a.id);
+      if ('error' in r) continue;
+      os.composioShares.unshare(a.id);
+      removed.push(`${a.toolkit} (${a.userId})`);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.pruned', data: { id: a.id, toolkit: a.toolkit, entity: a.userId, reason: 'superseded-expired' } });
+    }
+    // Re-read so the cache reflects the deletions rather than keeping ids that no longer exist.
+    await tm.refreshComposioConnections([
+      { userId: serviceUserId(os.tenant) },
+      { userId: me.email, ownerMemberId: me.id },
+    ], { notify: false });
+    return sendJson(res, 200, { ok: true, removed, kept: doomed.length - removed.length });
   }
   // Mark one of MY Composio connections available to the whole team — or take it back to just me.
   // Composio can't move an account between entities (its `user_id` is immutable and a session may only

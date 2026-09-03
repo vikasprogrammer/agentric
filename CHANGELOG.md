@@ -8,6 +8,43 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.421.0] - 2026-09-03
+### Added
+- **Every Composio connection now says whose account it actually is.** A Composio `user_id` is a SHELF,
+  not an identity: `service:<tenant>` means "the company's shelf" and an email means "that member's", and
+  neither says which third-party account was OAuth'd onto it. Live consequence - the *company* Google
+  Sheets connection on one tenant was a specific teammate's personal Google account, so an agent acting
+  "as the company" created a spreadsheet in that person's Drive while the console showed only
+  `googlesheets_seba-artal`. The account cannot be read from the connection record (every credential
+  field comes back as the literal `REDACTED`) but the Tool Router discloses it, so it is resolved,
+  cached in the new `composio_identities` table, and surfaced as `account` on `GET /api/connections`,
+  on each console row, and in every agent's prompt.
+- **Agents are told which namespace is whose.** Until now a session saw two indistinguishable MCP
+  servers, `composio` and `composio-company`, and the Tool Router picks tools by relevance - so which
+  identity acted was decided by ranking, not intent. `buildCompanyMd` now names each namespace, whose
+  shelf it is, and the resolved account per app, and instructs the agent to `ask` rather than proceed
+  when the account that would act is not the one the task implies. Prompt and mint are derived from one
+  `composioSessionPlan`, so the agent can never be told about a namespace it does not have.
+- **Expired connections are no longer silent.** One tenant's company ClickUp had three expired accounts
+  and zero live ones for two weeks with nothing anywhere saying so. A refresh now posts a
+  `connection.expired` card (audited `connector.expired`) to whoever can reauthorise it - the shelf's
+  member, or the admins tier for the company shelf - deduped per connection for a week, and says whether
+  the app is merely an old row or genuinely unavailable. The console shows expired rows with a
+  **Reconnect** button and hides "Share with team" on them, plus **Check accounts** (refresh on demand)
+  and **Clear replaced**.
+- `POST /api/connections/refresh` and `POST /api/connections/prune`. Prune deletes only **superseded**
+  expired connections - an expired account for an (entity, toolkit) that also has a live one, older than
+  7 days. Deliberately not "delete everything expired": an expired connection with no replacement is the
+  only record that a capability is missing, so sweeping it would erase the very thing that tells a human
+  to reconnect.
+
+### Note
+- The identity refresh is a mint plus two MCP round trips per entity, so it stays OFF the launch path: a
+  launch fires it in the background at most every 6h per entity and never waits on it. A failed probe
+  degrades to "we learned nothing this time" and never blanks a label already cached.
+- ⚠ `COMPOSIO_MANAGE_CONNECTIONS` does not report "no connection" for a toolkit - it **initiates** one
+  and returns an OAuth link. The probe list is therefore always derived from `activeToolkits()`.
+
 ## [0.420.0] - 2026-09-03
 ### Fixed
 - **Every Composio action was governed as one anonymous `connector.call`.** Composio's Tool Router

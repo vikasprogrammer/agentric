@@ -1502,6 +1502,9 @@ export interface ComposioConnection {
   userId: string
   /** Distinguishing label for this connection (user alias, else Composio's auto handle). */
   name: string
+  /** The REAL third-party account behind it (email / login), resolved from Composio. '' = not yet known.
+   *  The entity says whose SHELF the app sits on; this says whose ACCOUNT it actually is. */
+  account?: string
   /** Mine only: the owner marked it available to the whole team (composio_shares). */
   shared?: boolean
 }
@@ -1511,6 +1514,8 @@ export interface SharedConnection {
   toolkit: string
   status: string
   name: string
+  /** The REAL third-party account behind it. '' = not yet resolved. */
+  account?: string
   /** The Composio entity it lives under = the sharing member's email. */
   ownerEmail: string
   ownerMemberId: string
@@ -2187,6 +2192,8 @@ export const api = {
   saveCompany: (companyMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/company', { companyMd }),
   saveReview: (reviewMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/review', { reviewMd }),
   connections: () => call<ConnectionsResp>('GET', '/api/connections'),
+  refreshConnections: () => call<{ ok?: boolean; resolved?: number; expired?: number; error?: string }>('POST', '/api/connections/refresh', {}),
+  pruneConnections: () => call<{ ok?: boolean; removed?: string[]; kept?: number; error?: string }>('POST', '/api/connections/prune', {}),
   integrationsOverview: () => call<IntegrationsOverview>('GET', '/api/integrations/overview'),
   composioToolkits: () => call<{ toolkits: { slug: string; name: string }[]; error?: string }>('GET', '/api/composio/toolkits'),
   connectApp: (body: { toolkit: string; scope: 'company' | 'personal' }) =>

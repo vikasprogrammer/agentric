@@ -127,6 +127,66 @@ Two things worth knowing about it:
   rule for remote execution as a class. Their auto-approve signature is namespaced separately, so an
   "always approve" for a local command can never clear the same command on Composio's sandbox.
 
+## Whose account is it, really? (`src/connectors/composio-identity.ts`)
+
+**A Composio `user_id` is a SHELF, not an identity.** `service:<tenant>` means "the company's shelf"
+and an email means "that member's shelf" — neither says which third-party account was actually OAuth'd
+onto it. On expresstech the *company* Google Sheets connection turned out to be one teammate's personal
+Google account, so an agent acting "as the company" created a spreadsheet in that person's Drive, and
+nothing anywhere said so: the console displayed the opaque `googlesheets_seba-artal`.
+
+It cannot be read off the connection record — `data.id_token` and every other credential field come
+back as the literal string `REDACTED`. But the Tool Router discloses it: `COMPOSIO_MANAGE_CONNECTIONS`
+with a toolkit list returns `results[<toolkit>].current_user_info` (`{ email, … }` for Google, the
+account object for Stripe, a `login` for GitHub-likes). That is cached in **`composio_identities`** and
+surfaced in three places:
+
+- the **console** — a row reads `googlesheets — zubair@expresstech.io`, not a word-id;
+- every agent's **prompt** — `TerminalManager.composioContext` lists each namespace, whose shelf it is,
+  and the resolved account per app, plus the instruction to `ask` rather than act when the account that
+  would act is not the one the task implies;
+- `GET /api/connections`, as `account` on each row.
+
+> ⚠ **Never probe a toolkit with no ACTIVE connection.** `COMPOSIO_MANAGE_CONNECTIONS` does not report
+> "none" for one — it **initiates** a connection and returns an OAuth link. `activeToolkits()` derives
+> the probe list from a `listConnectedAccounts` result and is the only supported way to build it.
+
+The refresh is a mint plus two MCP round trips per entity, so it is deliberately **off the launch path**:
+a launch fires it in the background at most every 6h per entity (`composioIdentityStale`), the console's
+**Check accounts** button runs it on demand, and a session never waits on it. A failed probe degrades to
+"we learned nothing this time" — it never blanks a label already cached, because "unknown" and "wrong"
+are very different things for a prompt to say.
+
+### The prompt is the point
+
+Before this, an agent saw two indistinguishable MCP servers called `composio` and `composio-company`,
+and the Tool Router auto-selects tools by relevance — so **which identity acted was decided by ranking,
+not intent**. The same live run that created the sheet under a teammate's Google account then sent mail
+through `composio` (the run-as member's own Gmail), because the company shelf had no Gmail at all. Both
+were reasonable guesses from a name alone. Names are not identities, so the prompt states the identities.
+
+## Expired connections — mark, tell, and prune only what is superseded
+
+An expired connection is silent by construction: the agent finds the app missing and works around it.
+Company ClickUp on expresstech had three expired accounts and **zero** live ones for two weeks with
+nothing anywhere saying so.
+
+- **Status is cached on every refresh**, and a newly-expired connection posts a `connection.expired`
+  card (audited `connector.expired`) to whoever can reauthorise it — the shelf's member, or the admins
+  tier for the company shelf. Deduped per connection for a week. The card distinguishes the two cases,
+  because only one needs anyone to act: *reconnected already, this is the old row* vs *nothing else is
+  connected for this app, so agents cannot use it at all*.
+- **The console** shows an expired row with a **Reconnect** button (the same hosted OAuth), and hides
+  the "Share with team" control — lending out a dead account helps nobody.
+- **`POST /api/connections/prune`** (owner/admin) deletes only **superseded** expired connections: an
+  expired account for an (entity, toolkit) that also has a live one, older than 7 days. Reconnecting
+  leaves the old row behind, and those rows are the real clutter.
+
+> **Why not delete every expired connection.** An expired connection with no live replacement is the
+> only record that a capability is missing. Sweeping it away would erase precisely the thing that tells
+> a human to reconnect, turning a visible to-do into a silent gap — which is the failure mode this whole
+> section exists to fix.
+
 ## Gotchas
 
 - **The endpoint is minted per launch** — there is no stored URL to inspect or curl. Debug a bad session
