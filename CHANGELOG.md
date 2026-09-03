@@ -33,6 +33,30 @@ new version heading in the same commit.
   to/cc list and sat outside the enricher's recipient keys, so a send to one insider plus four outsiders
   would have scored as a single internal recipient. Latent until the unwrap above made the email facts
   fire at all.
+### Docs
+- **Insights Step 5: "prompt shape" added as a second-signal candidate** (`docs/insights-revisit.md`).
+  Agent prompts accrete monotonically through `agent_update` self-edits and nothing ever removes a
+  section: instawp's `onboarding-assistant` went 8.2KB -> 194KB over 15 revisions, `engineer` 7.8KB ->
+  81KB over 34. Because a prompt is re-read every session, instawp spends ~22M tokens/month re-loading
+  them. Two costs beyond tokens: the prompt's register leaks into the work product (an 81KB
+  essay-shaped prompt produced 109 PR comments in 14 days averaging >=1.6KB), and numbers rot in a
+  prompt because nothing dates or re-runs them. The signal is already fully recorded in
+  `agent_revisions` + `term_sessions`; ranking must be **bytes x runs**, not bytes. Includes the rule
+  four hand-migrations produced ("move what a run reads conditionally, keep what fires every run"),
+  the refusal to build a one-click migrate button, and measured sizing: 36.8MB/30d (~9.2M tokens/month)
+  freed across four agents.
+
+## [0.419.3] - 2026-09-03
+### Fixed
+- **A single `make-live.sh` run could put two tenants on two different commits.** Every checkout fetched
+  and then resolved `$REF` for itself, which is a race with whoever is merging: a box that fetched a
+  second later got a newer commit than its siblings. One run on 2026-09-03 put one tenant live on 0.419.2
+  and two on 0.419.1 and reported success for all three — each box really had been verified against the
+  version it had itself built, so nothing in the deploy was in a position to notice. `$REF` is now
+  resolved exactly once, up front (from the first local checkout, or the first remote on a remote-only
+  box), every checkout is pinned to that sha, and a checkout that does not have the commit after its
+  fetch fails by name instead of quietly deploying something else. The run now opens with the line
+  `deploy target: origin/main @ <sha>`.
 
 ## [0.419.2] - 2026-09-03
 ### Fixed
