@@ -114,7 +114,12 @@ for spec in ${AOS_LIVE_REMOTE_TARGETS:-}; do
 done
 
 REMOTE_NODE_BIN="${AOS_LIVE_REMOTE_NODE_BIN:-\$HOME/.nvm/versions/node/v22.22.0/bin}"
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=10"
+# `-n` is load-bearing, not tidiness: every remote loop below is a `while read … done <<EOF`, and an
+# ssh that inherits that stdin SLURPS the rest of the heredoc. With one remote target nothing showed;
+# adding a second one made the first ssh swallow it, so preflight and phase 1a silently skipped it and
+# the parallel build phase (background subshells, which do not share that stdin) then died on the
+# state file phase 1a never wrote — "No such file or directory", naming a tenant nothing had mentioned.
+SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10"
 # Every remote command runs through one wrapper so the node PATH and `set -e` are never forgotten.
 on_remote() { # <ssh-target> <command…>
   local host="$1"; shift

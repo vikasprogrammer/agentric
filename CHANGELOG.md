@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.419.1] - 2026-09-03
+### Fixed
+- **`make-live.sh` deployed only the FIRST remote tenant, and failed confusingly on the second.** Every
+  remote phase is a `while read ... done <<EOF` over the target list, and the `ssh` inside it inherited
+  that heredoc as stdin - so the first connection slurped the remaining entries and the loop ended one
+  tenant early. Preflight and the fetch/resolve phase silently skipped the second remote; the parallel
+  build phase, whose background subshells do NOT share that stdin, then did reach it and died on the
+  state file the earlier phase never wrote (`cat: .../<key>.old: No such file or directory`), naming a
+  tenant nothing in the log had mentioned. Invisible while exactly one remote was configured. `ssh -n`
+  closes it.
+
 ## [0.419.0] - 2026-09-03
 ### Fixed
 - **A file sent through ClickUp or Telegram reached the agent as nothing** — the last two of the four chat
