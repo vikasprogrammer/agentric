@@ -47,8 +47,12 @@ fi
 # so it should never be reached). With no marker at all — an older session, a resurrect, a
 # mock/agent-runner pane — the original ~3s floor applies unchanged.
 MARK="${AOS_SESSION_DIR:-}/session-$ID.launching"
-FLOOR=12      # ~3s   — the no-marker wait, as before
-CEILING=480   # ~120s — hard stop; a stale marker must never hang the terminal open forever
+# Tick length and the two bounds are env-overridable for the SUITE only: attach-grace-test has to age a
+# pane past the floor in real time, and at the shipped 0.25s tick that cost 12.7s of every deploy. The
+# logic under test is the same at any tick; production never sets these.
+TICK="${AOS_ATTACH_TICK_S:-0.25}"
+FLOOR="${AOS_ATTACH_FLOOR_TICKS:-12}"      # ~3s   — the no-marker wait, as before
+CEILING="${AOS_ATTACH_CEILING_TICKS:-480}" # ~120s — hard stop; a stale marker must never hang the terminal open forever
 i=0
 while [ "$i" -lt "$CEILING" ]; do
   # Past the floor with no launch in flight → it really is gone. Stop waiting and decide below.
@@ -56,7 +60,7 @@ while [ "$i" -lt "$CEILING" ]; do
   # One line of feedback for the slow-box case, so the pane isn't blank while we wait. tmux clears
   # the screen on attach, so this never survives into the session itself.
   if [ "$i" -eq 0 ] && [ -f "$MARK" ]; then printf 'starting session…\r\n'; fi
-  sleep 0.25
+  sleep "$TICK"
   if tmux -S "$SOCK" has-session -t "$NAME" 2>/dev/null; then
     exec tmux -u -S "$SOCK" attach -t "$NAME"
   fi

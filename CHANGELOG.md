@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.415.2] - 2026-09-03
+### Changed
+- **The governance suite runs in 40s instead of 88s.** Three of its 88 scripts were 61s of the total, all
+  of it real sleeping: `loop-stall-attribution` blocked the event loop for 1.2s some thirty times to cross
+  a hardcoded 1000ms stall threshold (39s), `attach-grace` aged tmux panes against `attach.sh`'s 0.25s
+  poll tick (12.7s), and `opencode-gate` sat out the plugin's 1s approval beat and 2s gate backoff (9.1s).
+  Each of those three constants is now env-overridable — `AOS_STALL_MS`, `AOS_ATTACH_TICK_S` /
+  `AOS_ATTACH_FLOOR_TICKS` / `AOS_ATTACH_CEILING_TICKS`, `AOS_GATE_POLL_MS` — and the tests set small
+  values, scaling their own waits by the same factor. Production sets none of them and its timing is
+  unchanged. What each test proves is threshold-independent (a block that CROSSES the line; a pane that
+  lands past the floor in ticks), so the shortened runs are the same proofs. Deliberately left alone:
+  `loopOverSecond`, a reported metric whose meaning IS its one-second threshold, and gate-hook.sh's twin
+  poll loop, which counts in whole seconds with shell arithmetic. Verified over three consecutive runs of
+  all three scripts with no flakes. Combined with v0.415.1, a steady-state 3-target deploy goes from ~314s
+  to well under a minute of build-and-test.
+
 ## [0.415.1] - 2026-09-03
 ### Changed
 - **`make-live.sh` builds every checkout in parallel and runs the governance suite once per commit.** A

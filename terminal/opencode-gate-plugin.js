@@ -23,6 +23,12 @@ const SECRET = process.env.AOS_SECRET || "";
 const TENANT = process.env.AOS_TENANT || "";
 const UNATTENDED = process.env.UNATTENDED === "1";
 const APPROVAL_WAIT_S = Number(process.env.AOS_UNATTENDED_APPROVAL_WAIT_S || "180");
+// How long to sleep between gate retries and between approval polls. Env-overridable for the suite
+// only (opencode-gate-test spent 9.1s of every deploy sitting in these sleeps); production never sets
+// it. Deliberately NOT mirrored into gate-hook.sh's twin loop: that one counts `waited` in whole
+// seconds with shell arithmetic, so a sub-second poll would silently break its timeout accounting —
+// and nothing in the suite waits on it. The governed BEHAVIOUR of the two stays identical.
+const POLL_MS = Number(process.env.AOS_GATE_POLL_MS) > 0 ? Number(process.env.AOS_GATE_POLL_MS) : 1000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -188,13 +194,13 @@ export const AgentricGate = async () => {
         // Unreachable or an unrecognised decision: wait and ask again. The agent blocks here;
         // ungoverned action is impossible.
         console.error("Agentric: gate unreachable — blocking this action until it responds…");
-        await sleep(2000);
+        await sleep(POLL_MS * 2);
       }
 
       console.error("Agentric: this action needs approval — see the inbox. Waiting…");
       let waited = 0;
       for (;;) {
-        await sleep(1000);
+        await sleep(POLL_MS);
         const status = await pollStatus(gateId);
         if (status === "allow") return;
         if (status === "deny") throw new Error("Agentric: rejected by human.");

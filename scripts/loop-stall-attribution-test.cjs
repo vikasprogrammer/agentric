@@ -23,6 +23,14 @@ const ROOT = path.resolve(__dirname, '..');
 let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
+// Shrink the stall threshold before the module is loaded (STALL_MS is read once, at import). The
+// attribution logic under test is threshold-independent — it just needs a block that CROSSES the line
+// — so proving it at 100ms is the same proof as at the shipped 1s, and takes a tenth as long. This
+// file used to be 39s of a 87s governance suite, all of it spent blocking on purpose.
+const STALL = 100;
+const BLOCK = STALL + 50; // comfortably over, with room for timer jitter on a loaded box
+process.env.AOS_STALL_MS = String(STALL);
+
 const { requestMetrics } = require(path.join(ROOT, 'dist/edge/request-metrics.js'));
 
 const block = (ms) => { const t = Date.now(); while (Date.now() - t < ms) { /* hold the loop */ } };
@@ -35,27 +43,27 @@ const stalls = () => requestMetrics.snapshot(5).loop.stalls;
   requestMetrics.start(50);
 
   console.log('\nattribution');
-  requestMetrics.phase('test:namedBlock', () => block(1200));
+  requestMetrics.phase('test:namedBlock', () => block(BLOCK));
   await tick(200);
   const named = stalls().find((s) => s.phase === 'test:namedBlock');
-  assert(!!named && named.ms >= 1000, 'a block inside a named phase is attributed to it', JSON.stringify(stalls()));
+  assert(!!named && named.ms >= STALL, 'a block inside a named phase is attributed to it', JSON.stringify(stalls()));
   assert(seen.some((s) => s.phase === 'test:namedBlock'), 'the sink fires for it (this is what writes the audit row)');
 
   requestMetrics.reset();
-  block(1200);
+  block(BLOCK);
   await tick(200);
   assert(stalls().some((s) => s.phase === 'unattributed'), 'a block with nothing declared reads unattributed', JSON.stringify(stalls()));
 
   requestMetrics.reset();
   const done = requestMetrics.beginPhase('test:closedBeforeTick');
-  block(1200);
+  block(BLOCK);
   done();                        // the blocking call returns BEFORE the sampler gets to run
   await tick(200);
   assert(stalls().some((s) => s.phase === 'test:closedBeforeTick'), 'a phase closed just before the tick still gets the blame', JSON.stringify(stalls()));
 
   console.log('\nphase bookkeeping');
   requestMetrics.reset();
-  requestMetrics.phase('test:outer', () => requestMetrics.phase('test:inner', () => block(1200)));
+  requestMetrics.phase('test:outer', () => requestMetrics.phase('test:inner', () => block(BLOCK)));
   await tick(200);
   assert(stalls().some((s) => s.phase === 'test:inner'), 'nested phases resolve to the INNERMOST open one — the code actually holding the loop', JSON.stringify(stalls()));
 
@@ -64,7 +72,7 @@ const stalls = () => requestMetrics.snapshot(5).loop.stalls;
   requestMetrics.reset();
   const endRequest = requestMetrics.beginPhase('route:GET /api/whatever');
   await tick(60);
-  requestMetrics.phase('timer:blocking', () => block(1200));
+  requestMetrics.phase('timer:blocking', () => block(BLOCK));
   await tick(200);
   endRequest();
   assert(stalls().some((s) => s.phase === 'timer:blocking'), 'a timer blocking inside an awaiting request is blamed on the timer', JSON.stringify(stalls()));
@@ -72,7 +80,7 @@ const stalls = () => requestMetrics.snapshot(5).loop.stalls;
   requestMetrics.reset();
   let threw = false;
   try { requestMetrics.phase('test:throws', () => { throw new Error('boom'); }); } catch { threw = true; }
-  block(1200);
+  block(BLOCK);
   await tick(200);
   assert(threw, 'phase() rethrows');
   assert(!stalls().some((s) => s.phase === 'test:throws') || stalls().every((s) => s.ms > 0), 'a throwing phase is closed, not left open forever');
@@ -84,7 +92,7 @@ const stalls = () => requestMetrics.snapshot(5).loop.stalls;
   requestMetrics.reset();
   const endWait = requestMetrics.beginPhase('route:POST /api/tasks/wait', { attributable: false });
   await tick(60);
-  block(1200);
+  block(BLOCK);
   await tick(200);
   endWait();
   const parked = stalls()[0];
@@ -93,7 +101,7 @@ const stalls = () => requestMetrics.snapshot(5).loop.stalls;
   requestMetrics.reset();
   const endOpen = requestMetrics.beginPhase('route:GET /api/slow');
   await tick(400);
-  block(1200);
+  block(BLOCK);
   await tick(200);
   endOpen();
   const aged = stalls()[0];
@@ -101,7 +109,7 @@ const stalls = () => requestMetrics.snapshot(5).loop.stalls;
 
   console.log('\nbounds');
   requestMetrics.reset();
-  for (let i = 0; i < 24; i++) { requestMetrics.phase(`test:ring${i}`, () => block(1010)); await tick(120); }
+  for (let i = 0; i < 24; i++) { requestMetrics.phase(`test:ring${i}`, () => block(BLOCK)); await tick(120); }
   assert(stalls().length <= 20, 'the ring is bounded', String(stalls().length));
   requestMetrics.reset();
   assert(stalls().length === 0, 'reset clears the ring');

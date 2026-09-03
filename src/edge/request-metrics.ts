@@ -30,8 +30,13 @@ const BUCKETS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000
 /** How many distinct route templates to track before lumping the rest into `other`. */
 const MAX_ROUTES = 300;
 
-/** Lag at or above which a tick is recorded as a STALL (with its phase) rather than just binned. */
-const STALL_MS = 1_000;
+/** Lag at or above which a tick is recorded as a STALL (with its phase) rather than just binned.
+ *  Overridable ONLY so the suite can prove this machinery without sleeping through it: attribution
+ *  behaves identically at 100ms and at 1s, but a test that blocks the loop for 1.2s some thirty times
+ *  spent 39s of every deploy — 45% of the whole governance suite — doing nothing. Production never
+ *  sets it; `loopOverSecond` below stays pinned to a literal second, since that one is a REPORTED
+ *  metric whose meaning is its threshold. */
+const STALL_MS = Number(process.env.AOS_STALL_MS) > 0 ? Number(process.env.AOS_STALL_MS) : 1_000;
 /** How many stalls to keep. Small on purpose: this is a lead, not a log. */
 const STALL_RING = 20;
 /** Closed phases kept for attribution — a stall that ends just before the tick still has a suspect. */
