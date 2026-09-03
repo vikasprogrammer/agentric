@@ -375,10 +375,12 @@ function ConnectorRow({ c, me, busy, onToggle, onRemove, onShare }: {
 /** A live Composio-connected app row (company or personal). Shows the connection's distinguishing
  *  handle/alias so multiple accounts of the same app (e.g. two Gmails) are told apart.
  *  `onShare` is passed for a row the viewer owns — the "available to the team / just me" toggle. */
-function ComposioRow({ app, canRemove, busy, onRemove, onShare, sharedBy }: {
-  app: { id: string; toolkit: string; status: string; name?: string; shared?: boolean }
+function ComposioRow({ app, canRemove, busy, onRemove, onShare, onReconnect, sharedBy }: {
+  app: { id: string; toolkit: string; status: string; name?: string; account?: string; shared?: boolean }
   canRemove: boolean; busy: boolean; onRemove?: () => void
   onShare?: (shared: boolean) => void
+  /** Offered on an EXPIRED row — re-runs the OAuth for this toolkit on this shelf. */
+  onReconnect?: () => void
   /** Set on a BORROWED row (a teammate shared it) — shown instead of the share control. */
   sharedBy?: string
 }) {
@@ -387,21 +389,31 @@ function ComposioRow({ app, canRemove, busy, onRemove, onShare, sharedBy }: {
   const handle = app.name && app.name !== app.toolkit
     ? app.name.replace(new RegExp(`^${app.toolkit}[_-]`, 'i'), '')
     : ''
-  const detail = [handle, sharedBy ? `shared by ${sharedBy}` : '', 'via Composio'].filter(Boolean).join(' · ')
+  // The account is the thing people actually need and never had: a COMPANY connection is still some
+  // individual's login underneath, and that is who owns the documents an agent creates through it.
+  // Lead with it, and fall back to the opaque handle only while it is still unresolved.
+  const expired = app.status.toUpperCase() !== 'ACTIVE'
+  const detail = [app.account || handle, sharedBy ? `shared by ${sharedBy}` : '', 'via Composio'].filter(Boolean).join(' · ')
   return (
     <Row
       name={app.toolkit}
-      title={app.toolkit}
+      title={app.account ? `${app.toolkit} — acts as ${app.account}` : app.toolkit}
       subtitle={detail}
       badges={
         <>
-          {statusBadge(app.status.toLowerCase(), app.status === 'ACTIVE' ? 'ok' : 'warn')}
+          {statusBadge(app.status.toLowerCase(), expired ? 'warn' : 'ok')}
           {app.shared && statusBadge('shared with team', 'ok')}
         </>
       }
-      right={(onShare || onRemove) ? (
+      right={(onShare || onRemove || (expired && onReconnect)) ? (
         <>
-          {onShare && (
+          {expired && onReconnect && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={onReconnect}
+              title="Re-run this app's OAuth — until you do, agents cannot use it">
+              Reconnect
+            </Button>
+          )}
+          {onShare && !expired && (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => onShare(!app.shared)}
               title={app.shared
                 ? 'Take it back: only sessions you start will load it'
@@ -588,7 +600,7 @@ export function GithubMineCard() {
   )
 }
 
-function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onShareComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost, onPublishHost }: {
+function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onShareComposio, onReconnectComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost, onPublishHost }: {
   me: Member | null
   connectors: Connector[]
   hosts: Host[]
@@ -600,6 +612,7 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
   onShare: (id: string, shared: boolean) => void
   onDisconnectComposio: (id: string, scope: 'company' | 'personal', label: string) => void
   onShareComposio: (id: string, shared: boolean, label: string) => void
+  onReconnectComposio: (toolkit: string, scope: 'company' | 'personal') => void
   onToggleHost: (id: string, enabled: boolean) => void
   onRemoveHost: (id: string) => void
   onShareHost: (id: string, shared: boolean) => void
@@ -665,7 +678,9 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
           <NativeRow name="discord" title="Discord" s={ov?.discord} isAdmin={isAdmin} />
           <NativeRow name="telegram" title="Telegram" s={ov?.telegram ? { configured: ov.telegram.configured, connected: ov.telegram.connected, botUserId: ov.telegram.username ? `@${ov.telegram.username}` : '' } : undefined} isAdmin={isAdmin} />
           {companyApps.map((a) => (
-            <ComposioRow key={a.id} app={a} canRemove={isAdmin} busy={busy === a.id} onRemove={() => onDisconnectComposio(a.id, 'company', a.toolkit)} />
+            <ComposioRow key={a.id} app={a} canRemove={isAdmin} busy={busy === a.id}
+              onRemove={() => onDisconnectComposio(a.id, 'company', a.toolkit)}
+              onReconnect={isAdmin ? () => onReconnectComposio(a.toolkit, 'company') : undefined} />
           ))}
           {sharedApps.map((a) => (
             <ComposioRow
@@ -704,6 +719,7 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
               busy={busy === a.id}
               onRemove={() => onDisconnectComposio(a.id, 'personal', a.toolkit)}
               onShare={(shared) => onShareComposio(a.id, shared, a.toolkit)}
+              onReconnect={() => onReconnectComposio(a.toolkit, 'personal')}
             />
           ))}
           {myConnectors.map((c) => <ConnectorRow key={c.id} c={c} {...cardProps} />)}
@@ -1075,6 +1091,40 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
     loadConnections()
   }
 
+  // Reconnect an EXPIRED app: the same hosted OAuth as a first connection, on the same shelf. Composio
+  // keeps the dead row until it is pruned, so the new one appears alongside it until then.
+  const reconnectComposio = async (toolkit: string, scope: 'company' | 'personal') => {
+    setBusy(toolkit)
+    const r = await api.connectApp({ toolkit, scope })
+    setBusy('')
+    if (r.error) return window.alert('Could not reconnect: ' + r.error)
+    if (r.redirectUrl) window.open(r.redirectUrl, '_blank', 'noopener')
+  }
+
+  // Re-ask Composio whose account each connection really is, and what has expired. A live probe, so it
+  // is a button rather than something every page load pays for.
+  const [checking, setChecking] = useState(false)
+  const refreshAccounts = async () => {
+    setChecking(true)
+    const r = await api.refreshConnections()
+    setChecking(false)
+    if (r.error) return window.alert('Could not refresh: ' + r.error)
+    loadConnections()
+  }
+
+  // Clear only the SUPERSEDED expired rows — an expired app that has since been reconnected. An expired
+  // app with no replacement is left alone on purpose: it is the only record that a capability is missing.
+  const pruneExpired = async () => {
+    if (!window.confirm('Remove expired connections that have already been reconnected?\n\nAnything expired with no live replacement is kept — it is what tells you an app still needs reauthorising.')) return
+    setChecking(true)
+    const r = await api.pruneConnections()
+    setChecking(false)
+    if (r.error) return window.alert('Could not prune: ' + r.error)
+    window.alert(r.removed?.length ? `Removed ${r.removed.length}:\n${r.removed.join('\n')}` : 'Nothing to remove — no expired connection has been superseded yet.')
+    loadConnections()
+    loadOverview()
+  }
+
   const keySet = !!(ov?.composio.keySet || conns?.keySet)
 
   return (
@@ -1087,7 +1137,19 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
       </p>
 
       {!showAdd && (
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
+          {keySet && (
+            <Button variant="ghost" disabled={checking} onClick={refreshAccounts}
+              title="Ask Composio whose account is behind each connection, and which have expired">
+              {checking ? 'Checking…' : 'Check accounts'}
+            </Button>
+          )}
+          {keySet && isAdminRole(me) && (
+            <Button variant="ghost" disabled={checking} onClick={pruneExpired}
+              title="Remove expired connections that have already been reconnected. Anything expired with no replacement is kept.">
+              Clear replaced
+            </Button>
+          )}
           <Button variant="outline" onClick={() => setHostForm({ host: null, scope: isAdminRole(me) ? 'org' : 'personal' })}><Server className="mr-1 h-4 w-4" />Add a host</Button>
           <Button onClick={() => setShowAdd(true)}><Plus className="mr-1 h-4 w-4" />Add an integration</Button>
         </div>
@@ -1117,6 +1179,7 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
         onShare={share}
         onDisconnectComposio={disconnectComposio}
         onShareComposio={shareComposio}
+        onReconnectComposio={reconnectComposio}
         onToggleHost={toggleHost}
         onRemoveHost={removeHost}
         onPublishHost={publishHost}

@@ -18,6 +18,8 @@ import { clipText } from './state/session-activity';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
+import { listConnectedAccounts } from './connectors/composio';
+import { activeToolkits, resolveIdentities } from './connectors/composio-identity';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { isolateClaudeConfig } from './edge/config-isolation';
@@ -500,7 +502,7 @@ function markDuplicateDispatches(nodes: ChainNode[]): void {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request';
+  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request' | 'connection.expired';
   sessionId: string;
   agent: string;
   title: string;
@@ -708,7 +710,7 @@ export type ReviewCardKind = Exclude<ReviewNotice['kind'], 'system.update'>;
 export interface ReviewNotice {
   sessionId: string;
   agent: string;
-  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'goal.update.proposed' | 'connection.request' | 'system.update';
+  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'goal.update.proposed' | 'connection.request' | 'connection.expired' | 'system.update';
   title: string;
   summary: string;
   /** Whom to DM. Defaults (in the registry's `notifyReview`) to the `admins` tier — the audience nearly
@@ -4696,7 +4698,11 @@ export class TerminalManager {
     // BOTH lanes. How to wait is not a lane question: the two limits that make a long sleep wrong (the
     // ~2-minute Bash kill, the ~5-minute cache TTL) apply identically to a member's own interactive
     // session, and the first two agents caught doing it were one of each.
-    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, codeReview, goalsSection, fleet, team, preamble, learned, lane, WAITING_BRIEF]
+    // Whose account each Composio namespace holds. Sits next to the messaging steer because it answers
+    // the same class of question — "which of these lookalike tools is the right one" — and because both
+    // are about acting as the right identity rather than the first tool that matches.
+    const composio = this.composioContext(actingMember, selfAgent ?? '');
+    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, composio, github, codeReview, goalsSection, fleet, team, preamble, learned, lane, WAITING_BRIEF]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -4730,29 +4736,18 @@ export class TerminalManager {
       // `composio` → the running member's OWN connected apps (their email as user_id); `composio-company`
       // → apps connected under the shared service entity, usable by every agent. Automation/system spawns
       // get only the company entity (no person's personal credentials).
-      const sessions: Array<{ id: string; userId: string; scope: string; opts?: MintOptions }> = [
-        { id: 'composio-company', userId: serviceUserId(this.os.tenant), scope: 'company' },
-      ];
-      if (memberId) sessions.unshift({ id: 'composio', userId: this.composioUserId(memberId, agent), scope: 'personal' });
-      // Connections a TEAMMATE marked "available to the team". A connected account's owning entity is
-      // immutable on Composio's side, so sharing is a marker we enforce here: one extra session per
-      // sharing owner, minted under THEIR entity but allowlisted to the shared toolkits and pinned to
-      // the shared account ids — so the borrower reaches exactly what was shared and nothing else of
-      // that person's Composio account. Connection management is off: a borrower must not be able to
-      // add or revoke connections under an entity that isn't theirs.
-      for (const m of this.os.composioShares.mintsFor(memberId)) {
-        sessions.push({
-          id: `composio-shared-${m.ownerMemberId}`,
-          userId: m.userId,
-          scope: 'shared',
-          opts: { toolkits: m.toolkits, connectedAccounts: m.connectedAccounts, manageConnections: false },
-        });
-      }
+      const sessions = this.composioSessionPlan(memberId, agent);
       // Minted CONCURRENTLY, not one after another: each mint is a ~0.5–1s round trip to Composio, so
       // a launch with a personal + company (+ shared) session used to serialise into ~1.5s of dead time
       // — and, on the old `spawnSync` transport, ~1.5s with the event loop stopped, which stalled every
       // other request on this single-threaded server. Failures stay per-session (audited, that connector
       // dropped), exactly as before.
+      // Refresh what these entities actually hold — WHOSE account each app is, and what has expired —
+      // so the next launch's prompt can name them. Fire-and-forget and rate-limited: a probe costs a
+      // mint plus two round trips per entity, and no session may wait on it. Nothing here changes this
+      // launch; it changes what the NEXT one is able to tell the agent.
+      const due = sessions.filter((s) => this.composioIdentityStale(s.userId)).map((s) => ({ userId: s.userId, ownerMemberId: s.ownerMemberId }));
+      if (due.length) void this.refreshComposioConnections(due).catch(() => { /* advisory */ });
       const minted = await Promise.all(sessions.map((s) => mintToolRouterSessionAsync(apiKey, s.userId, s.opts)));
       for (const [i, s] of sessions.entries()) {
         const res = minted[i];
@@ -4810,6 +4805,186 @@ export class TerminalManager {
       },
     };
     return JSON.stringify(config, null, 2);
+  }
+
+  /** Has this entity's cached identity/status gone stale (or never been resolved)? Keeps the launch-time
+   *  refresh to roughly once every six hours per entity rather than once per session. */
+  private composioIdentityStale(userId: string, maxAgeMs = 6 * 60 * 60 * 1000): boolean {
+    const rows = this.os.composioIdentities.forEntity(userId);
+    if (!rows.length) return true;
+    return Math.min(...rows.map((r) => r.checkedAt)) < Date.now() - maxAgeMs;
+  }
+
+  /**
+   * Re-resolve what a set of Composio entities actually hold: the live account list (status), and for
+   * every toolkit with an ACTIVE account, WHICH account that is. Caches both, forgets connections that
+   * no longer exist, and tells a human once about anything that has expired.
+   *
+   * Deliberately OFF the launch path — a probe is a mint plus two MCP round trips per entity, and a
+   * session must not wait on Composio to start. Callers fire it and forget (the launcher) or await it
+   * where latency is already expected (the console's Connections page). Every failure degrades to "we
+   * learned nothing this time": a probe that fails never blanks a label we already had.
+   *
+   * `owners` maps an entity to the member accountable for it, so an expiry card reaches the person who
+   * can actually reauthorise it; an entity with no owner (the company shelf) goes to the admins tier.
+   */
+  async refreshComposioConnections(
+    entities: Array<{ userId: string; ownerMemberId?: string }>,
+    opts: { notify?: boolean } = {},
+  ): Promise<{ resolved: number; expired: number }> {
+    const key = this.os.settings.composioApiKey();
+    if (!key || !entities.length) return { resolved: 0, expired: 0 };
+    const seen = new Map<string, string | undefined>();
+    for (const e of entities) if (e.userId && !seen.has(e.userId)) seen.set(e.userId, e.ownerMemberId);
+    let resolved = 0;
+    let expired = 0;
+    for (const [userId, ownerMemberId] of seen) {
+      const accounts = await listConnectedAccounts(key, userId);
+      if (!accounts.length) continue;
+      // Status first, so an expired connection is recorded even when the identity probe fails.
+      this.os.composioIdentities.upsert(accounts.map((a) => ({ id: a.id, userId, toolkit: a.toolkit, status: a.status })));
+      this.os.composioIdentities.pruneEntity(userId, new Set(accounts.map((a) => a.id)));
+      // ONLY toolkits with a live account — probing one without would make Composio initiate a
+      // connection rather than report its absence (see composio-identity.ts).
+      const found = await resolveIdentities(key, userId, activeToolkits(accounts));
+      if (found.length) {
+        const byId = new Map(accounts.map((a) => [a.id, a]));
+        this.os.composioIdentities.upsert(
+          found
+            .filter((f) => byId.has(f.connectionId))
+            .map((f) => ({ id: f.connectionId, userId, toolkit: f.toolkit, account: f.account, status: byId.get(f.connectionId)!.status })),
+        );
+        resolved += found.length;
+      }
+      const stale = accounts.filter((a) => a.status.toUpperCase() === 'EXPIRED');
+      expired += stale.length;
+      if (opts.notify !== false && stale.length) this.notifyExpiredConnections(userId, ownerMemberId);
+    }
+    this.audit('-', 'system', 'connector.identity.refreshed', { entities: [...seen.keys()], resolved, expired });
+    return { resolved, expired };
+  }
+
+  /**
+   * Tell someone that a Composio connection has expired. An expired connection is silent by
+   * construction — the agent simply finds the app missing and works around it — which is how one
+   * tenant's company ClickUp sat dead for two weeks with nothing anywhere saying so. One card per
+   * entity, deduped for a week per connection, addressed to whoever can actually reauthorise it.
+   */
+  private notifyExpiredConnections(userId: string, ownerMemberId?: string): void {
+    const QUIET_MS = 7 * 24 * 60 * 60 * 1000;
+    const due = this.os.composioIdentities.unnotifiedExpired(userId, QUIET_MS);
+    if (!due.length) return;
+    const live = new Set(
+      this.os.composioIdentities.forEntity(userId).filter((i) => i.status.toUpperCase() === 'ACTIVE').map((i) => i.toolkit),
+    );
+    // A toolkit with NO live account left is a capability the fleet has actually lost; one that has been
+    // reconnected is just an old row. Say which is which, because only the first needs anyone to act.
+    const lost = due.filter((d) => !live.has(d.toolkit));
+    const scope = ownerMemberId ? 'your' : 'the company';
+    const body = [
+      `${due.length} ${scope} Composio connection${due.length === 1 ? ' has' : 's have'} expired:`,
+      ...due.map((d) => `- ${d.toolkit}${d.account ? ` (${d.account})` : ''}${live.has(d.toolkit) ? ' — already reconnected, this is the old record' : ' — nothing else is connected for this app, so agents cannot use it at all'}`),
+      '',
+      lost.length
+        ? `Reconnect ${lost.map((l) => l.toolkit).join(', ')} in Connections to restore ${lost.length === 1 ? 'it' : 'them'}.`
+        : 'Nothing is missing — these rows can be cleared from Connections.',
+    ].join('\n');
+    this.postReviewCard({
+      type: 'connection.expired',
+      sessionId: '-',
+      agent: 'system',
+      title: lost.length
+        ? `Connection expired — ${lost.map((l) => l.toolkit).join(', ')} unavailable`
+        : `${due.length} expired Composio connection${due.length === 1 ? '' : 's'} to clear`,
+      body,
+      args: { entity: userId, toolkits: due.map((d) => d.toolkit), lost: lost.map((l) => l.toolkit) },
+      audience: ownerMemberId ? { kind: 'member', id: ownerMemberId } : { kind: 'admins' },
+    });
+    this.os.composioIdentities.markNotified(due.map((d) => d.id));
+    this.audit('-', 'system', 'connector.expired', { entity: userId, toolkits: due.map((d) => d.toolkit), lost: lost.map((l) => l.toolkit) });
+  }
+
+  /**
+   * Which Composio Tool Router sessions this run gets, and under whose entity each is minted. Pure
+   * (DB reads only, no network), because TWO places must agree on it and disagreeing is exactly the
+   * failure we are fixing: `buildMcpConfigJson` mints them, and `composioContext` tells the agent in
+   * its prompt what each one actually is. Deriving the prompt from the same plan means the agent can
+   * never be told about a namespace it doesn't have, or left blind about one it does.
+   */
+  private composioSessionPlan(memberId: string | undefined, agent: string): Array<{ id: string; userId: string; scope: 'personal' | 'company' | 'shared'; ownerMemberId?: string; opts?: MintOptions }> {
+    const sessions: Array<{ id: string; userId: string; scope: 'personal' | 'company' | 'shared'; ownerMemberId?: string; opts?: MintOptions }> = [
+      { id: 'composio-company', userId: serviceUserId(this.os.tenant), scope: 'company' },
+    ];
+    // `composio` → the running member's OWN connected apps (their email as user_id); `composio-company`
+    // → apps connected under the shared service entity, usable by every agent. Automation/system spawns
+    // get only the company entity (no person's personal credentials).
+    if (memberId) sessions.unshift({ id: 'composio', userId: this.composioUserId(memberId, agent), scope: 'personal', ownerMemberId: memberId });
+    // Connections a TEAMMATE marked "available to the team". A connected account's owning entity is
+    // immutable on Composio's side, so sharing is a marker we enforce here: one extra session per
+    // sharing owner, minted under THEIR entity but allowlisted to the shared toolkits and pinned to
+    // the shared account ids — so the borrower reaches exactly what was shared and nothing else of
+    // that person's Composio account. Connection management is off: a borrower must not be able to
+    // add or revoke connections under an entity that isn't theirs.
+    for (const m of this.os.composioShares.mintsFor(memberId)) {
+      sessions.push({
+        id: `composio-shared-${m.ownerMemberId}`,
+        userId: m.userId,
+        scope: 'shared',
+        ownerMemberId: m.ownerMemberId,
+        opts: { toolkits: m.toolkits, connectedAccounts: m.connectedAccounts, manageConnections: false },
+      });
+    }
+    return sessions;
+  }
+
+  /**
+   * The prompt section that tells an agent WHOSE accounts each Composio namespace holds.
+   *
+   * Without it the agent sees two indistinguishable MCP servers named `composio` and
+   * `composio-company`, and the Tool Router auto-selects tools from whichever answers — so the choice
+   * of identity is made by relevance ranking, not by intent. That is not hypothetical: one run created
+   * a Google Sheet through `composio-company` (whose Google account turned out to belong to a specific
+   * teammate, so the file landed in that person's Drive) and then sent mail through `composio`, which
+   * is the run-as member's own Gmail, because the company entity had no Gmail at all. Both were
+   * reasonable guesses from a name alone. Names are not identities, so we state the identities.
+   *
+   * Reads the CACHE only (`composio_identities`), never the network — `buildCompanyMd` is a synchronous
+   * assembly and a launch must not wait on Composio. An entity we have not resolved yet degrades to its
+   * scope line without an account list, which is still strictly more than the agent knew before.
+   */
+  private composioContext(memberId: string | undefined, agent: string): string {
+    if (!this.os.settings.composioApiKey()) return '';
+    const plan = this.composioSessionPlan(memberId, agent);
+    const cached = this.os.composioIdentities;
+    const lines: string[] = [];
+    for (const s of plan) {
+      const who = s.scope === 'personal'
+        ? `the connected apps of **${this.os.team.getMember(memberId ?? '')?.name || s.userId}**, the person this run acts as`
+        : s.scope === 'company'
+          ? 'the apps connected at the COMPANY level, shared by every agent'
+          : `apps **${this.os.team.getMember(s.ownerMemberId ?? '')?.name || s.userId}** lent to the team`;
+      const accounts = cached.forEntity(s.userId).filter((i) => i.status.toUpperCase() === 'ACTIVE');
+      const detail = accounts.length
+        ? accounts.map((a) => `    - ${a.toolkit} — ${a.account || 'account unknown'}`).join('\n')
+        : '    - (nothing resolved yet — check Connections in the console before assuming an app is there)';
+      lines.push(`- **\`${s.id}\`** — ${who}:\n${detail}`);
+    }
+    if (!lines.length) return '';
+    return (
+      '# Composio — whose account you are about to act as\n\n' +
+      'Each Composio namespace below is a SEPARATE set of third-party accounts, and the tool you pick ' +
+      'decides which real person or company the world sees. The namespace name says whose SHELF an app ' +
+      'sits on, not whose account it is: a company connection is still somebody\'s individual login ' +
+      'underneath, and that is who owns the documents you create and who appears as the sender of the ' +
+      'mail you send. The resolved account is named below — read it before you act.\n\n' +
+      lines.join('\n') +
+      '\n\nRules: prefer the namespace whose account matches the identity the task calls for; when a task ' +
+      'is company work, use `composio-company`, and when it is this person\'s own work, use `composio`. ' +
+      'If the account that would act is NOT the one the task implies — a company task that would send ' +
+      'from an individual\'s mailbox, or a personal task that would write into a teammate\'s Drive — stop ' +
+      'and `ask` a human instead of proceeding. Never assume an app exists on a shelf because it exists ' +
+      'on another one.'
+    );
   }
 
   /**

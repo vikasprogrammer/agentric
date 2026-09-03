@@ -110,6 +110,25 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_composio_shares_owner ON composio_shares (owner_member_id);
 
+    -- What each Composio connected account REALLY is (composio-identity.ts). Composio's entity id says
+    -- whose SCOPE an account sits in (service:<tenant> = company, an email = that member's own) — it
+    -- says nothing about which third-party account is actually behind it, and the API redacts the token
+    -- payload. So a company Google Sheets connection can be an individual's personal Google account, and
+    -- for a long time nothing anywhere recorded that: the console showed the opaque Composio word-id and
+    -- agents acted through it blind. This caches the account the Tool Router itself reports
+    -- (current_user_info), plus the live status, so both the console and every agent's prompt can name
+    -- the real identity without a round trip. Cache only — Composio remains the source of truth.
+    CREATE TABLE IF NOT EXISTS composio_identities (
+      id         TEXT PRIMARY KEY,        -- the Composio connected-account id (ca_…)
+      user_id    TEXT NOT NULL,           -- the Composio entity it sits under (scope, not identity)
+      toolkit    TEXT NOT NULL,           -- toolkit slug (gmail, googlesheets, …)
+      account    TEXT NOT NULL DEFAULT '',-- the REAL account behind it (email / login / account name)
+      status     TEXT NOT NULL DEFAULT '',-- last seen status (ACTIVE / EXPIRED / …)
+      checked_at INTEGER NOT NULL,        -- when we last resolved it
+      notified_at INTEGER                 -- when we last told a human it had expired (dedupes the card)
+    );
+    CREATE INDEX IF NOT EXISTS idx_composio_identities_user ON composio_identities (user_id);
+
     -- Host connections — reachable destinations (SSH box / internal HTTP / DB) an agent may talk to,
     -- as a first-class governed thing (docs/host-connections-plan.md). Phase 2a stores them; the
     -- governance that reads them (net.connect/ssh.exec + allow-list) is Phase 2b. Mirrors connectors'

@@ -766,6 +766,14 @@ drift and prints the one-line fix.
   from inside a string. `src/capabilities/composio-envelope.ts` rewrites the envelope to the real effect
   in `TerminalManager.gate` BEFORE `enrichArgs` — server-side, so it covers all three runtimes at once.
   Treat this as the general shape: when a connector is a *router*, govern what it routes to, not its name.
+- **A Composio `user_id` is a SHELF, not an identity.** `service:<tenant>` vs an email says whose shelf an
+  app sits on, never which account is behind it — a COMPANY connection is routinely one teammate's
+  personal login (live: expresstech's company Google Sheets was a specific member's Google account, so
+  an agent "acting as the company" wrote into that person's Drive). The account is unreadable from the
+  connection record (every credential field returns the literal `REDACTED`) but IS disclosed by
+  `COMPOSIO_MANAGE_CONNECTIONS` as `current_user_info` — cached in `composio_identities` and named in
+  the console + every agent's prompt (`src/connectors/composio-identity.ts`). ⚠ Probing a toolkit with
+  no ACTIVE connection **creates one**, so always derive the probe list with `activeToolkits()`.
 - **Remote Control is pinned OFF for every governed session** (`remoteControlAtStartup: false` in
   `terminal/claude-launch.sh`). It normally needs an explicit `/remote-control` (`/rc`), but auto-connect
   is a **user-level** setting: the box owner flipping "Enable Remote Control for all sessions" would

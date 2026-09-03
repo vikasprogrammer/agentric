@@ -710,6 +710,8 @@ const REVIEW_PRESENTATION: Record<ReviewNotice['kind'], { icon: string; page: st
   'agent.update.proposed': { icon: '✏️', page: 'agents' },
   'goal.update.proposed': { icon: '🎯', page: 'goals' },
   'connection.request': { icon: '🔌', page: 'connectors' },
+  // Not a request either — the OS reporting that a connection it depends on has lapsed.
+  'connection.expired': { icon: '🔌', page: 'connectors' },
   // Not an agent's request at all — the OS itself reporting on its own version (see edge/update-watch.ts).
   'system.update': { icon: '⬆️', page: 'settings/updates' },
 };

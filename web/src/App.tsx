@@ -4795,6 +4795,7 @@ const REVIEW_KINDS: Record<string, { page: Route; detail?: string; label: string
   'skill.request': { page: 'skills', label: 'Skills' },
   'host.proposed': { page: 'connectors', label: 'Connections' },
   'connection.request': { page: 'connectors', label: 'Connections' },
+  'connection.expired': { page: 'connectors', label: 'Connections' },
   'policy.proposal': { page: 'settings', detail: 'policy', label: 'Settings → Policy' },
   'secret.request': { page: 'settings', detail: 'secrets', label: 'Settings → Secrets' },
   'automation.proposed': { page: 'automations', label: 'Automations' },
@@ -6332,7 +6333,7 @@ function ApprovalBrief({ m }: { m: Msg }) {
 /** The glyph for each open review card in "Needs you" — one per {@link REVIEW_KINDS} entry. */
 const REVIEW_ICON: Record<string, LucideIcon> = {
   'skill.proposed': Sparkles, 'skill.request': Sparkles,
-  'host.proposed': Server, 'connection.request': Plug,
+  'host.proposed': Server, 'connection.request': Plug, 'connection.expired': Plug,
   'policy.proposal': Shield, 'secret.request': KeyRound,
   'automation.proposed': Zap, 'agent.update.proposed': Pencil,
   'goal.update.proposed': Target, 'app.proposed': Package,
