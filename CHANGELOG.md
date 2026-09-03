@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.415.1] - 2026-09-03
+### Changed
+- **`make-live.sh` builds every checkout in parallel and runs the governance suite once per commit.** A
+  deploy was spending ~93% of its wall clock in the suite, sequentially, once per checkout — measured on
+  this box: tsc 2.8s, console build 6.2s, governance suite **88.3s**, times three targets on the same sha.
+  The suite is a property of the COMMIT, not the checkout, so re-running it for the second and third local
+  checkout re-proved the same shas on the same node on the same box. It now runs once across the local
+  checkouts when they're all landing on the same commit (and in each of them when they aren't). Every
+  REMOTE still runs its own — a different node major and libc is exactly where the portable-SQL bugs turn
+  up — deduped only across remotes sharing both a host and a commit. Phase 1 also splits: the cheap,
+  informative half (fetch, resolve, refuse a dirty tree) stays sequential and up front, while the
+  expensive half runs one job per checkout concurrently, each job's output captured and replayed whole in
+  target order. The build-everything-then-restart-everything guarantee is unchanged — the wait loop
+  collects every exit code and one failure anywhere stops the deploy before a single service restarts.
+  Two smaller fixes ride along: the local suite run now sets `AOS_NO_TTYD=1` like the remote one already
+  did (a suite run that builds a TenantRegistry leaks a ttyd per tenant on a live box), and the build/test
+  log paths are keyed per checkout instead of one fixed `/tmp` file that parallel jobs would overwrite.
+
 ## [0.415.0] - 2026-09-03
 ### Fixed
 - **Crown-jewel read protection moved from `permissions.deny` into the gate hook, un-sticking every
