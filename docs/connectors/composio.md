@@ -173,7 +173,10 @@ nothing anywhere saying so.
 
 - **Status is cached on every refresh**, and a newly-expired connection posts a `connection.expired`
   card (audited `connector.expired`) to whoever can reauthorise it — the shelf's member, or the admins
-  tier for the company shelf. Deduped per connection for a week. The card distinguishes the two cases,
+  tier for the company shelf. Deduped per connection for a week. **Inbox only, no Slack/Discord DM**
+  (`quiet: true`): every other review card is an agent blocked on a human, but this one is a standing
+  condition nobody is waiting on, so a DM would only add to the chat noise that buries the cards that
+  do need answering. The card distinguishes the two cases,
   because only one needs anyone to act: *reconnected already, this is the old row* vs *nothing else is
   connected for this app, so agents cannot use it at all*.
 - **The console** shows an expired row with a **Reconnect** button (the same hosted OAuth), and hides

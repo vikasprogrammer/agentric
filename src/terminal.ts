@@ -4911,6 +4911,11 @@ export class TerminalManager {
       body,
       args: { entity: userId, toolkits: lostToolkits, lost: lostToolkits },
       audience: ownerMemberId ? { kind: 'member', id: ownerMemberId } : { kind: 'admins' },
+      // Inbox only. An expired connection is a standing condition, not a question anyone is blocked on:
+      // it stays true until someone reconnects the app, and the card retires itself when they do. A DM
+      // for it is a notification about state, which is exactly the kind of chat noise that makes the
+      // approvals and questions people MUST answer harder to see.
+      quiet: true,
     });
   }
 
@@ -6038,7 +6043,7 @@ export class TerminalManager {
    * fires in ONE place — parity with how approvals/questions/tasks already reach a human. The notifier is
    * advisory: a failed push never wedges the request.
    */
-  private postReviewCard(input: { type: ReviewCardKind; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string; audience?: Audience; link?: ReviewNotice['link'] }): void {
+  private postReviewCard(input: { type: ReviewCardKind; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string; audience?: Audience; link?: ReviewNotice['link']; quiet?: boolean }): void {
     // Providing/publishing/granting is an owner/admin act — address the review card to the admin tier by
     // default. A caller can override (e.g. a personal connection request, which only its own member can
     // complete) by passing an explicit `audience`.
@@ -6049,6 +6054,12 @@ export class TerminalManager {
       ...(input.args ? { args: input.args } : {}),
       audienceKind: audience.kind, audienceId: audienceIdOf(audience),
     });
+    // `quiet`: Inbox only, no Slack/Discord DM. Every OTHER review card is an agent BLOCKED on a human —
+    // it asked for a credential, a skill, a policy change, and nothing proceeds until someone answers, so
+    // interrupting them is the point. A card the OS raises about its own state is not that: nobody is
+    // waiting on it, it is true for as long as it is true, and it self-heals. Pushing it out-of-band adds
+    // to the chat noise that already makes the signal cards easy to miss.
+    if (input.quiet) return;
     try { this.reviewNotifier?.({ sessionId: input.sessionId, agent: input.agent, kind: input.type, title: input.title, summary: input.summary ?? input.body, audience, ...(input.link ? { link: input.link } : {}) }); }
     catch { /* out-of-band push is advisory — never let it wedge the request */ }
   }
