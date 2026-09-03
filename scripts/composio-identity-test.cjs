@@ -208,6 +208,20 @@ check('…and another shelf\'s card is left alone', openCards().some((c) => JSON
 aos.composioIdentities.pruneEntity(owner.email, new Set());
 check('deleting the expired connection clears its card too', tm.reconcileExpiredCards(owner.email) === 1 && openCards().length === 0);
 
+// ── 8. the card is Inbox-only — no Slack/Discord DM ─────────────────────────────────────────────
+// Every other review card is an agent BLOCKED on a human, so interrupting them is the point. An expired
+// connection is a standing condition nobody is waiting on, and it self-heals — a DM for it is pure noise
+// on top of chat that is already noisy enough to bury the cards people must answer.
+let dms = 0;
+tm.setReviewNotifier(() => { dms++; });
+aos.composioIdentities.upsert([{ id: 'z1', userId: ENTITY, toolkit: 'notion', status: 'EXPIRED' }]);
+tm.notifyExpiredConnections(ENTITY);
+check('an expired-connection card lands in the Inbox', openCards().some((c) => /notion/.test(c.title)));
+check('…and sends no Slack/Discord DM', dms === 0);
+// The control: a card someone IS blocked on still pushes out-of-band.
+tm.requestConnection('-', 'some-agent', { toolkit: 'linear', scope: 'company', reasoning: 'need it' });
+check('control: a card an agent is blocked on still DMs', dms === 1);
+
 const total = pass + failures.length;
 if (failures.length) {
   console.error(`\nCOMPOSIO IDENTITY: ${pass}/${total} passed, ${failures.length} FAILED\n`);

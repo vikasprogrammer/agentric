@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.422.2] - 2026-09-03
+### Changed
+- **The expired-connection card no longer DMs Slack/Discord — Inbox only.** Every other review card is
+  an agent BLOCKED on a human (a credential, a skill, a policy change: nothing proceeds until someone
+  answers), so interrupting them out-of-band is the point. An expired connection is not that - it is a
+  standing condition nobody is waiting on, true for as long as it is true, and it retires itself once
+  the app is reconnected. A DM for it is a notification about state, which is exactly the noise that
+  makes the cards people MUST answer easy to miss. `postReviewCard` gained a `quiet` flag for this
+  class; the DM path is otherwise unchanged.
+
 ## [0.422.1] - 2026-09-03
 ### Fixed
 - **An expired-connection card outlived the problem.** Reported within the hour of v0.422.0 shipping:
