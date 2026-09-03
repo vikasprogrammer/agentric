@@ -165,6 +165,49 @@ check('the agent is told to stop and ask when the acting account is wrong', /sto
 aos.settings.setComposioApiKey('', 'owner@testco');
 check('a workspace with no Composio key gets no section', !/whose account you are about to act as/i.test(tm.buildCompanyMd('some-agent', owner.id, false, '')));
 
+// ── 7. the expiry card: one line per app, honest grammar, and it clears itself ───────────────────
+// A card that outlives its condition is worse than no card — it sits in NEEDS YOU claiming an app is
+// unavailable after the human has already fixed it, and a review card has no reject path, so there is
+// no way to make it go away. That happened live the afternoon this shipped.
+const ENTITY = `service:${aos.tenant}`;
+const openCards = () => aos.db.prepare("SELECT id, title, body, args FROM messages WHERE type = 'connection.expired' AND status = 'open'").all();
+
+// Two expired accounts of the SAME app, plus one that has already been reconnected.
+aos.composioIdentities.upsert([
+  { id: 'x1', userId: ENTITY, toolkit: 'google_search_console', account: 'a@x.io', status: 'EXPIRED' },
+  { id: 'x2', userId: ENTITY, toolkit: 'google_search_console', account: 'a@x.io', status: 'EXPIRED' },
+  { id: 'x3', userId: ENTITY, toolkit: 'clickup', status: 'EXPIRED' },
+  { id: 'x4', userId: ENTITY, toolkit: 'clickup', status: 'ACTIVE' },
+]);
+tm.notifyExpiredConnections(ENTITY);
+let cards = openCards();
+check('one card is posted', cards.length === 1);
+check('two expired accounts of one app are ONE line, not two', (cards[0].body.match(/google_search_console/g) || []).length === 1);
+check('a reconnected app raises nothing — it is housekeeping, not news', !/clickup/.test(cards[0].body + cards[0].title));
+check('the title names only what is actually unavailable', cards[0].title === 'Connection expired — google_search_console unavailable');
+check('the body reads as English', /^The company Composio connection has expired, and nothing else is connected for this app/.test(cards[0].body));
+check('…and says it will clear itself', /clears itself/.test(cards[0].body));
+check('a personal shelf says "Your"', (() => {
+  aos.composioIdentities.upsert([{ id: 'y1', userId: owner.email, toolkit: 'linear', status: 'EXPIRED' }]);
+  tm.notifyExpiredConnections(owner.email, owner.id);
+  const mine = openCards().find((c) => JSON.parse(c.args).entity === owner.email);
+  return mine && /^Your Composio connection has expired/.test(mine.body);
+})());
+
+// The same connections are still expired → the card must stand.
+tm.reconcileExpiredCards(ENTITY);
+check('the card stands while the app is still expired', openCards().some((c) => JSON.parse(c.args).entity === ENTITY));
+// The human reconnects it (or deletes it — either way nothing is expired any more).
+aos.composioIdentities.upsert([
+  { id: 'x1', userId: ENTITY, toolkit: 'google_search_console', account: 'a@x.io', status: 'ACTIVE' },
+  { id: 'x2', userId: ENTITY, toolkit: 'google_search_console', account: 'a@x.io', status: 'ACTIVE' },
+]);
+check('the card closes itself once nothing is expired', tm.reconcileExpiredCards(ENTITY) === 1 && !openCards().some((c) => JSON.parse(c.args).entity === ENTITY));
+check('…and another shelf\'s card is left alone', openCards().some((c) => JSON.parse(c.args).entity === owner.email));
+// Deleting the connection outright (the live case: the rows were pruned, not reconnected) also clears it.
+aos.composioIdentities.pruneEntity(owner.email, new Set());
+check('deleting the expired connection clears its card too', tm.reconcileExpiredCards(owner.email) === 1 && openCards().length === 0);
+
 const total = pass + failures.length;
 if (failures.length) {
   console.error(`\nCOMPOSIO IDENTITY: ${pass}/${total} passed, ${failures.length} FAILED\n`);
