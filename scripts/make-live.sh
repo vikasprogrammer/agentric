@@ -35,9 +35,15 @@
 # checkout is then synced/built ONCE and each service restarted — which is also why the phases below
 # are ordered build-everything-then-restart-everything.
 #
+# Checkouts are synced/built/tested in PARALLEL (phase 1b) and restarted one at a time (phase 2). The
+# ordering guarantee is unchanged — nothing restarts until every job has passed — but the wall clock is
+# now the slowest checkout instead of the sum of all of them. Each job's output is captured and replayed
+# whole, in target order, rather than three builds interleaving into an unreadable transcript.
+#
 # Safety properties worth keeping:
 #  - Nothing is restarted until every checkout's build AND tests pass, so a broken commit leaves every
-#    running server untouched (each holds its old code in memory).
+#    running server untouched (each holds its old code in memory). Parallel jobs don't weaken this: the
+#    wait loop collects every exit code and one failure anywhere stops the deploy before phase 2.
 #  - The restart is `launchctl kickstart`, never `pkill -f "dist/cli.js serve"` — that command line is
 #    shared by every tenant process on this box and killing it took prod down on 2026-08-01.
 #  - A failed health check prints the exact rollback command rather than guessing.
@@ -174,12 +180,41 @@ EOF
 say "targets: $(printf '%s%s' "$TARGETS" "$REMOTES" | cut -d: -f1 | tr '\n' ' ')"
 
 # ── phase 1: sync + build every checkout (no service is restarted in here) ───────
+#
+# Split in two on purpose:
+#   1a  sequential, cheap and INFORMATIVE — fetch, resolve the target commit, refuse a dirty tree, and
+#       print what each checkout is about to move to. None of it takes real time, and doing it up front
+#       means a dirty checkout or an unreachable box costs nothing.
+#   1b  parallel, and where all the time actually goes — reset, install, build, test. Checkouts are
+#       independent until phase 2, so running them one after another made the wall clock the SUM of
+#       work that could have overlapped: on this 3-tenant box, three builds of the same commit, one at
+#       a time. Each job's output is captured and replayed WHOLE, in target order, once everything is
+#       done — three interleaved build logs would be unreadable, and a deploy is not a thing you watch
+#       character by character.
+#
+# The governance suite is ~90% of a deploy (88s of a 95s local pass, and 3 of its 88 scripts are 70% of
+# that — they sleep). It is a property of the COMMIT, not of the checkout: running it once per local
+# checkout re-proved the same shas on the same node on the same box. It now runs ONCE across the local
+# checkouts when they're all landing on the same commit — and in every one of them when they aren't,
+# which is the only case where the second run could say something new. Each REMOTE still runs its own:
+# a different node major and a different libc is exactly where portable-SQL bugs surface (see
+# CLAUDE.md → SQLite differs local vs CI/boxes). Remotes are deduped only when they share BOTH a host
+# and a commit.
+#
+# Per-job log/build/test files are keyed by checkout. They used to be fixed /tmp paths, which two
+# parallel builds would write over each other.
+
+# ---- phase 1a (local): fetch, resolve, refuse a dirty tree ----------------------
+LOCAL_JOBS=""
+LOCAL_NEWS=""
 for CHECKOUT in $CHECKOUTS; do
   cd "$CHECKOUT"
   git fetch -q origin
   OLD="$(git rev-parse HEAD)"
   NEW="$(git rev-parse "$REF")"
-  echo "$OLD" >"$STATE/$(key_for "$CHECKOUT").old"
+  K="$(key_for "$CHECKOUT")"
+  echo "$OLD" >"$STATE/$K.old"
+  echo "$NEW" >"$STATE/$K.new"
 
   if [ "$OLD" = "$NEW" ]; then
     say "$CHECKOUT: already at $(git rev-parse --short "$NEW") — rebuilding + restarting anyway"
@@ -196,8 +231,64 @@ for CHECKOUT in $CHECKOUTS; do
     fail "$CHECKOUT has local changes (above) — rerun with --force to discard them"
   fi
 
-  [ "$DRY" -eq 1 ] && continue
+  LOCAL_JOBS="$LOCAL_JOBS $CHECKOUT"
+  LOCAL_NEWS="$LOCAL_NEWS$NEW
+"
+done
 
+# One distinct target commit across every local checkout ⇒ one suite run covers all of them.
+LOCAL_UNIQ="$(printf '%s' "$LOCAL_NEWS" | sort -u | grep -c . || true)"
+SUITE_FIRST=1
+for CHECKOUT in $LOCAL_JOBS; do
+  K="$(key_for "$CHECKOUT")"
+  if [ "$SUITE_FIRST" -eq 1 ] || [ "$LOCAL_UNIQ" != "1" ]; then : >"$STATE/$K.suite"; fi
+  SUITE_FIRST=0
+done
+
+# ---- phase 1a (remote): same, over ssh ------------------------------------------
+REMOTE_SEEN=""
+while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
+  [ -n "$TENANT" ] || continue
+  OLD="$(on_remote "$SSHT" "git -C '$CHECKOUT' rev-parse HEAD")"
+  on_remote "$SSHT" "git -C '$CHECKOUT' fetch -q origin"
+  NEW="$(on_remote "$SSHT" "git -C '$CHECKOUT' rev-parse '$REF'")"
+  K="$(key_for "$SSHT$CHECKOUT")"
+  echo "$OLD" >"$STATE/$K.old"
+  echo "$NEW" >"$STATE/$K.new"
+
+  if [ "$OLD" = "$NEW" ]; then
+    say "$SSHT:$CHECKOUT: already at ${NEW:0:7} — rebuilding + restarting anyway"
+  else
+    say "$SSHT:$CHECKOUT: deploying ${OLD:0:7} → ${NEW:0:7}"
+    on_remote "$SSHT" "git -C '$CHECKOUT' --no-pager log --oneline '$OLD..$NEW'" | sed 's/^/  /'
+  fi
+
+  DIRTY="$(on_remote "$SSHT" "git -C '$CHECKOUT' status --porcelain")"
+  if [ -n "$DIRTY" ] && [ "$FORCE" -ne 1 ]; then
+    echo "$DIRTY" | sed 's/^/  /'
+    fail "$SSHT:$CHECKOUT has local changes (above) — rerun with --force to discard them"
+  fi
+
+  # A remote's suite run is skipped only by another remote on the SAME host at the SAME commit.
+  case " $REMOTE_SEEN " in
+    *" $SSHT|$NEW "*) ;;
+    *) : >"$STATE/$K.suite"; REMOTE_SEEN="$REMOTE_SEEN $SSHT|$NEW" ;;
+  esac
+done <<EOF
+$REMOTES
+EOF
+
+if [ "$DRY" -eq 1 ]; then say "dry run — nothing changed"; exit 0; fi
+
+# ---- phase 1b: the expensive half, one job per checkout, all at once ------------
+
+# Build output is captured, not streamed: tsc says nothing on success and vite writes its chunk-size
+# advice to stderr on every run. On failure the log is printed, so nothing is actually hidden.
+build_local() { # <checkout> — runs in its own subshell; its whole output is one job log
+  CHECKOUT="$1"
+  K="$(key_for "$CHECKOUT")"
+  OLD="$(cat "$STATE/$K.old")"; NEW="$(cat "$STATE/$K.new")"
+  cd "$CHECKOUT"
   git reset --hard -q "$NEW"
 
   # Dependencies only when the lockfiles actually moved (a full install on every deploy is ~30s of
@@ -213,49 +304,31 @@ for CHECKOUT in $CHECKOUTS; do
     fi
   fi
 
-  # Build output is captured, not streamed: tsc says nothing on success and vite writes its chunk-size
-  # advice to stderr on every run. On failure the log is printed, so nothing is actually hidden.
-  BUILD_LOG=/tmp/aos-make-live-build.log
   say "building server"
-  npm run build >"$BUILD_LOG" 2>&1 \
-    || { tail -30 "$BUILD_LOG" >&2; fail "server build failed in $CHECKOUT — every live server untouched, still on its old code"; }
+  npm run build >"$STATE/$K.build" 2>&1 \
+    || { tail -30 "$STATE/$K.build" >&2; fail "server build failed in $CHECKOUT — every live server untouched, still on its old code"; }
   say "building console"
-  (cd web && npm run build >"$BUILD_LOG" 2>&1) \
-    || { tail -30 "$BUILD_LOG" >&2; fail "web build failed in $CHECKOUT — every live server untouched, still on its old code"; }
+  (cd web && npm run build >"$STATE/$K.build" 2>&1) \
+    || { tail -30 "$STATE/$K.build" >&2; fail "web build failed in $CHECKOUT — every live server untouched, still on its old code"; }
 
   if [ "$SKIP_TESTS" -eq 1 ]; then
     say "skipping governance suite (--skip-tests)"
+  elif [ ! -f "$STATE/$K.suite" ]; then
+    say "governance suite already run for ${NEW:0:7} — not repeating it here"
   else
     say "running governance suite"
-    npm run test:governance >/tmp/aos-make-live-tests.log 2>&1 \
-      || { tail -20 /tmp/aos-make-live-tests.log >&2; fail "governance suite failed in $CHECKOUT — NOTHING restarted"; }
-    tail -1 /tmp/aos-make-live-tests.log
+    # AOS_NO_TTYD: a suite run that builds a TenantRegistry spawns a ttyd per tenant and only
+    # startServer's stopAll reaps it — on a live box those leak and pin every core.
+    AOS_NO_TTYD=1 npm run test:governance >"$STATE/$K.tests" 2>&1 \
+      || { tail -20 "$STATE/$K.tests" >&2; fail "governance suite failed in $CHECKOUT — NOTHING restarted"; }
+    tail -1 "$STATE/$K.tests"
   fi
-done
+}
 
-# ── phase 1b: sync + build every remote checkout (still nothing restarted) ───────
-while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
-  [ -n "$TENANT" ] || continue
-  OLD="$(on_remote "$SSHT" "git -C '$CHECKOUT' rev-parse HEAD")"
-  on_remote "$SSHT" "git -C '$CHECKOUT' fetch -q origin"
-  NEW="$(on_remote "$SSHT" "git -C '$CHECKOUT' rev-parse '$REF'")"
-  echo "$OLD" >"$STATE/$(key_for "$SSHT$CHECKOUT").old"
-
-  if [ "$OLD" = "$NEW" ]; then
-    say "$SSHT:$CHECKOUT: already at ${NEW:0:7} — rebuilding + restarting anyway"
-  else
-    say "$SSHT:$CHECKOUT: deploying ${OLD:0:7} → ${NEW:0:7}"
-    on_remote "$SSHT" "git -C '$CHECKOUT' --no-pager log --oneline '$OLD..$NEW'" | sed 's/^/  /'
-  fi
-
-  DIRTY="$(on_remote "$SSHT" "git -C '$CHECKOUT' status --porcelain")"
-  if [ -n "$DIRTY" ] && [ "$FORCE" -ne 1 ]; then
-    echo "$DIRTY" | sed 's/^/  /'
-    fail "$SSHT:$CHECKOUT has local changes (above) — rerun with --force to discard them"
-  fi
-
-  [ "$DRY" -eq 1 ] && continue
-
+build_remote() { # <tenant> <ssh-target> <checkout>
+  TENANT="$1"; SSHT="$2"; CHECKOUT="$3"
+  K="$(key_for "$SSHT$CHECKOUT")"
+  OLD="$(cat "$STATE/$K.old")"; NEW="$(cat "$STATE/$K.new")"
   on_remote "$SSHT" "git -C '$CHECKOUT' reset --hard -q '$NEW'"
 
   if [ "$OLD" != "$NEW" ]; then
@@ -270,27 +343,51 @@ while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
   fi
 
   say "$TENANT: building server"
-  on_remote "$SSHT" "cd '$CHECKOUT' && npm run build >/tmp/aos-make-live-build.log 2>&1" \
-    || { on_remote "$SSHT" "tail -30 /tmp/aos-make-live-build.log" >&2 || true; fail "$TENANT: server build failed on $SSHT — every live server untouched"; }
+  on_remote "$SSHT" "cd '$CHECKOUT' && npm run build >/tmp/aos-make-live-$K.build 2>&1" \
+    || { on_remote "$SSHT" "tail -30 /tmp/aos-make-live-$K.build" >&2 || true; fail "$TENANT: server build failed on $SSHT — every live server untouched"; }
   say "$TENANT: building console"
-  on_remote "$SSHT" "cd '$CHECKOUT/web' && npm run build >/tmp/aos-make-live-build.log 2>&1" \
-    || { on_remote "$SSHT" "tail -30 /tmp/aos-make-live-build.log" >&2 || true; fail "$TENANT: web build failed on $SSHT — every live server untouched"; }
+  on_remote "$SSHT" "cd '$CHECKOUT/web' && npm run build >/tmp/aos-make-live-$K.build 2>&1" \
+    || { on_remote "$SSHT" "tail -30 /tmp/aos-make-live-$K.build" >&2 || true; fail "$TENANT: web build failed on $SSHT — every live server untouched"; }
 
   if [ "$SKIP_TESTS" -eq 1 ]; then
     say "$TENANT: skipping governance suite (--skip-tests)"
+  elif [ ! -f "$STATE/$K.suite" ]; then
+    say "$TENANT: governance suite already run for ${NEW:0:7} on $SSHT — not repeating it"
   else
     say "$TENANT: running governance suite"
-    # AOS_NO_TTYD: a suite run that builds a TenantRegistry spawns a ttyd per tenant and only
-    # startServer's stopAll reaps it — on a live box those leak and pin every core.
-    on_remote "$SSHT" "cd '$CHECKOUT' && AOS_NO_TTYD=1 npm run test:governance >/tmp/aos-make-live-tests.log 2>&1" \
-      || { on_remote "$SSHT" "tail -20 /tmp/aos-make-live-tests.log" >&2 || true; fail "$TENANT: governance suite failed on $SSHT — NOTHING restarted"; }
-    on_remote "$SSHT" "tail -1 /tmp/aos-make-live-tests.log"
+    on_remote "$SSHT" "cd '$CHECKOUT' && AOS_NO_TTYD=1 npm run test:governance >/tmp/aos-make-live-$K.tests 2>&1" \
+      || { on_remote "$SSHT" "tail -20 /tmp/aos-make-live-$K.tests" >&2 || true; fail "$TENANT: governance suite failed on $SSHT — NOTHING restarted"; }
+    on_remote "$SSHT" "tail -1 /tmp/aos-make-live-$K.tests"
   fi
+}
+
+JOB_KEYS=""
+for CHECKOUT in $LOCAL_JOBS; do
+  K="$(key_for "$CHECKOUT")"
+  ( build_local "$CHECKOUT" ) >"$STATE/$K.log" 2>&1 &
+  echo $! >"$STATE/$K.pid"
+  JOB_KEYS="$JOB_KEYS $K"
+done
+while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
+  [ -n "$TENANT" ] || continue
+  K="$(key_for "$SSHT$CHECKOUT")"
+  ( build_remote "$TENANT" "$SSHT" "$CHECKOUT" ) >"$STATE/$K.log" 2>&1 &
+  echo $! >"$STATE/$K.pid"
+  JOB_KEYS="$JOB_KEYS $K"
 done <<EOF
 $REMOTES
 EOF
 
-if [ "$DRY" -eq 1 ]; then say "dry run — nothing changed"; exit 0; fi
+say "building $(printf '%s' "$JOB_KEYS" | wc -w | tr -d ' ') checkout(s) in parallel"
+JOB_FAILED=""
+for K in $JOB_KEYS; do
+  RC=0; wait "$(cat "$STATE/$K.pid")" || RC=$?
+  cat "$STATE/$K.log"
+  [ "$RC" -eq 0 ] || JOB_FAILED="$JOB_FAILED $K"
+done
+# One failure anywhere means NOTHING restarts — the whole point of building before restarting. The
+# per-job logs are already printed above, so this line only has to name the casualties.
+[ -z "$JOB_FAILED" ] || fail "build/test failed in$(printf '%s' "$JOB_FAILED") — every live server untouched, still on its old code"
 
 # ── phase 2: restart + verify each service ───────────────────────────────────────
 START=$(date +%s)
