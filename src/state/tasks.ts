@@ -50,6 +50,10 @@ const OVERDUE_MARK = '⏰ went overdue';
 /** Sentinel body for the one-time "its run ended without closing this" event, per stranding SESSION — so a
  *  task stranded twice (re-dispatched, stranded again) wakes its caller once per dead run, not once ever. */
 const strandedMark = (sessionId: string): string => `⚠️ run ended without closing this (${sessionId})`;
+/** Sentinel body for the one-time "the caller agent was not woken with this result" event. The completion
+ *  poke is deliberately dropped when the caller is not running (see `edge/wakeups.ts`), and a drop with no
+ *  trace reads exactly like a lost poke — this is where the silence becomes legible. */
+const wakeDroppedMark = (agent: string): string => `💤 ${agent} was not woken — it had no live run, so the result stands here`;
 
 /**
  * What the {@link TaskStore} notifier sink receives on a meaningful task change. The store stays
@@ -342,6 +346,22 @@ export class TaskStore {
       .get<{ 1: number }>(id, mark);
     if (existing) return false;
     this.addEvent(id, 'status', mark, 'system', sessionId);
+    return true;
+  }
+
+  /**
+   * Record a one-time "the caller was not woken with this outcome" marker; returns true only the FIRST
+   * time so a re-fired hand-off writes one line, not a column of them. Written as a `status` event rather
+   * than a `comment` deliberately: {@link latestNote} reads the newest comment as THE result of the task,
+   * and a piece of delivery bookkeeping must never become the answer a later poke quotes.
+   */
+  markWakeDropped(id: string, agent: string): boolean {
+    const mark = wakeDroppedMark(agent);
+    const existing = this.db
+      .prepare(`SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'status' AND body = ? LIMIT 1`)
+      .get<{ 1: number }>(id, mark);
+    if (existing) return false;
+    this.addEvent(id, 'status', mark, 'system');
     return true;
   }
 
