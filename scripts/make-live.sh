@@ -51,6 +51,9 @@
 #    most one service; the report at the end says which tenants moved and which never got there.
 #  - A remote box is only ever reached with `ssh -o BatchMode=yes` — a deploy that would sit waiting on a
 #    password prompt fails fast in preflight instead of hanging.
+#  - EVERY checkout lands on the SAME commit: $REF is resolved once, up front, and each checkout is
+#    pinned to that sha. Resolving per-checkout raced whoever was merging — a box that fetched a second
+#    later deployed a different commit, and the run still reported success.
 set -euo pipefail
 
 ENV_FILE="${AOS_LIVE_ENV:-$HOME/.agentric-live.env}"
@@ -182,6 +185,29 @@ done <<EOF
 $REMOTES
 EOF
 
+# ── phase 0b: resolve ONE commit for the whole deploy ────────────────────────────
+# Every checkout used to fetch and then resolve $REF for ITSELF. That is a race with whoever is merging:
+# a checkout that fetches after a merge lands resolves a different commit than its siblings that fetched
+# a second earlier. On 2026-09-03 one tenant went live on 0.419.2 while the other two went live on
+# 0.419.1 — out of a single run that reported success for all three, because each box was verified
+# against the version it had itself built. A deploy is one commit everywhere or it is not a deploy, so
+# $REF is resolved exactly ONCE, here, and every checkout is pinned to that sha.
+#
+# The pin is read from the first local checkout, or the first remote when this box deploys only remotes.
+PIN_SRC="$(printf '%s' "$CHECKOUTS" | awk '{print $1}')"
+if [ -n "$PIN_SRC" ]; then
+  git -C "$PIN_SRC" fetch -q origin
+  TARGET="$(git -C "$PIN_SRC" rev-parse --verify -q "$REF^{commit}")" \
+    || fail "cannot resolve $REF in $PIN_SRC"
+else
+  PIN_SSHT="$(printf '%s' "$REMOTES" | head -1 | cut -d: -f2)"
+  PIN_CO="$(printf '%s' "$REMOTES" | head -1 | cut -d: -f3)"
+  on_remote "$PIN_SSHT" "git -C '$PIN_CO' fetch -q origin"
+  TARGET="$(on_remote "$PIN_SSHT" "git -C '$PIN_CO' rev-parse --verify -q '$REF^{commit}'")" \
+    || fail "cannot resolve $REF on $PIN_SSHT:$PIN_CO"
+fi
+say "deploy target: $REF @ ${TARGET:0:7} — every checkout is pinned to this commit"
+
 say "targets: $(printf '%s%s' "$TARGETS" "$REMOTES" | cut -d: -f1 | tr '\n' ' ')"
 
 # ── phase 1: sync + build every checkout (no service is restarted in here) ───────
@@ -216,7 +242,9 @@ for CHECKOUT in $CHECKOUTS; do
   cd "$CHECKOUT"
   git fetch -q origin
   OLD="$(git rev-parse HEAD)"
-  NEW="$(git rev-parse "$REF")"
+  NEW="$TARGET"
+  git rev-parse --verify -q "$NEW^{commit}" >/dev/null \
+    || fail "$CHECKOUT: $REF pinned to $NEW, but that commit is not here after a fetch"
   K="$(key_for "$CHECKOUT")"
   echo "$OLD" >"$STATE/$K.old"
   echo "$NEW" >"$STATE/$K.new"
@@ -256,7 +284,9 @@ while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
   [ -n "$TENANT" ] || continue
   OLD="$(on_remote "$SSHT" "git -C '$CHECKOUT' rev-parse HEAD")"
   on_remote "$SSHT" "git -C '$CHECKOUT' fetch -q origin"
-  NEW="$(on_remote "$SSHT" "git -C '$CHECKOUT' rev-parse '$REF'")"
+  NEW="$TARGET"
+  on_remote "$SSHT" "git -C '$CHECKOUT' rev-parse --verify -q '$NEW^{commit}' >/dev/null" \
+    || fail "$TENANT: $REF pinned to $NEW, but that commit is not on $SSHT:$CHECKOUT after a fetch"
   K="$(key_for "$SSHT$CHECKOUT")"
   echo "$OLD" >"$STATE/$K.old"
   echo "$NEW" >"$STATE/$K.new"

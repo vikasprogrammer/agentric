@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.419.3] - 2026-09-03
+### Fixed
+- **A single `make-live.sh` run could put two tenants on two different commits.** Every checkout fetched
+  and then resolved `$REF` for itself, which is a race with whoever is merging: a box that fetched a
+  second later got a newer commit than its siblings. One run on 2026-09-03 put one tenant live on 0.419.2
+  and two on 0.419.1 and reported success for all three — each box really had been verified against the
+  version it had itself built, so nothing in the deploy was in a position to notice. `$REF` is now
+  resolved exactly once, up front (from the first local checkout, or the first remote on a remote-only
+  box), every checkout is pinned to that sha, and a checkout that does not have the commit after its
+  fetch fails by name instead of quietly deploying something else. The run now opens with the line
+  `deploy target: origin/main @ <sha>`.
+
 ## [0.419.2] - 2026-09-03
 ### Fixed
 - **A task room's Session tab had no way to open that session on its own.** The embedded pane was
