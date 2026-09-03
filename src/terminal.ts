@@ -22,6 +22,7 @@ import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, Act
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { isolateClaudeConfig } from './edge/config-isolation';
 import { resolveCapability } from './capabilities/normalize';
+import { unwrapComposioEnvelope } from './capabilities/composio-envelope';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
@@ -4998,6 +4999,20 @@ export class TerminalManager {
       const runAs = this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(sessionId)?.run_as ?? undefined;
       hostGrants = this.os.hosts.grantsFor(runAs);
     }
+    // Composio Tool Router envelope (composio-envelope.ts): its session exposes only six meta-tools, so
+    // the REAL action lives inside `input` and every plane keyed on `args.tool` — normalization, the
+    // enricher's email facts, the decision brief — was reading the envelope's name instead. Rewrite to
+    // the real effect FIRST, so everything below governs a Composio action exactly as it governs a
+    // first-class connector tool. Not an envelope → null, and nothing changes.
+    const envelope = unwrapComposioEnvelope(capability, rawArgs, this.emailOrgDomains());
+    if (envelope) {
+      this.audit(sessionId, agent, 'gate.composio.unwrapped', {
+        from: rawArgs.tool, to: envelope.args.tool, kind: envelope.kind,
+        capability: envelope.capability, actions: envelope.actions,
+      });
+      rawArgs = envelope.args;
+      capability = envelope.capability;
+    }
     const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns(), hostGrants);
     // An outbound email is its own governed capability: reclassify so the policy gates it by recipient
     // (internal → green, external → yellow) instead of the generic connector-mutation tier.
@@ -5296,9 +5311,12 @@ export class TerminalManager {
    */
   policyCheck(sessionId: string, agent: string, capability: string, args: Record<string, unknown>): Decision {
     if (this.os.settings.killSwitch().engaged) return { effect: 'deny', riskClass: 'deny', reason: 'workspace emergency stop is engaged' };
-    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
-    // Mirror the gate: email promotion first, then capability normalization (§4.2), so a dry-run preview
+    // Mirror the gate exactly, in the same order: unwrap a Composio envelope to the real action, then
+    // enrich, then email promotion, then capability normalization (§4.2) — so a dry-run preview
     // classifies the same canonical capability the live gate will.
+    const unwrapped = unwrapComposioEnvelope(capability, args, this.emailOrgDomains());
+    if (unwrapped) { args = unwrapped.args; capability = unwrapped.capability; }
+    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
     const cap = enriched.emailSend === true
       ? 'email.send'
       : resolveCapability(capability, typeof enriched.tool === 'string' ? enriched.tool : undefined);

@@ -758,6 +758,14 @@ drift and prints the one-line fix.
   `terminal/claude-launch.sh` (`crossSessionInbound: "refuse"` + `isolatePeerMachines: true`) rather than
   by denying the tools, since the same `SendMessage` also serves subagents/agent teams inside one session.
   When claude-code updates, diff the tools reference against that routing table.
+- **A hosted tool router can hide every real action behind one tool name.** Composio's Tool Router
+  exposes exactly SIX meta-tools no matter how many apps are connected, and the real action rides at
+  `input.tools[].tool_slug` — so `args.tool` said `COMPOSIO_MULTI_EXECUTE_TOOL` and every plane keyed on
+  it (`normalize.ts`, the enricher's `emailSend`, `briefFor`) was blind. Two of the six are arbitrary
+  bash/Python on Composio's own sandbox, and the Python one can call `run_composio_tool(tool_slug=…)`
+  from inside a string. `src/capabilities/composio-envelope.ts` rewrites the envelope to the real effect
+  in `TerminalManager.gate` BEFORE `enrichArgs` — server-side, so it covers all three runtimes at once.
+  Treat this as the general shape: when a connector is a *router*, govern what it routes to, not its name.
 - **Remote Control is pinned OFF for every governed session** (`remoteControlAtStartup: false` in
   `terminal/claude-launch.sh`). It normally needs an explicit `/remote-control` (`/rc`), but auto-connect
   is a **user-level** setting: the box owner flipping "Enable Remote Control for all sessions" would
