@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.415.0] - 2026-09-03
+### Fixed
+- **Crown-jewel read protection moved from `permissions.deny` into the gate hook, un-sticking every
+  `cd <dir> && <relative path>` command.** On claude-code 2.1.259 the mere existence of a `Read()` deny
+  rule makes Claude escalate any Bash command of that shape to a **human-only** approval — it can't
+  statically prove the relative target resolves outside a denied path, so it fails closed ("only you can
+  approve running it anyway"). An absolute `cd` doesn't help; the relative *target* is the trigger. That
+  is most of what an agent types, and the escalation outranks us: verified live (instapods session
+  `ses_d985eefa4b8c4165`) that the gate hook had already returned `permissionDecision:"allow"` for the
+  exact command at 12:28:22 and Claude escalated anyway at 12:28:37 — `permissions.deny` beats a hook
+  allow, the same precedence that keeps deny rules in force under `--dangerously-skip-permissions`. So an
+  interactive run parked on a Yes/No for an ordinary grep. `claude-launch.sh` now exports the crown-jewel
+  list as `AOS_PROTECTED_PATHS` and writes no `Read()` deny rule (the `AskUserQuestion` deny stays — a
+  tool-name rule doesn't trip the check), and `gate-hook.sh` enforces those paths itself on
+  `Read`/`Glob`/`Grep`/`NotebookRead`: a local decision with no gateway round-trip, matching in both
+  directions (reading *into* a protected path, and a recursive search rooted *above* one), on real paths
+  so a symlinked home can't spell the same directory two ways. Net gains beyond the fix — a blocked read
+  now carries a **model-visible** reason instead of an opaque refusal, and it lands in the audit trail,
+  which a `permissions.deny` hit never did. Pinned by `scripts/protected-path-guard-test.cjs`.
+
 ## [0.414.8] - 2026-09-03
 ### Fixed
 - **A session reaped by the idle-interactive janitor is now remembered.** Every other teardown path writes

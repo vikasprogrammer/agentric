@@ -14,8 +14,8 @@
  *      `~/.codex`, the workspace DB, or the data home's `connectors/` `control/` `tenants/` dirs is
  *      credential or control-plane tampering. There is no legitimate agent workflow that does it, so
  *      there's nothing to break and nothing to bake — it denies from the moment it ships. (Note the
- *      Claude launcher already blocks READS of these paths via `permissions.deny`; this closes the
- *      write side, which nothing covered.)
+ *      READ side of the same paths is already blocked, by the gate hook's `AOS_PROTECTED_PATHS` arm —
+ *      `permissions.deny` Read rules until v0.415.0; this closes the write side, which nothing covered.)
  *
  *   2. ANYTHING ELSE OUTSIDE THE AGENT'S OWN FOLDER → `ask`, OFF BY DEFAULT behind a workspace toggle.
  *      This one genuinely can break real work — agents legitimately write to repos they've cloned,

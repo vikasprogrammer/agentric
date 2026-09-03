@@ -125,26 +125,52 @@ STATUSLINE="$(dirname "$HOOK")/statusline.js"
 # while giving a false sense of containment. Real OS containment, where we want it, is the Linux
 # per-user uid-isolation path (src/edge/launcher.ts, AOS_UID_ISOLATION) — not this.
 #
-# We DO keep a small set of `permissions.deny` Read rules for crown-jewel paths. These govern the
-# BUILT-IN Read/Glob/Grep tools (which the gate hook deliberately defers to Claude's own permission
-# layer — they aren't world side effects). Bash reads are governed by the gate hook's intent check,
-# not by a filesystem wall. We can't blanket-deny $HOME for the Read tool — the agent folder lives
-# under it and a deny would block the agent reading its OWN files — so we deny only crown-jewel
-# paths that never overlap the agent folder.
-H="${HOME#/}"
+# Crown-jewel paths (ssh keys, the tenant DB, the connector bag) still have to be unreadable, but that
+# is enforced by the GATE HOOK, not by `permissions.deny` Read rules — see AOS_PROTECTED_PATHS below.
+# Bash reads are governed by the gate hook's intent check, not by a filesystem wall.
+#
+# WHY NOT `permissions.deny`, which is where this lived until v0.415.0: on claude-code 2.1.259 a single
+# `Read()` deny rule anywhere in the settings makes Claude escalate EVERY Bash command shaped
+# `cd <dir> && <command with a relative path>` to a **human-only** approval — "grep on 'internal/' after
+# a cd would search a directory that cannot be determined here, and a Read() deny rule is configured;
+# only you can approve running it anyway". It can't statically prove the relative target resolves
+# outside a denied path, so it fails closed. An absolute `cd` does not help; the relative *target* is
+# what trips it. That shape is most of what an agent types, and the dialog is upstream of us: verified
+# live on 2026-09-03 (session ses_d985eefa4b8c4165) that the gate hook had ALREADY returned
+# `permissionDecision:"allow"` for the exact command (`gate.attempt`/`gate.decision` at 12:28:22) and
+# Claude escalated anyway at 12:28:37 — i.e. `permissions.deny` outranks a hook allow, the same
+# precedence that keeps deny rules in force under --dangerously-skip-permissions. So the interactive
+# lane parked on a Yes/No a human had to answer, for an ordinary grep.
+#
+# Moving the same protection into the hook removes the trigger and is strictly better besides: a
+# blocked read now carries a model-visible reason instead of an opaque refusal, and it lands in the
+# audit trail, which a `permissions.deny` hit never did.
+H="$HOME"
+PROTECTED="$H/.ssh
+$H/.aws
+$H/.gnupg
+$H/.claude"
+DATA_HOME="$(cd "$AGENT_DIR/../.." 2>/dev/null && pwd)"
+if [ -n "$DATA_HOME" ]; then
+  # agent-os.db's WAL/SHM sidecars are separate files — name them, or a read of `agent-os.db-wal`
+  # walks straight past a rule that only covers the base file.
+  PROTECTED="$PROTECTED
+$DATA_HOME/connectors
+$DATA_HOME/control
+$DATA_HOME/tenants
+$DATA_HOME/agent-os.db
+$DATA_HOME/agent-os.db-wal
+$DATA_HOME/agent-os.db-shm"
+fi
+export AOS_PROTECTED_PATHS="$PROTECTED"
 # Deny the native AskUserQuestion tool: it renders a multiple-choice picker in the TUI and BLOCKS the
 # turn until someone presses Enter at the keyboard — but an Agentric run has no human at the terminal
 # (chat/automation/task/Slack runs are unattended; even an attached session interacts via the console).
 # So it hangs the run forever and never reaches the Inbox. Denied here, the agent asks via `ask_human`
 # (governed → Inbox card + DM, blocks for the answer) or in plain prose — both work everywhere. (deny
-# rules apply even under --dangerously-skip-permissions.)
-DENYS="\"AskUserQuestion\", \"Read(//$H/.ssh/**)\", \"Read(//$H/.aws/**)\", \"Read(//$H/.gnupg/**)\", \"Read(//$H/.claude/**)\""
-DATA_HOME="$(cd "$AGENT_DIR/../.." 2>/dev/null && pwd)"
-if [ -n "$DATA_HOME" ]; then
-  DH="${DATA_HOME#/}"
-  DENYS="$DENYS, \"Read(//$DH/connectors/**)\", \"Read(//$DH/control/**)\", \"Read(//$DH/tenants/**)\", \"Read(//$DH/agent-os.db*)\""
-fi
-DENY_LINE=", \"deny\": [ $DENYS ]"
+# rules apply even under --dangerously-skip-permissions.) This is a TOOL-name rule, not a `Read()` one,
+# so it does not trip the compound-command escalation described above.
+DENY_LINE=", \"deny\": [ \"AskUserQuestion\" ]"
 mkdir -p .claude
 # Write to a NON-auto-discovered filename and load it via the `--settings` FLAG (see COMMON_ARGS below).
 # Claude's workspace-TRUST gate ignores the permissions.allow entries of an AUTO-DISCOVERED
@@ -217,7 +243,7 @@ $OUTPUT_STYLE_LINE
   },
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
+      { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Glob|Grep|NotebookRead|mcp__.*", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
     ],
     "Notification": [
       { "hooks": [ { "type": "command", "command": "bash '$NOTIFY_HOOK'" } ] }
