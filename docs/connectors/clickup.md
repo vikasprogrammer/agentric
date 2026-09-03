@@ -70,6 +70,34 @@ wrong key → 503/401; no `ClickupIngress` on the runtime → 503.
 The generated task prompt (`fireClickup`) tells the agent to fetch the full task first — on ClickUp the
 **task description** usually holds the real request and the comment is just the trigger.
 
+### Attachments (v0.419.0)
+
+`comment_text` is the **flattened** text: a screenshot dropped on a task leaves no trace in it at all, so
+the files live only in the structured `comment` block array (`{ type: 'attachment', attachment: {…} }`)
+and, on some payload shapes, a sibling `attachments` array. `parseClickupAttachments` reads both and
+de-duplicates by id; `downloadClickupFile` fetches the bytes (≤5 files, ≤8 MB each) into the agent's own
+**`.inbox/`**, and `attachmentNote` names each by the relative path it will have.
+
+The presigned URL needs **no Authorization header** — and must not be sent one, since the API token has no
+business reaching the attachment host — but it **expires**, which is why the bytes are taken at dispatch
+rather than handed to the agent as a link. Host-checked against `*.clickup.com`. ClickUp's `title` usually
+drops the extension, so it is re-appended from `extension` — an agent needs to know it is looking at a
+`.png`. Audit: `clickup.file.received` / `.failed` / `.skipped`.
+
+### What ClickUp deliberately does NOT get
+
+The Slack/Discord fix for *untagged* replies does not transfer. There, a thread the bot opened is **ours**,
+so having spoken in it is a safe targeting signal. A ClickUp task's comment section is a **shared human
+workspace** that happens to have an agent in it: acting on every comment would spawn a run per comment on
+every covered task. The `/command` gate stays the addressing rule, and it is the reason the loop-guard can
+be as simple as it is.
+
+The ack follows the same logic. A dispatch the commenter **steered** (`/support-ops …`) still posts no
+"on it" comment — the 👀 reaction is enough and a second comment is noise on a shared task. But when the
+**router** picked the agent (an automation, an auto-route, a resolved disambiguation) the commenter has no
+way to know who took it, so that case posts a one-line `chatAck` naming them. Pinned by
+`scripts/chat-attachments-test.cjs`.
+
 Audit: `trigger.clickup` `{ task, status, sessions }` on every inbound POST, whatever the outcome.
 
 ## How an agent replies
@@ -115,7 +143,9 @@ All calls use the global `fetch` (Node 22+), return `{ error }` instead of throw
 
 | Function | ClickUp endpoint | Used for |
 |---|---|---|
-| `fetchLatestComment(token, taskId)` | `GET /task/{id}/comment` | ingress enrichment (webhook has no text) |
+| `fetchLatestComment(token, taskId)` | `GET /task/{id}/comment` | ingress enrichment (webhook has no text) + attachments |
+| `parseClickupAttachments(comment)` | — | pull files out of the comment blocks (`comment_text` hides them) |
+| `downloadClickupFile(url, maxBytes)` | the presigned attachment URL | fetch the bytes before the link expires |
 | `addComment(token, taskId, text)` | `POST /task/{id}/comment` | the agent's reply + router help text |
 | `addReaction(token, commentId, 'eyes')` | `POST /comment/{id}/reaction` | the 👀 "picked it up" ack |
 | `authedUser(token)` | `GET /user` | Settings "test connection" |
@@ -131,4 +161,7 @@ All calls use the global `fetch` (Node 22+), return `{ error }` instead of throw
   section is shared with humans who are not talking to an agent.
 - **Reactions take shortcodes**, not emoji characters.
 - **Plain text only** — markdown will render literally in a ClickUp comment.
+- **`comment_text` hides attachments.** A comment can carry a screenshot and read as pure text; only the
+  structured `comment` blocks show it.
+- **The attachment URL expires.** Never store one and fetch it later — take the bytes at dispatch.
 - Digest reference-extraction treats `86xxxxxxx`-shaped ids as ClickUp tasks (`src/edge/digest.ts`).

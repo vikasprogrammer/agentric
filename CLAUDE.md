@@ -320,6 +320,16 @@ Key modules:
   The chat ack now NAMES the agent that picked the message up (`chatAck`, shared by Slack/Discord/Telegram
   — an anonymous "On it" leaves the sender unable to tell who answered when the auto-router chose). Pinned
   by `scripts/discord-ingress-test.cjs`; full detail in `docs/connectors/slack.md` + `docs/connectors/discord.md`.
+  **ClickUp + Telegram close the same attachment family (v0.419.0), each by a different mechanism** —
+  ClickUp: `comment_text` is FLATTENED, so a screenshot leaves no trace in it; the files live only in the
+  structured `comment` blocks, behind a presigned `*.clickup.com` URL taking NO auth header and EXPIRING.
+  Telegram: worst of the four — `parseTelegramUpdate` returned null for any message with no text, so an
+  UNCAPTIONED photo was dropped whole; `photo` is an array smallest-first (take the LAST), a `file_id` is
+  opaque so each file costs a `getFile`, and ⚠ the resulting download URL EMBEDS THE BOT TOKEN in its path
+  (never log/audit/show it). ClickUp deliberately does NOT get the untagged-reply fix: a task's comment
+  section is a shared human workspace, not a thread the bot owns, so the `/command` gate stays the
+  addressing rule — and its ack names the agent only when the ROUTER chose it (a steered `/support-ops …`
+  keeps the quiet 👀 reaction). Pinned by `scripts/chat-attachments-test.cjs`.
   Per-automation **execution mode**: `headless` (default) and `interactive` now run the SAME way — an
   attachable interactive claude TUI (NOT `claude -p`) with `--dangerously-skip-permissions` (the PreToolUse
   gate hook still runs + blocks risky Bash under that flag). The difference is teardown: an `headless`
