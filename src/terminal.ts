@@ -800,6 +800,16 @@ interface LaunchSpec {
   forkFrom?: string;
 }
 
+/**
+ * The name an inbound chat attachment takes inside an agent's `.inbox/`. Exported because the chat
+ * sockets must name the file in the PROMPT before the session (and therefore the agent folder) exists
+ * — if the two sanitizers ever disagreed, the agent would be told to Read a path that isn't there.
+ */
+export function inboxFileName(name: string): string {
+  const clean = (name || 'file').split(/[\\/]/).pop()!.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 80);
+  return clean || 'file';
+}
+
 export class TerminalManager {
   /** Scripted demo runner — for `runtime: mock` agents. */
   private readonly runner = path.resolve(__dirname, '../terminal/agent-runner.sh');
@@ -2290,16 +2300,85 @@ export class TerminalManager {
    * (unresumable → the caller falls back to a fresh spawn).
    */
   sessionForSlackThread(channel: string, threadTs: string): { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    // UNION of the two bindings: `slack_threads` (the run's reply target, written when a message
+    // triggered it) and `slack_bot_threads` (every thread the bot has spoken in, including ones IT
+    // opened with a proactive post). The second is what makes a reply under a cron report continue the
+    // run that wrote the report instead of dying as unaddressed chatter.
     const row = this.db
       .prepare(
-        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId
+        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId, t.created_at AS createdAt
            FROM slack_threads s JOIN term_sessions t ON t.id = s.session_id
           WHERE s.channel = ? AND s.thread_ts = ?
-          ORDER BY t.created_at DESC LIMIT 1`,
+          UNION
+         SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId, t.created_at AS createdAt
+           FROM slack_bot_threads b JOIN term_sessions t ON t.id = b.session_id
+          WHERE b.channel = ? AND b.thread_ts = ?
+          ORDER BY createdAt DESC LIMIT 1`,
       )
-      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(channel, threadTs);
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(channel, threadTs, channel, threadTs);
     if (!row) return undefined;
     return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
+
+  /**
+   * Record that the bot has spoken in a Slack thread — the thread-keyed index behind
+   * {@link knowsSlackThread}. Called when a session is bound at spawn AND when an agent's own post
+   * (`slack_reply` / `slack_send`) opens a NEW thread, which is the case `slack_threads` structurally
+   * cannot cover (it is keyed by session, one reply target per run). Newest writer wins the row, so a
+   * later run replying in the same thread becomes the one a follow-up continues.
+   */
+  noteSlackThread(sessionId: string, channel: string, threadTs: string): void {
+    if (!sessionId || !channel || !threadTs) return;
+    try {
+      this.db.prepare('INSERT OR REPLACE INTO slack_bot_threads (channel, thread_ts, session_id, created_at) VALUES (?, ?, ?, ?)')
+        .run(channel, threadTs, sessionId, Date.now());
+    } catch { /* best-effort index; never break a post over it */ }
+  }
+
+  /** Point a session's Slack reply target at a (possibly newly created) thread. Used by the slash-command
+   *  path, which can only learn the thread root by posting it — the session is already spawned by then. */
+  rebindSlackThread(sessionId: string, channel: string, threadTs: string): void {
+    if (!sessionId || !channel || !threadTs) return;
+    try {
+      this.db.prepare('INSERT OR REPLACE INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?)')
+        .run(sessionId, channel, threadTs, Date.now());
+      this.noteSlackThread(sessionId, channel, threadTs);
+    } catch { /* best-effort */ }
+  }
+
+  /** Has the bot spoken in this Slack thread? The deterministic "is this addressed to us" test the
+   *  socket uses before dropping an untagged channel message: a reply under something we posted is a
+   *  reply to us, whether or not the run behind it is still alive. */
+  knowsSlackThread(channel: string, threadTs: string): boolean {
+    if (!channel || !threadTs) return false;
+    return !!this.db
+      .prepare('SELECT 1 FROM slack_bot_threads WHERE channel = ? AND thread_ts = ? UNION SELECT 1 FROM slack_threads WHERE channel = ? AND thread_ts = ? LIMIT 1')
+      .get(channel, threadTs, channel, threadTs);
+  }
+
+  /**
+   * Drop inbound chat attachments into a session's agent folder, under the same `.inbox/` the console's
+   * paste-a-file path uses — so an agent Reads `.inbox/<name>` by a relative path inside its own
+   * workspace and the gate's containment rules hold unchanged. `name` is sanitized to a basename here;
+   * the caller has already bounded the count and size. Returns the relative paths actually written.
+   */
+  stageInboundFiles(sessionId: string, files: { name: string; data: Buffer }[]): string[] {
+    if (!files.length) return [];
+    const row = this.db.prepare('SELECT agent FROM term_sessions WHERE id = ?').get<{ agent: string }>(sessionId);
+    const dir = row ? this.os.agents.get(row.agent)?.dir : undefined;
+    if (!dir) return [];
+    const written: string[] = [];
+    for (const f of files) {
+      const clean = inboxFileName(f.name);
+      try {
+        const target = path.join(dir, '.inbox');
+        fs.mkdirSync(target, { recursive: true });
+        fs.writeFileSync(path.join(target, clean), f.data);
+        written.push(path.join('.inbox', clean));
+      } catch { /* one unwritable file must not lose the rest */ }
+    }
+    if (written.length) this.audit(sessionId, 'chat', 'session.attachment', { paths: written, source: 'chat' });
+    return written;
   }
   /**
    * The MOST RECENT session bound to a Discord channel — the thread-continuity twin of
@@ -2544,6 +2623,7 @@ export class TerminalManager {
     if (slack?.channel) {
       this.db.prepare('INSERT OR REPLACE INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?)')
         .run(id, slack.channel, slack.threadTs || '', Date.now());
+      if (slack.threadTs) this.noteSlackThread(id, slack.channel, slack.threadTs);
     }
     // Native Discord egress: the exact analogue — bind the channel + triggering message for discord_reply.
     if (discord?.channel) {

@@ -8,6 +8,37 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.416.0] - 2026-09-03
+### Fixed
+- **A Slack message with a file attached was dropped whole — text and all.** Slack marks such a message
+  `subtype: "file_share"`, and `parseSlackEvent` dropped every subtyped message (the rule that correctly
+  ignores edits, joins and deletes), so pasting a screenshot at an agent read as the bot ignoring you.
+  `file_share` now routes as the ordinary user message it is.
+- **An untagged reply in a thread Agentric itself started went nowhere.** The `slack_threads` binding is
+  keyed by session id — one reply target per run — so a thread the BOT opened (a cron report posted with
+  `slack_send`, a proactive nudge) had no row at all, and a reply under it fell through to the
+  "unaddressed channel chatter" drop. A new thread-keyed index (`slack_bot_threads`) records every thread
+  the bot has spoken in, written both at spawn and whenever `slack_reply`/`slack_send` opens a new one.
+  Having spoken in a thread is now the targeting signal: a reply there is acted on with no @mention, and
+  stays with the agent that owns the thread rather than being re-classified or answered with a roster.
+  A thread we have never posted in is still ignored in full silence.
+
+### Added
+- **Attachments reach the agent as files it can open.** Slack hands out metadata and an authenticated
+  URL, never bytes, so an agent told "see the screenshot" had nothing to read. Inbound files are now
+  downloaded with the bot token (≤5 files, ≤8 MB each) into the agent's own `.inbox/` — the same folder
+  the console's paste-a-file path uses — and the prompt names each by the relative path it will have.
+  Needs the new `files:read` scope; Slack answering a download with its sign-in HTML is reported as that
+  missing scope rather than saved as a "file", and a non-Slack URL is refused outright.
+- **Addressing an agent from a Slack DM.** Slack intercepts a leading `/` as a slash command, so
+  `/support-ops fix this` typed in a DM never left the client — the one syntax the help list advertised
+  was the one that could not be sent. `@support-ops …`, `support-ops: …` and a bare `support-ops …` now
+  route identically (guarded on the first token being a real agent id, so an ordinary sentence is not
+  read as addressing an agent), and a single declared `/agentric <agent> <request>` slash command,
+  delivered over the existing Socket Mode connection, gives the slash form a real home. Its ack opens a
+  thread and the run is bound to it, so the answer and every follow-up stay in one place. The help list
+  no longer quotes a `/name` form Slack refuses to send.
+
 ## [0.415.2] - 2026-09-03
 ### Changed
 - **The governance suite runs in 40s instead of 88s.** Three of its 88 scripts were 61s of the total, all

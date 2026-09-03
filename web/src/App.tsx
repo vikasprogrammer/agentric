@@ -8095,6 +8095,18 @@ const SLACK_MANIFEST_OBJ = {
   features: {
     bot_user: { display_name: 'Agentric', always_online: true },
     app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+    // Slack intercepts ANY leading `/` as a slash command, so `/support-ops fix this` typed in a DM never
+    // reaches the app at all. This one declared command gives that syntax somewhere to land for every
+    // agent (no per-agent manifest entry, no reinstall when the roster changes); it is delivered over the
+    // same Socket Mode connection, so it still needs no public request URL.
+    slash_commands: [
+      {
+        command: '/agentric',
+        description: 'Ask an Agentric agent',
+        usage_hint: '<agent> <your request>',
+        should_escape: false,
+      },
+    ],
   },
   oauth_config: {
     scopes: {
@@ -8106,6 +8118,8 @@ const SLACK_MANIFEST_OBJ = {
         'im:write', 'im:history',
         'mpim:history',
         'users:read', 'users:read.email',
+        'files:read',
+        'commands',
       ],
     },
   },
@@ -18887,7 +18901,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
               className="font-mono text-xs"
             />
           </Field>
-          <Field label="Bot token" help="OAuth & Permissions → Bot User OAuth Token. Scopes: app_mentions:read, chat:write, channels:read/join/history, groups:read/history, im:write/history, mpim:history, users:read, users:read.email.">
+          <Field label="Bot token" help="OAuth & Permissions → Bot User OAuth Token. Scopes: app_mentions:read, chat:write, commands, channels:read/join/history, groups:read/history, im:write/history, mpim:history, users:read, users:read.email, files:read (files:read is what lets an agent open a screenshot you paste).">
             <Input
               type="password"
               value={botTok}

@@ -278,6 +278,23 @@ Key modules:
   there. Bot-posted messages are still dropped (`ev.fromBot`) — an integration that POSTS reports belongs
   on a webhook automation. Slack filters are validated at save time (the predicate layer fails open at
   runtime, so that's the only place a typo is caught). Pinned by `scripts/slack-content-filter-test.cjs`.
+  **Three ingress traps Slack imposes, all fixed in v0.416.0 and all of which read to the human as the
+  bot ignoring them:** (1) a message with a file carries `subtype: "file_share"`, so the rule that drops
+  subtyped messages (edits/joins/deletes) used to swallow the WHOLE message, text included — `file_share`
+  is now routed as the ordinary message it is, and its files are DOWNLOADED with the bot token (Slack
+  hands out an authenticated URL, never bytes; needs the **`files:read`** scope) into the agent's own
+  `.inbox/`, the same folder the console's paste-a-file path uses. (2) `slack_threads` is keyed by
+  session id — one reply target per run — so a thread the BOT opened (`slack_send` posting a cron report)
+  had no row and a reply under it hit the unaddressed-chatter drop; the thread-keyed
+  **`slack_bot_threads`** index now records every thread the bot has spoken in, and *having spoken there*
+  is the targeting signal — an untagged reply is acted on and stays with the agent that owns the thread
+  (`fallbackAgent`), while a thread we never posted in is still ignored in silence. (3) Slack intercepts
+  a leading `/` as a slash command, so `/agent-name …` typed in a DM never leaves the client:
+  `normalizeChatCommand` now also accepts `@name …`, `name: …` and a bare `name …` (guarded on the first
+  token being a real agent id), and one declared **`/agentric <agent> <request>`** command arrives over
+  the SAME socket (`slash_commands` envelope) — its ack opens the thread the run is then bound to. Pinned
+  by `scripts/slack-ingress-test.cjs`. Discord has none of these three (no slash interception, threads
+  branched explicitly) but its file path is still metadata-only.
   The socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
   (no `ws` dep). Slack here is INGRESS-native; Composio remains the webhook ingress lane.
 - `src/edge/discord-socket.ts` + `src/connectors/discord.ts` — **native Discord via the Gateway**: a

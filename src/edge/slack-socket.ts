@@ -16,10 +16,15 @@
  */
 import { AgentOS } from '../kernel';
 import { Automations } from './automations';
-import { explainSlackError, joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage } from '../connectors/slack';
+import { downloadSlackFile, explainSlackError, joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage, SlackFileRef } from '../connectors/slack';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+/** Attachments per message we'll fetch. A pasted screenshot is one file; a dumped folder is not a chat. */
+const MAX_FILES = 5;
+/** Per-file ceiling. Big enough for a screenshot, a PDF or a log; small enough that a video doesn't
+ *  stall the socket's dispatch or fill the agent folder. */
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 export class SlackSocket {
   private ws?: WebSocket;
@@ -132,6 +137,11 @@ export class SlackSocket {
       try { this.ws?.send(JSON.stringify({ envelope_id: msg.envelope_id })); } catch { /* */ }
     }
     if (type === 'events_api') void this.dispatch(msg).catch(() => { /* never let one event kill the socket */ });
+    // Slack swallows a leading `/…` as a slash command, so `/support-ops help me` typed in a DM never
+    // reaches the events stream at all — the sender just sees "that command doesn't exist". The single
+    // declared `/agentric <agent> <request>` command gives that syntax a real home, and Socket Mode
+    // delivers it here rather than to a public request URL.
+    if (type === 'slash_commands') void this.dispatchSlashCommand(msg).catch(() => { /* same */ });
   }
 
   private async dispatch(envelope: any): Promise<void> {
@@ -144,31 +154,23 @@ export class SlackSocket {
     // identity-map link (provider `slack`, set on the Team page); fall back to matching the Slack
     // profile email to a member. The map wins so a workspace can override / cover users whose Slack
     // email differs from their login email (or when the bot lacks the email scope).
-    let runAsMember: string | undefined;
-    let actorLabel = ev.user || 'someone';
-    if (ev.user) {
-      const mapped = this.os.team.memberByExternalId('slack', ev.user);
-      if (mapped) {
-        runAsMember = mapped.id; actorLabel = mapped.name || mapped.email;
-      } else {
-        const email = await this.resolveEmail(ev.user);
-        if (email) {
-          const m = this.os.team.getMemberByEmail(email);
-          if (m) { runAsMember = m.id; actorLabel = m.name || m.email; }
-        }
-      }
-    }
+    const { runAsMember, actorLabel } = await this.resolveActor(ev.user);
 
     // An app_mention arrives as `<@BOTID> /agent …` — strip the leading bot mention so the message
     // (and the `/agent` router prefix) starts clean, matching the Discord path.
     const text = (ev.text || '').replace(new RegExp(`^\\s*<@${this.botUserId}>\\s*`), '').trim();
+
+    // Attachments. Slack hands us metadata, not bytes: the file lives behind an authenticated URL, so we
+    // fetch it here (bot token, bounded count + size) and hand the agent real files in its own folder.
+    // Downloaded BEFORE routing so the same buffers serve whichever path claims the message.
+    const files = await this.fetchFiles(ev.files);
 
     // Thread continuity: if this message lands inside a thread already bound to a session, continue THAT
     // conversation (resume the same agent + transcript) instead of treating it as a fresh trigger — so
     // a plain "ok, now do X" in the thread keeps talking to the agent rather than hitting the /agent
     // router's help list. Only the FIRST message in a thread (nothing bound yet) falls through below.
     const cont = this.autos.continueSlackThread(
-      { channel: ev.channel, threadTs: ev.threadTs, actorLabel, text, raw: ev.raw },
+      { channel: ev.channel, threadTs: ev.threadTs, actorLabel, text, raw: ev.raw, files },
       runAsMember,
     );
     if (cont.status !== 'none') {
@@ -196,14 +198,42 @@ export class SlackSocket {
     // makes the automation depend on the reporter remembering to summon it. So a watched channel's
     // messages go to `fireSlack` with `channelWatch`, which fires ONLY channel-scoped automations whose
     // `when`/`unless` predicates hold, and never the router. Everything else still drops here.
+    //
+    // The OTHER exception is a thread we are already IN. A thread the bot opened itself (a cron report
+    // posted with `slack_send`, a proactive nudge) never had a `slack_threads` row, and a bound thread
+    // whose run has ended unresumably yields `none` above — in both cases a human replying under our own
+    // message was dropped as chatter, which reads as the bot ignoring you in the conversation it started.
+    // Having spoken in a thread IS the targeting signal, so a reply there routes normally (fresh spawn
+    // bound to the thread) instead of demanding an @mention the sender has no reason to add.
     const isDm = ev.channelType === 'im' || ev.channelType === 'mpim';
     if (ev.eventType !== 'app_mention' && !isDm) {
+      const ours = !!ev.threadTs && this.autos.knowsSlackThread(ev.channel, ev.threadTs);
+      if (ours) {
+        const r = await this.autos.fireSlack(
+          { eventType: ev.eventType, channel: ev.channel, threadTs: ev.threadTs, user: ev.user, actorLabel, text, raw: ev.raw, files },
+          runAsMember,
+          { fallbackAgent: this.autos.agentForSlackThread(ev.channel, ev.threadTs) },
+        );
+        this.stageInto(r.sessions, files);
+        this.os.audit.append({
+          ts: Date.now(),
+          runId: r.sessions[0] ?? '-',
+          tenant: this.os.tenant,
+          principal: runAsMember ? `member:${runAsMember}` : 'slack',
+          type: 'trigger.slack',
+          data: { eventType: ev.eventType, channel: ev.channel, thread: true, ourThread: true, runAs: runAsMember ?? null, fired: r.fired, files: files.length || null },
+        });
+        if (r.fired > 0) await postMessage(this.os.settings.slackBotToken(), ev.channel, `:robot_face: On it — working on this now.`, ev.threadTs);
+        else if (r.reply) await postMessage(this.os.settings.slackBotToken(), ev.channel, r.reply, ev.threadTs);
+        return;
+      }
       if (!this.autos.watchesSlackChannel(ev.channel)) return;
       const watch = await this.autos.fireSlack(
-        { eventType: ev.eventType, channel: ev.channel, threadTs: ev.threadTs, user: ev.user, actorLabel, text, raw: ev.raw },
+        { eventType: ev.eventType, channel: ev.channel, threadTs: ev.threadTs, user: ev.user, actorLabel, text, raw: ev.raw, files },
         runAsMember,
         { channelWatch: true, router: false },
       );
+      this.stageInto(watch.sessions, files);
       // Audited only when something happened. A watched channel sees every message pass through here, so
       // an unconditional audit row would make the busiest channel the loudest thing in the audit log.
       if (watch.fired > 0 || watch.dropped) {
@@ -283,9 +313,11 @@ export class SlackSocket {
         actorLabel,
         text,
         raw: ev.raw,
+        files,
       },
       runAsMember,
     );
+    this.stageInto(result.sessions, files);
 
     this.os.audit.append({
       ts: Date.now(),
@@ -293,7 +325,7 @@ export class SlackSocket {
       tenant: this.os.tenant,
       principal: runAsMember ? `member:${runAsMember}` : 'slack',
       type: 'trigger.slack',
-      data: { eventType: ev.eventType, channel: ev.channel, runAs: runAsMember ?? null, fired: result.fired },
+      data: { eventType: ev.eventType, channel: ev.channel, runAs: runAsMember ?? null, fired: result.fired, files: files.length || null },
     });
 
     // Immediate in-thread feedback so the user sees the trigger landed. The agent posts the real
@@ -304,6 +336,88 @@ export class SlackSocket {
     } else if (result.reply) {
       await postMessage(this.os.settings.slackBotToken(), ev.channel, result.reply, ev.threadTs);
     }
+  }
+
+  /** Resolve a Slack user id → the member to run as (identity map first, then profile email) plus a
+   *  human label for prompts and filters. Shared by the events and slash-command paths. */
+  private async resolveActor(userId: string): Promise<{ runAsMember?: string; actorLabel: string }> {
+    let actorLabel = userId || 'someone';
+    if (!userId) return { actorLabel };
+    const mapped = this.os.team.memberByExternalId('slack', userId);
+    if (mapped) return { runAsMember: mapped.id, actorLabel: mapped.name || mapped.email };
+    const email = await this.resolveEmail(userId);
+    if (email) {
+      const m = this.os.team.getMemberByEmail(email);
+      if (m) return { runAsMember: m.id, actorLabel: m.name || m.email };
+    }
+    return { actorLabel };
+  }
+
+  /** Fetch a message's attachments as bytes. Slack only ever hands us metadata — the file itself sits
+   *  behind an authenticated URL — so without this an agent sees "here's the screenshot" and no
+   *  screenshot. Bounded by MAX_FILES / MAX_FILE_BYTES; a failed download is audited and skipped rather
+   *  than failing the whole message, since the text is usually still actionable. */
+  private async fetchFiles(refs: SlackFileRef[]): Promise<{ name: string; data: Buffer }[]> {
+    if (!refs?.length) return [];
+    const token = this.os.settings.slackBotToken();
+    const out: { name: string; data: Buffer }[] = [];
+    for (const f of refs.slice(0, MAX_FILES)) {
+      if (f.size && f.size > MAX_FILE_BYTES) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'slack', type: 'slack.file.skipped', data: { name: f.name, size: f.size, reason: 'too large' } });
+        continue;
+      }
+      const got = await downloadSlackFile(token, f.url, MAX_FILE_BYTES);
+      if ('error' in got) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'slack', type: 'slack.file.failed', data: { name: f.name, error: got.error } });
+        continue;
+      }
+      out.push({ name: f.name, data: got.data });
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'slack', type: 'slack.file.received', data: { name: f.name, bytes: got.data.length, mime: f.mimetype } });
+    }
+    return out;
+  }
+
+  /** Write the downloaded attachments into each freshly spawned session's agent folder. */
+  private stageInto(sessions: string[], files: { name: string; data: Buffer }[]): void {
+    if (!files.length) return;
+    for (const sid of sessions) this.autos.stageInboundFiles(sid, files);
+  }
+
+  /**
+   * The `/agentric <agent> <request>` slash command. Slack's slash-command interception is the reason
+   * this exists: a leading `/` never reaches the events stream, so the `/support-ops …` syntax the help
+   * text advertises is dead on arrival in a DM. One declared command restores it for every agent
+   * without a per-agent Slack manifest entry.
+   *
+   * The ack is posted FIRST so its `ts` can become the thread root, then the spawned run is re-bound to
+   * that thread — so the agent answers in a thread and follow-ups continue the conversation through the
+   * ordinary thread path instead of stranding.
+   */
+  private async dispatchSlashCommand(envelope: any): Promise<void> {
+    const p = envelope?.payload || {};
+    const channel = String(p.channel_id || '');
+    if (!channel) return;
+    const userId = String(p.user_id || '');
+    const { runAsMember, actorLabel } = await this.resolveActor(userId);
+    // Slack strips the command itself: `/agentric support-ops fix X` arrives as text `support-ops fix X`.
+    const body = String(p.text || '').trim();
+    const text = body.startsWith('/') ? body : `/${body}`;
+    const token = this.os.settings.slackBotToken();
+    const result = await this.autos.fireSlack(
+      { eventType: 'slash_command', channel, threadTs: '', user: userId, actorLabel, text, raw: p },
+      runAsMember,
+    );
+    this.os.audit.append({
+      ts: Date.now(), runId: result.sessions[0] ?? '-', tenant: this.os.tenant,
+      principal: runAsMember ? `member:${runAsMember}` : 'slack',
+      type: 'trigger.slack', data: { eventType: 'slash_command', command: String(p.command || ''), channel, runAs: runAsMember ?? null, fired: result.fired },
+    });
+    const ack = result.fired > 0
+      ? `:robot_face: <@${userId}> asked: ${body || '(nothing)'}\nOn it — working on this now.`
+      : (result.reply || 'Nothing to do.');
+    const posted = await postMessage(token, channel, ack);
+    if ('error' in posted) return;
+    for (const sid of result.sessions) this.autos.rebindSlackThread(sid, channel, posted.ts);
   }
 
   /**
@@ -331,6 +445,10 @@ export class SlackSocket {
       this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.reply.failed', data: { channel: row.channel, error: res.error } });
       return { ok: false, error: explainSlackError(res.error, row.channel) };
     }
+    // Remember the thread we just spoke in. When the run had no thread of its own (`thread_ts` blank)
+    // this post STARTS one, and the reply a human writes under it must find its way back to this run —
+    // the case `slack_threads` (one row per session) structurally cannot record.
+    this.autos.noteSlackThread(sessionId, row.channel, row.thread_ts || res.ts);
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.reply', data: { channel: row.channel, ts: res.ts, chars: body.length } });
     return { ok: true };
   }
@@ -361,6 +479,9 @@ export class SlackSocket {
       res = await postMessage(token, channel, body);
     }
     if ('error' in res) return this.sendFailed(sessionId, channel, res.error);
+    // A proactive post opens a NEW thread. Bind it so a human replying under the daily report is talking
+    // to the agent that wrote it, instead of being dropped as unaddressed channel chatter.
+    this.autos.noteSlackThread(sessionId, channel, res.ts);
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.send', data: { channel, ts: res.ts, chars: body.length } });
     return { ok: true };
   }

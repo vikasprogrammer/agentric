@@ -250,6 +250,21 @@ function migrate(db: Db): void {
       created_at INTEGER NOT NULL
     );
 
+    -- Every Slack thread the bot is PART OF, keyed by the thread itself rather than by session.
+    -- slack_threads is keyed by session_id (one reply target per run) and is written only when a
+    -- message TRIGGERS a run — so a thread the bot itself opened (a cron report posted with slack_send,
+    -- a proactive nudge) had no row, and a human replying in it was dropped as unaddressed chatter. This
+    -- table is the "have we spoken here" index: a reply in any thread listed here is addressed to us,
+    -- even when the run that posted has long since ended.
+    CREATE TABLE IF NOT EXISTS slack_bot_threads (
+      channel    TEXT NOT NULL,
+      thread_ts  TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (channel, thread_ts)
+    );
+    CREATE INDEX IF NOT EXISTS idx_slack_bot_threads_session ON slack_bot_threads (session_id);
+
     -- Native Discord egress binding (the analogue of slack_threads): the channel + message a
     -- Discord-triggered session should reply into. Written when a discord automation spawns a session;
     -- read by the agentos discord_reply tool so the agent posts back to the SAME channel as a reply to
