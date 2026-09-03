@@ -20,11 +20,15 @@
  * Zero-dependency: the global `WebSocket` (Node 22+, undici) handles the wire; no `ws` package.
  */
 import { AgentOS } from '../kernel';
-import { Automations } from './automations';
-import { GATEWAY_INTENTS, OP, getGatewayUrl, openDmChannel, parseDiscordMessage, postMessage, startThread } from '../connectors/discord';
+import { Automations, chatAck } from './automations';
+import { DiscordFileRef, GATEWAY_INTENTS, OP, downloadDiscordFile, getGatewayUrl, openDmChannel, parseDiscordMessage, postMessage, startThread } from '../connectors/discord';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+/** Attachments per message we'll fetch. A pasted screenshot is one file; a dumped folder is not a chat. */
+const MAX_FILES = 5;
+/** Per-file ceiling — a screenshot, a PDF or a log, but not a video. */
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 /** A concise Discord thread title from the triggering message (Discord caps names at 100 chars). */
 function threadName(text: string, actor: string): string {
@@ -212,6 +216,11 @@ export class DiscordSocket {
     // (and the `/agent` router prefix) starts clean. `<@!id>` is the legacy nickname-mention form.
     const text = (ev.text || '').replace(new RegExp(`^\\s*<@!?${this.botUserId}>\\s*`), '').trim();
 
+    // Attachments. Discord's CDN URL is signed and EXPIRING, so the bytes are fetched now rather than
+    // handed to the agent as a link it would open minutes later. Bounded count + size; downloaded before
+    // routing so the same buffers serve whichever path claims the message.
+    const files = await this.fetchFiles(ev.files);
+
     // Inline approve/deny: a DM reply from someone with a pending approval we sent them resolves the gate
     // directly (no trip to the web Inbox) — the approval-side twin of the question path below. Only for
     // DMs (where the approval ping was sent). Checked first: while an approval is pending, a "yes"/"no"
@@ -254,7 +263,7 @@ export class DiscordSocket {
     if (ev.eventType === 'direct_message') {
       const cont = this.autos.continueSessionDm('discord', ev.user, { actorLabel, text, channel: ev.channel }, runAsMember);
       if (cont.status !== 'none' && cont.sessionId) {
-        void this.dmUser(ev.user, `✅ Sent to **${cont.agent}** — it'll reply here. (To start something else instead: \`/agent-name your request\`.)`);
+        void this.dmUser(ev.user, `✅ Sent to **${cont.agent}** — it'll reply here. (To start something else instead: \`agent-name: your request\`.)`);
         this.os.audit.append({
           ts: Date.now(), runId: cont.sessionId, tenant: this.os.tenant,
           principal: runAsMember ? `member:${runAsMember}` : 'discord',
@@ -270,7 +279,7 @@ export class DiscordSocket {
     // list. Guild-only (DMs have no threads); only the first @mention (nothing bound yet) falls through to
     // a fresh spawn below. Mirrors slack-socket's continueSlackThread branch.
     if (ev.guildId) {
-      const cont = this.autos.continueDiscordThread({ channel: ev.channel, actorLabel, text, raw: ev.raw }, runAsMember);
+      const cont = this.autos.continueDiscordThread({ channel: ev.channel, actorLabel, text, raw: ev.raw, replyToId: ev.replyToId, files }, runAsMember);
       if (cont.status !== 'none') {
         this.os.audit.append({
           ts: Date.now(), runId: cont.sessionId ?? '-', tenant: this.os.tenant,
@@ -284,7 +293,31 @@ export class DiscordSocket {
     // Not a thread continuation. A guild message that didn't @-mention us was surfaced only for the check
     // above — drop it so ordinary channel chatter never spawns a run or spams the router (mirrors Slack's
     // non-mention drop; the parser now lets these through solely for continuity). DMs always proceed.
-    if (!ev.mentioned) return;
+    //
+    // The exception is a REPLY to something an agent posted. A proactive `discord_send` (a cron report)
+    // creates no thread, so `discord_threads` cannot bind it and the reply under it used to be dropped —
+    // the bot ignoring you in the conversation it started. Discord marks a reply with
+    // `message_reference.message_id`, and having WRITTEN that message is the targeting signal: no
+    // @mention needed, and the run that wrote it (or, if it is past resuming, its agent) takes the reply.
+    if (!ev.mentioned) {
+      const parent = ev.replyToId ? this.autos.agentForDiscordMessage(ev.channel, ev.replyToId) : undefined;
+      if (!parent) return;
+      const r = await this.autos.fireDiscord(
+        { eventType: ev.eventType, channel: ev.channel, messageId: ev.messageId, user: ev.user, actorLabel, text, raw: ev.raw, files },
+        runAsMember,
+        { fallbackAgent: parent },
+      );
+      this.stageInto(r.sessions, files);
+      this.os.audit.append({
+        ts: Date.now(), runId: r.sessions[0] ?? '-', tenant: this.os.tenant,
+        principal: runAsMember ? `member:${runAsMember}` : 'discord', type: 'trigger.discord',
+        data: { eventType: ev.eventType, channel: ev.channel, replyToOurs: true, runAs: runAsMember ?? null, fired: r.fired, files: files.length || null },
+      });
+      const token = this.os.settings.discordBotToken();
+      if (r.fired > 0) await this.postAndRemember(r.sessions, token, ev.channel, chatAck(r.agents, '**'), ev.messageId);
+      else if (r.reply) await postMessage(token, ev.channel, r.reply, ev.messageId);
+      return;
+    }
 
     // Keep the whole exchange in ONE thread. For a guild @mention, branch a thread off the user's
     // message so the ack, the agent's replies, and everything after live together (not scattered as
@@ -309,9 +342,11 @@ export class DiscordSocket {
         actorLabel,
         text,
         raw: ev.raw,
+        files,
       },
       runAsMember,
     );
+    this.stageInto(result.sessions, files);
 
     this.os.audit.append({
       ts: Date.now(),
@@ -319,17 +354,52 @@ export class DiscordSocket {
       tenant: this.os.tenant,
       principal: runAsMember ? `member:${runAsMember}` : 'discord',
       type: 'trigger.discord',
-      data: { eventType: ev.eventType, channel, thread: channel !== ev.channel, runAs: runAsMember ?? null, fired: result.fired },
+      data: { eventType: ev.eventType, channel, thread: channel !== ev.channel, runAs: runAsMember ?? null, fired: result.fired, files: files.length || null },
     });
 
     // Immediate feedback so the user sees the trigger landed (in the thread when we made one). The agent
     // posts the real answer via its own `discord_reply` tool, bound to the same thread/channel. If nothing
     // fired but the generic router returned a help list, post that so the sender learns how to reach the fleet.
     if (result.fired > 0) {
-      await postMessage(this.os.settings.discordBotToken(), channel, '🤖 On it — working on this now.', replyRef);
+      await this.postAndRemember(result.sessions, this.os.settings.discordBotToken(), channel, chatAck(result.agents, '**'), replyRef);
     } else if (result.reply) {
       await postMessage(this.os.settings.discordBotToken(), channel, result.reply, replyRef);
     }
+  }
+
+  /** Fetch a message's attachments as bytes. A failed download is audited and skipped rather than failing
+   *  the whole message — the text is usually still actionable. */
+  private async fetchFiles(refs: DiscordFileRef[]): Promise<{ name: string; data: Buffer }[]> {
+    if (!refs?.length) return [];
+    const out: { name: string; data: Buffer }[] = [];
+    for (const f of refs.slice(0, MAX_FILES)) {
+      if (f.size && f.size > MAX_FILE_BYTES) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'discord', type: 'discord.file.skipped', data: { name: f.name, size: f.size, reason: 'too large' } });
+        continue;
+      }
+      const got = await downloadDiscordFile(f.url, MAX_FILE_BYTES);
+      if ('error' in got) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'discord', type: 'discord.file.failed', data: { name: f.name, error: got.error } });
+        continue;
+      }
+      out.push({ name: f.name, data: got.data });
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'discord', type: 'discord.file.received', data: { name: f.name, bytes: got.data.length, mime: f.mimetype } });
+    }
+    return out;
+  }
+
+  /** Write the downloaded attachments into each freshly spawned session's agent folder. */
+  private stageInto(sessions: string[], files: { name: string; data: Buffer }[]): void {
+    if (!files.length) return;
+    for (const sid of sessions) this.autos.stageInboundFiles(sid, files);
+  }
+
+  /** Post the ack and remember it against the runs it announces, so a human replying to the ack itself
+   *  reaches them — the ack is a message an agent caused, and replying to it is the obvious thing to do. */
+  private async postAndRemember(sessions: string[], token: string, channel: string, text: string, replyRef?: string): Promise<void> {
+    const res = await postMessage(token, channel, text, replyRef);
+    if ('error' in res) return;
+    for (const sid of sessions) this.autos.noteDiscordMessage(sid, channel, res.id);
   }
 
   /**
@@ -350,6 +420,9 @@ export class DiscordSocket {
       this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.reply.failed', data: { channel: row.channel, error: res.error } });
       return { ok: false, error: res.error };
     }
+    // Remember what we said, so a human replying to THIS message routes back to this run — the case a
+    // channel-keyed binding cannot cover for a plain (threadless) channel post.
+    this.autos.noteDiscordMessage(sessionId, row.channel, res.id);
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.reply', data: { channel: row.channel, id: res.id, chars: body.length } });
     return { ok: true };
   }
@@ -371,6 +444,9 @@ export class DiscordSocket {
       this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.send.failed', data: { channel, error: res.error } });
       return { ok: false, error: res.error };
     }
+    // A proactive post opens no thread on Discord, so the reply reference is the only way back: bind it,
+    // and a human replying under the daily report is talking to the agent that wrote it.
+    this.autos.noteDiscordMessage(sessionId, channel, res.id);
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.send', data: { channel, id: res.id, chars: body.length } });
     return { ok: true };
   }

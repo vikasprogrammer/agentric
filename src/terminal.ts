@@ -2400,6 +2400,44 @@ export class TerminalManager {
     return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
   }
   /**
+   * The session that posted a given Discord message — the reply-reference continuity key. A guild
+   * message that doesn't @mention us but REPLIES to something an agent wrote is addressed to that
+   * agent; `discord_threads` (channel-keyed) can't see it, because a proactive `discord_send` posts
+   * into a channel with no thread and binding the whole channel would make every unrelated message in
+   * it continue the run.
+   */
+  sessionForDiscordMessage(channel: string, messageId: string): { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    if (!channel || !messageId) return undefined;
+    const row = this.db
+      .prepare(
+        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId
+           FROM discord_bot_messages m JOIN term_sessions t ON t.id = m.session_id
+          WHERE m.channel = ? AND m.message_id = ?
+          ORDER BY t.created_at DESC LIMIT 1`,
+      )
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(channel, messageId);
+    if (!row) return undefined;
+    return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
+
+  /** Record that an agent posted this Discord message, so a reply to it routes back to that run.
+   *  Written by `discord_reply` and `discord_send` — the agent's own voice. */
+  noteDiscordMessage(sessionId: string, channel: string, messageId: string): void {
+    if (!sessionId || !channel || !messageId) return;
+    try {
+      this.db.prepare('INSERT OR REPLACE INTO discord_bot_messages (channel, message_id, session_id, created_at) VALUES (?, ?, ?, ?)')
+        .run(channel, messageId, sessionId, Date.now());
+    } catch { /* best-effort index; never break a post over it */ }
+  }
+
+  /** Did an agent post the message this one replies to? The deterministic "is this addressed to us"
+   *  test the Discord socket uses before dropping a guild message that carries no @mention. */
+  knowsDiscordMessage(channel: string, messageId: string): boolean {
+    if (!channel || !messageId) return false;
+    return !!this.db.prepare('SELECT 1 FROM discord_bot_messages WHERE channel = ? AND message_id = ?').get(channel, messageId);
+  }
+
+  /**
    * The MOST RECENT session bound to a ClickUp task — the thread-continuity twin of
    * {@link sessionForSlackThread}, keyed on the task id (the natural ClickUp "thread"). A follow-up
    * `/agentname` comment on the same task resumes THAT run's agent + claude conversation. Undefined when

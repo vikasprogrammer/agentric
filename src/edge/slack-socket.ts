@@ -15,7 +15,7 @@
  * Zero-dependency: the global `WebSocket` (Node 22+, undici) handles the wire; no `ws` package.
  */
 import { AgentOS } from '../kernel';
-import { Automations } from './automations';
+import { Automations, chatAck } from './automations';
 import { downloadSlackFile, explainSlackError, joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage, SlackFileRef } from '../connectors/slack';
 
 const RECONNECT_MIN_MS = 1_000;
@@ -223,7 +223,7 @@ export class SlackSocket {
           type: 'trigger.slack',
           data: { eventType: ev.eventType, channel: ev.channel, thread: true, ourThread: true, runAs: runAsMember ?? null, fired: r.fired, files: files.length || null },
         });
-        if (r.fired > 0) await postMessage(this.os.settings.slackBotToken(), ev.channel, `:robot_face: On it — working on this now.`, ev.threadTs);
+        if (r.fired > 0) await postMessage(this.os.settings.slackBotToken(), ev.channel, chatAck(r.agents), ev.threadTs);
         else if (r.reply) await postMessage(this.os.settings.slackBotToken(), ev.channel, r.reply, ev.threadTs);
         return;
       }
@@ -247,7 +247,7 @@ export class SlackSocket {
         });
       }
       if (watch.fired > 0) {
-        await postMessage(this.os.settings.slackBotToken(), ev.channel, `:robot_face: On it — working on this now.`, ev.threadTs);
+        await postMessage(this.os.settings.slackBotToken(), ev.channel, chatAck(watch.agents), ev.threadTs);
       }
       return;
     }
@@ -332,7 +332,7 @@ export class SlackSocket {
     // answer via its own Slack egress tools. If nothing fired but the generic router returned a help
     // list (unknown/unaddressed `/agent`), post that so the sender learns how to reach the fleet.
     if (result.fired > 0) {
-      await postMessage(this.os.settings.slackBotToken(), ev.channel, `:robot_face: On it — working on this now.`, ev.threadTs);
+      await postMessage(this.os.settings.slackBotToken(), ev.channel, chatAck(result.agents), ev.threadTs);
     } else if (result.reply) {
       await postMessage(this.os.settings.slackBotToken(), ev.channel, result.reply, ev.threadTs);
     }
@@ -413,7 +413,7 @@ export class SlackSocket {
       type: 'trigger.slack', data: { eventType: 'slash_command', command: String(p.command || ''), channel, runAs: runAsMember ?? null, fired: result.fired },
     });
     const ack = result.fired > 0
-      ? `:robot_face: <@${userId}> asked: ${body || '(nothing)'}\nOn it — working on this now.`
+      ? `<@${userId}> asked: ${body || '(nothing)'}\n${chatAck(result.agents)}`
       : (result.reply || 'Nothing to do.');
     const posted = await postMessage(token, channel, ack);
     if ('error' in posted) return;

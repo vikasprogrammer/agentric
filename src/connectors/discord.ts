@@ -126,6 +126,17 @@ export async function openDmChannel(botToken: string, userId: string): Promise<{
 }
 
 /** A normalized inbound Discord message, parsed from a `MESSAGE_CREATE` dispatch payload. */
+/** A file attached to an inbound Discord message, normalized for download + hand-off to an agent. */
+export interface DiscordFileRef {
+  id: string;
+  name: string;
+  mimetype: string;
+  /** Bytes, as Discord reports them (0 when unknown) — the cheap pre-check before we spend a download. */
+  size: number;
+  /** The CDN URL. Public but SIGNED and expiring, so it is fetched now, not handed to the agent as a link. */
+  url: string;
+}
+
 export interface DiscordMessageEvent {
   /** The event kind for filtering/labels: `direct_message` (DM to the bot) or `mention` (@bot in a guild). */
   eventType: string;
@@ -147,6 +158,11 @@ export interface DiscordMessageEvent {
    *  message that did NOT mention us is still surfaced (for thread-continuity), but with `mentioned:false`
    *  so the dispatcher only lets it CONTINUE a bound thread, never start a fresh run. */
   mentioned: boolean;
+  /** The message this one REPLIES to (`message_reference.message_id`), or ''. Discord's analogue of a
+   *  Slack thread root: a reply to something the bot posted is addressed to the bot, @mention or not. */
+  replyToId: string;
+  /** Files attached to the message (screenshots, logs, PDFs). Empty when there are none. */
+  files: DiscordFileRef[];
   /** The full inner message object (capped when injected into a task template). */
   raw: any;
 }
@@ -182,6 +198,55 @@ export function parseDiscordMessage(d: any, botUserId: string): DiscordMessageEv
     username: String(d.author?.global_name || d.author?.username || ''),
     text: String(d.content || ''),
     fromBot,
+    replyToId: String(d.message_reference?.message_id || ''),
+    files: parseDiscordFiles(d.attachments),
     raw: d,
   };
+}
+
+/** Normalize the `attachments` array Discord puts on a message. Entries with no URL are skipped. */
+export function parseDiscordFiles(attachments: unknown): DiscordFileRef[] {
+  if (!Array.isArray(attachments)) return [];
+  const out: DiscordFileRef[] = [];
+  for (const a of attachments) {
+    if (!a || typeof a !== 'object') continue;
+    const rec = a as Record<string, unknown>;
+    const url = String(rec.url || rec.proxy_url || '');
+    if (!url) continue;
+    out.push({
+      id: String(rec.id || ''),
+      name: String(rec.filename || 'file'),
+      mimetype: String(rec.content_type || ''),
+      size: Number(rec.size) || 0,
+      url,
+    });
+  }
+  return out;
+}
+
+/**
+ * Download a Discord attachment. Unlike Slack's, the CDN URL carries its own signature and needs NO
+ * Authorization header — and must not be sent one, since the bot token has no business reaching the CDN
+ * host. It is also EXPIRING, which is exactly why the bytes are fetched at dispatch rather than handed
+ * to the agent as a link to open later. Host-checked (the URL arrives inside an untrusted event) and
+ * bounded by `maxBytes`; returns `{ error }` (never throws).
+ */
+export async function downloadDiscordFile(
+  url: string,
+  maxBytes: number,
+): Promise<{ data: Buffer; contentType: string } | { error: string }> {
+  if (!/^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\//.test(url)) {
+    return { error: 'refusing to download a non-Discord URL' };
+  }
+  try {
+    const res = await fetch(url, { redirect: 'follow' });
+    if (!res.ok) return { error: `download failed (${res.status})` };
+    const declared = Number(res.headers.get('content-length')) || 0;
+    if (declared > maxBytes) return { error: `file is ${declared} bytes, over the ${maxBytes}-byte limit` };
+    const data = Buffer.from(await res.arrayBuffer());
+    if (data.length > maxBytes) return { error: `file is ${data.length} bytes, over the ${maxBytes}-byte limit` };
+    return { data, contentType: String(res.headers.get('content-type') || '') };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'download failed' };
+  }
 }

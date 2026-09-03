@@ -293,8 +293,7 @@ Key modules:
   `normalizeChatCommand` now also accepts `@name …`, `name: …` and a bare `name …` (guarded on the first
   token being a real agent id), and one declared **`/agentric <agent> <request>`** command arrives over
   the SAME socket (`slash_commands` envelope) — its ack opens the thread the run is then bound to. Pinned
-  by `scripts/slack-ingress-test.cjs`. Discord has none of these three (no slash interception, threads
-  branched explicitly) but its file path is still metadata-only.
+  by `scripts/slack-ingress-test.cjs`. Discord's analogues are below.
   The socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
   (no `ws` dep). Slack here is INGRESS-native; Composio remains the webhook ingress lane.
 - `src/edge/discord-socket.ts` + `src/connectors/discord.ts` — **native Discord via the Gateway**: a
@@ -309,6 +308,18 @@ Key modules:
   thread-create failure → channel fallback). The `discord_reply` MCP tool is bound to `discord_threads`;
   `DISCORD_REPLY=1` exposes it. `discord.connected` records the READY guild count. Reconnect backoff + zombie
   detection mirror SlackSocket.
+  **The three Slack ingress traps have Discord analogues, fixed the SAME way but by different keys
+  (v0.417.0)** — attachments: Discord never drops the message (no `file_share` subtype) but
+  `attachments[]` was payload-only, so files are now downloaded into the agent's `.inbox/` with **no**
+  Authorization header (a signed CDN URL; the bot token has no business at that host) and at dispatch
+  time (the URL EXPIRES). Untagged replies: `discord_threads` is keyed by CHANNEL, which cannot cover a
+  proactive `discord_send` (no thread, and binding the whole channel would drag every unrelated message
+  into the run) — so **`discord_bot_messages`** records every message an agent posts and Discord's own
+  `message_reference.message_id` is the targeting signal. Slash interception: doesn't exist on Discord (an
+  unknown `/command` sends as plain text), and the shared `normalizeChatCommand` aliases already apply.
+  The chat ack now NAMES the agent that picked the message up (`chatAck`, shared by Slack/Discord/Telegram
+  — an anonymous "On it" leaves the sender unable to tell who answered when the auto-router chose). Pinned
+  by `scripts/discord-ingress-test.cjs`; full detail in `docs/connectors/slack.md` + `docs/connectors/discord.md`.
   Per-automation **execution mode**: `headless` (default) and `interactive` now run the SAME way — an
   attachable interactive claude TUI (NOT `claude -p`) with `--dangerously-skip-permissions` (the PreToolUse
   gate hook still runs + blocks risky Bash under that flag). The difference is teardown: an `headless`
