@@ -23,11 +23,16 @@
 import { AgentOS } from '../kernel';
 import { isCodingRuntime } from '../types';
 import { Automations, chatAck } from './automations';
-import { getMe, getUpdates, parseTelegramUpdate, sendMessage, setMyCommands, telegramCommandName } from '../connectors/telegram';
+import { getMe, getUpdates, parseTelegramUpdate, sendMessage, setMyCommands, telegramCommandName, TelegramFileRef, downloadTelegramFile } from '../connectors/telegram';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const LONG_POLL_SEC = 25; // how long Telegram holds an idle getUpdates open
+
+/** Attachments per message we'll fetch. A pasted screenshot is one file; an album dump is not a chat. */
+const MAX_FILES = 5;
+/** Per-file ceiling — a screenshot, a PDF or a log, but not a video. */
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 export class TelegramSocket {
   private botId = '';
@@ -156,6 +161,11 @@ export class TelegramSocket {
     // real (possibly hyphenated) agent id so a tapped `/agent_author` reaches `agent-author`.
     let text = this.resolveCommand(this.stripMention(ev.text));
 
+    // Attachments. Telegram hands out an opaque `file_id`, never a URL, so each one costs a `getFile`
+    // before the bytes can be fetched — done here, before routing, so the same buffers serve whichever
+    // path claims the message.
+    const files = await this.fetchFiles(ev.files);
+
     // `/new` (or `/reset`) — end the current conversation in this chat and start fresh. Detected before
     // continuity so the command itself never gets delivered into the live session. `/new` alone acks and
     // returns; `/new <request>` resets then falls through with the request as a fresh spawn. Skipped if an
@@ -246,7 +256,7 @@ export class TelegramSocket {
     // this is the general "keep talking in this chat". Only the first message (nothing bound yet) falls
     // through to a fresh spawn below.
     {
-      const cont = this.autos.continueTelegramThread({ chat: ev.chatId, messageThreadId: ev.messageThreadId, actorLabel, text, raw: ev.raw }, runAsMember);
+      const cont = this.autos.continueTelegramThread({ chat: ev.chatId, messageThreadId: ev.messageThreadId, actorLabel, text, raw: ev.raw, files }, runAsMember);
       if (cont.status !== 'none') {
         this.os.audit.append({
           ts: Date.now(), runId: cont.sessionId ?? '-', tenant: this.os.tenant,
@@ -272,9 +282,11 @@ export class TelegramSocket {
         actorLabel,
         text,
         raw: ev.raw,
+        files,
       },
       runAsMember,
     );
+    for (const sid of result.sessions) this.autos.stageInboundFiles(sid, files);
 
     this.os.audit.append({
       ts: Date.now(),
@@ -335,6 +347,29 @@ export class TelegramSocket {
     if (!this.botUsername) return (text || '').trim();
     const re = new RegExp(`@${this.botUsername.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\b`, 'ig');
     return (text || '').replace(re, '').trim();
+  }
+
+  /** Fetch a message's attachments as bytes. A failed download is audited and skipped rather than failing
+   *  the whole message — the caption is usually still actionable. The download URL embeds the bot token,
+   *  so only the bytes ever leave `downloadTelegramFile`; nothing here logs a URL. */
+  private async fetchFiles(refs: TelegramFileRef[]): Promise<{ name: string; data: Buffer }[]> {
+    if (!refs?.length) return [];
+    const token = this.os.settings.telegramBotToken();
+    const out: { name: string; data: Buffer }[] = [];
+    for (const f of refs.slice(0, MAX_FILES)) {
+      if (f.size && f.size > MAX_FILE_BYTES) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'telegram', type: 'telegram.file.skipped', data: { name: f.name, size: f.size, reason: 'too large' } });
+        continue;
+      }
+      const got = await downloadTelegramFile(token, f.fileId, MAX_FILE_BYTES);
+      if ('error' in got) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'telegram', type: 'telegram.file.failed', data: { name: f.name, error: got.error } });
+        continue;
+      }
+      out.push({ name: f.name, data: got.data });
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'telegram', type: 'telegram.file.received', data: { name: f.name, bytes: got.data.length, mime: f.mimetype } });
+    }
+    return out;
   }
 
   /** Map a Telegram user id → Agentric member id via the identity map (provider `telegram`). Undefined

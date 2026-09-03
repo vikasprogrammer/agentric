@@ -37,9 +37,28 @@ follow-ups (thread continuity) require Group Privacy disabled in @BotFather**.
 the **identity map** (`member_identities`, provider `telegram`) — Telegram exposes no email, so as with
 Discord there is no email fallback; unmapped senders run as the company identity.
 
-Then the usual: continuity first, then `telegram` automations, then the shared `/agent` router.
+Then the usual: continuity first, then `telegram` automations, then the shared `/agent` router. The ack
+**names the agent that picked the message up** (`chatAck`, shared with Slack and Discord) — where the
+auto-router, not the sender, chose, an anonymous "On it" leaves the sender unable to tell who answered.
 
 Audit: `telegram.connected` `{ botId, username }`; `trigger.telegram` per dispatch.
+
+### Attachments (v0.419.0)
+
+`parseTelegramUpdate` used to return **null for any message with no text**, and an uncaptioned photo is
+the most natural way a person reports a bug — so the message was dropped whole, the worst version of this
+defect across the four chat lanes. A message with no text but with files now routes.
+
+Each media kind is its own top-level field (`photo`, `document`, `video`, `audio`, `voice`) and **`photo`
+is an array of the same image at ascending sizes** — the last entry is the largest and the only one worth
+reading. Telegram gives a photo no filename, so one is synthesized from its `file_unique_id`.
+
+Telegram hands out an opaque **`file_id`, never a URL**, so every file costs a `getFile` before the bytes
+can be fetched (≤5 files, ≤8 MB each, into the agent's own `.inbox/`). The resolved path is valid for
+about an hour, which is why the bytes are taken at dispatch. ⚠ **The download URL embeds the bot token in
+its path** (`/file/bot<token>/<path>`) — it must never be logged, put in an audit row, or shown to an
+agent; only the bytes leave `downloadTelegramFile`. Audit: `telegram.file.received` / `.failed` /
+`.skipped`. Pinned by `scripts/chat-attachments-test.cjs`.
 
 ## Threading
 
@@ -67,3 +86,5 @@ links as `label: url` for `telegram` (same as ClickUp) instead of masked markup.
 - **Group Privacy on = no continuity.** Only commands/mentions/replies reach the bot.
 - **No email → the identity map is mandatory** for per-member run-as.
 - Forum topics: continuity keys on `(chat_id, message_thread_id)`, so the same chat's topics stay separate.
+- **The file download URL contains the bot token.** Never log it, audit it, or hand it to an agent.
+- **`photo` is an array**, smallest-first. Taking `photo[0]` gets a thumbnail, not the screenshot.

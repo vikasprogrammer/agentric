@@ -8,6 +8,36 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.419.0] - 2026-09-03
+### Fixed
+- **A file sent through ClickUp or Telegram reached the agent as nothing** — the last two of the four chat
+  lanes, after Slack (v0.416.0) and Discord (v0.417.0). Each needed a different fix:
+  - **ClickUp**: `comment_text` is the flattened text, so a screenshot dropped on a task leaves no trace in
+    it — the files live only in the structured `comment` block array (and, on some payloads, a sibling
+    `attachments` array). Both are read and de-duplicated, then downloaded into the agent's own `.inbox/`.
+    The presigned URL takes **no** Authorization header (the API token has no business at the attachment
+    host) and **expires**, so the bytes are taken at dispatch. ClickUp's `title` drops the extension, so it
+    is re-appended — an agent needs to know it is looking at a `.png`.
+  - **Telegram**: the worst of the four. `parseTelegramUpdate` returned null for any message with **no
+    text**, and an uncaptioned photo is the most natural way a person reports a bug — so the message was
+    dropped whole. It now routes. `photo` is an array of ascending sizes and the largest is taken (the
+    first is a thumbnail); Telegram hands out an opaque `file_id` rather than a URL, so each file costs a
+    `getFile` first. ⚠ That download URL embeds the bot token in its path — it is never logged, audited or
+    shown to an agent.
+  Both are bounded at 5 files / 8 MB each and land in the same `.inbox/` the console's paste-a-file path
+  uses, with the prompt naming each by the relative path it will have.
+
+### Changed
+- **ClickUp names the agent in its ack only when the router chose it.** A dispatch the commenter steered
+  (`/support-ops …`) still posts no "on it" comment — the 👀 reaction is enough, and a second comment is
+  noise on a task's shared comment section. But an automation, an auto-route or a resolved disambiguation
+  leaves the commenter with no way to know who took it, so that case posts a one-line named ack.
+- Telegram's ack names the agent too, completing the `chatAck` rollout across all four lanes.
+- `docs/connectors/clickup.md` and `docs/connectors/telegram.md` document the attachment paths, plus — for
+  ClickUp — **why the Slack/Discord untagged-reply fix deliberately does not transfer**: a task's comment
+  section is a shared human workspace, not a thread the bot owns, so the `/command` gate stays the
+  addressing rule.
+
 ## [0.418.0] - 2026-09-03
 ### Added
 - **Eight more proven agent shapes in Docs → Use cases, plus the readback practice.** Generalised from

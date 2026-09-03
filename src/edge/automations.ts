@@ -1707,14 +1707,16 @@ export class Automations {
    * member; absent → the company identity. Event-driven, so no pile-up guard. Returns sessions started.
    */
   async fireClickup(
-    event: { taskId: string; commentId: string; text: string; taskUrl: string; actorLabel: string; raw: unknown },
+    event: { taskId: string; commentId: string; text: string; taskUrl: string; actorLabel: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
-  ): Promise<{ fired: number; sessions: string[]; reply?: string }> {
+  ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string }> {
     const sessions: string[] = [];
+    const agents: string[] = [];
     const bind = { taskId: event.taskId, commentId: event.commentId };
     const extra =
       `Triggered from ClickUp by ${event.actorLabel} on task ${event.taskId} (${event.taskUrl}).\n` +
-      `Comment (the user's request):\n${event.text}\n\n` +
+      `Comment (the user's request):\n${event.text}\n` +
+      attachmentNote(event.files) + `\n` +
       `Do this IN ORDER:\n` +
       `1. FIRST fetch the FULL task details for context — the ClickUp task DESCRIPTION holds the real ` +
       `content (customer email / "Cx:" fields, issue details, links, stack traces), not just this comment. ` +
@@ -1729,16 +1731,17 @@ export class Automations {
       const f = (a.filter || '').trim().toLowerCase();
       if (f && f !== '*' && f !== event.taskId.toLowerCase()) continue;
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, clickup: bind });
-      if (r.ok) sessions.push(r.sessionId);
+      if (r.ok) { sessions.push(r.sessionId); agents.push(a.agentId); }
     }
     // No specific automation matched → the shared chat front door (explicit `/name` / auto-route / help).
     let reply: string | undefined;
     if (sessions.length === 0) {
       const r = await this.routeUnmatched({ key: `clickup:${event.taskId}`, text: event.text, extra, runAs: runAsMember, clickup: bind });
       sessions.push(...r.sessions);
+      agents.push(...r.agents);
       reply = r.reply;
     }
-    return { fired: sessions.length, sessions, reply };
+    return { fired: sessions.length, sessions, agents, reply };
   }
 
   /**
@@ -1749,7 +1752,7 @@ export class Automations {
    * {@link fireClickup}. The route posts no ack — the agent's own `clickup_reply` is the feedback.
    */
   continueClickupThread(
-    event: { taskId: string; actorLabel: string; text: string; raw: unknown },
+    event: { taskId: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
   ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
     const bound = this.tm.sessionForClickupThread(event.taskId);
@@ -1757,12 +1760,15 @@ export class Automations {
     // Explicit `/other-agent …` on a shared task overrides continuity → let the caller spawn it fresh.
     if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
     const runAs = runAsMember ?? bound.runAs;
-    const msg = this.stripChatPrefix(event.text);
-    if (!msg) return { status: 'none' };
+    // Files land in the agent's folder BEFORE the comment is typed in, so the path it names is readable
+    // by the time the agent acts on it.
+    const staged = this.tm.stageInboundFiles(bound.sessionId, event.files ?? []);
+    const msg = this.stripChatPrefix(event.text) + (staged.length ? `\n(attached: ${staged.join(', ')})` : '');
+    if (!msg.trim()) return { status: 'none' };
     const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
       ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
       principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
-      data: { mode, platform: 'clickup', agent: bound.agent, session: bound.sessionId, task: event.taskId, runAs: runAs ?? null },
+      data: { mode, platform: 'clickup', agent: bound.agent, session: bound.sessionId, task: event.taskId, runAs: runAs ?? null, files: staged.length || null },
     });
     // Warm path: live resident session → deliver by typing into it.
     if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
@@ -1867,7 +1873,7 @@ export class Automations {
    * (+ forum topic) and replies land there as a reply to the triggering message.
    */
   async fireTelegram(
-    event: { eventType: string; chat: string; messageThreadId: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown },
+    event: { eventType: string; chat: string; messageThreadId: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
   ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string }> {
     const sessions: string[] = [];
@@ -1875,7 +1881,8 @@ export class Automations {
     const bind = { chat: event.chat, messageThreadId: event.messageThreadId, messageId: event.messageId };
     const extra =
       `Triggered from Telegram by ${event.actorLabel} (${event.eventType}) in chat ${event.chat}.\n` +
-      `Message:\n${event.text}\n\n` +
+      `Message:\n${event.text}\n` +
+      attachmentNote(event.files) + `\n` +
       `When you're done, call the \`telegram_reply\` tool with your answer — it posts back to this exact ` +
       `Telegram chat as a reply (you don't need a chat id). Keep it concise.\n\n` +
       `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
@@ -1913,15 +1920,18 @@ export class Automations {
    * disabled in @BotFather for the plain follow-up to reach the bot at all.)
    */
   continueTelegramThread(
-    event: { chat: string; messageThreadId: string; actorLabel: string; text: string; raw: unknown },
+    event: { chat: string; messageThreadId: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
   ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
     const bound = this.tm.sessionForTelegramThread(event.chat, event.messageThreadId);
     if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
     if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
     const runAs = runAsMember ?? bound.runAs;
-    const msg = this.stripChatPrefix(event.text);
-    if (!msg) return { status: 'none' };
+    // Files land in the agent's folder BEFORE the message is typed in, so the path it names is readable
+    // by the time the agent acts on it.
+    const staged = this.tm.stageInboundFiles(bound.sessionId, event.files ?? []);
+    const msg = this.stripChatPrefix(event.text) + (staged.length ? `\n(attached: ${staged.join(', ')})` : '');
+    if (!msg.trim()) return { status: 'none' };
     const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
       ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
       principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',

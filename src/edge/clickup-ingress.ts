@@ -21,7 +21,13 @@
  */
 import type { AgentOS } from '../kernel';
 import type { Automations } from './automations';
-import { addComment, addReaction, fetchLatestComment, taskUrl } from '../connectors/clickup';
+import { chatAck } from './automations';
+import { ClickupFileRef, addComment, addReaction, downloadClickupFile, fetchLatestComment, taskUrl } from '../connectors/clickup';
+
+/** Attachments per comment we'll fetch. A pasted screenshot is one file; a dumped folder is not a comment. */
+const MAX_FILES = 5;
+/** Per-file ceiling — a screenshot, a PDF or a log, but not a video. */
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 export class ClickupIngress {
   /**
@@ -82,29 +88,67 @@ export class ClickupIngress {
     // (lighter + less noisy than an "on it" comment). Best-effort; the eventual reply is the real answer.
     void addReaction(token, comment.id, 'eyes');
 
+    // Attachments. `comment_text` is flattened text, so a screenshot dropped on the task leaves no trace
+    // in it — the files live only in the structured blocks, behind an EXPIRING presigned URL. Fetch the
+    // bytes now, before routing, so the same buffers serve whichever path claims the comment.
+    const files = await this.fetchFiles(comment.files);
+
     const member = comment.userEmail ? this.os.team.getMemberByEmail(comment.userEmail) : undefined;
     const runAs = member?.id;
     const actorLabel = member?.name || comment.userEmail || 'a ClickUp user';
 
     // 1) Continuity: a follow-up `/command` on a task already bound to a live/resumable session resumes it.
-    const cont = this.autos.continueClickupThread({ taskId, actorLabel, text, raw }, runAs);
+    const cont = this.autos.continueClickupThread({ taskId, actorLabel, text, raw, files }, runAs);
     if (cont.status !== 'none') {
       return { ok: true, status: cont.status, sessions: cont.sessionId ? [cont.sessionId] : [] };
     }
 
     // 2) Fresh: route the `/agentname` to the shared chat front door.
     const r = await this.autos.fireClickup(
-      { taskId, commentId: comment.id, text, taskUrl: taskUrl(taskId), actorLabel, raw },
+      { taskId, commentId: comment.id, text, taskUrl: taskUrl(taskId), actorLabel, raw, files },
       runAs,
     );
+    for (const sid of r.sessions) this.autos.stageInboundFiles(sid, files);
     // A routing/disambiguation reply (help list / "which agent?") carries TEXT, so it's a comment — and
-    // we remember its id to skip the webhook it triggers. A successful dispatch posts NO "on it" comment:
-    // the 👀 reaction above is the acknowledgement; the agent's own `clickup_reply` is the result.
+    // we remember its id to skip the webhook it triggers. A dispatch the commenter STEERED posts no
+    // "on it" comment: they typed `/support-ops`, so the 👀 reaction above says enough and a second
+    // comment is noise on a shared task. But when the ROUTER picked the agent — an auto-route, or a
+    // resolved disambiguation — the commenter has no way to know who took it, so we name them.
     if (r.reply) {
       const a = await addComment(token, taskId, r.reply);
       if ('ok' in a) this.remember(a.id);
+    } else if (r.agents.length && !this.commenterNamed(text, r.agents)) {
+      const a = await addComment(token, taskId, chatAck(r.agents, ''));
+      if ('ok' in a) this.remember(a.id);
     }
     return { ok: true, status: r.sessions.length ? 'dispatched' : 'ignored', sessions: r.sessions };
+  }
+
+  /** Did the comment itself name every agent that ran? `/support-ops …` did; an auto-route did not. */
+  private commenterNamed(text: string, agents: string[]): boolean {
+    const head = (text || '').trim().replace(/^\/agent-?os\s+\/?/i, '/').match(/^\/([A-Za-z0-9][\w-]*)/);
+    return !!head && agents.every((a) => a === head[1]);
+  }
+
+  /** Fetch a comment's attachments as bytes. A failed download is audited and skipped rather than failing
+   *  the whole comment — the text is usually still actionable. */
+  private async fetchFiles(refs: ClickupFileRef[]): Promise<{ name: string; data: Buffer }[]> {
+    if (!refs?.length) return [];
+    const out: { name: string; data: Buffer }[] = [];
+    for (const f of refs.slice(0, MAX_FILES)) {
+      if (f.size && f.size > MAX_FILE_BYTES) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'clickup', type: 'clickup.file.skipped', data: { name: f.name, size: f.size, reason: 'too large' } });
+        continue;
+      }
+      const got = await downloadClickupFile(f.url, MAX_FILE_BYTES);
+      if ('error' in got) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'clickup', type: 'clickup.file.failed', data: { name: f.name, error: got.error } });
+        continue;
+      }
+      out.push({ name: f.name, data: got.data });
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'clickup', type: 'clickup.file.received', data: { name: f.name, bytes: got.data.length, mime: f.mimetype } });
+    }
+    return out;
   }
 
   /**
