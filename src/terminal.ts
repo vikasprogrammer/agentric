@@ -3515,6 +3515,20 @@ export class TerminalManager {
             if (!overLifetime && (blockedCutoff == null || blockedAt >= blockedCutoff)) continue;
             if (!overLifetime) reason = 'blocked-timeout';
           }
+          // Remember the run before killing it. Every OTHER teardown path writes an episode —
+          // `markEnded` (normal end, and `teardownUnattended` through it), `markCrashed`, and
+          // `stopSession` (the human kill button) — but this janitor did its own teardown and skipped it,
+          // so an abandoned interactive session evaporated. Measured over 30 days: 3 of 29 reaped
+          // sessions on instapods and 18 of 136 on instawp had an episode, and those came from a `report`
+          // earlier in the run, not from the reap.
+          //
+          // The point is NOT recall value — these take the audit branch (no `report` was ever filed), so
+          // they read "Task: … / Outcome: stopped / Activity: 315 governed actions". It is that episodes
+          // are what Dreaming and the consolidator READ, and they were seeing only sessions that ended
+          // tidily. Every abandoned interactive run — and those carry the fleet's human-initiated work,
+          // "How are we doing marketing-wise", "give me the top gainers of the past 10 days" — was
+          // invisible to topic extraction. A biased sample is worse than a thin one.
+          this.writeEpisode(r.id, r.agent, terminal ? undefined : 'stopped');
           this.backend.kill(space, r.tmux);
           // Preserve a completed session's outcome — only a still-running one becomes 'stopped'.
           this.db.prepare("UPDATE term_sessions SET status = ?, busy_since = NULL, updated_at = ? WHERE id = ?").run(terminal ? r.status : 'stopped', Date.now(), r.id);
@@ -7596,7 +7610,13 @@ export class TerminalManager {
   private writeEpisode(sessionId: string, agent: string, outcomeOverride?: string): void {
     if (this.episoded.has(sessionId)) return;
     if (this.db.prepare("SELECT 1 FROM audit_events WHERE run_id = ? AND type = 'episode.stored'").get(sessionId)) return;
-    const task = this.db.prepare('SELECT task FROM term_sessions WHERE id = ?').get<{ task: string }>(sessionId)?.task ?? '';
+    // A DELETED session has no row. Its audit events survive (the log is append-only), so composing from
+    // them would write an episode with no task line, attributed to an agent we can no longer name — junk
+    // addressed to nobody. Seen live on instawp: one janitor-reaped run whose row had been deleted
+    // mid-flight, whose activity list still carried `session.deleted`.
+    const row = this.db.prepare('SELECT task FROM term_sessions WHERE id = ?').get<{ task: string }>(sessionId);
+    if (!row) return;
+    const task = row.task ?? '';
     const report = this.db.prepare("SELECT outcome, body FROM messages WHERE session_id = ? AND type = 'completed' ORDER BY created_at DESC LIMIT 1").get<{ outcome: string | null; body: string }>(sessionId);
     const events = this.db.prepare('SELECT type, data FROM audit_events WHERE run_id = ? ORDER BY ts').all<{ type: string; data: string }>(sessionId);
     const ep = composeEpisode(task, report, events, outcomeOverride);
