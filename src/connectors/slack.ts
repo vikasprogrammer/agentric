@@ -199,6 +199,17 @@ export async function lookupBotUserId(botToken: string): Promise<string> {
   }
 }
 
+/** A file attached to an inbound Slack message, normalized for download + hand-off to an agent. */
+export interface SlackFileRef {
+  id: string;
+  name: string;
+  mimetype: string;
+  /** Bytes, as Slack reports them (0 when unknown) — the cheap pre-check before we spend a download. */
+  size: number;
+  /** The authenticated download URL (`url_private_download`); needs the bot token in an Authorization header. */
+  url: string;
+}
+
 /** A normalized inbound Slack message event, parsed from a Socket-Mode `events_api` envelope. */
 export interface SlackMessageEvent {
   /** The Slack event type — `app_mention` (bot @-mentioned in a channel) or `message` (DM/IM). */
@@ -215,6 +226,8 @@ export interface SlackMessageEvent {
   threadTs: string;
   /** Whether this looks like the bot's own message / a bot message (caller should skip these). */
   fromBot: boolean;
+  /** Files attached to the message (images, PDFs, logs). Empty when there are none. */
+  files: SlackFileRef[];
   /** The full inner event object (capped when injected into a task template). */
   raw: any;
 }
@@ -230,7 +243,11 @@ export function parseSlackEvent(envelope: any): SlackMessageEvent | null {
   const eventType = String(ev.type || '');
   if (eventType !== 'app_mention' && eventType !== 'message') return null;
   // Slack message-changed/deleted/joined carry a `subtype`; we only route plain user messages + mentions.
-  if (eventType === 'message' && ev.subtype) return null;
+  // `file_share` is the exception that used to cost us every screenshot: a message a human sends WITH an
+  // attachment carries that subtype, so blanket-dropping subtyped messages silently swallowed the whole
+  // event — text and all — and the sender saw the bot ignore them. It is an ordinary user message that
+  // happens to have files, so it routes like one.
+  if (eventType === 'message' && ev.subtype && ev.subtype !== 'file_share') return null;
   const fromBot = !!ev.bot_id || ev.subtype === 'bot_message' || !ev.user;
   return {
     eventType,
@@ -240,6 +257,57 @@ export function parseSlackEvent(envelope: any): SlackMessageEvent | null {
     text: String(ev.text || ''),
     threadTs: String(ev.thread_ts || ev.ts || ''),
     fromBot,
+    files: parseSlackFiles(ev.files),
     raw: ev,
   };
+}
+
+/** Normalize the `files` array Slack attaches to a message (`file_share` / a mention with an upload).
+ *  Entries without a private download URL (a deleted or externally-hosted file) are skipped. */
+export function parseSlackFiles(files: unknown): SlackFileRef[] {
+  if (!Array.isArray(files)) return [];
+  const out: SlackFileRef[] = [];
+  for (const f of files) {
+    if (!f || typeof f !== 'object') continue;
+    const rec = f as Record<string, unknown>;
+    const url = String(rec.url_private_download || rec.url_private || '');
+    if (!url) continue;
+    out.push({
+      id: String(rec.id || ''),
+      name: String(rec.name || rec.title || 'file'),
+      mimetype: String(rec.mimetype || ''),
+      size: Number(rec.size) || 0,
+      url,
+    });
+  }
+  return out;
+}
+
+/**
+ * Download a Slack-hosted file as the bot. `url_private_download` is NOT public — it answers with the
+ * login page (HTML, status 200) unless the bot token rides in an Authorization header, which is the
+ * classic way this silently "works" and yields a 40KB HTML file instead of the screenshot. Needs the
+ * `files:read` scope. Bounded by `maxBytes`; returns `{ error }` (never throws).
+ */
+export async function downloadSlackFile(
+  botToken: string,
+  url: string,
+  maxBytes: number,
+): Promise<{ data: Buffer; contentType: string } | { error: string }> {
+  if (!botToken) return { error: 'no Slack bot token' };
+  if (!/^https:\/\/[\w.-]*\bslack\.com\//.test(url)) return { error: 'refusing to download a non-Slack URL' };
+  try {
+    const res = await fetch(url, { headers: { authorization: `Bearer ${botToken}` }, redirect: 'follow' });
+    if (!res.ok) return { error: `download failed (${res.status})` };
+    const contentType = String(res.headers.get('content-type') || '');
+    // Slack answers an unauthenticated/unscoped fetch with its sign-in page rather than a 401.
+    if (/^text\/html/i.test(contentType)) return { error: 'download returned Slack HTML — the app likely lacks the `files:read` scope' };
+    const declared = Number(res.headers.get('content-length')) || 0;
+    if (declared > maxBytes) return { error: `file is ${declared} bytes, over the ${maxBytes}-byte limit` };
+    const data = Buffer.from(await res.arrayBuffer());
+    if (data.length > maxBytes) return { error: `file is ${data.length} bytes, over the ${maxBytes}-byte limit` };
+    return { data, contentType };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'download failed' };
+  }
 }
