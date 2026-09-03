@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.419.2] - 2026-09-03
+### Fixed
+- **A task room's Session tab had no way to open that session on its own.** The embedded pane was
+  rendered with `standalone` - the flag that means "this IS the chrome-less popout at `#/term/<tmux>`,
+  so drop the Pop out and Focus buttons" - so inside a task room the terminal silently lost both, and
+  the only way to get a session into its own tab was to leave the room and find the run on the Sessions
+  page. The room is an embedded pane, not the popout, so it no longer passes the flag: "Pop out" (a real
+  anchor, so cmd/middle-click work) opens just the session, chrome-free, in a new browser tab.
+
 ## [0.419.1] - 2026-09-03
 ### Fixed
 - **`make-live.sh` deployed only the FIRST remote tenant, and failed confusingly on the second.** Every

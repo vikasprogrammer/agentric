@@ -10802,7 +10802,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
                   )}
                   {sessPending
                     ? <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening session…</div>
-                    : <TerminalFrame key={sessTmux} session={sessRow} tmux={sessTmux} standalone />}
+                    // NOT `standalone` — the room is an embedded pane, not the chrome-less popout, so it keeps
+                    // its own "Pop out" (open just this session in a fresh tab, no room/console around it) and
+                    // "Focus" buttons. It used to pass `standalone` and silently lost both.
+                    : <TerminalFrame key={sessTmux} session={sessRow} tmux={sessTmux} />}
                 </div>
               )}
             </div>
