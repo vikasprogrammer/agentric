@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.420.0] - 2026-09-03
+### Fixed
+- **Every Composio action was governed as one anonymous `connector.call`.** Composio's Tool Router
+  exposes exactly six meta-tools no matter how many apps an entity has connected, and the real action
+  rides at `input.tools[].tool_slug` - so `args.tool` always read `COMPOSIO_MULTI_EXECUTE_TOOL` and every
+  plane keyed on it was blind: `resolveCapability` never fired (`payments.refund`, `email.send`, ...),
+  the enricher never set `emailSend` so recipients were never judged, and the approval card said
+  *"Write to Composio multi execute tool"*. Live evidence: an expresstech run sent two customer-facing
+  Gmail messages, both audited `connector.call` / allow / green / "no rule matched". The gate now unwraps
+  the envelope to the real effect before enriching (`src/capabilities/composio-envelope.ts`,
+  `gate.composio.unwrapped`) - server-side, so claude-code, codex and opencode are all covered by one
+  implementation. A batch (up to 50 actions, one verdict) is governed at the risk of its worst member and
+  names the rest on the card.
+- **Two of those six meta-tools are arbitrary remote code and were waved through as generic connector
+  calls.** `COMPOSIO_REMOTE_BASH_TOOL` is a shell and `COMPOSIO_REMOTE_WORKBENCH` is a persistent Python
+  sandbox whose code can call `run_composio_tool(tool_slug=...)` - any Composio action, from inside a
+  string. Both are now `shell.exec` with the code as the governed command, carrying `composioRemote` so a
+  workspace can rule on remote execution as a class; their auto-approve signature is namespaced apart, so
+  an "always approve" for a local command can never clear the same command on Composio's box.
+  `COMPOSIO_MANAGE_CONNECTIONS` (which with `reinitiate_all` **replaces** a live connection) is now
+  `connector.connect`.
+- **`extra_recipients` did not count as recipients.** It is Composio's Gmail schema for the additional
+  to/cc list and sat outside the enricher's recipient keys, so a send to one insider plus four outsiders
+  would have scored as a single internal recipient. Latent until the unwrap above made the email facts
+  fire at all.
 ### Docs
 - **Insights Step 5: "prompt shape" added as a second-signal candidate** (`docs/insights-revisit.md`).
   Agent prompts accrete monotonically through `agent_update` self-edits and nothing ever removes a

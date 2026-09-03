@@ -95,6 +95,38 @@ Every Composio tool call is an `mcp__*` call, so it hits the gate hook → polic
 else. Rules key off the capability id **and** the args (the gate is handed the tool input), e.g.
 `email.send` to a recipient outside the org → `yellow`/`red`.
 
+### The envelope (`src/capabilities/composio-envelope.ts`)
+
+That only holds because the gate **unwraps the Tool Router envelope first**. However many apps an entity
+has connected, a minted session exposes exactly **six** meta-tools — verified against the live endpoint:
+
+| Meta-tool | What it really is | Governed as |
+|---|---|---|
+| `COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_GET_TOOL_SCHEMAS` | discovery, read-only | left alone |
+| `COMPOSIO_MULTI_EXECUTE_TOOL` | runs 1–50 real tools by slug | the real slug (`GMAIL_SEND_EMAIL` → `email.send`, `STRIPE_REFUND` → `payments.refund`, …) |
+| `COMPOSIO_REMOTE_BASH_TOOL` | arbitrary bash on Composio's sandbox | `shell.exec` + `composioRemote` |
+| `COMPOSIO_REMOTE_WORKBENCH` | arbitrary Python on a persistent sandbox | `shell.exec` + `composioRemote` |
+| `COMPOSIO_MANAGE_CONNECTIONS` | initiates — or with `reinitiate_all`, **replaces** — an OAuth connection | `connector.connect` |
+
+So `args.tool` is always the envelope's name and the real action lives at `input.tools[].tool_slug`.
+Before the unwrap, every plane that keys on `args.tool` was reading the wrapper: `resolveCapability`
+never fired, the enricher never set `emailSend` so recipients were never judged, and the approval card
+read *"Write to Composio multi execute tool"*. The unwrap runs in `TerminalManager.gate` (and mirrored in
+`policyCheck`) **before** `enrichArgs`, so it covers claude-code, codex and opencode at once — all three
+hooks post the same `{tool, input}` to `/api/gate`. It emits `gate.composio.unwrapped`.
+
+Two things worth knowing about it:
+
+- **A batch is governed at the risk of its worst member.** `tools` takes up to 50 actions but the gate
+  returns one verdict (one capability, one approval card, one `gateId` — the hook polls exactly one), so
+  collapsing is forced. Every slug is recorded on `composioActions` and the brief names the rest, so an
+  approver is never shown one action and given many.
+- **The two remote-code envelopes cannot be unwrapped to a named action** — the workbench's Python can
+  call `run_composio_tool(tool_slug=…)`, i.e. any Composio action, from inside a string. They are
+  governed as the code execution they are, and carry `composioRemote: true` so a workspace can write one
+  rule for remote execution as a class. Their auto-approve signature is namespaced separately, so an
+  "always approve" for a local command can never clear the same command on Composio's sandbox.
+
 ## Gotchas
 
 - **The endpoint is minted per launch** — there is no stored URL to inspect or curl. Debug a bad session
