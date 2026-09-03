@@ -335,6 +335,51 @@ tm.reapIdleSessions();
 assert(aos.db.prepare("SELECT COUNT(*) c FROM audit_events WHERE type='session.restored'").get().c === before, 'a second sweep restores nothing again');
 assert(!killed.includes('aos-CRASH-ZOMBIE'), '…and does not re-kill the already-reaped zombie (its pane is gone now)');
 
-console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}IDLE REAPER: ${pass}/${pass + fail} passed\x1b[0m`);
-try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
-process.exit(fail === 0 ? 0 : 1);
+// Runs LAST and async, because writeEpisode stores through the memory provider — a promise that audits
+// in `.then()` — so its record lands a tick after the sweep returns. Everything above is synchronous.
+(async () => {
+  const settle = () => new Promise((r) => setImmediate(() => setImmediate(() => setTimeout(r, 40))));
+
+  console.log('\n\x1b[1m9) a janitor-reaped session is REMEMBERED\x1b[0m');
+  // Every OTHER teardown path writes an episode — markEnded (normal end, and teardownUnattended through
+  // it), markCrashed, and stopSession (the human kill button). The idle-interactive janitor did its own
+  // teardown and skipped it, so an abandoned interactive session evaporated. Measured over 30 days
+  // before this: 3 of 29 reaped sessions on instapods and 18 of 136 on instawp had an episode, and those
+  // came from a `report` earlier in the run, not from the reap. Episodes are what Dreaming and the
+  // consolidator read, so the learning loop was seeing only sessions that ended tidily.
+  aos.settings.setInteractiveIdleTimeoutHours(48);
+  aos.settings.setInteractiveMaxHours(0);
+  aos.settings.setClaimedMaxHours(72);
+  aos.settings.setBlockedMaxHours(72);
+  // Restore the file's default liveness stub. Section 8 replaces it to exercise crash detection, and
+  // sweep 0 runs FIRST — leaving it in place marks these rows `crashed` before the idle sweep sees them,
+  // and markCrashed would write the episode instead, so the test would pass without exercising the fix.
+  tm.backend.aliveNames = () => new Set(aos.db.prepare('SELECT tmux FROM term_sessions').all().map((r) => r.tmux));
+
+  const worked = mkSession({ created_at: Date.now() - 100 * H, task: 'How are we doing marketing-wise for InstaPods?' });
+  for (let i = 0; i < 3; i++) aos.audit.append({ ts: Date.now(), runId: worked, tenant: aos.tenant, principal: 'caller', type: 'gate.decision', data: '{}' });
+  tm.reapIdleSessions();
+  assert(statusOf(worked) === 'stopped', 'the idle session is still reaped');
+  await settle();
+  const ep = aos.db.prepare("SELECT COUNT(*) n FROM audit_events WHERE run_id=? AND type='episode.stored'").get(worked).n;
+  assert(ep === 1, 'and its run is remembered — an episode is written before the pane dies', `got ${ep}`);
+  // Match THIS session's own task text, not "the newest memory" — that would pass on one an earlier
+  // section happened to write.
+  const mem = aos.db.prepare("SELECT content FROM memories WHERE tenant=? AND content LIKE '%marketing-wise%' LIMIT 1").get(aos.tenant);
+  assert(mem && /Outcome: stopped/.test(mem.content), 'the episode records that it was stopped, not that it succeeded', mem && mem.content.slice(0, 90));
+
+  // A DELETED session leaves its audit events behind (the log is append-only) but has no row. Composing
+  // from those alone would write a task-less episode attributed to an agent we can no longer name.
+  const ghost = mkSession({ created_at: Date.now() - 100 * H });
+  aos.audit.append({ ts: Date.now(), runId: ghost, tenant: aos.tenant, principal: 'caller', type: 'gate.decision', data: '{}' });
+  aos.db.prepare('DELETE FROM term_sessions WHERE id = ?').run(ghost);
+  const before = aos.db.prepare('SELECT COUNT(*) n FROM memories WHERE tenant=?').get(aos.tenant).n;
+  tm.reapIdleSessions();
+  await settle();
+  const after = aos.db.prepare('SELECT COUNT(*) n FROM memories WHERE tenant=?').get(aos.tenant).n;
+  assert(after === before, 'a deleted session writes no episode — junk addressed to nobody', `${before} -> ${after}`);
+
+  console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}IDLE REAPER: ${pass}/${pass + fail} passed\x1b[0m`);
+  try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
+  process.exit(fail === 0 ? 0 : 1);
+})();

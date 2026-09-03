@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.414.8] - 2026-09-03
+### Fixed
+- **A session reaped by the idle-interactive janitor is now remembered.** Every other teardown path writes
+  an episode — `markEnded` (normal end, and `teardownUnattended` through it), `markCrashed`, and
+  `stopSession`, the human kill button. The janitor did its own teardown and skipped it, so an abandoned
+  interactive session simply evaporated. Over 30 days: **3 of 29** janitor-reaped sessions on instapods
+  and **18 of 136** on instawp had an episode, and those came from a `report` earlier in the run, not from
+  the reap — ~144 sessions closed with nothing kept. The `max-lifetime` ceiling added in v0.410.5 inherited
+  the same gap.
+
+  **The point is not recall value.** These runs never filed a `report`, so they take the audit branch and
+  read *"Task: … / Outcome: stopped / Activity: 315 governed actions"* — and episodes are already excluded
+  from launch preambles. The point is that episodes are what **Dreaming and the consolidator read**, and
+  they were seeing only sessions that ended tidily. Every abandoned interactive run was invisible to topic
+  extraction — and those carry the fleet's human-initiated work (*"How are we doing marketing-wise"*,
+  *"give me the top gainers of the past 10 days"*). A biased sample is worse than a thin one. Volume is
+  ~5/day across both tenants, already covered by dedupe and prune.
+- **A deleted session no longer produces a phantom episode.** Audit events outlive the row (the log is
+  append-only), so composing from them alone wrote an episode with no task line, attributed to an agent
+  that can no longer be named. `writeEpisode` now returns when the session row is gone. Seen live on
+  instawp: one janitor-reaped run whose row had been deleted mid-flight, its activity list still carrying
+  `session.deleted`.
+
 ## [0.414.7] - 2026-09-02
 ### Added
 - **Named the three synchronous steps behind the one route that still blocks the loop.** With the
