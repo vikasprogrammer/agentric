@@ -4859,6 +4859,9 @@ export class TerminalManager {
       const stale = accounts.filter((a) => a.status.toUpperCase() === 'EXPIRED');
       expired += stale.length;
       if (opts.notify !== false && stale.length) this.notifyExpiredConnections(userId, ownerMemberId);
+      // ALWAYS, including when nothing is expired — that is exactly the case that has to retire a card
+      // whose problem the human has already fixed.
+      this.reconcileExpiredCards(userId);
     }
     this.audit('-', 'system', 'connector.identity.refreshed', { entities: [...seen.keys()], resolved, expired });
     return { resolved, expired };
@@ -4877,31 +4880,77 @@ export class TerminalManager {
     const live = new Set(
       this.os.composioIdentities.forEntity(userId).filter((i) => i.status.toUpperCase() === 'ACTIVE').map((i) => i.toolkit),
     );
-    // A toolkit with NO live account left is a capability the fleet has actually lost; one that has been
-    // reconnected is just an old row. Say which is which, because only the first needs anyone to act.
-    const lost = due.filter((d) => !live.has(d.toolkit));
-    const scope = ownerMemberId ? 'your' : 'the company';
+    // Reconnecting leaves the old row behind, so an expired connection whose toolkit is live again is
+    // housekeeping, not news — "Clear replaced" in Connections deals with it. Only a toolkit with NO
+    // live account left is a capability the fleet has actually lost, and only that is worth a card in
+    // someone's NEEDS YOU column. Mark the rest notified so they stop being reconsidered every refresh.
+    const lostToolkits = [...new Set(due.filter((d) => !live.has(d.toolkit)).map((d) => d.toolkit))];
+    this.os.composioIdentities.markNotified(due.map((d) => d.id));
+    this.audit('-', 'system', 'connector.expired', {
+      entity: userId, toolkits: [...new Set(due.map((d) => d.toolkit))], lost: lostToolkits,
+    });
+    if (!lostToolkits.length) return;
+    // One line per TOOLKIT, not per connection row: two expired accounts of the same app are one
+    // problem, and listing "google_search_console, google_search_console" reads like a bug (it was one).
+    const accountOf = (t: string): string => due.find((d) => d.toolkit === t && d.account)?.account ?? '';
+    const whose = ownerMemberId ? 'Your' : 'The company';
+    const n = lostToolkits.length;
+    // Each app is named ONCE — in the list, where its account can sit beside it. The opening line stays
+    // generic so a single-app card doesn't say the same slug twice in three lines.
     const body = [
-      `${due.length} ${scope} Composio connection${due.length === 1 ? ' has' : 's have'} expired:`,
-      ...due.map((d) => `- ${d.toolkit}${d.account ? ` (${d.account})` : ''}${live.has(d.toolkit) ? ' — already reconnected, this is the old record' : ' — nothing else is connected for this app, so agents cannot use it at all'}`),
+      `${whose} Composio connection${n === 1 ? ' has' : 's have'} expired, and nothing else is connected for ${n === 1 ? 'this app' : 'these apps'} — so agents cannot use ${n === 1 ? 'it' : 'them'} at all:`,
+      ...lostToolkits.map((t) => `- ${t}${accountOf(t) ? ` (${accountOf(t)})` : ''}`),
       '',
-      lost.length
-        ? `Reconnect ${lost.map((l) => l.toolkit).join(', ')} in Connections to restore ${lost.length === 1 ? 'it' : 'them'}.`
-        : 'Nothing is missing — these rows can be cleared from Connections.',
+      `Reconnect ${n === 1 ? 'it' : 'them'} in Connections to restore ${n === 1 ? 'it' : 'them'}. This card clears itself once nothing is expired.`,
     ].join('\n');
     this.postReviewCard({
       type: 'connection.expired',
       sessionId: '-',
       agent: 'system',
-      title: lost.length
-        ? `Connection expired — ${lost.map((l) => l.toolkit).join(', ')} unavailable`
-        : `${due.length} expired Composio connection${due.length === 1 ? '' : 's'} to clear`,
+      title: `Connection expired — ${lostToolkits.join(', ')} unavailable`,
       body,
-      args: { entity: userId, toolkits: due.map((d) => d.toolkit), lost: lost.map((l) => l.toolkit) },
+      args: { entity: userId, toolkits: lostToolkits, lost: lostToolkits },
       audience: ownerMemberId ? { kind: 'member', id: ownerMemberId } : { kind: 'admins' },
     });
-    this.os.composioIdentities.markNotified(due.map((d) => d.id));
-    this.audit('-', 'system', 'connector.expired', { entity: userId, toolkits: due.map((d) => d.toolkit), lost: lost.map((l) => l.toolkit) });
+  }
+
+  /**
+   * Close any expired-connection card whose premise has gone away.
+   *
+   * A card that outlives its condition is worse than no card: it sits in NEEDS YOU claiming an app is
+   * unavailable after the human has already dealt with it, and there is nothing they can do to make it
+   * go away — a review card carries no reject path, so "I fixed this" and "I am ignoring this" look
+   * identical. That happened the same afternoon this shipped: the expired connections were removed, the
+   * cache dropped to zero expired rows, and both cards stayed open.
+   *
+   * So the card is DERIVED state, reconciled on every refresh: it stands only while at least one of the
+   * toolkits it names still has an expired connection under that entity. Reconnected, deleted, or
+   * pruned all clear it — the card is about an expiry, and once no expiry remains there is nothing to
+   * report. Mirrors how an approval message derives its status from the approvals table at read time.
+   */
+  private reconcileExpiredCards(userId: string): number {
+    const expired = new Set(
+      this.os.composioIdentities.forEntity(userId)
+        .filter((i) => i.status.toUpperCase() === 'EXPIRED')
+        .map((i) => i.toolkit),
+    );
+    const open = this.db
+      .prepare(`SELECT id, args FROM messages WHERE type = 'connection.expired' AND status = 'open'`)
+      .all<{ id: string; args: string | null }>();
+    let closed = 0;
+    for (const row of open) {
+      let a: Record<string, unknown> = {};
+      try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
+      if (String(a.entity ?? '') !== userId) continue;
+      const named: string[] = Array.isArray(a.toolkits) ? (a.toolkits as unknown[]).map(String) : [];
+      // No toolkits recorded (a card from before this shape) → it can never be reconciled by name, so
+      // treat "nothing is expired on this shelf" as enough to retire it.
+      if (named.some((t) => expired.has(t))) continue;
+      this.db.prepare(`UPDATE messages SET status = 'resolved' WHERE id = ?`).run(row.id);
+      closed++;
+      this.audit('-', 'system', 'connector.expired.cleared', { entity: userId, toolkits: named });
+    }
+    return closed;
   }
 
   /**

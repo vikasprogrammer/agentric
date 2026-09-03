@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.422.1] - 2026-09-03
+### Fixed
+- **An expired-connection card outlived the problem.** Reported within the hour of v0.422.0 shipping:
+  the expired connections were removed, the cache dropped to zero expired rows, and both cards sat in
+  NEEDS YOU still claiming an app was unavailable - with no way to clear them, since a review card
+  carries no reject path, so "I fixed this" and "I am ignoring this" looked identical. The card is now
+  DERIVED state, reconciled on every connection refresh: it stands only while at least one toolkit it
+  names still has an expired connection on that shelf, and reconnecting, deleting or pruning all retire
+  it (`connector.expired.cleared`). It also gained a Dismiss button as the manual escape hatch, and says
+  in its own body that it clears itself.
+- **A reconnected app no longer raises a card at all.** An expired row whose toolkit is live again is
+  housekeeping - "Clear replaced" in Connections deals with it - so it is recorded and marked notified
+  but never put in front of a human. Only an app with NO live account left is something anyone can act
+  on. Previously a card titled "gmail unavailable" also carried a clickup line reading "already
+  reconnected, this is the old record", which is not news.
+- **Two expired accounts of the same app were listed twice.** A live card read "google_search_console,
+  google_search_console unavailable" and "Reconnect google_search_console, google_search_console". The
+  card is now one line per toolkit, with the account beside it.
+- **"2 the company Composio connections have expired."** Fixed the sentence, and each app is now named
+  once rather than in both the opening line and the list.
+
 ## [0.422.0] - 2026-09-03
 ### Added
 - **Every Composio connection now says whose account it actually is.** A Composio `user_id` is a SHELF,

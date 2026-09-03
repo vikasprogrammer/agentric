@@ -6389,6 +6389,12 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
           <Button render={<a href={navHref(review.page, review.detail)} />} size="sm" variant={canDecide ? 'ghost' : 'default'} className="h-7 px-2.5 text-xs">
             {canDecide ? 'See the full diff' : `Review in ${review.label}`}
           </Button>
+          {/* An OS notice, not an agent's proposal: there is nothing to approve or reject, so without this
+              a human who has already fixed the problem has no way to clear the card. It also self-heals
+              server-side on the next connection refresh — this is the manual escape hatch. */}
+          {m.type === 'connection.expired' && (
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onDismiss(m.id)}>Dismiss</Button>
+          )}
           {isAgentEdit && !canDecide && <span className="text-[11px] text-muted-foreground">an owner has to approve this one</span>}
           {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
         </div>
