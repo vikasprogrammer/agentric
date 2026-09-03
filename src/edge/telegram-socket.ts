@@ -22,7 +22,7 @@
  */
 import { AgentOS } from '../kernel';
 import { isCodingRuntime } from '../types';
-import { Automations } from './automations';
+import { Automations, chatAck } from './automations';
 import { getMe, getUpdates, parseTelegramUpdate, sendMessage, setMyCommands, telegramCommandName } from '../connectors/telegram';
 
 const RECONNECT_MIN_MS = 1_000;
@@ -289,7 +289,7 @@ export class TelegramSocket {
     // `telegram_reply` tool, bound to the same chat. If nothing fired but the generic router returned a
     // help list, post that so the sender learns how to reach the fleet.
     if (result.fired > 0) {
-      await sendMessage(this.os.settings.telegramBotToken(), ev.chatId, '🤖 On it — working on this now.', { replyToMessageId: ev.messageId, messageThreadId: ev.messageThreadId });
+      await sendMessage(this.os.settings.telegramBotToken(), ev.chatId, chatAck(result.agents), { replyToMessageId: ev.messageId, messageThreadId: ev.messageThreadId });
     } else if (result.reply) {
       await sendMessage(this.os.settings.telegramBotToken(), ev.chatId, result.reply, { replyToMessageId: ev.messageId, messageThreadId: ev.messageThreadId });
     }

@@ -8,6 +8,35 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.417.0] - 2026-09-03
+### Fixed
+- **A Discord message's attachments reached the agent as nothing at all.** Discord never dropped the
+  message (there is no `file_share` subtype to trip over), but `attachments[]` went into the raw payload
+  and nowhere else — so an agent told "see the screenshot" had no screenshot. Files are now downloaded
+  (≤5 per message, ≤8 MB each) into the agent's own `.inbox/`, and the prompt names each by the relative
+  path it will have. Two Discord-specific rules: the CDN URL is signed and is fetched with **no**
+  Authorization header (the bot token has no business reaching the CDN host), and it **expires**, which is
+  why the bytes are taken at dispatch instead of handed over as a link. Host-checked against
+  `cdn.discordapp.com` / `media.discordapp.net`.
+- **A reply to something an agent posted in Discord went nowhere.** `discord_threads` is keyed by channel,
+  which covers a branched thread and cannot cover a proactive `discord_send` — that posts into a channel
+  with no thread, and binding the whole channel would drag every unrelated message into the run. So a
+  reply under a cron report was dropped as guild chatter. Discord marks a reply with
+  `message_reference.message_id`, and having *written* that message is the targeting signal: the new
+  `discord_bot_messages` index records every message an agent posts (`discord_reply`, `discord_send`, and
+  the ack), a reply to one is acted on with no @mention, and it stays with that message's agent rather
+  than being re-classified or answered with a roster. A plain guild message, and a reply to somebody
+  else's message, are both still ignored in full silence.
+
+### Changed
+- **The ack that opens a chat thread now names the agent that picked the message up** — "🤖 `support-ops`
+  is on it" rather than an anonymous "On it". Where several agents are reachable and the auto-router, not
+  the sender, chose one, the old ack left the sender unable to tell who answered. Shared by Slack, Discord
+  and Telegram (`chatAck`); `fireSlack`/`fireDiscord`/`fireTelegram` and the chat router now report which
+  agents they started.
+- Discord's DM-continuity hint quotes `agent-name: your request` instead of the `/agent-name` form, and
+  the Slack and Discord connector docs are brought up to date with both this release and v0.416.0.
+
 ## [0.416.0] - 2026-09-03
 ### Fixed
 - **A Slack message with a file attached was dropped whole — text and all.** Slack marks such a message

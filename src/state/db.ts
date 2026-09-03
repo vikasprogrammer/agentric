@@ -276,6 +276,21 @@ function migrate(db: Db): void {
       created_at INTEGER NOT NULL
     );
 
+    -- Every message the BOT has posted to Discord, keyed by the message itself. Discord's analogue of
+    -- slack_bot_threads: there is no thread root on a plain channel post, but a human replying to one of
+    -- our messages carries message_reference.message_id, and that reference is the targeting signal —
+    -- a reply to something an agent wrote is addressed to that agent, @mention or not. Without this a
+    -- proactive discord_send (a cron report) was a dead end: every reply under it was dropped as
+    -- ordinary guild chatter.
+    CREATE TABLE IF NOT EXISTS discord_bot_messages (
+      channel    TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (channel, message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_discord_bot_messages_session ON discord_bot_messages (session_id);
+
     -- Native ClickUp egress binding (the analogue of slack_threads): the task a ClickUp-triggered
     -- session should reply into. Written when a /agentname comment on a task spawns a session; read by
     -- the agentos clickup_reply tool so the agent posts its answer back as a comment on the SAME task,

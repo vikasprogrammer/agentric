@@ -128,6 +128,7 @@ console.log('\ndownload');
   const sid = routed[routed.length - 1].id;
   const bound = tm.db.prepare('SELECT channel, thread_ts FROM slack_threads WHERE session_id = ?').get(sid);
   assert(bound && bound.thread_ts === '77.7', "the run is re-bound to the ack's own ts, so its answer lands in a thread");
+  assert(/support-ops/.test(posts[posts.length - 1].text), 'the ack NAMES the agent that picked it up — an anonymous "On it" leaves the sender unable to tell who answered', posts[posts.length - 1].text);
   assert(tm.knowsSlackThread('D0DM1', '77.7') === true, 'and that thread is now one we know, so follow-ups continue it');
 
   before = routed.length;
@@ -153,6 +154,7 @@ console.log('\ndownload');
   await sock.dispatch(env({ type: 'message', channel: CH, channel_type: 'channel', user: 'U1', ts: '500.2', thread_ts: REPORT_TS, text: 'which four?' }));
   assert(routed.length > before, 'an UNTAGGED reply in our own thread is acted on, not dropped as chatter');
   assert(posts.length > p && posts[posts.length - 1].thread === REPORT_TS, 'and is answered in that same thread');
+  assert(/support-ops/.test(posts[posts.length - 1].text), 'by an ack naming the agent that took it');
 
   before = routed.length;
   const p2 = posts.length;
