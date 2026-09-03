@@ -114,6 +114,34 @@ it. If you need to know which tools we use or where that data lives, ask me befo
 anything.
 ```
 
+### SLA radar
+
+Checks response and resolution times against the commitment you have made — first reply within N hours,
+resolution within N days — and reports only the items that have breached or are about to.
+
+- **Trigger:** twice-daily schedule, plus a monthly trend report.
+- **Posture:** Read-only analyst, and deliberately **internal**: it never contacts the customer whose
+  ticket is late.
+- **Why it works:** the breach list is short and unarguable, and it arrives while the ticket can still be
+  saved. Keep the two jobs separate — the radar that measures the SLA must not also be the agent that
+  replies to tickets, or it grades its own homework.
+
+```create-agent
+Create an agent called "sla-radar".
+
+Job: check support response and resolution times against our stated SLA, and report only the items
+that have breached or are about to. Also produce a monthly trend report on compliance.
+
+Trigger: a twice-daily schedule, plus a monthly schedule for the trend report.
+
+Safety posture: Read-only analyst, and strictly internal. It must NEVER reply to, email or otherwise
+contact a customer — it reports to us only.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ---
 
 ## Infrastructure and operations
@@ -176,6 +204,63 @@ cause from logs and state, then report a plain-English explanation plus the fix.
 Trigger: a person, from chat or the console, when something breaks.
 
 Safety posture: Read-first. Any write to a production system pauses for approval.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
+### Exception monitor
+
+Sweeps your production error logs every few hours, compares against a stored watermark so it only ever
+looks at what is new, groups raw errors into distinct problems, and reports the ones that are actually
+new or newly frequent.
+
+- **Trigger:** schedule every few hours. Silent when nothing new has appeared.
+- **Posture:** Read-only analyst. It files a task for anything that needs a code change; it does not fix.
+- **Why it works:** error logs are already collected everywhere and read almost nowhere, because the
+  volume is hostile to humans. The watermark is the whole trick — without it the agent re-reports the
+  same hundred exceptions every run and the channel dies in a week.
+
+```create-agent
+Create an agent called "exception-monitor".
+
+Job: sweep our production error logs every few hours. Keep a stored watermark of where the last
+successful run stopped so you only ever process what is new. Group raw errors into distinct problems
+and report the ones that are new or newly frequent, with a count and a first-seen time.
+
+Trigger: a schedule every few hours. Stay SILENT when nothing new has appeared.
+
+Safety posture: Read-only analyst. File a task for anything needing a code change; never fix it
+yourself.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
+### Record reconciler
+
+Compares two systems that are supposed to agree — what your platform bills against what is actually
+running, what your app database says exists against what the infrastructure really has — and reports
+every record that is in one and not the other.
+
+- **Trigger:** daily schedule.
+- **Posture:** Read-only analyst. It reports drift; a human (or the cleanup agent, per item) resolves it.
+- **Why it works:** drift between two systems of record is invisible until it is expensive — an orphaned
+  resource nobody bills for, a paying account with nothing running. Nobody schedules this check by hand
+  because it is boring, which is exactly the argument for an agent.
+
+```create-agent
+Create an agent called "record-reconciler".
+
+Job: compare two systems that are supposed to agree — our application records against what actually
+exists in the infrastructure — and report every record that is in one and not the other, with enough
+detail to act on.
+
+Trigger: a daily schedule.
+
+Safety posture: Read-only analyst. Report the drift; never delete or create anything to resolve it.
 
 Write the system prompt yourself and set its capabilities to match that posture, then create
 it. If you need to know which tools we use or where that data lives, ask me before you create
@@ -375,6 +460,33 @@ post-deploy health plus the rollback path.
 Trigger: a person, at release time.
 
 Safety posture: Pull request only. It never merges, never deploys, never touches production.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
+### Build failure sweep
+
+Sweeps your build and packaging pipelines daily for things that are broken and have stayed broken — a
+failing image build, a package that no longer publishes, a scheduled job that has silently errored for
+days — and makes sure a human actually hears about it.
+
+- **Trigger:** daily schedule.
+- **Posture:** Diagnose and propose. It reads the failing logs and says what broke; it does not push a fix.
+- **Why it works:** CI shouts loudly the moment a build breaks and then never mentions it again. The
+  failures that cost you are the ones that broke three weeks ago in a pipeline nobody watches.
+
+```create-agent
+Create an agent called "build-sweep".
+
+Job: sweep our build and packaging pipelines daily for anything broken and still broken — failing
+image builds, packages that no longer publish, scheduled jobs that have been erroring for days. Read
+the failing logs, say what broke and since when, and make sure a human hears about it.
+
+Trigger: a daily schedule.
+
+Safety posture: Diagnose and propose. Never push a fix or re-run a deploy yourself.
 
 Write the system prompt yourself and set its capabilities to match that posture, then create
 it. If you need to know which tools we use or where that data lives, ask me before you create
@@ -617,6 +729,34 @@ it. If you need to know which tools we use or where that data lives, ask me befo
 anything.
 ```
 
+### Pipeline status reporter
+
+Keeps the shared tracking sheet or CRM honest — reads the real state of each account or deal from the
+source systems and updates the status, last-touch and next-step columns so the pipeline everyone reads
+in the morning matches reality.
+
+- **Trigger:** daily schedule, early.
+- **Posture:** Writes to your internal tracker only. It never contacts a customer, and never changes a
+  record in the system it reads from.
+- **Why it works:** the status sheet is the artefact a whole team steers by, and it is always the first
+  thing to go stale because updating it is nobody's actual job.
+
+```create-agent
+Create an agent called "pipeline-status".
+
+Job: keep our shared tracking sheet honest — read the real state of each account from the source
+systems and update the status, last-touch and next-step columns so the pipeline matches reality.
+
+Trigger: a daily schedule, early in the morning.
+
+Safety posture: Writes to our internal tracker ONLY. It must never contact a customer, and never
+modify a record in the systems it reads from.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Churn investigator
 
 Finds accounts that just cancelled or removed their last active resource, reconstructs *why* from the
@@ -828,6 +968,34 @@ it. If you need to know which tools we use or where that data lives, ask me befo
 anything.
 ```
 
+### Edge protection tuner
+
+Reviews what your WAF, CDN or bot protection blocked in the last day, separates real attacks from
+legitimate traffic caught by an over-broad rule, and proposes rule changes with the evidence for each.
+
+- **Trigger:** daily schedule.
+- **Posture:** Diagnose and propose. Every rule change is a proposal; a human applies it.
+- **Why it works:** edge rules are set once and then quietly block paying customers for months. The
+  agent's real output is not the attack list — it is the false-positive list, which nobody was going to
+  find by hand.
+
+```create-agent
+Create an agent called "edge-tuner".
+
+Job: review what our WAF/CDN/bot protection blocked in the last day, separate real attacks from
+legitimate traffic caught by an over-broad rule, and propose rule changes with the evidence for each.
+Call out false positives first — blocked customers matter more than blocked attackers.
+
+Trigger: a daily schedule.
+
+Safety posture: Diagnose and propose. Every rule change is a proposal a human applies; change nothing
+yourself.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
 ### Fraud detection
 
 Detects fraudulent and abusive accounts — duplicate identities, resource mining, stolen payment
@@ -941,6 +1109,99 @@ it. If you need to know which tools we use or where that data lives, ask me befo
 anything.
 ```
 
+### Pipeline watchdog
+
+A liveness check on a chain of agents. Confirms the queue another agent works from is still moving —
+something was picked up, something was finished — and if the chain has stalled, says so and re-kicks it.
+
+- **Trigger:** schedule, more often than the pipeline it watches.
+- **Posture:** Checks liveness and re-dispatches; it never does the work itself.
+- **Why it works:** an unattended chain fails silently. Nothing errors, nothing alerts, work simply stops
+  moving and you find out days later. **Keep it dumb** — the moment the watchdog starts doing the stalled
+  work itself you have two agents doing the same job and no one watching either.
+
+```create-agent
+Create an agent called "pipeline-watchdog".
+
+Job: be the liveness check for a chain of agents. Confirm the queue they work from is still moving —
+something picked up, something finished, within the expected window. If it has stalled, say so and
+re-dispatch it.
+
+Trigger: a schedule that runs more often than the pipeline it watches.
+
+Safety posture: Liveness check and re-dispatch only. It must NEVER do the stalled work itself — if
+the pipeline is stuck for a reason it cannot fix, it reports and stops.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
+### Output quality reviewer
+
+Scores what your agents produced yesterday against a written rubric — were the drafts accurate, was the
+evidence real, did the recommendation follow from it — and reports the patterns, not the individual marks.
+
+- **Trigger:** daily or weekly schedule.
+- **Posture:** Read-only analyst. It grades; it never edits another agent or its output.
+- **Why it works:** it is the only cheap way to find out whether an unattended agent is still good, and
+  it must be a **different agent** than the one being graded. An agent scoring its own work reports
+  success indefinitely.
+
+```create-agent
+Create an agent called "quality-reviewer".
+
+Job: score what our agents produced in the last period against a written rubric — accuracy, whether
+the evidence is real and checkable, whether the recommendation follows from it. Report the recurring
+patterns and the worst examples, not a mark for every item.
+
+Trigger: a daily or weekly schedule.
+
+Safety posture: Read-only analyst. It grades output; it never edits another agent, its prompt, or its
+work. It must never be asked to grade its own output.
+
+Write the system prompt yourself and set its capabilities to match that posture, then create
+it. If you need to know which tools we use or where that data lives, ask me before you create
+anything.
+```
+
+---
+
+## Pre-registered readbacks
+
+The habit that separates a fleet that ships from a fleet that reports. When an agent makes a change
+meant to move a number — a page rewrite, a pricing tweak, a fix deployed to production, a campaign sent
+— it **books its own follow-up before it finishes**: a one-off run scheduled for 14, 28 or 30 days out
+that comes back, measures the same number the same way, and writes down the verdict.
+
+Any agent can do this: the `schedule` tool defers a future run of itself, and the deferred prompt
+carries the task id so the follow-up rejoins the same thread of work.
+
+Why it earns its own section:
+
+- **It is written before the result is known.** Deciding the success criterion in advance is what stops
+  the readback from being a story assembled around whatever happened. Put the criterion in the task, not
+  in the follow-up prompt.
+- **It closes the loop nobody closes by hand.** A human ships a change, intends to check it in a month,
+  and does not. The agent's calendar does not have that failure mode.
+- **It is where "did this work?" comes from.** A stack of readbacks is a real record of which changes
+  moved a number and which did not — the only honest input to the question of what your fleet is worth.
+
+What a good readback looks like:
+
+| Part | Rule |
+|---|---|
+| **When** | Fixed at ship time, matched to how long the metric needs to settle — not "in a while" |
+| **What** | The same query, the same window length, the same source as the baseline |
+| **Baseline** | Recorded before the change, in the task, not reconstructed afterwards |
+| **Verdict** | Explicitly allowed to be "no effect" or "made it worse", and closes the task either way |
+| **Self-contained** | The follow-up prompt assumes nothing is remembered — a run a month later is a fresh session |
+
+Two failure modes to design out. A readback that only ever reports success is measuring the reporting,
+not the change — the same trap as an agent grading its own work. And a change with no readback booked is
+a change nobody will ever be able to defend; if the metric is not worth a follow-up, say so at ship time
+rather than leaving the question open forever.
+
 ---
 
 ## The six safety postures
@@ -966,7 +1227,7 @@ if the prompt is ignored. See [Governance & approvals](#/docs/governance).
 
 ## The trigger catalog
 
-Five ways an agent starts. Most mature installs use all five, and the mix shifts over time — early on
+Six ways an agent starts. Most mature installs use all six, and the mix shifts over time — early on
 almost everything is a person clicking Run; later, schedules and agent-to-agent delegation dominate.
 
 | Trigger | Shape | Good for |
@@ -976,6 +1237,7 @@ almost everything is a person clicking Run; later, schedules and agent-to-agent 
 | **Chat** | Someone addresses an agent by name in Slack or Discord | Ad-hoc asks, the low-friction front door |
 | **Console** | A person picks an agent and gives it a task | Exploration, one-offs, anything new |
 | **Delegation** | One agent files a task for another and optionally waits for the result | Specialist hand-offs — the front door routes, the specialist works |
+| **Deferred self-schedule** | An agent books a one-off future run of itself — a follow-up check days or weeks out | Pre-registered readbacks: did the change we shipped actually work? |
 
 Two rules learned the hard way:
 

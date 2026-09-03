@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.418.0] - 2026-09-03
+### Added
+- **Eight more proven agent shapes in Docs → Use cases, plus the readback practice.** Generalised from
+  the recurring unattended workflows production installs actually run: an **SLA radar** (breach list,
+  internal-only, deliberately not the agent that answers tickets), an **exception monitor** (watermarked
+  log sweep — without the watermark it re-reports the same hundred errors and the channel dies), a
+  **record reconciler** (drift between two systems of record), a **build failure sweep** (CI shouts once
+  and never again; the costly failures are weeks old), an **edge protection tuner** (the real output is
+  the false-positive list — blocked customers), a **pipeline status reporter** (keeps the tracker the
+  team steers by honest), a **pipeline watchdog** (an unattended chain stalls silently; keep it dumb) and
+  an **output quality reviewer** (must be a different agent than the one graded). New
+  **Pre-registered readbacks** section: an agent books its own follow-up before it finishes, criterion
+  written before the result is known — the honest input to "did this work?". The trigger catalog gains
+  the sixth trigger that makes it possible, a deferred self-schedule.
+
 ## [0.417.0] - 2026-09-03
 ### Fixed
 - **A Discord message's attachments reached the agent as nothing at all.** Discord never dropped the
