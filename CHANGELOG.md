@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+### Docs
+- **Insights Step 5: "prompt shape" added as a second-signal candidate** (`docs/insights-revisit.md`).
+  Agent prompts accrete monotonically through `agent_update` self-edits and nothing ever removes a
+  section: instawp's `onboarding-assistant` went 8.2KB -> 194KB over 15 revisions, `engineer` 7.8KB ->
+  81KB over 34. Because a prompt is re-read every session, instawp spends ~22M tokens/month re-loading
+  them. Two costs beyond tokens: the prompt's register leaks into the work product (an 81KB
+  essay-shaped prompt produced 109 PR comments in 14 days averaging >=1.6KB), and numbers rot in a
+  prompt because nothing dates or re-runs them. The signal is already fully recorded in
+  `agent_revisions` + `term_sessions`; ranking must be **bytes x runs**, not bytes. Includes the rule
+  four hand-migrations produced ("move what a run reads conditionally, keep what fires every run"),
+  the refusal to build a one-click migrate button, and measured sizing: 36.8MB/30d (~9.2M tokens/month)
+  freed across four agents.
+
 ## [0.419.3] - 2026-09-03
 ### Fixed
 - **A single `make-live.sh` run could put two tenants on two different commits.** Every checkout fetched
