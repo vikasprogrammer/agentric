@@ -18,6 +18,11 @@
  *   8 a `poke-done` INJECTS into a live pane but never resurrects a cold caller — good news is not worth a
  *     claude, and resurrecting one is what fed the delegation loop (see the wakeups.ts module header);
  *   9 a hand-back (`poke-blocked`) still resumes, and one in a batch carries the completions along.
+ *  12 the SIBLING lane refuses a run acting as a different member — 25% of live sibling injects were one,
+ *     and the answer came back to the wrong human (see the wakeups.ts module header);
+ *  13 …and refuses a sibling bound to its own Slack/Discord/DM conversation, for the same reason;
+ *  14 a `poke-done` never takes the sibling lane at all — out of context is not cheap, it is misdelivered;
+ *  15 a dropped completion leaves one line on the TASK, so the silence reads as a decision, not a loss.
  *
  * Isolated home; the session backend is stubbed, so no tmux and no real `claude` are involved.
  */
@@ -297,6 +302,60 @@ console.log('\n\x1b[1m11) a still-working session is preferred over a finished o
   const r = q.enqueue({ agent: 'caller', transcript: 'cs-absent', runAs: alice.id, source: 'tsk_sib', message: '⛔ handed back', title: 'p', kind: 'poke-stranded' });
   assert(r.ok && r.via === 'inject-sibling', 'delivered to a sibling', r);
   assert(r.sessionId === working, 'the STILL-WORKING sibling wins over two finished ones', { got: r.sessionId, working, older, newestFinished });
+}
+
+console.log('\n\x1b[1m12) the sibling lane refuses a run acting as a DIFFERENT member\x1b[0m');
+{
+  idleAgent();
+  const bob = aos.team.invite({ email: 'bob@testco.dev', role: 'member' }).member;
+  mkSession('cs-12', { pane: false });                              // the caller's own transcript: cold
+  const other = mkSession('cs-12-sib', { run_as: bob.id, spawned_by: bob.id });
+  const before = spawned.length;
+  const r = q.enqueue({ agent: 'caller', transcript: 'cs-12', runAs: alice.id, source: 'tsk_12', message: '⚠️ handed back', title: 'p', kind: 'poke-stranded' });
+  assert(r.ok && r.via === 'resume', 'it resumes the caller\'s OWN transcript instead', r);
+  assert(spawned.length === before + 1 && spawned[spawned.length - 1].resumeClaudeId === 'cs-12', 'on the right transcript', spawned[spawned.length - 1]);
+  assert(!injected.some((i) => i.tmux === 'aos-' + other), 'Bob\'s run was never typed into', other);
+}
+
+console.log('\n\x1b[1m13) …nor a sibling that answers into its own conversation\x1b[0m');
+{
+  idleAgent();
+  mkSession('cs-13', { pane: false });
+  const chat = mkSession('cs-13-sib');                               // same member, but Slack-bound
+  aos.db.prepare('INSERT INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?,?,?,?)')
+    .run(chat, 'C123', '1725.0001', Date.now());
+  const before = spawned.length;
+  const r = q.enqueue({ agent: 'caller', transcript: 'cs-13', runAs: alice.id, source: 'tsk_13', message: '⚠️ handed back', title: 'p', kind: 'poke-stranded' });
+  assert(r.ok && r.via === 'resume', 'a thread-bound sibling would reply to the wrong audience', r);
+  assert(!injected.some((i) => i.tmux === 'aos-' + chat), 'so it is never typed into', chat);
+  assert(spawned.length === before + 1, 'and the wake-up still lands, on its own transcript');
+}
+
+console.log('\n\x1b[1m14) a `poke-done` never takes the sibling lane at all\x1b[0m');
+{
+  idleAgent();
+  mkSession('cs-14', { pane: false });                              // own transcript cold
+  const sib = mkSession('cs-14-sib');                               // a perfectly eligible sibling
+  const before = spawned.length;
+  const r = q.enqueue({ agent: 'caller', transcript: 'cs-14', runAs: alice.id, source: 'tsk_14', message: '✅ Really done: shipped', title: 'p', kind: WAKE_KIND_DONE });
+  assert(!r.ok && !r.queued, 'good news out of context is misdelivery, not a cheap delivery', r);
+  assert(!injected.some((i) => i.tmux === 'aos-' + sib), 'the sibling was left alone', sib);
+  assert(spawned.length === before, 'and nothing was resumed either');
+  assert(livePanes.has('aos-' + sib), 'nor was the sibling\'s run ended');
+}
+
+console.log('\n\x1b[1m15) a dropped completion leaves one line on the TASK\x1b[0m');
+{
+  idleAgent();
+  const t = aos.tasks.create({ tenant: aos.tenant, title: 'ship the thing', assignee: 'agent:worker', createdBy: 'agent:caller', owner: alice.id });
+  mkSession('cs-15', { pane: false });
+  q.enqueue({ agent: 'caller', transcript: 'cs-15', runAs: alice.id, source: t.id, message: '✅ Really done: shipped', title: 'p', kind: WAKE_KIND_DONE });
+  const ev = aos.db.prepare("SELECT * FROM task_events WHERE task_id = ? AND kind = 'status' AND body LIKE '%not woken%'").all(t.id);
+  assert(ev.length === 1, 'the drop is legible on the board, not a lost poke', ev.map((e) => e.body));
+  assert(aos.tasks.latestNote(t.id) === undefined, 'and it is NOT a comment — latestNote is the task RESULT', aos.tasks.latestNote(t.id));
+  // Re-fired: still one line, never a column of them.
+  q.enqueue({ agent: 'caller', transcript: 'cs-15', runAs: alice.id, source: t.id, message: '✅ Really done: shipped again', title: 'p', kind: WAKE_KIND_DONE });
+  assert(aos.db.prepare("SELECT COUNT(*) n FROM task_events WHERE task_id = ? AND body LIKE '%not woken%'").get(t.id).n === 1, 'written once');
 }
 
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m`);

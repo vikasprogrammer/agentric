@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.421.0] - 2026-09-03
+## [0.422.0] - 2026-09-03
 ### Added
 - **Every Composio connection now says whose account it actually is.** A Composio `user_id` is a SHELF,
   not an identity: `service:<tenant>` means "the company's shelf" and an email means "that member's", and
@@ -44,6 +44,29 @@ new version heading in the same commit.
   degrades to "we learned nothing this time" and never blanks a label already cached.
 - ⚠ `COMPOSIO_MANAGE_CONNECTIONS` does not report "no connection" for a toolkit - it **initiates** one
   and returns an OAuth link. The probe list is therefore always derived from `activeToolkits()`.
+
+## [0.421.0] - 2026-09-03
+### Fixed
+- **A delegate's result could come back to the wrong caller.** The wake queue delivers per AGENT, so when
+  the caller's own transcript was cold it typed the result into any other live session of that agent
+  (`inject-sibling`) - which is the same agent mid-work on something else, usually for someone else, and
+  it answers into ITS audience. Measured on a live tenant over 30 days: 369 of 1532 pokes took that lane
+  and **64 of the 251 joinable ones landed in a run acting as a different member than the task owner**.
+  Lane 2 now refuses a destination whose `run_as` differs from the batch, or that has a Slack / Discord /
+  Telegram / ClickUp thread or DM binding of its own to reply into; a refused sibling falls through to the
+  resume lane - the caller's own transcript, which was always the right destination (`acceptsSibling` in
+  `src/edge/wakeups.ts`).
+- **`poke-done` no longer takes the sibling lane at all.** The cheapness that justified it was
+  "in-context"; in a sibling it is by definition out of context, so what was left was good news delivered
+  to the wrong conversation. A completion now reaches its own pane or it stands on the task.
+- **A dropped completion leaves a mark on the task.** `poke-done` at a cold caller is deliberately dropped
+  (v0.375.0), but from the board that is indistinguishable from a poke that got lost - which is how it was
+  reported. `dropDone` writes one `status` line onto the task via `TaskStore.markWakeDropped` ("... was not
+  woken - it had no live run, so the result stands here"): no extra card and no extra DM (the owner already
+  has the `task.notified` DM), and a `status` event rather than a `comment` so it can never become the
+  result `latestNote` quotes. `agent.poke.skipped` now distinguishes `done-cold-caller` /
+  `done-no-own-pane` / `done-wedged-caller`.
+- `scripts/wakeup-queue-test.cjs` gains cases 12-15 (63 assertions); docs/tasks-plan.md gains §3.9.
 
 ## [0.420.0] - 2026-09-03
 ### Fixed
