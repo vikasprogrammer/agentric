@@ -332,9 +332,16 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
       // place a READ tool is observable at all: the loopback tools sit before the member-auth gate, so
       // the PreToolUse hook never sees them, and only the writing ones audit anything. A Map bump here,
       // never a write — the flush timer in startServer does the I/O.
+      // One count per TOOL CALL, not per request: `x-aos-tool-seq` is the request's position within its
+      // call, and only the first is counted. A blocking tool polls a route in a loop under one label
+      // (`task_wait` every 3s; `task_create({wait:true})` runs that loop under its own name), so counting
+      // requests measured how long agents waited, not what they chose to do — on a tenant that created
+      // 311 tasks it read `task_create: 1848`. An absent header counts as 1, so a caller that doesn't
+      // stamp a seq (an older MCP process outliving a server upgrade) is not silently dropped.
       const usageAgent = String(req.headers['x-aos-agent'] || '').trim();
       const usageTenant = String(req.headers['x-aos-tenant'] || '').trim() || registry.default()?.os.tenant || '';
-      if (tool && usageAgent) toolUsage.record(usageTenant, usageAgent, tool);
+      const toolSeq = Number(req.headers['x-aos-tool-seq'] ?? 1);
+      if (tool && usageAgent && (!Number.isFinite(toolSeq) || toolSeq <= 1)) toolUsage.record(usageTenant, usageAgent, tool);
     });
     // Superadmin control plane — host-independent (bearer-gated), so it sits before tenant routing.
     if ((req.url || '').split('?')[0].startsWith('/api/admin/')) {

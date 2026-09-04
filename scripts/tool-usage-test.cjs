@@ -112,7 +112,72 @@ console.log('\nboundaries\n');
   await new Promise((r) => setTimeout(r, 120));
   assert(toolUsage.pendingCount() === b2, 'a request without the headers is not counted');
 
+  // ONE COUNT PER TOOL CALL. A blocking tool polls a route in a loop under a single label — `task_wait`
+  // hits /api/tasks/wait every 3s inside one call, and `task_create({wait:true})` runs that same loop
+  // under its own name. Counting requests therefore measured how long an agent WAITED, not what it chose
+  // to do: the first live read (2026-09-04) showed `task_create: 1848` on a tenant that had created 311
+  // tasks. `x-aos-tool-seq` is the request's position within its call; only the first is counted.
+  const call = async (tool, seq) => {
+    const headers = { 'content-type': 'application/json', 'x-aos-secret': 'nope', 'x-aos-tool': tool, 'x-aos-agent': 'poller', 'x-aos-tenant': rtOs.tenant };
+    if (seq !== undefined) headers['x-aos-tool-seq'] = String(seq);
+    await fetch(`${base}/api/tasks/wait`, { method: 'POST', headers, body: JSON.stringify({ session: 'ses_none', id: 't1' }) }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 60));
+  };
+  // One tool call that polled five times.
+  for (let i = 1; i <= 5; i++) await call('task_wait', i);
+  toolUsage.flush(rtOs.tenant, rtOs.db);
+  const waited = readToolUsage(rtOs.db, rtOs.tenant, 30).find((r) => r.agent === 'poller' && r.tool === 'task_wait');
+  assert(waited && waited.n === 1, 'a tool that polls 5 times counts as ONE call', `got ${waited ? waited.n : 'nothing'}`);
+
+  // A second, separate call of the same tool is its own count — the fix must not collapse real repeats.
+  await call('task_wait', 1);
+  toolUsage.flush(rtOs.tenant, rtOs.db);
+  const twice = readToolUsage(rtOs.db, rtOs.tenant, 30).find((r) => r.agent === 'poller' && r.tool === 'task_wait');
+  assert(twice && twice.n === 2, 'but a second tool call counts again', `got ${twice ? twice.n : 'nothing'}`);
+
+  // No header at all = 1. An MCP process outlives a server upgrade, so the old client that stamps no seq
+  // must keep being counted rather than silently vanishing from the data.
+  await call('recall', undefined);
+  toolUsage.flush(rtOs.tenant, rtOs.db);
+  const unstamped = readToolUsage(rtOs.db, rtOs.tenant, 30).find((r) => r.agent === 'poller' && r.tool === 'recall');
+  assert(unstamped && unstamped.n === 1, 'a request with no seq header still counts (older MCP client)', `got ${unstamped ? unstamped.n : 'nothing'}`);
+
   await new Promise((r) => server.close(r));
+
+  // THE OTHER HALF. Everything above sends `x-aos-tool-seq` by hand; none of it proves the MCP client
+  // still stamps one. If it stops, the server keeps counting every request exactly as before and the
+  // data quietly goes back to being wrong — no error, no failing assertion anywhere else. So drive the
+  // real client: spawn it against a stub that never returns terminal, and watch one `task_wait` call
+  // poll under an increasing seq.
+  console.log('\nthe client half — the MCP stamps the sequence\n');
+  const http = require('http');
+  const { spawn } = require('child_process');
+  const seen = [];
+  let settle;
+  const done = new Promise((r) => (settle = r));
+  const stub = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      seen.push({ tool: req.headers['x-aos-tool'], seq: req.headers['x-aos-tool-seq'] });
+      if (seen.length >= 2) settle();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, status: 'doing', terminal: false }));   // never terminal → it polls
+    });
+  });
+  await new Promise((r) => stub.listen(0, '127.0.0.1', r));
+  const child = spawn(process.execPath, [path.join(ROOT, 'dist/memory/memory-mcp.js')], {
+    env: { ...process.env, AOS_URL: `http://127.0.0.1:${stub.address().port}`, SESSION: 'ses_x', AGENT: 'probe', AOS_SECRET: 's', UNATTENDED: '1' },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'task_wait', arguments: { id: 't1', timeoutSeconds: 30 } } }) + '\n');
+  await Promise.race([done, new Promise((r) => setTimeout(r, 15000))]);
+  child.kill();
+  await new Promise((r) => stub.close(r));
+  const polls = seen.filter((x) => x.tool === 'task_wait');
+  assert(polls.length >= 2, 'one task_wait call makes repeated loopback requests', `saw ${polls.length}`);
+  assert(polls[0] && polls[0].seq === '1', 'the first carries seq 1 — the one that gets counted', JSON.stringify(polls[0]));
+  assert(polls[1] && polls[1].seq === '2', 'and each poll after it increments', polls.map((p) => p.seq).join(','));
+
   fs.rmSync(HOME, { recursive: true, force: true });
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m\n`);
   process.exit(fail ? 1 : 0);

@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.424.1] - 2026-09-04
+### Fixed
+- **Tool-usage counts one tool CALL, not one loopback request.** The first live read of the v0.414.6
+  counters (2026-09-04, 2.5 days of data) put `task_wait: 4212` and `task_create: 1848` at the top of a
+  tenant's table — a tenant that had created **311 tasks** in the window. Neither number meant what it
+  said. `task_wait` polls `/api/tasks/wait` every 3s *inside one tool call*, `task_create({wait:true})`
+  runs that same loop under its OWN label, and `toolContext` (set once per `tools/call`) stamps
+  `x-aos-tool` on every request the call makes. So the metric was measuring how long agents **waited**,
+  not what they **chose to do**, and the two tools that block by design led the ranking for that reason
+  alone.
+
+  `x-aos-tool-seq` now carries the request's position within its tool call, and only seq 1 is counted.
+  The header still rides on *every* request, because the other consumer wants the opposite: per-tool
+  latency and the blocking-tool exemption in `request-metrics` need to see the polls (a poll that stalls
+  is a stall). An absent seq counts as 1, so an older MCP process outliving a server upgrade keeps being
+  counted rather than silently vanishing from the data.
+
+  Only the two blocking tools were distorted; the **used/unused set is unaffected**, which is the
+  question the counters were added to settle. Rows written before this fix keep the inflated counts for
+  `task_wait`/`task_create` — worth remembering when reading a window that spans 2026-09-04.
+
 ## [0.424.0] - 2026-09-04
 ### Added
 - **A Slack agent can read the thread it was tagged into.** A mention delivers one message, so an agent

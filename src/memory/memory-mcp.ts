@@ -48,15 +48,32 @@ const TASK_WAIT_S = Number(process.env.AOS_TASK_WAIT_S) || 900;
  * dispatched without awaiting the last), so a module-level "current tool" variable would mislabel
  * interleaved calls; an AsyncLocalStorage keeps the name bound to its own async chain.
  */
-const toolContext = new AsyncLocalStorage<string>();
+const toolContext = new AsyncLocalStorage<{ tool: string; seq: number }>();
 
 /** Headers for a loopback agent call: the session bearer + tenant route, plus any extras (e.g. JSON). */
 function H(extra: Record<string, string> = {}): Record<string, string> {
   // `x-aos-tool` and `x-aos-agent` are TELEMETRY only — the server buckets per-tool latency by the
   // first (request-metrics.ts) and counts per-agent tool usage by the pair (tool-usage.ts). Neither
   // grants anything. Authority stays with the session secret above.
-  const tool = toolContext.getStore();
-  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...(AGENT ? { 'x-aos-agent': AGENT } : {}), ...(tool ? { 'x-aos-tool': tool } : {}), ...extra };
+  //
+  // `x-aos-tool-seq` counts this request's position WITHIN its tool call, and exists because the two
+  // consumers want different things from the same header. Latency wants every request (a poll that
+  // stalls is a stall); usage wants one count per tool call, because a tool call is what the model
+  // actually decided to do. They diverge badly: `task_wait` polls /api/tasks/wait every 3s inside ONE
+  // call, and `task_create({wait:true})` runs that same loop under its OWN label — so the first read of
+  // this data (2026-09-04) showed `task_wait: 4212` and `task_create: 1848` on a tenant that had created
+  // 311 tasks. ~83% of the second number was poll spill. The counts led the table for a reason that had
+  // nothing to do with agent behaviour. Only seq 1 is counted; the header still rides on every request
+  // so per-tool latency and the blocking-tool exemption are unchanged.
+  const ctx = toolContext.getStore();
+  const seq = ctx ? ++ctx.seq : 0;
+  return {
+    'x-aos-secret': SECRET,
+    ...(TENANT ? { 'x-aos-tenant': TENANT } : {}),
+    ...(AGENT ? { 'x-aos-agent': AGENT } : {}),
+    ...(ctx ? { 'x-aos-tool': ctx.tool, 'x-aos-tool-seq': String(seq) } : {}),
+    ...extra,
+  };
 }
 
 interface JsonRpc {
@@ -3230,7 +3247,7 @@ async function handle(req: JsonRpc): Promise<void> {
     // indexed row-test and a by-id build. Sharing a bucket made the tool table rank a deliberate model
     // call second-slowest in the system and hid any regression on the cheap path behind its average.
     const label = name === 'session_open' && args.summary ? 'session_open:summary' : name;
-    return toolContext.run(label ?? 'unknown', async () => {
+    return toolContext.run({ tool: label ?? 'unknown', seq: 0 }, async () => {
     try {
       const text =
         name === 'recall' ? await recall(args)
