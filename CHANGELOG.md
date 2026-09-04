@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.424.0] - 2026-09-04
+### Added
+- **A Slack agent can read the thread it was tagged into.** A mention delivers one message, so an agent
+  pulled into the fifth reply of a live thread saw one line and nothing before it — and then either asked
+  the human to paste the conversation back or answered confidently about a thread it had never read. The
+  bot is already in the channel and already receives the event, so the rest was one authenticated call
+  away: the ingress now reads the thread (`conversations.replies`, last 30 messages, 800 chars each) and
+  hands it to the agent oldest-first, senders resolved to member names and other apps named by their bot
+  profile. Narrow on purpose — no call when the message *opens* its thread, none on the continuity path
+  (that session already holds the transcript), and never fatal. ⚠ History scopes are per conversation
+  type: `channels:history` is public channels only, a **private** channel needs **`groups:history`**
+  (`mpim:history` / `im:history` for group DMs / DMs). All four are in the bundled manifest, but an app
+  installed before them answers `missing_scope` — surfaced verbatim in the `slack.thread.unreadable`
+  audit line, in an amber banner on Settings → Integrations, and in the agent's prompt. Add the scope and
+  reinstall. Pinned by `scripts/slack-ingress-test.cjs`.
+- **The missing scope is warned about deterministically, in the thread.** Telling the agent it is blind
+  is a *request* — the model may relay it, paraphrase it into something wrong, or answer as though
+  nothing were missing, and the run least able to notice it is blind is exactly this one. So the server
+  appends the warning to its own ack: which scope, for this conversation type (`groups:history` in a
+  private channel, `mpim:history` in a group DM), and that the app must be **reinstalled** after adding
+  it. `not_in_channel` gets the different fix it actually needs (invite the bot). And because the person
+  who tagged the bot is rarely the person who can add a scope, the same failure drives a banner on
+  Settings → Integrations for the admin, who never sees the thread.
+
 ## [0.423.0] - 2026-09-04
 ### Added
 - **A company Composio connection can be claimed back as one person's own** — the exact inverse of

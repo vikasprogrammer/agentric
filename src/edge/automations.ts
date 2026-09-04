@@ -298,6 +298,24 @@ const MAX_PAYLOAD_CHARS = 4000; // keep webhook payloads from flooding the task 
  * `stageInboundFiles` writes them there right after the spawn, so the agent can just Read the path.
  * An image is worth naming as such: without this the model has no reason to look at a file at all.
  */
+/**
+ * The thread a chat message landed in, rendered for the prompt.
+ *
+ * A mention delivers one line. When a human tags the bot on the fifth message of a thread they mean
+ * "handle THIS conversation", and an agent given only the mention has three bad options: ask them to
+ * paste it back, answer the wrong question, or invent a reason it cannot see the rest. So the ingress
+ * fetches the thread and hands it over as plain context. Empty string when there is no thread, when the
+ * mention IS the thread's first message, or when the platform refused (the ingress audits that).
+ */
+export function threadNote(history?: string, unreadable?: string): string {
+  if (history) return `\nThe thread this arrived in, oldest first (the message above is the newest — you have already been given it):\n${history}\n`;
+  // Say WHY it is missing rather than nothing. An agent that knows a thread exists but cannot read it
+  // invents a reason and tells the human a wrong one; the real error is short, actionable and the thing
+  // the operator has to fix, so hand it over verbatim.
+  if (unreadable) return `\nThis message is part of a longer thread you could NOT be given — reading it failed with Slack error \`${unreadable}\`. Answer from what you have, and say plainly that you can only see the message that mentioned you${unreadable === 'missing_scope' ? ' because the Slack app is missing the history scope for this conversation (`groups:history` for a private channel, `mpim:history` for a group DM) — an admin adds it in Settings → Integrations and reinstalls' : ''}.\n`;
+  return '';
+}
+
 export function attachmentNote(files?: { name: string }[]): string {
   if (!files?.length) return '';
   const lines = files.map((f) => `• .inbox/${inboxFileName(f.name)}`).join('\n');
@@ -1296,7 +1314,7 @@ export class Automations {
    * fire" is answerable from the audit row instead of by re-reading the filter.
    */
   async fireSlack(
-    event: { eventType: string; channel: string; threadTs: string; user: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
+    event: { eventType: string; channel: string; threadTs: string; user: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[]; history?: string; historyError?: string },
     runAsMember?: string,
     opts: { channelWatch?: boolean; router?: boolean; fallbackAgent?: string } = {},
   ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string; dropped?: string }> {
@@ -1313,7 +1331,8 @@ export class Automations {
       `Triggered from Slack by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}` +
       (event.threadTs ? ` (thread ${event.threadTs})` : '') + `.\n` +
       `Message:\n${event.text}\n` +
-      attachmentNote(event.files) + `\n` +
+      attachmentNote(event.files) +
+      threadNote(event.history, event.historyError) + `\n` +
       `When you're done, call the \`slack_reply\` tool with your answer — it posts back to this exact ` +
       `Slack thread (you don't need a channel id). Keep it concise.\n\n` +
       `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;

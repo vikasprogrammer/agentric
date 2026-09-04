@@ -16,7 +16,7 @@
  */
 import { AgentOS } from '../kernel';
 import { Automations, chatAck } from './automations';
-import { downloadSlackFile, explainSlackError, joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage, SlackFileRef } from '../connectors/slack';
+import { downloadSlackFile, explainSlackError, fetchThreadMessages, historyScopeFor, threadReadWarning, joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage, SlackFileRef } from '../connectors/slack';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -25,6 +25,16 @@ const MAX_FILES = 5;
 /** Per-file ceiling. Big enough for a screenshot, a PDF or a log; small enough that a video doesn't
  *  stall the socket's dispatch or fill the agent folder. */
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
+/** Earlier thread messages we hand the agent. Enough for the shape of a conversation, bounded so a
+ *  200-reply incident thread doesn't become the whole prompt. */
+const MAX_THREAD_MESSAGES = 30;
+/** Per-message clip inside that block — a pasted stack trace is context, not the point. */
+const MAX_THREAD_CHARS = 800;
+
+/** Ack + the (usually empty) thread-read warning, as one message so the person sees both at once. */
+function withWarning(ack: string, warning: string): string {
+  return warning ? `${ack}\n\n${warning}` : ack;
+}
 
 export class SlackSocket {
   private ws?: WebSocket;
@@ -39,6 +49,10 @@ export class SlackSocket {
    *  Backs the identity-map auto-link so a notification never re-queries users.lookupByEmail per send. */
   private readonly userByEmailCache = new Map<string, string | null>();
   private lastError = '';
+  /** The most recent thread we were tagged into and could not read, kept for the console's Integrations
+   *  page. The in-thread warning tells the person who tagged us; this tells the admin who can fix it —
+   *  they are rarely the same person, and the admin never sees the thread. */
+  private lastThreadScopeError?: { channel: string; scope: string; error: string; at: number };
 
   constructor(
     private readonly os: AgentOS,
@@ -46,12 +60,16 @@ export class SlackSocket {
   ) {}
 
   /** Live status for the console (never returns the tokens). */
-  status(): { configured: boolean; connected: boolean; botUserId: string; lastError?: string } {
+  status(): {
+    configured: boolean; connected: boolean; botUserId: string; lastError?: string;
+    threadScopeError?: { channel: string; scope: string; error: string; at: number };
+  } {
     return {
       configured: this.os.settings.slackConfigured(),
       connected: this.ws?.readyState === WebSocket.OPEN,
       botUserId: this.botUserId,
       lastError: this.lastError || undefined,
+      threadScopeError: this.lastThreadScopeError,
     };
   }
 
@@ -187,6 +205,19 @@ export class SlackSocket {
       return;
     }
 
+    // The thread this landed in. Slack delivers only the mentioning message, so an agent tagged into an
+    // existing conversation has no idea what was said before it — the single most common way the bot
+    // reads as useless ("I can only see the message that mentioned me"). Fetched only when there IS an
+    // earlier conversation (`thread_ts` present and not this message's own `ts`) and only past the
+    // continuation branch above, whose resumed session already holds the transcript. A failure here is
+    // never fatal: the run proceeds without history and the reason is audited (`missing_scope` on a
+    // private channel is the one an operator must act on — add `groups:history` and reinstall).
+    const { history, historyError } = await this.fetchThreadHistory(ev.channel, ev.channelType, ev.threadTs, ev.raw?.ts);
+    // Deterministic, server-written, posted in the thread alongside the ack. The agent is told the same
+    // thing in its prompt, but a prompt is a request — and the run least able to notice it is blind is
+    // exactly this one. So the person who tagged us is told by the OS, not by the model.
+    const threadWarning = threadReadWarning(ev.channelType, historyError);
+
     // Not a thread continuation. A plain channel `message` (no @mention) normally reached us only because
     // the app subscribes to `message.channels` FOR that continuity — chatter in a channel the bot happens
     // to sit in, never a fresh trigger, so it is dropped rather than spamming the `/agent` router's help
@@ -210,7 +241,7 @@ export class SlackSocket {
       const ours = !!ev.threadTs && this.autos.knowsSlackThread(ev.channel, ev.threadTs);
       if (ours) {
         const r = await this.autos.fireSlack(
-          { eventType: ev.eventType, channel: ev.channel, threadTs: ev.threadTs, user: ev.user, actorLabel, text, raw: ev.raw, files },
+          { eventType: ev.eventType, channel: ev.channel, threadTs: ev.threadTs, user: ev.user, actorLabel, text, raw: ev.raw, files, history, historyError },
           runAsMember,
           { fallbackAgent: this.autos.agentForSlackThread(ev.channel, ev.threadTs) },
         );
@@ -223,13 +254,13 @@ export class SlackSocket {
           type: 'trigger.slack',
           data: { eventType: ev.eventType, channel: ev.channel, thread: true, ourThread: true, runAs: runAsMember ?? null, fired: r.fired, files: files.length || null },
         });
-        if (r.fired > 0) await postMessage(this.os.settings.slackBotToken(), ev.channel, chatAck(r.agents), ev.threadTs);
+        if (r.fired > 0) await postMessage(this.os.settings.slackBotToken(), ev.channel, withWarning(chatAck(r.agents), threadWarning), ev.threadTs);
         else if (r.reply) await postMessage(this.os.settings.slackBotToken(), ev.channel, r.reply, ev.threadTs);
         return;
       }
       if (!this.autos.watchesSlackChannel(ev.channel)) return;
       const watch = await this.autos.fireSlack(
-        { eventType: ev.eventType, channel: ev.channel, threadTs: ev.threadTs, user: ev.user, actorLabel, text, raw: ev.raw, files },
+        { eventType: ev.eventType, channel: ev.channel, threadTs: ev.threadTs, user: ev.user, actorLabel, text, raw: ev.raw, files, history, historyError },
         runAsMember,
         { channelWatch: true, router: false },
       );
@@ -247,7 +278,7 @@ export class SlackSocket {
         });
       }
       if (watch.fired > 0) {
-        await postMessage(this.os.settings.slackBotToken(), ev.channel, chatAck(watch.agents), ev.threadTs);
+        await postMessage(this.os.settings.slackBotToken(), ev.channel, withWarning(chatAck(watch.agents), threadWarning), ev.threadTs);
       }
       return;
     }
@@ -314,6 +345,8 @@ export class SlackSocket {
         text,
         raw: ev.raw,
         files,
+        history,
+        historyError,
       },
       runAsMember,
     );
@@ -332,10 +365,53 @@ export class SlackSocket {
     // answer via its own Slack egress tools. If nothing fired but the generic router returned a help
     // list (unknown/unaddressed `/agent`), post that so the sender learns how to reach the fleet.
     if (result.fired > 0) {
-      await postMessage(this.os.settings.slackBotToken(), ev.channel, chatAck(result.agents), ev.threadTs);
+      await postMessage(this.os.settings.slackBotToken(), ev.channel, withWarning(chatAck(result.agents), threadWarning), ev.threadTs);
     } else if (result.reply) {
       await postMessage(this.os.settings.slackBotToken(), ev.channel, result.reply, ev.threadTs);
     }
+  }
+
+  /**
+   * Read the thread a message arrived in and render it for the prompt, or '' when there is nothing to
+   * add. Returns '' — never throws, never blocks the run — when the message opens its own thread, when
+   * the app lacks the history scope for this conversation type, or when Slack errors.
+   *
+   * Senders are labelled with the same resolution the run-as path uses, so a name in the transcript is
+   * the teammate the agent can look up, not a raw `U0123ABCD`.
+   */
+  private async fetchThreadHistory(
+    channel: string,
+    channelType: string,
+    threadTs: string,
+    ownTs?: unknown,
+  ): Promise<{ history?: string; historyError?: string }> {
+    const own = String(ownTs || '');
+    if (!threadTs || !channel) return {};
+    // `threadTs` falls back to the message's own `ts` for an un-threaded message: that IS the thread's
+    // first message, so there is no history and no call worth making.
+    if (own && threadTs === own) return {};
+    const token = this.os.settings.slackBotToken();
+    const got = await fetchThreadMessages(token, channel, threadTs, MAX_THREAD_MESSAGES);
+    if ('error' in got) {
+      const scope = historyScopeFor(channelType);
+      this.os.audit.append({
+        ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'slack',
+        type: 'slack.thread.unreadable',
+        data: { channel, thread: threadTs, error: got.error, scope },
+      });
+      this.lastThreadScopeError = { channel, scope, error: got.error, at: Date.now() };
+      return { historyError: got.error };
+    }
+    const lines: string[] = [];
+    for (const m of got.messages) {
+      if (own && m.ts === own) continue; // the triggering message is already in the prompt
+      const body = m.text.replace(/\s+$/, '');
+      if (!body) continue;
+      let who = m.name;
+      if (!who && m.user) who = m.user === this.botUserId ? 'Agentric (you)' : (await this.resolveActor(m.user)).actorLabel;
+      lines.push(`${who || 'someone'}: ${body.length > MAX_THREAD_CHARS ? `${body.slice(0, MAX_THREAD_CHARS)}…` : body}`);
+    }
+    return { history: lines.length ? lines.join('\n') : undefined };
   }
 
   /** Resolve a Slack user id → the member to run as (identity map first, then profile email) plus a

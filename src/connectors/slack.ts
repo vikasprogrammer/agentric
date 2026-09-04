@@ -311,3 +311,94 @@ export async function downloadSlackFile(
     return { error: e instanceof Error ? e.message : 'download failed' };
   }
 }
+
+/** The history scope a conversation type needs. Slack splits them by conversation kind, which is the
+ *  whole trap: an app with `channels:history` works in every public channel and fails in every private
+ *  one, so the feature looks installed until the first private thread. */
+export function historyScopeFor(channelType: string): string {
+  if (channelType === 'group') return 'groups:history';
+  if (channelType === 'mpim') return 'mpim:history';
+  if (channelType === 'im') return 'im:history';
+  return 'channels:history';
+}
+
+/**
+ * The line the bot posts IN the thread when it could not read that thread — deterministic, written by
+ * the server, never by the model.
+ *
+ * The agent is told the same thing in its prompt, but a prompt is a request: the model may relay it,
+ * paraphrase it into something wrong, or answer as though nothing were missing. The one case that
+ * matters is exactly the case where the agent has the least context to notice, so the warning cannot
+ * depend on the agent noticing. Returns '' when there is nothing to warn about.
+ */
+export function threadReadWarning(channelType: string, error?: string): string {
+  if (!error) return '';
+  const scope = historyScopeFor(channelType);
+  if (error === 'missing_scope' || error === 'not_allowed_token_type') {
+    return `⚠️ I can only see the message that tagged me — I can't read this thread's earlier messages. ` +
+      `The Agentric Slack app is missing the \`${scope}\` scope for this conversation. ` +
+      `An admin adds it in the Slack app config (OAuth & Permissions → Bot Token Scopes) and reinstalls the app.`;
+  }
+  if (error === 'not_in_channel' || error === 'channel_not_found') {
+    return `⚠️ I can only see the message that tagged me — I can't read this thread's earlier messages ` +
+      `(Slack: \`${error}\`). Invite the bot to this channel so it can read the conversation it is asked about.`;
+  }
+  return `⚠️ I can only see the message that tagged me — reading this thread failed (Slack: \`${error}\`).`;
+}
+
+/** One earlier message in the thread a mention landed in, normalized for the prompt block. */
+export interface SlackThreadMessage {
+  /** Slack `ts` — also the message's identity, so the caller can drop the triggering message itself. */
+  ts: string;
+  /** Sender's Slack user id ('' for a bot/app post). */
+  user: string;
+  /** A display name when the payload carries one (bot posts do; human posts don't — the caller resolves). */
+  name: string;
+  text: string;
+  bot: boolean;
+}
+
+/**
+ * Read the messages already in a thread (`conversations.replies`).
+ *
+ * Why this exists: an @mention delivers ONLY the mention's own text. A human who tags the bot on the
+ * fifth message of a thread is, in their head, handing over a conversation — and the agent, seeing one
+ * line, either asks them to paste it all back or (worse) invents a reason it cannot see the rest. The
+ * bot is a member of the channel and already receives the event, so the history is one authenticated
+ * call away; we fetch it here and inject it into the prompt.
+ *
+ * Scope note: `channels:history` covers PUBLIC channels only. A private channel needs `groups:history`,
+ * a group DM `mpim:history`, a DM `im:history` — a Slack app created before those were in the bundled
+ * manifest answers `missing_scope`, which is surfaced verbatim so the operator is told to add the scope
+ * and reinstall rather than the agent guessing.
+ *
+ * `oldest`-less and newest-last: Slack returns the thread in ascending order, so we take the LAST
+ * `limit` entries (the parent plus recent turns matter; the middle of a 300-reply thread does not).
+ */
+export async function fetchThreadMessages(
+  botToken: string,
+  channel: string,
+  threadTs: string,
+  limit: number,
+): Promise<{ messages: SlackThreadMessage[] } | { error: string }> {
+  if (!botToken || !channel || !threadTs) return { error: 'missing token, channel or thread' };
+  try {
+    const url =
+      `${SLACK_API}/conversations.replies?channel=${encodeURIComponent(channel)}` +
+      `&ts=${encodeURIComponent(threadTs)}&limit=${Math.max(1, Math.min(200, limit))}`;
+    const res = await fetch(url, { headers: { authorization: `Bearer ${botToken}` } });
+    const j: any = await res.json().catch(() => ({}));
+    if (!j?.ok) return { error: String(j?.error || `conversations.replies failed (${res.status})`) };
+    const raw = Array.isArray(j.messages) ? j.messages : [];
+    const messages: SlackThreadMessage[] = raw.map((m: any) => ({
+      ts: String(m?.ts || ''),
+      user: String(m?.user || ''),
+      name: String(m?.bot_profile?.name || m?.username || ''),
+      text: String(m?.text || ''),
+      bot: !!m?.bot_id || m?.subtype === 'bot_message' || !m?.user,
+    }));
+    return { messages: messages.slice(-limit) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'conversations.replies failed' };
+  }
+}

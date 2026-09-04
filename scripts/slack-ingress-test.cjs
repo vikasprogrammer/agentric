@@ -31,7 +31,7 @@ const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${
 const slackApi = require(path.join(ROOT, 'dist/connectors/slack.js'));
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
 const { TerminalManager, inboxFileName } = require(path.join(ROOT, 'dist/terminal.js'));
-const { Automations, attachmentNote } = require(path.join(ROOT, 'dist/edge/automations.js'));
+const { Automations, attachmentNote, threadNote } = require(path.join(ROOT, 'dist/edge/automations.js'));
 const { SlackSocket } = require(path.join(ROOT, 'dist/edge/slack-socket.js'));
 
 const CH = 'C0OPS1234';
@@ -181,6 +181,84 @@ console.log('\ndownload');
   assert(/\.inbox\/crash\.png/.test(withFile.task), 'the agent is TOLD about the file, by the path it can read');
   assert(fs.existsSync(path.join(AGENT_DIR, '.inbox', 'crash.png')), 'and the bytes are actually on disk in its own folder');
   assert(fs.readFileSync(path.join(AGENT_DIR, '.inbox', 'crash.png')).length === 4, 'with the downloaded content, not a Slack HTML page');
+  global.fetch = realFetch;
+
+  // ── 8. the thread a mention landed in ────────────────────────────────────────
+  // Reported 2026-09-04: tagging the bot midway through an existing thread got "I only receive the text
+  // of the message that @-mentions me; the rest of this thread isn't visible to me" — true of the raw
+  // event, and the agent then guessed at a cause. The history is one authenticated call away.
+  console.log('\nthread history');
+  assert(threadNote() === '' && threadNote('') === '', 'no thread → nothing added to the prompt');
+  assert(/Alice: ship it/.test(threadNote('Alice: ship it')), 'a thread is handed over as plain text');
+
+  const replies = [
+    { ts: '700.0', user: 'U9', text: 'prod latency is up 4x since the deploy' },
+    { ts: '700.1', user: '', bot_id: 'B1', bot_profile: { name: 'Beszel' }, text: 'ALERT web-3 cpu 98%' },
+    { ts: '700.2', user: 'U9', text: 'x'.repeat(2000) },
+    { ts: '700.3', user: 'U1', text: '<@BOT> can you triage this?' },
+  ];
+  let askedUrl = '';
+  global.fetch = async (url, init) => {
+    if (/conversations\.replies/.test(String(url))) {
+      askedUrl = String(url); // users.info also runs here (name resolution) — only the history read matters
+      assert((init && init.headers && init.headers.authorization) === 'Bearer xoxb-test', 'the history read is authenticated as the bot');
+      return { ok: true, json: async () => ({ ok: true, messages: replies }) };
+    }
+    return { ok: true, json: async () => ({ ok: false, error: 'unexpected' }) };
+  };
+  sock.botUserId = 'BOT';
+  before = routed.length;
+  await sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'channel', user: 'U1', ts: '700.3', thread_ts: '700.0', text: '<@BOT> support-ops can you triage this?' }));
+  assert(routed.length === before + 1, 'a mention inside an existing thread still routes');
+  const threaded = routed[routed.length - 1].task;
+  assert(/prod latency is up 4x/.test(threaded), 'the agent is given what was said BEFORE it was tagged — the whole point');
+  assert(/Beszel: ALERT web-3 cpu 98%/.test(threaded), "including another app's posts, named by their bot profile");
+  assert(!/x{900}/.test(threaded), 'a giant pasted blob is clipped, so one message cannot become the prompt');
+  const block = threaded.slice(threaded.indexOf('The thread this arrived in'), threaded.indexOf("When you're done"));
+  assert(block.length > 0 && !/can you triage this\?/.test(block), 'the triggering message is not repeated inside the history block');
+  assert(/ts=700\.0/.test(askedUrl) && new RegExp(`channel=${CH}`).test(askedUrl), 'the read is scoped to that channel + thread');
+  assert(!/⚠️/.test(posts[posts.length - 1].text), 'a thread that read fine gets a clean ack — no warning noise');
+
+  // A first message in a channel opens its own thread: `thread_ts` falls back to `ts`, and there is no
+  // history to read — spending an API call per message would be pure cost.
+  askedUrl = '';
+  await sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'channel', user: 'U1', ts: '800.1', text: '<@BOT> support-ops hello' }));
+  assert(askedUrl === '', 'a mention that OPENS a thread reads no history');
+
+  // The failure that produced the report: an app created before `groups:history` was in the manifest.
+  global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, error: 'missing_scope' }) });
+  before = routed.length;
+  const auditBefore = aos.db.prepare("SELECT COUNT(*) c FROM audit_events WHERE type = 'slack.thread.unreadable'").get().c;
+  // A PRIVATE channel — the shape the report came from, and the one `channels:history` does not cover.
+  await sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'group', user: 'U1', ts: '900.9', thread_ts: '700.0', text: '<@BOT> support-ops triage' }));
+  assert(routed.length === before + 1, 'an unreadable thread never blocks the run');
+  const auditAfter = aos.db.prepare("SELECT COUNT(*) c FROM audit_events WHERE type = 'slack.thread.unreadable'").get().c;
+  assert(auditAfter === auditBefore + 1, 'and the reason is audited, so the operator can see the missing scope');
+  const blind = routed[routed.length - 1].task;
+  assert(/missing_scope/.test(blind) && /groups:history/.test(blind), 'the agent is TOLD it is blind and why — it invented a reason for the human otherwise', blind.slice(0, 200));
+  assert(/only see the message that mentioned you/.test(blind), 'and told to say so plainly instead of answering as if it had the thread');
+
+  // The prompt is a REQUEST — the model may relay it, paraphrase it wrong, or answer as if nothing were
+  // missing, and the run least able to notice it is blind is exactly this one. So the warning is written
+  // by the server and posted in the thread, deterministically, next to the ack.
+  const warned = posts[posts.length - 1];
+  assert(warned && warned.thread === '700.0', 'the warning lands in the thread the person is watching');
+  assert(/support-ops/.test(warned.text), 'alongside the ack, in one message (the ack is not replaced)');
+  assert(/groups:history/.test(warned.text), 'and names the scope for THIS conversation type — a private channel is `groups:history`, not `channels:history`', warned.text);
+  assert(/reinstall/i.test(warned.text), 'plus the step people forget: the scope does nothing until the app is reinstalled');
+
+  assert(slackApi.threadReadWarning('channel', 'missing_scope').includes('channels:history'), 'a public channel names channels:history');
+  assert(slackApi.threadReadWarning('mpim', 'missing_scope').includes('mpim:history'), 'a group DM names mpim:history');
+  assert(slackApi.threadReadWarning('im', 'missing_scope').includes('im:history'), 'a DM names im:history');
+  assert(/invite the bot/i.test(slackApi.threadReadWarning('group', 'not_in_channel')), 'not_in_channel is a different fix and says so, rather than sending an admin after a scope they already have');
+  assert(slackApi.threadReadWarning('group', 'ratelimited').includes('ratelimited'), 'an unknown error is still reported, verbatim');
+  assert(slackApi.threadReadWarning('group', '') === '' && slackApi.threadReadWarning('group') === '', 'and a thread that read fine adds nothing to the ack');
+
+  // The person who tagged the bot is not the person who can fix it, and the admin never sees the thread.
+  const st = sock.status();
+  assert(st.threadScopeError && st.threadScopeError.scope === 'groups:history' && st.threadScopeError.channel === CH,
+    'the failure is also held for the console, where the admin who can add the scope will see it');
+  assert(/missing_scope/.test(String(aos.db.prepare("SELECT data FROM audit_events WHERE type = 'slack.thread.unreadable' ORDER BY ts DESC LIMIT 1").get().data)), 'verbatim — `missing_scope` is the one an operator must act on');
   global.fetch = realFetch;
 
   console.log(`\n${pass} passed, ${fail} failed`);

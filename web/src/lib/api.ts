@@ -1484,6 +1484,9 @@ export interface SlackStatus {
   botUserId: string
   lastError?: string
   error?: string
+  /** The most recent thread the bot was tagged into and could not read. The person who tagged it is
+   *  warned in the thread; this is for the admin who can actually add the scope, who never sees it. */
+  threadScopeError?: { channel: string; scope: string; error: string; at: number }
 }
 
 /** Live Discord Gateway status — same shape as SlackStatus. */
