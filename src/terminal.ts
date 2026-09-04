@@ -5286,9 +5286,9 @@ export class TerminalManager {
     // (internal → green, external → yellow) instead of the generic connector-mutation tier.
     if (args.emailSend === true) {
       capability = 'email.send';
-      // Fail-closed (UC5): a session running AS a member must send email from THAT member's own
-      // account. Reaching for the COMPANY email tool from a member-scoped run is the silent fallback we
-      // must not allow — it means the member's Gmail isn't connected. Deny with a clear reason.
+      // Identity guard (UC5): refuse a send that would go out wearing ANOTHER named person's mailbox.
+      // Evidence-based, not namespace-based — reaching for the company shelf is normal (a shared role
+      // mailbox is exactly what it is for); see `emailIdentityDenial` for what actually convicts.
       const emailDenial = this.emailIdentityDenial(sessionId, rawArgs);
       if (emailDenial) {
         this.audit(sessionId, agent, 'gate.email.blocked', { capability, reason: emailDenial, recipients: args.emailRecipients ?? [] });
@@ -5612,18 +5612,83 @@ export class TerminalManager {
   }
 
   /**
-   * Fail-closed guard for act-as-member email (UC5). Returns a denial reason, or null to allow. A
-   * session that runs AS a specific member may only send email from that member's OWN account: if the
-   * agent reaches for the COMPANY Composio email tool from a member-scoped run, the member simply hasn't
-   * connected their Gmail, so we refuse rather than silently send from the company identity. Company /
-   * automation runs (no run_as member) legitimately use the company account and pass through.
+   * Guard for act-as-member email (UC5). Returns a denial reason, or null to let the normal policy
+   * gate decide.
+   *
+   * THE HARM this exists for is misattribution: an agent acting as one person sends mail that the
+   * world sees as coming from ANOTHER named person. That is not hypothetical — a "company" Google
+   * connection turned out to be one teammate's personal Google account, so an agent acting "as the
+   * company" created a document owned by a person who had no idea (see `composio-identity.ts`).
+   *
+   * The first version caught that by NAMESPACE: any member-scoped run reaching for `composio-company`
+   * email was denied, on the reasoning that a member should send from their own account and the
+   * company shelf is a silent fallback. That conflates a SHELF with a MAILBOX and it broke a
+   * legitimate, deliberate pattern — a shared role mailbox (`sales@`, `support@`) connected at the
+   * company level, which members are *supposed* to send from and which has its own thread history and
+   * ownership. It denied even internal mail between teammates, it was unconditional (an owner-run
+   * session was refused identically), and its own message claimed a precondition ("the run-as member
+   * has no Gmail connected") that it never actually checked. Every company-account send in this
+   * workspace failed the moment v0.420.0 started classifying Composio actions as `email.send` and the
+   * dormant guard woke up.
+   *
+   * So it now denies on EVIDENCE about the account that would ACTUALLY send this message:
+   *
+   *   - resolve the TOOLKIT from the action slug (`…__GMAIL_SEND_EMAIL` → `gmail`), longest match
+   *     against the toolkits on the company shelf, so a `microsoft_outlook_…` action is not read as
+   *     `microsoft`. Convicting on a sibling toolkit's connection would reintroduce the same false
+   *     denial one shelf over — a role `gmail` send blocked because `outlook` happens to be a
+   *     teammate's. Unresolvable toolkit → we do not know what would send → fall through;
+   *   - skip a CLAIMED connection (`composio_claims`). A claim is the sanctioned remediation for
+   *     exactly this problem, and `composioSessionPlan` already makes a claimed account unreachable
+   *     from anyone else's run — so it is not what would send, and denying on it would punish the
+   *     workspace for having fixed the thing properly;
+   *   - convict only when the surviving account IS an ACTIVE team member's own mailbox, and not the
+   *     actor's. An unresolved account label is "we don't know yet", which must never read as guilty,
+   *     and an `invited`-status row is a shared alias someone added to the console, not a person.
+   *
+   * A role mailbox, or an account we cannot tie to a person, falls through. That is not the same as
+   * ungoverned: `email.send` carries its own policy, which routes every EXTERNAL recipient to a human
+   * approval, and the agent's prompt names the account behind each namespace so the choice is made
+   * with open eyes. It is a real residual, though — internal mail is not separately gated, so while an
+   * account is unresolved a member-scoped run can mail a teammate from it with nothing in the way.
+   * Resolving the identity cache (or filing a claim) is what closes that, not this guard.
+   *
+   * Company / automation runs (no run_as member) legitimately use the company account and pass
+   * through. Shared (`composio-shared-*`) namespaces are out of scope: those connections were
+   * explicitly lent by their owner to the team.
    */
   private emailIdentityDenial(sessionId: string, rawArgs: Record<string, unknown>): string | null {
     const runAs = this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(sessionId)?.run_as ?? null;
     if (!runAs) return null; // company/automation identity → company email account is correct
     const tool = typeof rawArgs.tool === 'string' ? rawArgs.tool : '';
-    if (/composio-company/i.test(tool)) {
-      return 'acting as a member — send email from your own connected account, not the company one (the run-as member has no Gmail connected)';
+    if (!/composio-company/i.test(tool)) return null;
+    const actor = this.os.team.resolveMemberRef(runAs);
+    const actorEmail = (actor?.email ?? '').trim().toLowerCase();
+    const entity = serviceUserId(this.os.tenant);
+    // Only ACTIVE connections can send, and only one toolkit is about to. `GMAIL_SEND_EMAIL` and
+    // `MICROSOFT_OUTLOOK_SEND_EMAIL` both start with their toolkit slug, so the longest toolkit that
+    // prefixes the action wins; nothing matches → we cannot say what would send, so we do not convict.
+    const action = (tool.includes('__') ? tool.slice(tool.lastIndexOf('__') + 2) : tool).toLowerCase();
+    const live = this.os.composioIdentities.forEntity(entity).filter((i) => i.status.toUpperCase() === 'ACTIVE');
+    const toolkit = [...new Set(live.map((i) => i.toolkit.toLowerCase()))]
+      .filter((t) => t && action.startsWith(`${t}_`))
+      .sort((a, b) => b.length - a.length)[0];
+    if (!toolkit) return null;
+    const claimed = new Set(
+      this.os.composioClaims.list()
+        .filter((c) => c.userId === entity && c.memberId !== actor?.id)
+        .map((c) => c.id),
+    );
+    for (const conn of live) {
+      if (conn.toolkit.toLowerCase() !== toolkit) continue;
+      if (claimed.has(conn.id)) continue; // walled off from this run — it is not what would send
+      const account = (conn.account ?? '').trim().toLowerCase();
+      if (!account || account === actorEmail) continue;
+      // A role mailbox belongs to nobody in particular. A mailbox that IS an active member's own login
+      // is that person, and sending from it makes them the apparent author.
+      const owner = this.os.team.getMemberByEmail(account);
+      if (!owner || owner.status !== 'active' || owner.id === actor?.id) continue;
+      return `the company ${conn.toolkit} connection is ${owner.name || owner.email}'s own mailbox (${account}) — sending would appear to come from them, not from ${actor?.email ?? runAs}; connect this run-as member's own account, claim that connection for ${owner.name || owner.email} in Settings → Connections, or connect a shared role mailbox at the company level`;
     }
     return null;
   }
