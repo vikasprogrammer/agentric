@@ -206,6 +206,12 @@ export async function initiateConnection(
  */
 export interface MintOptions {
   toolkits?: string[];
+  /** Toolkits to REMOVE from an otherwise unrestricted session. Used by claims (composio-claims.ts): a
+   *  company app privately claimed by one member is disabled in everyone else's company session. Verified
+   *  against the live endpoint — a disabled toolkit is genuinely unreachable, not merely hidden, and
+   *  `COMPOSIO_SEARCH_TOOLS` reports no connection for it. Mutually exclusive with `toolkits`: one mint
+   *  is either an allowlist (a borrowed share) or a denylist (a company session minus claims). */
+  disableToolkits?: string[];
   connectedAccounts?: Record<string, string[]>;
   manageConnections?: boolean;
 }
@@ -214,7 +220,9 @@ export interface MintOptions {
 function mintBody(userId: string, opts: MintOptions): string {
   return JSON.stringify({
     user_id: userId,
-    ...(opts.toolkits?.length ? { toolkits: { enable: opts.toolkits } } : {}),
+    ...(opts.toolkits?.length
+      ? { toolkits: { enable: opts.toolkits } }
+      : opts.disableToolkits?.length ? { toolkits: { disable: opts.disableToolkits } } : {}),
     ...(opts.connectedAccounts && Object.keys(opts.connectedAccounts).length
       ? { connected_accounts: opts.connectedAccounts }
       : {}),

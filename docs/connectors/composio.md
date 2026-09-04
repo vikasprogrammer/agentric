@@ -127,6 +127,47 @@ Two things worth knowing about it:
   rule for remote execution as a class. Their auto-approve signature is namespaced separately, so an
   "always approve" for a local command can never clear the same command on Composio's sandbox.
 
+## Claiming a company connection back (`src/connectors/composio-claims.ts`)
+
+The exact inverse of sharing, and it exists for the same reason. Someone completes the hosted OAuth on
+the **company** shelf while signed in to their own Google/Slack account — which happens constantly — and
+the result is a connection every agent in the tenant can act through, wearing one individual's identity.
+That is the shape of the incident that started this work.
+
+An account's entity is immutable on Composio's side, so a claim can no more be a move than a share can.
+It is a marker enforced at mint time, in the same place and by the same code path:
+
+| | marker | how the launcher enforces it |
+|---|---|---|
+| **Share** (`composio_shares`) | personal account → reachable by everyone | mint an EXTRA session under the owner's entity, allowlisted + pinned |
+| **Claim** (`composio_claims`) | company account → reachable by one member | mint the company session **minus** it, for everyone else |
+
+`exclusionFor` picks between the two expressible exclusions:
+
+- the claimed account is the **only** ACTIVE one of its toolkit → `toolkits.disable`, because Composio
+  rejects an empty account pin (`Array must contain at least 1 element`);
+- **other** active accounts of that toolkit remain → pin the session to exactly those.
+
+Both verified against the live endpoint: a disabled toolkit is genuinely unreachable, and
+`COMPOSIO_SEARCH_TOOLS` reports no connection for it rather than offering a dead one.
+
+Notes worth keeping:
+
+- **Automation and system runs are excluded too.** They act as nobody, so they have no business acting
+  as the claimer.
+- **A toolkit we cannot enumerate is disabled, not left open.** Over-restricting is recoverable — the
+  agent reports it cannot reach an app — while under-restricting silently hands a teammate's mailbox to
+  the whole fleet, which is the bug being fixed.
+- **The prompt follows the mint.** A claimed app is hidden from every other run's Composio section, and
+  shown to its claimer marked as their own account. Advertising an app the session cannot reach is the
+  same class of lie as not saying whose account it is.
+- **Owner/admin only**, because a company connection is org property and privatising one takes a
+  capability away from everyone. Whose it is comes from the resolved account (an email that matches a
+  member); when nothing matches, the caller names the member explicitly.
+- **A claim always lets go**: releasing talks to no remote (so a broken API key can never leave a toolkit
+  walled off), a claim on a deleted connection is pruned on the next refresh, and removing a member gives
+  their claimed connections back to the company.
+
 ## Whose account is it, really? (`src/connectors/composio-identity.ts`)
 
 **A Composio `user_id` is a SHELF, not an identity.** `service:<tenant>` means "the company's shelf"

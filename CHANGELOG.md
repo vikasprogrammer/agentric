@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.423.0] - 2026-09-04
+### Added
+- **A company Composio connection can be claimed back as one person's own** — the exact inverse of
+  sharing a personal one with the team, and it exists for the same reason. Someone completes the hosted
+  OAuth on the *company* shelf while signed in to their own Google/Slack account, and the result is a
+  connection every agent in the tenant can act through wearing one individual's identity; that is the
+  shape of the incident this whole thread started from. An account's entity is immutable on Composio's
+  side, so a claim can no more be a move than a share can - it is a marker the launcher enforces by
+  minting everyone ELSE's company session without it (`composio_claims`, `exclusionFor`). Console:
+  **Make it personal** / **Give back to company** on a company row, mirroring Share with team.
+  `POST /api/connections/claim`, audited `connector.claimed` / `connector.released`.
+- Two exclusions are expressible and the code picks between them: the claimed account is the only ACTIVE
+  one of its toolkit ⇒ `toolkits.disable` (Composio rejects an empty account pin), other active accounts
+  remain ⇒ pin the session to exactly those. Both verified against the live endpoint - a disabled toolkit
+  is genuinely unreachable, not merely hidden.
+
+### Note
+- Automation and system runs are excluded too: they act as nobody, so they have no business acting as the
+  claimer. A toolkit that cannot be enumerated is disabled rather than left open - over-restricting is
+  recoverable, under-restricting is the bug. The prompt follows the mint, so a claimed app is hidden from
+  every other run and shown to its claimer marked as their own.
+- Owner/admin only, since a company connection is org property and privatising one takes a capability
+  away from everyone. Whose it is comes from the account resolved in v0.422.0; when no member matches,
+  the caller names one.
+
 ## [0.422.2] - 2026-09-03
 ### Changed
 - **The expired-connection card no longer DMs Slack/Discord — Inbox only.** Every other review card is

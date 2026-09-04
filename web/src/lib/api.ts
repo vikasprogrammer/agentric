@@ -1507,6 +1507,10 @@ export interface ComposioConnection {
   account?: string
   /** Mine only: the owner marked it available to the whole team (composio_shares). */
   shared?: boolean
+  /** Company only: this connection is really one person's account (composio_claims) — their display
+   *  name. No other run reaches it. The inverse of `shared`. */
+  claimedBy?: string
+  claimedByMember?: string
 }
 /** A teammate's connection they marked available to the team — borrowed, not owned. */
 export interface SharedConnection {
@@ -2193,6 +2197,8 @@ export const api = {
   saveReview: (reviewMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/review', { reviewMd }),
   connections: () => call<ConnectionsResp>('GET', '/api/connections'),
   refreshConnections: () => call<{ ok?: boolean; resolved?: number; expired?: number; error?: string }>('POST', '/api/connections/refresh', {}),
+  claimConnection: (body: { id: string; claimed: boolean; memberId?: string }) =>
+    call<{ ok?: boolean; claimed?: boolean; member?: { id: string; name: string }; resolved?: string; error?: string }>('POST', '/api/connections/claim', body),
   pruneConnections: () => call<{ ok?: boolean; removed?: string[]; kept?: number; error?: string }>('POST', '/api/connections/prune', {}),
   integrationsOverview: () => call<IntegrationsOverview>('GET', '/api/integrations/overview'),
   composioToolkits: () => call<{ toolkits: { slug: string; name: string }[]; error?: string }>('GET', '/api/composio/toolkits'),

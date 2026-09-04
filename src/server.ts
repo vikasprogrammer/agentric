@@ -2696,6 +2696,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Same rule for their shared Composio apps: the team borrowed those through THEIR entity, so the
     // grant dies with the account rather than leaving the fleet minting under a departed member.
     const sharesRemoved = os.composioShares.removeByOwner(teamMember[1]).length;
+    // …and any company connection claimed for them goes back to the company: an account nobody owns must
+    // not stay walled off from the whole fleet with no one able to explain why.
+    os.composioClaims.releaseByMember(teamMember[1]);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'member.removed', data: { member: teamMember[1], connectorsRemoved, hostsRemoved, sharesRemoved } });
     return sendJson(res, 200, { ...out, connectorsRemoved, hostsRemoved, sharesRemoved });
   }
@@ -6557,8 +6560,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const identities = os.composioIdentities.byConnection([
       serviceUserId(os.tenant), me.email, ...owners,
     ]);
-    const withAccount = <T extends { id: string }>(a: T): T & { account: string } =>
-      ({ ...a, account: identities.get(a.id)?.account ?? '' });
+    // Claims: a company row that is really one person's account. Carried on the row so the console can
+    // render whose it is (and offer to give it back) without a second call.
+    const claims = new Map(os.composioClaims.list().map((c) => [c.id, c]));
+    const memberName = (id: string): string => os.team.getMember(id)?.name || os.team.getMember(id)?.email || id;
+    const withAccount = <T extends { id: string }>(a: T): T & { account: string; claimedBy?: string; claimedByMember?: string } => {
+      const c = claims.get(a.id);
+      return {
+        ...a,
+        account: identities.get(a.id)?.account ?? '',
+        ...(c ? { claimedBy: memberName(c.memberId), claimedByMember: c.memberId } : {}),
+      };
+    };
     return sendJson(res, 200, {
       keySet: true,
       company: company.map(withAccount),
@@ -6608,6 +6621,53 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       { userId: me.email, ownerMemberId: me.id },
     ], { notify: false });
     return sendJson(res, 200, { ok: true, removed, kept: doomed.length - removed.length });
+  }
+  // The inverse of sharing: a COMPANY connection that is really one person's account (someone completed
+  // the hosted OAuth while signed in to their own Google/Slack) is claimed back for them. Composio cannot
+  // move an account between entities, so this is a marker the launcher enforces — every OTHER run's
+  // company session is minted without it. Owner/admin only: a company connection is org property, and
+  // letting any member privatise one would silently take a capability away from the whole fleet.
+  if (method === 'POST' && p === '/api/connections/claim') {
+    const b = await readBody(req);
+    const id = String(b.id || '').trim();
+    const claimed = b.claimed !== false;
+    if (!id) return sendJson(res, 400, { error: 'id is required' });
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'only an owner or admin can change who a company connection belongs to' });
+    // Releasing talks to no remote, so it must ALWAYS be possible — a cleared or broken Composio key can
+    // never leave a toolkit walled off with no way to give it back.
+    if (!claimed) {
+      const existing = os.composioClaims.get(id);
+      if (!existing) return sendJson(res, 404, { error: 'that connection is not claimed' });
+      os.composioClaims.release(id);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.released', data: { id, toolkit: existing.toolkit, member: existing.memberId } });
+      return sendJson(res, 200, { ok: true, claimed: false });
+    }
+    const key = os.settings.composioApiKey();
+    if (!key) return sendJson(res, 400, { error: 'no Composio API key' });
+    const entity = serviceUserId(os.tenant);
+    // Verified against Composio, so a claim can only ever name a real company connection.
+    const company = await listConnectedAccounts(key, entity);
+    const app = company.find((a) => a.id === id);
+    if (!app) return sendJson(res, 404, { error: 'that connection is not on the company shelf' });
+    // Who it belongs to: an explicit member, else the one whose email matches the account we resolved
+    // for it. The second is the common case and the reason resolving accounts came first — without it
+    // there is nothing to match on and the caller has to know.
+    const resolved = os.composioIdentities.byConnection([entity]).get(id)?.account ?? '';
+    const target = String(b.memberId || '').trim()
+      ? os.team.getMember(String(b.memberId).trim())
+      : (resolved ? os.team.getMemberByEmail(resolved) : undefined);
+    if (!target) {
+      return sendJson(res, 400, {
+        error: resolved
+          ? `no team member has the address ${resolved} — say which member this connection belongs to`
+          : 'this connection has no resolved account yet — run Check accounts, or say which member it belongs to',
+        resolved,
+      });
+    }
+    os.composioClaims.pruneEntity(entity, new Set(company.map((a) => a.id)));
+    os.composioClaims.claim({ id, toolkit: app.toolkit, userId: entity, memberId: target.id, account: resolved, claimedBy: me.email });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.claimed', data: { id, toolkit: app.toolkit, member: target.id, account: resolved } });
+    return sendJson(res, 200, { ok: true, claimed: true, member: { id: target.id, name: target.name } });
   }
   // Mark one of MY Composio connections available to the whole team — or take it back to just me.
   // Composio can't move an account between entities (its `user_id` is immutable and a session may only

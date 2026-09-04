@@ -222,6 +222,63 @@ check('…and sends no Slack/Discord DM', dms === 0);
 tm.requestConnection('-', 'some-agent', { toolkit: 'linear', scope: 'company', reasoning: 'need it' });
 check('control: a card an agent is blocked on still DMs', dms === 1);
 
+// ── 9. claims: the inverse of sharing ────────────────────────────────────────────────────────────
+// Someone completes the hosted OAuth on the COMPANY shelf while signed in to their own account, and the
+// result is a connection every agent can act through wearing that individual's identity. The entity is
+// immutable on Composio's side, so a claim can no more be a move than a share can — it is a marker the
+// launcher enforces by minting everyone else's company session WITHOUT it.
+const { exclusionFor } = require(path.resolve(__dirname, '..', 'dist/connectors/composio-claims'));
+const CO = `service:${aos.tenant}`;
+const claim = (id, toolkit, memberId) => ({ id, toolkit, userId: CO, memberId, account: '', claimedBy: 'admin@x', createdAt: 1 });
+
+// One account, claimed: nobody else can reach the toolkit at all. Composio rejects an empty account pin
+// ("Array must contain at least 1 element"), so the only expressible exclusion is disabling the toolkit.
+let ex = exclusionFor([claim('ca_1', 'googlesheets', 'm_zubair')], new Map([['googlesheets', ['ca_1']]]), 'm_other');
+check('a sole claimed account disables its toolkit for everyone else', ex.disableToolkits.includes('googlesheets'));
+check('…and pins nothing, since there is nothing left to pin', Object.keys(ex.connectedAccounts).length === 0);
+
+// The claimer keeps it, untouched.
+ex = exclusionFor([claim('ca_1', 'googlesheets', 'm_zubair')], new Map([['googlesheets', ['ca_1']]]), 'm_zubair');
+check('the claimer still reaches their own account', !ex.disableToolkits.length && !Object.keys(ex.connectedAccounts).length);
+
+// A second, unclaimed account of the same app must survive for everyone else.
+ex = exclusionFor([claim('ca_1', 'googlesheets', 'm_zubair')], new Map([['googlesheets', ['ca_1', 'ca_2']]]), 'm_other');
+check('a sibling unclaimed account is kept by re-pinning, not disabled', !ex.disableToolkits.includes('googlesheets'));
+check('…and the claimed one is pinned out', JSON.stringify(ex.connectedAccounts.googlesheets) === '["ca_2"]');
+
+// An automation/system run has no member, so it is nobody — it must not act as the claimer.
+ex = exclusionFor([claim('ca_1', 'gmail', 'm_zubair')], new Map([['gmail', ['ca_1']]]), undefined);
+check('an automation run (no member) is excluded like everyone else', ex.disableToolkits.includes('gmail'));
+
+// Fail SAFE: a toolkit we cannot enumerate is disabled, never left open. Over-restricting is recoverable
+// (the agent reports it cannot reach an app); under-restricting hands a teammate's mailbox to the fleet.
+ex = exclusionFor([claim('ca_1', 'gmail', 'm_zubair')], new Map(), 'm_other');
+check('an unknown toolkit with a claim fails closed', ex.disableToolkits.includes('gmail'));
+check('no claims ⇒ no restriction at all', (() => {
+  const none = exclusionFor([], new Map([['gmail', ['ca_9']]]), 'm_other');
+  return !none.disableToolkits.length && !Object.keys(none.connectedAccounts).length;
+})());
+
+// The store, and the two ways a claim must let go.
+aos.composioClaims.claim(claim('ca_keep', 'gmail', owner.id));
+aos.composioClaims.claim(claim('ca_gone', 'notion', owner.id));
+check('claims are recorded', aos.composioClaims.list().length === 2);
+check('a claim on a deleted connection is pruned — otherwise it disables a toolkit forever',
+  aos.composioClaims.pruneEntity(CO, new Set(['ca_keep'])).length === 1 && aos.composioClaims.list().length === 1);
+check('removing the member gives the connection back to the company',
+  aos.composioClaims.releaseByMember(owner.id).length === 1 && aos.composioClaims.list().length === 0);
+
+// The prompt must not advertise an app this run cannot reach.
+aos.settings.setComposioApiKey('test-key', 'owner@testco');
+aos.composioIdentities.upsert([{ id: 'ca_hub', userId: CO, toolkit: 'hubspot', account: 'zubair@x.io', status: 'ACTIVE' }]);
+aos.composioClaims.claim(claim('ca_hub', 'hubspot', 'm_someone_else'));
+check('a claimed app is hidden from every other run\'s prompt', !/hubspot/.test(tm.buildCompanyMd('a', owner.id, false, '')));
+check('…while a sibling unclaimed account of another app is untouched', /googlesheets/.test(tm.buildCompanyMd('a', owner.id, false, '')));
+aos.composioClaims.claim(claim('ca_hub', 'hubspot', owner.id));
+const own = tm.buildCompanyMd('a', owner.id, false, '');
+check('…and shown to its claimer', /hubspot — zubair@x\.io/.test(own));
+check('…labelled as theirs, not the company\'s', /your OWN account, kept on the company shelf/.test(own));
+
 const total = pass + failures.length;
 if (failures.length) {
   console.error(`\nCOMPOSIO IDENTITY: ${pass}/${total} passed, ${failures.length} FAILED\n`);

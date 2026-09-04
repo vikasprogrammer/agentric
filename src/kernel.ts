@@ -26,6 +26,7 @@ import { CapabilityRegistry } from './capabilities/registry';
 import { ConnectorStore } from './connectors/connectors';
 import { ComposioShareStore } from './connectors/composio-shares';
 import { ComposioIdentityStore } from './connectors/composio-identity';
+import { ComposioClaimStore } from './connectors/composio-claims';
 import { HostStore } from './hosts/hosts';
 import { AutoApprovalStore } from './state/auto-approvals';
 import { Gateway } from './gateway/gateway';
@@ -129,6 +130,8 @@ export class AgentOS {
   readonly composioShares: ComposioShareStore;
   /** What each Composio connection REALLY is — the account behind the entity (composio-identity.ts). */
   readonly composioIdentities: ComposioIdentityStore;
+  /** Company connections claimed back as one member's own (composio-claims.ts) — sharing, inverted. */
+  readonly composioClaims: ComposioClaimStore;
   /** Host connections — governed reachable destinations (SSH / internal HTTP / DB). See host-connections-plan.md. */
   readonly hosts: HostStore;
   /** "Always approve THIS action" list, keyed on the decision-brief signature (auto-approvals.ts). */
@@ -155,6 +158,7 @@ export class AgentOS {
     this.connectors = new ConnectorStore(this.db);
     this.composioShares = new ComposioShareStore(this.db);
     this.composioIdentities = new ComposioIdentityStore(this.db);
+    this.composioClaims = new ComposioClaimStore(this.db);
     this.hosts = new HostStore(this.db);
     this.autoApprovals = new AutoApprovalStore(this.db);
     this.approvals = new SqliteApprovals(this.db);
