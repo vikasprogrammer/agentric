@@ -20,6 +20,7 @@ import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffSta
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
 import { listConnectedAccounts } from './connectors/composio';
 import { activeToolkits, resolveIdentities } from './connectors/composio-identity';
+import { exclusionFor } from './connectors/composio-claims';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { isolateClaudeConfig } from './edge/config-isolation';
@@ -4807,6 +4808,19 @@ export class TerminalManager {
     return JSON.stringify(config, null, 2);
   }
 
+  /** ACTIVE company accounts grouped by toolkit, from the identity cache — what `exclusionFor` needs to
+   *  decide between disabling a toolkit outright and re-pinning it to the accounts nobody has claimed.
+   *  A toolkit absent here is unknown to us, and `exclusionFor` disables it rather than leaving a claimed
+   *  account reachable; over-restricting is recoverable, under-restricting is the bug. */
+  private activeCompanyAccounts(entity: string): Map<string, string[]> {
+    const byToolkit = new Map<string, string[]>();
+    for (const i of this.os.composioIdentities.forEntity(entity)) {
+      if (i.status.toUpperCase() !== 'ACTIVE') continue;
+      byToolkit.set(i.toolkit, [...(byToolkit.get(i.toolkit) ?? []), i.id]);
+    }
+    return byToolkit;
+  }
+
   /** Has this entity's cached identity/status gone stale (or never been resolved)? Keeps the launch-time
    *  refresh to roughly once every six hours per entity rather than once per session. */
   private composioIdentityStale(userId: string, maxAgeMs = 6 * 60 * 60 * 1000): boolean {
@@ -4843,7 +4857,11 @@ export class TerminalManager {
       if (!accounts.length) continue;
       // Status first, so an expired connection is recorded even when the identity probe fails.
       this.os.composioIdentities.upsert(accounts.map((a) => ({ id: a.id, userId, toolkit: a.toolkit, status: a.status })));
-      this.os.composioIdentities.pruneEntity(userId, new Set(accounts.map((a) => a.id)));
+      const liveIds = new Set(accounts.map((a) => a.id));
+      this.os.composioIdentities.pruneEntity(userId, liveIds);
+      // A claim on a connection that no longer exists would keep disabling its toolkit for the whole
+      // tenant forever, with nothing in the console left to explain why.
+      this.os.composioClaims.pruneEntity(userId, liveIds);
       // ONLY toolkits with a live account — probing one without would make Composio initiate a
       // connection rather than report its absence (see composio-identity.ts).
       const found = await resolveIdentities(key, userId, activeToolkits(accounts));
@@ -4966,8 +4984,16 @@ export class TerminalManager {
    * never be told about a namespace it doesn't have, or left blind about one it does.
    */
   private composioSessionPlan(memberId: string | undefined, agent: string): Array<{ id: string; userId: string; scope: 'personal' | 'company' | 'shared'; ownerMemberId?: string; opts?: MintOptions }> {
+    const companyEntity = serviceUserId(this.os.tenant);
+    // Claims (composio-claims.ts): a company connection that is really ONE person's account is minted
+    // OUT of everyone else's company session — including automation/system runs, which have no member
+    // and so no business acting as one. The exact inverse of a share, enforced in the same place.
+    const claims = this.os.composioClaims.list().filter((c) => c.userId === companyEntity);
+    const companyOpts: MintOptions = claims.length
+      ? exclusionFor(claims, this.activeCompanyAccounts(companyEntity), memberId)
+      : {};
     const sessions: Array<{ id: string; userId: string; scope: 'personal' | 'company' | 'shared'; ownerMemberId?: string; opts?: MintOptions }> = [
-      { id: 'composio-company', userId: serviceUserId(this.os.tenant), scope: 'company' },
+      { id: 'composio-company', userId: companyEntity, scope: 'company', ...(claims.length ? { opts: companyOpts } : {}) },
     ];
     // `composio` → the running member's OWN connected apps (their email as user_id); `composio-company`
     // → apps connected under the shared service entity, usable by every agent. Automation/system spawns
@@ -5010,6 +5036,12 @@ export class TerminalManager {
     if (!this.os.settings.composioApiKey()) return '';
     const plan = this.composioSessionPlan(memberId, agent);
     const cached = this.os.composioIdentities;
+    // A claimed app sits on the company shelf but belongs to one person. The claimer's own runs still
+    // reach it, and they are told so explicitly — otherwise "it is on the company shelf" reads as
+    // "it is the company's", which is the misreading that put a teammate's Drive in an agent's hands.
+    const claimedBy = new Map(this.os.composioClaims.list().map((c) => [c.id, c.memberId]));
+    const claimNote = (id: string): string =>
+      claimedBy.has(id) ? ' — your OWN account, kept on the company shelf; no other agent can use it' : '';
     const lines: string[] = [];
     for (const s of plan) {
       const who = s.scope === 'personal'
@@ -5017,9 +5049,16 @@ export class TerminalManager {
         : s.scope === 'company'
           ? 'the apps connected at the COMPANY level, shared by every agent'
           : `apps **${this.os.team.getMember(s.ownerMemberId ?? '')?.name || s.userId}** lent to the team`;
-      const accounts = cached.forEntity(s.userId).filter((i) => i.status.toUpperCase() === 'ACTIVE');
+      let accounts = cached.forEntity(s.userId).filter((i) => i.status.toUpperCase() === 'ACTIVE');
+      // A claimed company app is minted out of this session unless the run acts as its claimer, so it
+      // must not be advertised here either — telling an agent about an app it cannot reach is the same
+      // class of lie as not telling it whose account an app is.
+      if (s.scope === 'company') {
+        const mine = new Map(this.os.composioClaims.list().filter((c) => c.userId === s.userId).map((c) => [c.id, c.memberId]));
+        accounts = accounts.filter((a) => !mine.has(a.id) || mine.get(a.id) === memberId);
+      }
       const detail = accounts.length
-        ? accounts.map((a) => `    - ${a.toolkit} — ${a.account || 'account unknown'}`).join('\n')
+        ? accounts.map((a) => `    - ${a.toolkit} — ${a.account || 'account unknown'}${claimNote(a.id)}`).join('\n')
         : '    - (nothing resolved yet — check Connections in the console before assuming an app is there)';
       lines.push(`- **\`${s.id}\`** — ${who}:\n${detail}`);
     }

@@ -129,6 +129,22 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_composio_identities_user ON composio_identities (user_id);
 
+    -- Company Composio connections that are really ONE person's account (composio-claims.ts) — the exact
+    -- inverse of composio_shares. Someone completes the hosted OAuth on the company shelf while signed in
+    -- to their own Google/Slack account, and the result is a connection every agent can act through
+    -- wearing that individual's identity. The entity is immutable on Composio's side, so this cannot be a
+    -- move: it is a marker the launcher enforces by minting everyone ELSE's company session without it.
+    CREATE TABLE IF NOT EXISTS composio_claims (
+      id         TEXT PRIMARY KEY,       -- the Composio connected-account id (ca_...) on the company entity
+      toolkit    TEXT NOT NULL,          -- toolkit slug — what gets disabled or re-pinned for everyone else
+      user_id    TEXT NOT NULL,          -- the company service entity (unchanged; it cannot be moved)
+      member_id  TEXT NOT NULL,          -- the member it really belongs to (prunes with the member)
+      account    TEXT NOT NULL DEFAULT '', -- resolved account at claim time, for display
+      claimed_by TEXT NOT NULL,          -- email of the owner/admin who filed it
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_composio_claims_member ON composio_claims (member_id);
+
     -- Host connections — reachable destinations (SSH box / internal HTTP / DB) an agent may talk to,
     -- as a first-class governed thing (docs/host-connections-plan.md). Phase 2a stores them; the
     -- governance that reads them (net.connect/ssh.exec + allow-list) is Phase 2b. Mirrors connectors'

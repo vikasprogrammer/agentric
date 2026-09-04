@@ -375,12 +375,15 @@ function ConnectorRow({ c, me, busy, onToggle, onRemove, onShare }: {
 /** A live Composio-connected app row (company or personal). Shows the connection's distinguishing
  *  handle/alias so multiple accounts of the same app (e.g. two Gmails) are told apart.
  *  `onShare` is passed for a row the viewer owns — the "available to the team / just me" toggle. */
-function ComposioRow({ app, canRemove, busy, onRemove, onShare, onReconnect, sharedBy }: {
-  app: { id: string; toolkit: string; status: string; name?: string; account?: string; shared?: boolean }
+function ComposioRow({ app, canRemove, busy, onRemove, onShare, onReconnect, onClaim, sharedBy }: {
+  app: { id: string; toolkit: string; status: string; name?: string; account?: string; shared?: boolean; claimedBy?: string }
   canRemove: boolean; busy: boolean; onRemove?: () => void
   onShare?: (shared: boolean) => void
   /** Offered on an EXPIRED row — re-runs the OAuth for this toolkit on this shelf. */
   onReconnect?: () => void
+  /** COMPANY rows only — the inverse of onShare: hand a connection that is really one person's account
+   *  back to them, or give it back to the company. */
+  onClaim?: (claimed: boolean) => void
   /** Set on a BORROWED row (a teammate shared it) — shown instead of the share control. */
   sharedBy?: string
 }) {
@@ -393,7 +396,7 @@ function ComposioRow({ app, canRemove, busy, onRemove, onShare, onReconnect, sha
   // individual's login underneath, and that is who owns the documents an agent creates through it.
   // Lead with it, and fall back to the opaque handle only while it is still unresolved.
   const expired = app.status.toUpperCase() !== 'ACTIVE'
-  const detail = [app.account || handle, sharedBy ? `shared by ${sharedBy}` : '', 'via Composio'].filter(Boolean).join(' · ')
+  const detail = [app.account || handle, sharedBy ? `shared by ${sharedBy}` : '', app.claimedBy ? `only ${app.claimedBy}` : '', 'via Composio'].filter(Boolean).join(' · ')
   return (
     <Row
       name={app.toolkit}
@@ -403,14 +406,23 @@ function ComposioRow({ app, canRemove, busy, onRemove, onShare, onReconnect, sha
         <>
           {statusBadge(app.status.toLowerCase(), expired ? 'warn' : 'ok')}
           {app.shared && statusBadge('shared with team', 'ok')}
+          {app.claimedBy && statusBadge(`personal — ${app.claimedBy}`, 'warn')}
         </>
       }
-      right={(onShare || onRemove || (expired && onReconnect)) ? (
+      right={(onShare || onClaim || onRemove || (expired && onReconnect)) ? (
         <>
           {expired && onReconnect && (
             <Button size="sm" variant="outline" disabled={busy} onClick={onReconnect}
               title="Re-run this app's OAuth — until you do, agents cannot use it">
               Reconnect
+            </Button>
+          )}
+          {onClaim && !expired && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => onClaim(!app.claimedBy)}
+              title={app.claimedBy
+                ? 'Give it back to the company — every agent can use it again'
+                : "This app is really one person's own account: keep it working for them, and stop every other agent acting through it"}>
+              {app.claimedBy ? 'Give back to company' : 'Make it personal'}
             </Button>
           )}
           {onShare && !expired && (
@@ -600,7 +612,7 @@ export function GithubMineCard() {
   )
 }
 
-function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onShareComposio, onReconnectComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost, onPublishHost }: {
+function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onShareComposio, onClaimComposio, onReconnectComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost, onPublishHost }: {
   me: Member | null
   connectors: Connector[]
   hosts: Host[]
@@ -612,6 +624,7 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
   onShare: (id: string, shared: boolean) => void
   onDisconnectComposio: (id: string, scope: 'company' | 'personal', label: string) => void
   onShareComposio: (id: string, shared: boolean, label: string) => void
+  onClaimComposio: (id: string, claimed: boolean, label: string, account?: string) => void
   onReconnectComposio: (toolkit: string, scope: 'company' | 'personal') => void
   onToggleHost: (id: string, enabled: boolean) => void
   onRemoveHost: (id: string) => void
@@ -680,6 +693,7 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
           {companyApps.map((a) => (
             <ComposioRow key={a.id} app={a} canRemove={isAdmin} busy={busy === a.id}
               onRemove={() => onDisconnectComposio(a.id, 'company', a.toolkit)}
+              onClaim={isAdmin ? (claimed) => onClaimComposio(a.id, claimed, a.toolkit, a.account) : undefined}
               onReconnect={isAdmin ? () => onReconnectComposio(a.toolkit, 'company') : undefined} />
           ))}
           {sharedApps.map((a) => (
@@ -1101,6 +1115,30 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
     if (r.redirectUrl) window.open(r.redirectUrl, '_blank', 'noopener')
   }
 
+  // The inverse of "Share with team": a company connection that is really one person's own account —
+  // somebody completed the hosted OAuth while signed in to it — is handed back to them. Composio cannot
+  // move an account between shelves, so it stays where it is and the launcher mints it out of every
+  // other run's session.
+  const claimComposio = async (id: string, claimed: boolean, label: string, account?: string) => {
+    if (claimed && !window.confirm(
+      `Make ${label}${account ? ` (${account})` : ''} personal?\n\nIt stays on the company shelf — Composio can't move a connection — but from the next session only its owner's runs can act through it. Every other agent loses it.`,
+    )) return
+    setBusy(id)
+    let r = await api.claimConnection({ id, claimed })
+    // No resolved account, or one that matches nobody: the server can't guess whose it is, so ask.
+    if (r.error && claimed && /which member/.test(r.error)) {
+      const who = window.prompt(`${r.error}\n\nEmail of the member this connection belongs to:`, r.resolved || '')
+      if (!who) { setBusy(''); return }
+      const m = (await api.team()).members?.find((x) => x.email.toLowerCase() === who.trim().toLowerCase())
+      if (!m) { setBusy(''); return window.alert(`No team member with the address ${who.trim()}.`) }
+      r = await api.claimConnection({ id, claimed, memberId: m.id })
+    }
+    setBusy('')
+    if (r.error) return window.alert('Could not change who this belongs to: ' + r.error)
+    loadConnections()
+    loadOverview()
+  }
+
   // Re-ask Composio whose account each connection really is, and what has expired. A live probe, so it
   // is a button rather than something every page load pays for.
   const [checking, setChecking] = useState(false)
@@ -1179,6 +1217,7 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
         onShare={share}
         onDisconnectComposio={disconnectComposio}
         onShareComposio={shareComposio}
+        onClaimComposio={claimComposio}
         onReconnectComposio={reconnectComposio}
         onToggleHost={toggleHost}
         onRemoveHost={removeHost}
