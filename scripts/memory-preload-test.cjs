@@ -29,7 +29,7 @@ let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
-const { TerminalManager, isEpisodeRecord, distinctLines } = require(path.join(ROOT, 'dist/terminal.js'));
+const { TerminalManager, isEpisodeRecord, isPreambleNoise, distinctLines } = require(path.join(ROOT, 'dist/terminal.js'));
 
 const aos = loadAgentOS();
 const tm = new TerminalManager(aos, 'http://127.0.0.1:0', path.join(HOME, 'tmux.sock'));
@@ -114,7 +114,38 @@ const setPreload = (cfg) => aos.settings.setMemoryConfig({ ...(aos.settings.memo
   const qaFallback = await tm.memoryPreamble('qa', '');
   assert(!qaFallback.includes('Task: Run the nightly'), 'the salience fallback excludes episodes too');
 
-  console.log('\nunit: the two rules the preamble is built on\n');
+  // ── the SHARED pool must carry knowledge, not fleet statistics ──────────────────────────────────
+  console.log('\nthe shared pool seeds knowledge, not statistics\n');
+  aos.db.prepare('DELETE FROM memories').run();
+  // The live shape: the dreaming pass writes one tenant-scoped digest per pass and they accumulate — 51 of
+  // 72 shared memories on instapods, 48 of 85 on instawp. Shared memories reach EVERY agent, so a newcomer
+  // with no memories of its own got a preamble that was 6 of 8 slots of fleet statistics.
+  for (let i = 20; i < 26; i++) {
+    const r = await remember('dreamer', `Fleet self-learning (pass ${i}, since 2026-07-01): 768 sessions - 376 reported success, 150 never reported an outcome. Recurring topics: incus, instapods, github.`, 0.6, 'tenant');
+    aos.db.prepare("UPDATE memories SET tags = '[\"dreaming\",\"learned\"]' WHERE id = ?").run(r.id);
+  }
+  const shared = await remember('consolidator', 'Bunny edge-rule QA cannot be done on a *.instawp.site sandbox - it never traverses the edge, so every probe returns a misleading 200. Use the canary pull zone.', 0.7, 'tenant');
+  void shared;
+
+  // The probe deliberately uses wording the digests match BEST ("fleet", "sessions", "reported
+  // outcomes") — otherwise ranking alone buries them and the assertion passes without the filter doing
+  // anything. On the previous code this query returned them at the top.
+  const seeded = await tm.memoryPreamble('brand-new-agent', 'Review the recent fleet sessions and their reported outcomes across instapods.');
+  const nItems = seeded.split('\n').filter((l) => l.startsWith('- '));
+  assert(!nItems.some((l) => /Fleet self-learning/.test(l)), 'a dreaming digest is never seeded, even when it is the BEST match for the task', nItems.join(' | ').slice(0, 160));
+
+  const knowledge = await tm.memoryPreamble('brand-new-agent', 'Run the nightly Bunny edge-rule sweep.');
+  assert(/never traverses the edge/.test(knowledge), 'real shared knowledge still is');
+
+  // …and the salience fallback (no task text) obeys the same rule.
+  const nFallback = await tm.memoryPreamble('brand-new-agent', '');
+  assert(!nFallback.includes('Fleet self-learning'), 'the salience fallback excludes dreaming digests too');
+
+  console.log('\nunit: the rules the preamble is built on\n');
+  assert(isPreambleNoise({ tags: ['dreaming', 'learned'], content: 'Fleet self-learning (pass 31)...' }), 'a dreaming digest is preamble noise');
+  assert(isPreambleNoise({ tags: ['episode'], content: 'Task: x' }), '…so is an episode');
+  assert(!isPreambleNoise({ tags: ['lesson'], content: 'A durable fact about the system.' }), 'a lesson is not');
+
   assert(isEpisodeRecord({ tags: ['episode', 'session-end'], content: 'anything' }), 'an episode is identified by its tag');
   assert(isEpisodeRecord({ content: 'Task: do the thing\nOutcome: success' }), '…and by its Task: opening when tags are missing');
   assert(!isEpisodeRecord({ tags: ['lesson'], content: 'A durable fact about the system.' }), 'a lesson is not an episode');

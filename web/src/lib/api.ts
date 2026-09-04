@@ -39,17 +39,15 @@ export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 /** `claude --permission-mode` choices. Interactive lane only; the gate hook governs regardless. */
 export type PermissionMode = 'auto' | 'plan' | 'acceptEdits' | 'manual' | 'dontAsk' | 'bypassPermissions'
 export const PERMISSION_MODES: PermissionMode[] = ['auto', 'plan', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions']
-/** How much prose a session spends narrating itself. `terse` appends a compression brief to the system
- *  prompt — narration only; code, errors and every human-facing artifact stay in full. */
-export type Verbosity = 'normal' | 'terse'
-export const VERBOSITIES: Verbosity[] = ['normal', 'terse']
 /** Per-agent / workspace runtime tuning for claude-code sessions. Each field optional → inherit
- *  (permissionMode's floor is `auto`, verbosity's is `normal`). */
+ *  (permissionMode's floor is `auto`, outputStyle's is `Default`). */
 export interface RuntimeTuning {
   model?: string
   effort?: Effort
   permissionMode?: PermissionMode
-  verbosity?: Verbosity
+  /** Claude Code output style — a built-in name or a workspace library style. Sets the system prompt's
+   *  role/tone/response shape. claude-code only. */
+  outputStyle?: string
 }
 /** Wire form of a PARTIAL tuning edit (the agent-config route): an omitted key keeps the agent's current
  *  value, `''` clears the knob to inherit. Distinct from RuntimeTuning, whose `undefined` already means
@@ -58,17 +56,41 @@ export type RuntimeTuningPatch = {
   model?: string
   effort?: Effort | ''
   permissionMode?: PermissionMode | ''
-  verbosity?: Verbosity | ''
+  outputStyle?: string
 }
 
-/** How far the terse flag has spread — counts only. The predecessor (`VerbositySavings`) carried
- *  cost-per-turn deltas and was retired in v0.389.0: `output_tokens` is ~85% tool-call arguments, so
- *  it never measured the narration the brief acts on. Whether terse WORKS is answered by
- *  `npm run bench:verbosity` / `bench:verbosity-turns`, not by a query over live traffic. */
-export interface VerbosityAdoption {
+/** A Claude Code output style: a built-in, or a custom one in the workspace library. */
+export interface OutputStyleInfo {
+  name: string
+  description: string
+  /** Set on custom styles. FALSE means the style REPLACES Claude Code's software-engineering
+   *  instructions (the frontmatter default) — worth showing, because the CLI never says so. */
+  keepCodingInstructions?: boolean
+  bytes?: number
+  updatedAt?: number
+  /** Why this style won't take effect on this box (e.g. the CLI is too old). */
+  warning?: string
+}
+export interface OutputStylesResp {
+  builtin: OutputStyleInfo[]
+  custom: OutputStyleInfo[]
+  /** False when there is no data home, so custom styles can't be stored. */
+  enabled: boolean
+  error?: string
+}
+export interface OutputStyleDetail extends OutputStyleInfo {
+  content: string
+  error?: string
+}
+
+/** Which output styles the fleet is running — counts only. Two ancestors of this reported COST
+ *  (`VerbositySavings`, retired v0.389.0, and the terse adoption panel): `output_tokens` is ~85%
+ *  tool-call arguments, so neither ever measured the narration a style acts on. Whether a style works
+ *  is answered by `npm run bench:output-style`, never by a query over live traffic. */
+export interface OutputStyleAdoption {
   windowDays: number
-  sessions: { normal: number; terse: number; unstamped: number }
-  byAgent: Array<{ agent: string; normal: number; terse: number }>
+  sessions: { byStyle: Array<{ style: string; count: number }>; unstamped: number }
+  byAgent: Array<{ agent: string; styles: Array<{ style: string; count: number }> }>
   error?: string
 }
 
@@ -91,6 +113,11 @@ export interface Concurrency {
   unattendedNoProgressMinutes: number
   /** Close an interactive session waiting this many hours on an unanswered question/approval (0 = off; default 72). */
   blockedMaxHours: number
+  /** Expire a take-over claim untouched for this many hours, so a claimed session stops being immortal (0 = off; default 72). */
+  claimedMaxHours: number
+  /** Hard AGE ceiling (hours) for a detached interactive session — the backstop the idle clocks cannot be,
+   *  since idleness resets on every tool call (0 = off; default 168). */
+  interactiveMaxHours: number
 }
 
 /** One credential set in the runtime rotation pool (never carries the api-key value, only its vault ref). */
@@ -213,8 +240,19 @@ export interface RequestMetricsSnapshot {
   routes: RouteStat[]
   /** Per-MCP-tool timings; empty until an agent session has called one since the last restart. */
   tools?: ToolStat[]
-  loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number }
+  loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number; stalls?: StallRecord[] }
   error?: string
+}
+
+/** One event-loop stall with the synchronous phase that was open across it — see request-metrics.ts. */
+export interface StallRecord {
+  at: number
+  ms: number
+  /** How long the blamed phase had already been open when the block began — a big number means it was
+   *  merely open across the stall (a long-poll), not the thing running. */
+  openMs?: number
+  /** `upkeep:auditRetention`, `automations:tick`, `spawn:git fetch`, … or `unattributed`. */
+  phase: string
 }
 
 export interface StateResp {
@@ -238,6 +276,12 @@ export interface StateResp {
 }
 /** What the sessions list shows in its money column — a workspace-wide viewing preference. */
 export type SessionMetrics = 'cost' | 'tokens' | 'both'
+/** How the box behaves when it notices it has fallen behind origin.
+ *  `off` — say nothing. `notify` — Inbox card + DM to the owner (the drift alarm; applies nothing).
+ *  `ask` — additionally raise an OWNER approval whose approval applies the update on the box. */
+export type UpdateWatchMode = 'off' | 'notify' | 'ask'
+export interface UpdateWatchConfig { mode: UpdateWatchMode; everyHours: number }
+
 /** Self-update status — the deploy is a git checkout, so this reflects "is the box behind origin?". */
 export interface UpdateStatus {
   current: string
@@ -248,6 +292,12 @@ export interface UpdateStatus {
   upstream: string
   /** Uncommitted changes on the box — an ff-only apply would fail, so the button is disabled. */
   dirty: boolean
+  /** The tracked files behind `dirty`, so the UI can name what is in the way. */
+  dirtyFiles?: string[]
+  /** The upstream commit an update would land on — the watcher's dedupe key. */
+  head?: string
+  /** The self-update watcher's config on this box (see UpdateWatchConfig). */
+  watch?: UpdateWatchConfig
   checkedAt: number
   /** Newest-first commit subjects that would land (a lightweight changelog preview). */
   log: string[]
@@ -314,6 +364,11 @@ export interface DepStatus {
 /** Native-dependency report for Settings → System (GET /api/deps). */
 export interface DepsReport {
   deps: DepStatus[]
+  /** The runtime-CLI watcher's config on this box (see UpdateWatchConfig). */
+  watch?: UpdateWatchConfig
+  /** The `claude` version this box's gate-hook tool routing was last signed off against — stamped by an
+   *  owner approving a runtime upgrade, or upgrading by hand. '' when nobody has yet. */
+  gateReviewedVersion?: string
   /** True when every required dep is present — sessions can run. */
   ok: boolean
   /** Missing deps a package manager could install (drives the "Install now" button). */
@@ -913,7 +968,7 @@ export interface AutoApproval {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed' | 'agent.update.proposed'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request' | 'connection.expired'
   sessionId: string
   agent: string
   title: string
@@ -1015,6 +1070,10 @@ export interface AgentUpdateProposal {
   fields: { description?: string; claudeMd?: string; category?: string; model?: string; effort?: string; icon?: string; examplePrompts?: string[] }
   rationale?: string
   preview?: string
+  /** The target's CLAUDE.md changed after this card was written, so its full replacement text would revert
+   *  that newer change. Set by the server per card — the reviewer's cue to reject it and let the proposer
+   *  redo the edit on the current text. Only ever true for a `claudeMd` proposal. */
+  stale?: boolean
   createdAt: number
 }
 export interface GoalUpdateProposal {
@@ -1149,6 +1208,18 @@ export interface MemoryHealth {
   ok: boolean
   backend: string
   detail?: string
+  /** Backend-reported vitals. Absent for a backend that has none (sqlite) — render what arrives. */
+  diagnostics?: MemoryDiagnostics
+}
+export interface MemoryDiagnostics {
+  latencyMs?: number
+  memoryCount?: number
+  vectorCount?: number
+  syncStatus?: string
+  services?: Record<string, string>
+  vectorDimensions?: { configured?: number; effective?: number; mismatch?: boolean }
+  enrichment?: Record<string, number | string>
+  version?: string
 }
 export type MemoryBackend = 'sqlite' | 'libsql' | 'automem'
 export interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
@@ -1280,9 +1351,11 @@ export interface SkillshResp { query: string; hits: SkillshHit[]; error?: string
 export interface SkillRequest { id: string; skill: string; source: string; agent: string; rationale?: string; createdAt: number }
 export interface SkillRequestsResp { requests: SkillRequest[]; error?: string }
 
-/** An agent's `secret_request` awaiting a human. `mode`: 'provide' (enter a new value) or 'access'
- *  (grant the agent an existing vault key — no value typed). No secret value is ever in play here. */
-export interface SecretRequest { id: string; key: string; agent: string; mode: 'provide' | 'access'; reasoning?: string; createdAt: number }
+/** An agent's `secret_request` awaiting a human. `mode`: 'provide' (enter a new value), 'access' (grant
+ *  the agent an existing vault key — no value typed) or 'rotate' (the agent holds the key but the value
+ *  is being rejected — enter a replacement, which overwrites every `locations` principal). No secret
+ *  value is ever in play here. */
+export interface SecretRequest { id: string; key: string; agent: string; mode: 'provide' | 'access' | 'rotate'; locations?: string[]; reasoning?: string; createdAt: number }
 export interface SecretRequestsResp { requests: SecretRequest[]; error?: string }
 
 /** An agent's `connection_request` awaiting a human. `scope` 'personal' (the run's own member completes
@@ -1411,6 +1484,9 @@ export interface SlackStatus {
   botUserId: string
   lastError?: string
   error?: string
+  /** The most recent thread the bot was tagged into and could not read. The person who tagged it is
+   *  warned in the thread; this is for the admin who can actually add the scope, who never sees it. */
+  threadScopeError?: { channel: string; scope: string; error: string; at: number }
 }
 
 /** Live Discord Gateway status — same shape as SlackStatus. */
@@ -1429,8 +1505,15 @@ export interface ComposioConnection {
   userId: string
   /** Distinguishing label for this connection (user alias, else Composio's auto handle). */
   name: string
+  /** The REAL third-party account behind it (email / login), resolved from Composio. '' = not yet known.
+   *  The entity says whose SHELF the app sits on; this says whose ACCOUNT it actually is. */
+  account?: string
   /** Mine only: the owner marked it available to the whole team (composio_shares). */
   shared?: boolean
+  /** Company only: this connection is really one person's account (composio_claims) — their display
+   *  name. No other run reaches it. The inverse of `shared`. */
+  claimedBy?: string
+  claimedByMember?: string
 }
 /** A teammate's connection they marked available to the team — borrowed, not owned. */
 export interface SharedConnection {
@@ -1438,6 +1521,8 @@ export interface SharedConnection {
   toolkit: string
   status: string
   name: string
+  /** The REAL third-party account behind it. '' = not yet resolved. */
+  account?: string
   /** The Composio entity it lives under = the sharing member's email. */
   ownerEmail: string
   ownerMemberId: string
@@ -1753,6 +1838,10 @@ export const api = {
   checkUpdate: (force = false) => call<UpdateStatus>('GET', '/api/update' + (force ? '?force=1' : '')),
   /** Owner-only: pull + rebuild + restart. Resolves with the step log; the process bounces after. */
   applyUpdate: () => call<UpdateApplyResult>('POST', '/api/update/apply'),
+  setRuntimeWatch: (body: Partial<UpdateWatchConfig>) => call<{ ok?: boolean; watch?: UpdateWatchConfig; error?: string }>('POST', '/api/runtime/watch', body),
+  runRuntimeWatch: () => call<{ action?: string; installed?: string; latest?: string; error?: string }>('POST', '/api/runtime/watch/run'),
+  setUpdateWatch: (body: Partial<UpdateWatchConfig>) => call<{ ok?: boolean; watch?: UpdateWatchConfig; error?: string }>('POST', '/api/update/watch', body),
+  runUpdateWatch: () => call<{ action?: string; behind?: number; latest?: string; error?: string }>('POST', '/api/update/watch/run'),
   /** Owner-only: plain restart, no pull/rebuild. The process bounces ~1.5s after the response. */
   restart: () => call<RestartResult>('POST', '/api/restart'),
   sessions: (archived?: boolean) => call<Session[]>('GET', '/api/sessions' + (archived ? '?archived=1' : '')),
@@ -1916,7 +2005,10 @@ export const api = {
   approveAutomationProposal: (id: string, runAs?: string) => call<{ ok: boolean; automation?: Automation; error?: string }>('POST', `/api/automations/proposals/${id}/approve`, runAs !== undefined ? { runAs } : {}),
   rejectAutomationProposal: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/automations/proposals/${id}/reject`),
   agentUpdateProposals: (target?: string) => call<{ proposals: AgentUpdateProposal[]; canApprove?: boolean; error?: string }>('GET', '/api/agents/proposals' + (target ? '?target=' + encodeURIComponent(target) : '')),
-  approveAgentUpdateProposal: (id: string) => call<{ ok: boolean; target?: string; rev?: number; error?: string }>('POST', `/api/agents/proposals/${id}/approve`),
+  // `staleBase`/`warning`: the target's CLAUDE.md had moved since this edit was proposed, so applying it
+  // replaced that newer text. Surface the warning — it is the only notice the reviewer gets that an earlier
+  // approval was just undone (rev is revertable from the agent's History).
+  approveAgentUpdateProposal: (id: string) => call<{ ok: boolean; target?: string; rev?: number; staleBase?: boolean; warning?: string; error?: string }>('POST', `/api/agents/proposals/${id}/approve`),
   rejectAgentUpdateProposal: (id: string, note?: string) => call<{ ok: boolean; error?: string }>('POST', `/api/agents/proposals/${id}/reject`, { note }),
   goalUpdateProposals: (goal?: string) => call<{ proposals: GoalUpdateProposal[]; canApprove?: boolean; error?: string }>('GET', '/api/goals/proposals' + (goal ? '?goal=' + encodeURIComponent(goal) : '')),
   approveGoalUpdateProposal: (id: string) => call<{ ok: boolean; goalId?: string; status?: GoalStatus; error?: string }>('POST', `/api/goals/proposals/${id}/approve`),
@@ -2049,14 +2141,20 @@ export const api = {
   agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
-  verbosityAdoption: (days = 30) => call<VerbosityAdoption>('GET', `/api/settings/verbosity-adoption?days=${days}`),
+  outputStyleAdoption: (days = 30) => call<OutputStyleAdoption>('GET', `/api/settings/output-style-adoption?days=${days}`),
+  outputStyles: () => call<OutputStylesResp>('GET', '/api/output-styles'),
+  outputStyle: (name: string) => call<OutputStyleDetail>('GET', `/api/output-styles/${encodeURIComponent(name)}`),
+  saveOutputStyle: (name: string, body: { content?: string; description?: string }) =>
+    call<OutputStyleDetail & { ok: boolean }>('PUT', `/api/output-styles/${encodeURIComponent(name)}`, body),
+  deleteOutputStyle: (name: string) =>
+    call<{ ok: boolean; orphaned: string[]; error?: string }>('DELETE', `/api/output-styles/${encodeURIComponent(name)}`),
   subagentDefault: () => call<{ mode: 'all' | 'none'; error?: string }>('GET', '/api/settings/subagent-default'),
   saveSubagentDefault: (mode: 'all' | 'none') => call<{ ok: boolean; mode?: 'all' | 'none'; error?: string }>('PUT', '/api/settings/subagent-default', { mode }),
   agentProposalTrust: () => call<{ trust: AgentProposalTrust; error?: string }>('GET', '/api/settings/agent-proposal-trust'),
   saveAgentProposalTrust: (patch: Partial<AgentProposalTrust>) => call<{ ok: boolean; trust?: AgentProposalTrust; error?: string }>('PUT', '/api/settings/agent-proposal-trust', patch),
   saveSessionMetrics: (value: SessionMetrics) => call<{ ok: boolean; sessionMetrics?: SessionMetrics; error?: string }>('PUT', '/api/settings/session-metrics', { value }),
   concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
-  saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number }>('PUT', '/api/settings/concurrency', body),
+  saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number; claimedMaxHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number; claimedMaxHours?: number }>('PUT', '/api/settings/concurrency', body),
   runtimeAccounts: () => call<RuntimeAccountsResp>('GET', '/api/runtime-accounts'),
   addRuntimeAccount: (body: { runtime: string; name: string; kind: RuntimeAccountKind; configDir?: string; apiKeyRef?: string; token?: string }) => call<{ ok: boolean; error?: string; account?: RuntimeAccount }>('POST', '/api/runtime-accounts', body),
   setRuntimeAccountEnabled: (runtime: string, name: string, enabled: boolean) => call<{ ok: boolean; error?: string }>('PATCH', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`, { enabled }),
@@ -2101,6 +2199,10 @@ export const api = {
   saveCompany: (companyMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/company', { companyMd }),
   saveReview: (reviewMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/review', { reviewMd }),
   connections: () => call<ConnectionsResp>('GET', '/api/connections'),
+  refreshConnections: () => call<{ ok?: boolean; resolved?: number; expired?: number; error?: string }>('POST', '/api/connections/refresh', {}),
+  claimConnection: (body: { id: string; claimed: boolean; memberId?: string }) =>
+    call<{ ok?: boolean; claimed?: boolean; member?: { id: string; name: string }; resolved?: string; error?: string }>('POST', '/api/connections/claim', body),
+  pruneConnections: () => call<{ ok?: boolean; removed?: string[]; kept?: number; error?: string }>('POST', '/api/connections/prune', {}),
   integrationsOverview: () => call<IntegrationsOverview>('GET', '/api/integrations/overview'),
   composioToolkits: () => call<{ toolkits: { slug: string; name: string }[]; error?: string }>('GET', '/api/composio/toolkits'),
   connectApp: (body: { toolkit: string; scope: 'company' | 'personal' }) =>

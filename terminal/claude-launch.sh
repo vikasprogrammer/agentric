@@ -125,26 +125,52 @@ STATUSLINE="$(dirname "$HOOK")/statusline.js"
 # while giving a false sense of containment. Real OS containment, where we want it, is the Linux
 # per-user uid-isolation path (src/edge/launcher.ts, AOS_UID_ISOLATION) — not this.
 #
-# We DO keep a small set of `permissions.deny` Read rules for crown-jewel paths. These govern the
-# BUILT-IN Read/Glob/Grep tools (which the gate hook deliberately defers to Claude's own permission
-# layer — they aren't world side effects). Bash reads are governed by the gate hook's intent check,
-# not by a filesystem wall. We can't blanket-deny $HOME for the Read tool — the agent folder lives
-# under it and a deny would block the agent reading its OWN files — so we deny only crown-jewel
-# paths that never overlap the agent folder.
-H="${HOME#/}"
+# Crown-jewel paths (ssh keys, the tenant DB, the connector bag) still have to be unreadable, but that
+# is enforced by the GATE HOOK, not by `permissions.deny` Read rules — see AOS_PROTECTED_PATHS below.
+# Bash reads are governed by the gate hook's intent check, not by a filesystem wall.
+#
+# WHY NOT `permissions.deny`, which is where this lived until v0.415.0: on claude-code 2.1.259 a single
+# `Read()` deny rule anywhere in the settings makes Claude escalate EVERY Bash command shaped
+# `cd <dir> && <command with a relative path>` to a **human-only** approval — "grep on 'internal/' after
+# a cd would search a directory that cannot be determined here, and a Read() deny rule is configured;
+# only you can approve running it anyway". It can't statically prove the relative target resolves
+# outside a denied path, so it fails closed. An absolute `cd` does not help; the relative *target* is
+# what trips it. That shape is most of what an agent types, and the dialog is upstream of us: verified
+# live on 2026-09-03 (session ses_d985eefa4b8c4165) that the gate hook had ALREADY returned
+# `permissionDecision:"allow"` for the exact command (`gate.attempt`/`gate.decision` at 12:28:22) and
+# Claude escalated anyway at 12:28:37 — i.e. `permissions.deny` outranks a hook allow, the same
+# precedence that keeps deny rules in force under --dangerously-skip-permissions. So the interactive
+# lane parked on a Yes/No a human had to answer, for an ordinary grep.
+#
+# Moving the same protection into the hook removes the trigger and is strictly better besides: a
+# blocked read now carries a model-visible reason instead of an opaque refusal, and it lands in the
+# audit trail, which a `permissions.deny` hit never did.
+H="$HOME"
+PROTECTED="$H/.ssh
+$H/.aws
+$H/.gnupg
+$H/.claude"
+DATA_HOME="$(cd "$AGENT_DIR/../.." 2>/dev/null && pwd)"
+if [ -n "$DATA_HOME" ]; then
+  # agent-os.db's WAL/SHM sidecars are separate files — name them, or a read of `agent-os.db-wal`
+  # walks straight past a rule that only covers the base file.
+  PROTECTED="$PROTECTED
+$DATA_HOME/connectors
+$DATA_HOME/control
+$DATA_HOME/tenants
+$DATA_HOME/agent-os.db
+$DATA_HOME/agent-os.db-wal
+$DATA_HOME/agent-os.db-shm"
+fi
+export AOS_PROTECTED_PATHS="$PROTECTED"
 # Deny the native AskUserQuestion tool: it renders a multiple-choice picker in the TUI and BLOCKS the
 # turn until someone presses Enter at the keyboard — but an Agentric run has no human at the terminal
 # (chat/automation/task/Slack runs are unattended; even an attached session interacts via the console).
 # So it hangs the run forever and never reaches the Inbox. Denied here, the agent asks via `ask_human`
 # (governed → Inbox card + DM, blocks for the answer) or in plain prose — both work everywhere. (deny
-# rules apply even under --dangerously-skip-permissions.)
-DENYS="\"AskUserQuestion\", \"Read(//$H/.ssh/**)\", \"Read(//$H/.aws/**)\", \"Read(//$H/.gnupg/**)\", \"Read(//$H/.claude/**)\""
-DATA_HOME="$(cd "$AGENT_DIR/../.." 2>/dev/null && pwd)"
-if [ -n "$DATA_HOME" ]; then
-  DH="${DATA_HOME#/}"
-  DENYS="$DENYS, \"Read(//$DH/connectors/**)\", \"Read(//$DH/control/**)\", \"Read(//$DH/tenants/**)\", \"Read(//$DH/agent-os.db*)\""
-fi
-DENY_LINE=", \"deny\": [ $DENYS ]"
+# rules apply even under --dangerously-skip-permissions.) This is a TOOL-name rule, not a `Read()` one,
+# so it does not trip the compound-command escalation described above.
+DENY_LINE=", \"deny\": [ \"AskUserQuestion\" ]"
 mkdir -p .claude
 # Write to a NON-auto-discovered filename and load it via the `--settings` FLAG (see COMMON_ARGS below).
 # Claude's workspace-TRUST gate ignores the permissions.allow entries of an AUTO-DISCOVERED
@@ -181,8 +207,34 @@ rm -f .claude/settings.json
 # box, an isolated config dir, or a rotated account dir. It is not a governance change — it suppresses the
 # interactive confirmation of a mode this lane already runs in, and every effect still passes the
 # PreToolUse gate hook, which decides authoritatively regardless of permission mode.
+# OUTPUT STYLE (RuntimeTuning.outputStyle → src/edge/output-styles.ts). Claude Code takes a style as the
+# `outputStyle` SETTING, not a CLI flag, so it rides the same --settings file as everything else here. A
+# built-in name (`Concise`, `Proactive`, …) needs no file; a CUSTOM one is a .md the server materialised
+# into .claude/output-styles/ before launch. Unset (or `Default`) emits no key at all, which leaves any
+# lower settings layer untouched. Belt-and-braces re-filter of the name: it is already validated at the
+# API edge against the installed styles, and this keeps a hand-set env var from breaking the JSON.
+# NOTE: an UNKNOWN style is silently ignored by claude (exit 0, runs as Default) — nothing here can warn.
+OUTPUT_STYLE_LINE=""
+if [ -n "${CLAUDE_OUTPUT_STYLE:-}" ]; then
+  SAFE_STYLE="${CLAUDE_OUTPUT_STYLE//[^A-Za-z0-9 _-]/}"
+  if [ -n "$SAFE_STYLE" ]; then
+    OUTPUT_STYLE_LINE="  \"outputStyle\": \"$SAFE_STYLE\","
+  fi
+fi
+# REMOTE CONTROL (claude.ai/code + the Claude mobile app driving a local session) is OFF for governed
+# runs. It only activates on an explicit `/remote-control` (`/rc`) — EXCEPT when auto-connect is on, and
+# auto-connect is a USER-level setting: the box owner flipping "Enable Remote Control for all sessions"
+# in their own ~/.claude/settings.json would silently register EVERY tenant's every interactive session
+# as a remote session on THEIR personal claude.ai account, mirroring each transcript to Anthropic servers
+# and handing a phone a prompt box into a governed agent — the same undeclared-input class as
+# `enabledPlugins` (see AOS_CLAUDE_CONFIG_ISOLATION). So we pin auto-connect off here; a --settings value
+# wins over user settings, and project/local `false` wins even over managed settings, so the safe
+# direction holds. NOT `disableRemoteControl` — that kills the feature outright, and a human who has
+# attached to a session in the browser terminal should still be able to type `/rc` deliberately.
 cat > .claude/aos-settings.json <<JSON
 {
+$OUTPUT_STYLE_LINE
+  "remoteControlAtStartup": false,
   "crossSessionInbound": "refuse",
   "isolatePeerMachines": true,
   "skipDangerousModePermissionPrompt": true,
@@ -191,7 +243,7 @@ cat > .claude/aos-settings.json <<JSON
   },
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
+      { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Glob|Grep|NotebookRead|mcp__.*", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
     ],
     "Notification": [
       { "hooks": [ { "type": "command", "command": "bash '$NOTIFY_HOOK'" } ] }
@@ -301,6 +353,38 @@ RUNTIME_ARGS=()
 # bash 3.2 (macOS default) errors on expanding an EMPTY array under `set -u`; the `[@]+` guard
 # expands to nothing when MCP_ARGS/SYS_ARGS are empty instead of tripping "unbound variable".
 COMMON_ARGS=(--settings .claude/aos-settings.json "${MCP_ARGS[@]+"${MCP_ARGS[@]}"}" "${SYS_ARGS[@]+"${SYS_ARGS[@]}"}" "${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"}")
+
+# RESUME pre-flight. A resurrection (attach.sh → this script with RESUME=1) never passes through the
+# server's launch path, so the credential check that guards a fresh spawn has never seen it: on a box whose
+# macOS login keychain is locked, claude comes up "Not logged in", burns a turn and ends at $0 — the exact
+# silent failure the launch pre-flight exists to stop. Ask the server, which owns the one implementation of
+# "is this credential readable", over the same loopback + session-secret channel as /api/ended.
+#
+# Fails OPEN on purpose: no AOS_URL, an unreachable server, a timeout or any unparseable answer proceeds
+# exactly as before. Only an explicit ok:false stops the launch, so this can never wedge a fleet.
+preflight_credentials() {
+  [ -n "${AOS_URL:-}" ] && [ -n "${SESSION:-}" ] || return 0
+  local body out msg
+  body=$(node -e 'console.log(JSON.stringify({session:process.argv[1],configDir:process.argv[2]||""}))' \
+    "$SESSION" "${CLAUDE_CONFIG_DIR:-}" 2>/dev/null) || return 0
+  out=$(curl -s -m 5 -X POST "$AOS_URL/api/credential-check" -H 'content-type: application/json' \
+    -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" -d "$body" 2>/dev/null) || return 0
+  msg=$(printf '%s' "$out" | node -e '
+    let s = "";
+    process.stdin.on("data", (d) => { s += d; });
+    process.stdin.on("end", () => {
+      try { const j = JSON.parse(s); if (j && j.ok === false) process.stdout.write(String(j.message || "credentials are not readable")); } catch {}
+    });' 2>/dev/null) || return 0
+  [ -n "$msg" ] || return 0
+  red "Not started — $msg"
+  dim "Fix the credential (Settings → Runtime → Runtime accounts), then reopen this session."
+  return 1
+}
+if [ "$RESUMED_FROM_ENV" = "1" ] && ! preflight_credentials; then
+  # Hold the pane open rather than exiting: ttyd re-dials the instant a pane dies, which would spin this
+  # same refusal in a loop. A shell lets the human read the reason and close the tab.
+  exec bash
+fi
 
 if [ "${RESIDENT:-}" = "1" ] || [ "${UNATTENDED:-}" = "1" ]; then
   # UNATTENDED lane — the single path for every run with no human at the keyboard: automation/cron/task

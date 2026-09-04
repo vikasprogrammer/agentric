@@ -89,6 +89,35 @@
  * Measured against the same week: 131 of 275 injects were `poke-done` into a finished run and stop
  * happening; the 21 stranded/blocked ones that also targeted a finished run still deliver, so this costs
  * no extra resumes.
+ *
+ * ## A sibling is a different CONVERSATION, not a cheaper caller (2026-09-03)
+ *
+ * Every fix above asked whether a destination was live and whether it was worth a claude. None asked who
+ * ends up READING the answer. Lane 2 was written on the premise that the message "carries the task id,
+ * title and the delegate's note, so it needs no transcript context" — true of the reading, false of the
+ * replying. The sibling is the same agent mid-work on something else, for someone else, and it answers
+ * into ITS audience: its `report` card goes to its own session owner, its `slack_reply` into its own
+ * thread. That is the user report *"in some cases it sends data back to the wrong caller"*.
+ *
+ * Measured on live instawp, 30 days: 369 of 1532 pokes took the sibling lane, and of the 251 that could
+ * be joined to their task, **64 (25%) landed in a run acting as a different member than the task owner**
+ * — one person's task body and result inside a run accountable to someone else. So lane 2 now asks two
+ * questions about the recipient before it will speak there ({@link WakeupQueue.acceptsSibling}): the
+ * run-as identity must match every pending row, and the session must have no outward thread/DM binding of
+ * its own. A rejected sibling is not a held wake-up — the batch simply falls through to the resume lane,
+ * which is the caller's own transcript and was always the right destination.
+ *
+ * And {@link WAKE_KIND_DONE} gives up the sibling lane entirely. The cheapness that justified it was
+ * "in-context"; in a sibling it is by definition out of context, so what is left is good news delivered
+ * to the wrong conversation. A completion reaches its OWN pane or it stands on the task.
+ *
+ * ## A drop must leave a mark (same day)
+ *
+ * `poke-done` at a cold caller is a decision, but from the board it is indistinguishable from a poke that
+ * got lost — which is exactly how it was reported. {@link WakeupQueue.dropDone} now writes one `status`
+ * line onto the task ("… was not woken — it had no live run, so the result stands here"). Not a card and
+ * not a DM: the owner already has the `task.notified` DM for the completion itself, and a second ping
+ * about the plumbing is the noise this lane exists to avoid.
  */
 import { newId } from '../id';
 import { AgentOS } from '../kernel';
@@ -194,8 +223,8 @@ export class WakeupQueue {
     // PANE), never the row's `status`: a session that called `report` still has the REPL we type into.
     const transcripts = new Set(pending.map((p) => p.transcript));
     const live = this.db
-      .prepare('SELECT id, tmux, claude_session_id AS cs FROM term_sessions WHERE agent = ? ORDER BY created_at DESC LIMIT 50')
-      .all<{ id: string; tmux: string; cs: string | null }>(agentId)
+      .prepare('SELECT id, tmux, claude_session_id AS cs, run_as AS runAs FROM term_sessions WHERE agent = ? ORDER BY created_at DESC LIMIT 50')
+      .all<{ id: string; tmux: string; cs: string | null; runAs: string | null }>(agentId)
       .filter((r) => this.tm.reachable(r.id));
     // A run that has REPORTED is finished — it said so. Its pane is still reachable (that is the whole
     // point of the attachable lane), which made it look like a free delivery target, and 55% of injects
@@ -218,7 +247,12 @@ export class WakeupQueue {
     const pool = live.filter((r) => !finished.has(r.id));
     if (!doneOnly) pool.push(...live.filter((r) => finished.has(r.id)));
     const own = pool.find((r) => r.cs && transcripts.has(r.cs));
-    const dest = own ?? pool[0];
+    // The SIBLING lane is not the caller — it is the same agent in a different conversation, and that
+    // difference is the whole bug (see "A sibling is a different conversation" in the module header). It
+    // is offered a wake-up only when there is something for it to DO (never good news alone) and only
+    // when speaking there cannot put one person's work in front of another: same run-as identity, and no
+    // outward thread/DM binding of its own to answer into.
+    const dest = own ?? (doneOnly ? undefined : pool.find((r) => this.acceptsSibling(r, pending)));
     if (dest) {
       const via = own ? 'inject' : 'inject-sibling';
       const injected = this.tm.injectToSession(dest.id, message, true, principal);
@@ -234,13 +268,13 @@ export class WakeupQueue {
       if (!own) return { ok: false, reason: 'sibling session did not accept the wake-up — queued for retry', queued: true };
       // …unless a resume was never on the table: killing a wedged run only to drop the news would cost
       // the run and deliver nothing. Leave it alone and settle.
-      if (doneOnly) return this.dropDone(agentId, pending);
+      if (doneOnly) return this.dropDone(agentId, pending, 'done-wedged-caller');
       this.tm.stopSession(dest.id, 'system');
     }
 
-    // Lane 3 — nothing of this agent is live. Resume the transcript in a fresh `poke:` run. One session
-    // for ALL pending wake-ups: they were coalesced above, so N completions cost one claude, not N.
-    if (doneOnly) return this.dropDone(agentId, pending);
+    // Lane 3 — nothing this batch may speak into. Resume the transcript in a fresh `poke:` run. One
+    // session for ALL pending wake-ups: they were coalesced above, so N completions cost one claude, not N.
+    if (doneOnly) return this.dropDone(agentId, pending, live.length ? 'done-no-own-pane' : 'done-cold-caller');
     if (opts.budget !== undefined && opts.budget <= 0) {
       this.bump(pending);
       return { ok: false, reason: 'at the concurrency cap — queued for the next tick', queued: true };
@@ -309,8 +343,19 @@ export class WakeupQueue {
    * card. (Expiry means "we could not reach the caller and someone should know"; this means "there was
    * nothing here worth reaching it for".) Audited so the count is visible next to the pokes that did fire.
    */
-  private dropDone(agentId: string, rows: Row[]): WakeupDelivery {
+  private dropDone(agentId: string, rows: Row[], reason: string = 'done-cold-caller'): WakeupDelivery {
     this.settle(rows, 'dropped', 'none', null);
+    // Leave the trace on the TASK. A drop is a decision, but from the board it is indistinguishable from
+    // a poke that got lost — which is how this lane was read as a bug for weeks. One `status` line, no
+    // card and no DM: the owner already has the `task.notified` DM for the completion itself, and a
+    // second ping about the plumbing is the noise this whole lane exists to avoid.
+    for (const r of rows) {
+      try {
+        if (this.os.tasks.get(r.source)) this.os.tasks.markWakeDropped(r.source, agentId);
+      } catch {
+        // the audit event below is the record; the task line is the courtesy
+      }
+    }
     this.os.audit.append({
       ts: Date.now(),
       runId: '-',
@@ -321,11 +366,47 @@ export class WakeupQueue {
         caller: agentId,
         source: rows[rows.length - 1].source,
         sources: rows.length > 1 ? rows.map((r) => r.source) : undefined,
-        reason: 'done-cold-caller',
+        reason,
         kind: WAKE_KIND_DONE,
       },
     });
     return { ok: false, reason: 'caller is cold and the hand-off is done — the result stands in the task', queued: false };
+  }
+
+  /**
+   * May this batch be typed into a live session that is NOT its own transcript?
+   *
+   * Two conditions, both about WHO ends up reading the answer rather than about liveness:
+   *
+   *  - **same run-as.** A sibling run acts as a different member often enough to matter (64 of 251
+   *    sibling injects on live instawp over 30 days), and injecting there puts one person's task body,
+   *    title and result inside a run accountable to somebody else.
+   *  - **no outward binding.** A session bound to a Slack/Discord/Telegram/ClickUp thread or a DM has a
+   *    conversation it answers into. Anything typed there is liable to be replied to THAT audience — the
+   *    "sent the result back to the wrong caller" report. Its own transcript may be chat-bound (that is
+   *    the caller's own conversation); a sibling's may not.
+   *
+   * A mixed batch is held to the strictest reading: one identity across every pending row, or no sibling.
+   */
+  private acceptsSibling(dest: { id: string; runAs: string | null }, pending: Row[]): boolean {
+    const owners = new Set(pending.map((p) => p.run_as ?? ''));
+    if (owners.size !== 1) return false;
+    if ((dest.runAs ?? '') !== [...owners][0]) return false;
+    return !this.boundToConversation(dest.id);
+  }
+
+  /** Does this session answer into an outward thread or DM of its own? One query over every binding table
+   *  the chat lanes write (`terminal.ts` binds each on ingress; `session_dms` on an outbound DM). */
+  private boundToConversation(sessionId: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS x FROM slack_threads WHERE session_id = ?
+                UNION ALL SELECT 1 FROM discord_threads WHERE session_id = ?
+                UNION ALL SELECT 1 FROM telegram_threads WHERE session_id = ?
+                UNION ALL SELECT 1 FROM clickup_threads WHERE session_id = ?
+                UNION ALL SELECT 1 FROM session_dms WHERE session_id = ?
+                LIMIT 1`)
+      .get<{ x: number }>(sessionId, sessionId, sessionId, sessionId, sessionId);
+    return !!row;
   }
 
   private settle(rows: Row[], status: 'delivered' | 'expired' | 'dropped', via: string, sessionId: string | null): void {

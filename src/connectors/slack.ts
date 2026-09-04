@@ -199,6 +199,17 @@ export async function lookupBotUserId(botToken: string): Promise<string> {
   }
 }
 
+/** A file attached to an inbound Slack message, normalized for download + hand-off to an agent. */
+export interface SlackFileRef {
+  id: string;
+  name: string;
+  mimetype: string;
+  /** Bytes, as Slack reports them (0 when unknown) — the cheap pre-check before we spend a download. */
+  size: number;
+  /** The authenticated download URL (`url_private_download`); needs the bot token in an Authorization header. */
+  url: string;
+}
+
 /** A normalized inbound Slack message event, parsed from a Socket-Mode `events_api` envelope. */
 export interface SlackMessageEvent {
   /** The Slack event type — `app_mention` (bot @-mentioned in a channel) or `message` (DM/IM). */
@@ -215,6 +226,8 @@ export interface SlackMessageEvent {
   threadTs: string;
   /** Whether this looks like the bot's own message / a bot message (caller should skip these). */
   fromBot: boolean;
+  /** Files attached to the message (images, PDFs, logs). Empty when there are none. */
+  files: SlackFileRef[];
   /** The full inner event object (capped when injected into a task template). */
   raw: any;
 }
@@ -230,7 +243,11 @@ export function parseSlackEvent(envelope: any): SlackMessageEvent | null {
   const eventType = String(ev.type || '');
   if (eventType !== 'app_mention' && eventType !== 'message') return null;
   // Slack message-changed/deleted/joined carry a `subtype`; we only route plain user messages + mentions.
-  if (eventType === 'message' && ev.subtype) return null;
+  // `file_share` is the exception that used to cost us every screenshot: a message a human sends WITH an
+  // attachment carries that subtype, so blanket-dropping subtyped messages silently swallowed the whole
+  // event — text and all — and the sender saw the bot ignore them. It is an ordinary user message that
+  // happens to have files, so it routes like one.
+  if (eventType === 'message' && ev.subtype && ev.subtype !== 'file_share') return null;
   const fromBot = !!ev.bot_id || ev.subtype === 'bot_message' || !ev.user;
   return {
     eventType,
@@ -240,6 +257,148 @@ export function parseSlackEvent(envelope: any): SlackMessageEvent | null {
     text: String(ev.text || ''),
     threadTs: String(ev.thread_ts || ev.ts || ''),
     fromBot,
+    files: parseSlackFiles(ev.files),
     raw: ev,
   };
+}
+
+/** Normalize the `files` array Slack attaches to a message (`file_share` / a mention with an upload).
+ *  Entries without a private download URL (a deleted or externally-hosted file) are skipped. */
+export function parseSlackFiles(files: unknown): SlackFileRef[] {
+  if (!Array.isArray(files)) return [];
+  const out: SlackFileRef[] = [];
+  for (const f of files) {
+    if (!f || typeof f !== 'object') continue;
+    const rec = f as Record<string, unknown>;
+    const url = String(rec.url_private_download || rec.url_private || '');
+    if (!url) continue;
+    out.push({
+      id: String(rec.id || ''),
+      name: String(rec.name || rec.title || 'file'),
+      mimetype: String(rec.mimetype || ''),
+      size: Number(rec.size) || 0,
+      url,
+    });
+  }
+  return out;
+}
+
+/**
+ * Download a Slack-hosted file as the bot. `url_private_download` is NOT public — it answers with the
+ * login page (HTML, status 200) unless the bot token rides in an Authorization header, which is the
+ * classic way this silently "works" and yields a 40KB HTML file instead of the screenshot. Needs the
+ * `files:read` scope. Bounded by `maxBytes`; returns `{ error }` (never throws).
+ */
+export async function downloadSlackFile(
+  botToken: string,
+  url: string,
+  maxBytes: number,
+): Promise<{ data: Buffer; contentType: string } | { error: string }> {
+  if (!botToken) return { error: 'no Slack bot token' };
+  if (!/^https:\/\/[\w.-]*\bslack\.com\//.test(url)) return { error: 'refusing to download a non-Slack URL' };
+  try {
+    const res = await fetch(url, { headers: { authorization: `Bearer ${botToken}` }, redirect: 'follow' });
+    if (!res.ok) return { error: `download failed (${res.status})` };
+    const contentType = String(res.headers.get('content-type') || '');
+    // Slack answers an unauthenticated/unscoped fetch with its sign-in page rather than a 401.
+    if (/^text\/html/i.test(contentType)) return { error: 'download returned Slack HTML — the app likely lacks the `files:read` scope' };
+    const declared = Number(res.headers.get('content-length')) || 0;
+    if (declared > maxBytes) return { error: `file is ${declared} bytes, over the ${maxBytes}-byte limit` };
+    const data = Buffer.from(await res.arrayBuffer());
+    if (data.length > maxBytes) return { error: `file is ${data.length} bytes, over the ${maxBytes}-byte limit` };
+    return { data, contentType };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'download failed' };
+  }
+}
+
+/** The history scope a conversation type needs. Slack splits them by conversation kind, which is the
+ *  whole trap: an app with `channels:history` works in every public channel and fails in every private
+ *  one, so the feature looks installed until the first private thread. */
+export function historyScopeFor(channelType: string): string {
+  if (channelType === 'group') return 'groups:history';
+  if (channelType === 'mpim') return 'mpim:history';
+  if (channelType === 'im') return 'im:history';
+  return 'channels:history';
+}
+
+/**
+ * The line the bot posts IN the thread when it could not read that thread — deterministic, written by
+ * the server, never by the model.
+ *
+ * The agent is told the same thing in its prompt, but a prompt is a request: the model may relay it,
+ * paraphrase it into something wrong, or answer as though nothing were missing. The one case that
+ * matters is exactly the case where the agent has the least context to notice, so the warning cannot
+ * depend on the agent noticing. Returns '' when there is nothing to warn about.
+ */
+export function threadReadWarning(channelType: string, error?: string): string {
+  if (!error) return '';
+  const scope = historyScopeFor(channelType);
+  if (error === 'missing_scope' || error === 'not_allowed_token_type') {
+    return `⚠️ I can only see the message that tagged me — I can't read this thread's earlier messages. ` +
+      `The Agentric Slack app is missing the \`${scope}\` scope for this conversation. ` +
+      `An admin adds it in the Slack app config (OAuth & Permissions → Bot Token Scopes) and reinstalls the app.`;
+  }
+  if (error === 'not_in_channel' || error === 'channel_not_found') {
+    return `⚠️ I can only see the message that tagged me — I can't read this thread's earlier messages ` +
+      `(Slack: \`${error}\`). Invite the bot to this channel so it can read the conversation it is asked about.`;
+  }
+  return `⚠️ I can only see the message that tagged me — reading this thread failed (Slack: \`${error}\`).`;
+}
+
+/** One earlier message in the thread a mention landed in, normalized for the prompt block. */
+export interface SlackThreadMessage {
+  /** Slack `ts` — also the message's identity, so the caller can drop the triggering message itself. */
+  ts: string;
+  /** Sender's Slack user id ('' for a bot/app post). */
+  user: string;
+  /** A display name when the payload carries one (bot posts do; human posts don't — the caller resolves). */
+  name: string;
+  text: string;
+  bot: boolean;
+}
+
+/**
+ * Read the messages already in a thread (`conversations.replies`).
+ *
+ * Why this exists: an @mention delivers ONLY the mention's own text. A human who tags the bot on the
+ * fifth message of a thread is, in their head, handing over a conversation — and the agent, seeing one
+ * line, either asks them to paste it all back or (worse) invents a reason it cannot see the rest. The
+ * bot is a member of the channel and already receives the event, so the history is one authenticated
+ * call away; we fetch it here and inject it into the prompt.
+ *
+ * Scope note: `channels:history` covers PUBLIC channels only. A private channel needs `groups:history`,
+ * a group DM `mpim:history`, a DM `im:history` — a Slack app created before those were in the bundled
+ * manifest answers `missing_scope`, which is surfaced verbatim so the operator is told to add the scope
+ * and reinstall rather than the agent guessing.
+ *
+ * `oldest`-less and newest-last: Slack returns the thread in ascending order, so we take the LAST
+ * `limit` entries (the parent plus recent turns matter; the middle of a 300-reply thread does not).
+ */
+export async function fetchThreadMessages(
+  botToken: string,
+  channel: string,
+  threadTs: string,
+  limit: number,
+): Promise<{ messages: SlackThreadMessage[] } | { error: string }> {
+  if (!botToken || !channel || !threadTs) return { error: 'missing token, channel or thread' };
+  try {
+    const url =
+      `${SLACK_API}/conversations.replies?channel=${encodeURIComponent(channel)}` +
+      `&ts=${encodeURIComponent(threadTs)}&limit=${Math.max(1, Math.min(200, limit))}`;
+    const res = await fetch(url, { headers: { authorization: `Bearer ${botToken}` } });
+    const j: any = await res.json().catch(() => ({}));
+    if (!j?.ok) return { error: String(j?.error || `conversations.replies failed (${res.status})`) };
+    const raw = Array.isArray(j.messages) ? j.messages : [];
+    const messages: SlackThreadMessage[] = raw.map((m: any) => ({
+      ts: String(m?.ts || ''),
+      user: String(m?.user || ''),
+      name: String(m?.bot_profile?.name || m?.username || ''),
+      text: String(m?.text || ''),
+      bot: !!m?.bot_id || m?.subtype === 'bot_message' || !m?.user,
+    }));
+    return { messages: messages.slice(-limit) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'conversations.replies failed' };
+  }
 }

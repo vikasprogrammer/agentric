@@ -61,7 +61,7 @@ are reconciled by splitting *what is checked* from *what is judged*:
   never parses it, never scores it. The model decides *whether* the bar was met; the server only requires
   *that* a judgment was recorded with a resolvable artifact behind it.
 
-This is the lesson `verbosity` already taught (`src/edge/verbosity.ts`): a prompt instruction with no
+This is the lesson `verbosity` already taught (now `src/edge/output-styles.ts`, which records the autopsy): a prompt instruction with no
 enforced counterpart is unfalsifiable and rots. It is also the lesson from the opposite direction — a
 fully declarative process engine becomes a programming language nobody in marketing can edit.
 

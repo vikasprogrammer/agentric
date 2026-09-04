@@ -25,6 +25,8 @@ import { createMemoryProvider } from './memory';
 import { CapabilityRegistry } from './capabilities/registry';
 import { ConnectorStore } from './connectors/connectors';
 import { ComposioShareStore } from './connectors/composio-shares';
+import { ComposioIdentityStore } from './connectors/composio-identity';
+import { ComposioClaimStore } from './connectors/composio-claims';
 import { HostStore } from './hosts/hosts';
 import { AutoApprovalStore } from './state/auto-approvals';
 import { Gateway } from './gateway/gateway';
@@ -34,6 +36,7 @@ import { SqliteApprovals } from './governance/approvals';
 import { TeamStore } from './governance/team';
 import { SettingsStore } from './governance/settings';
 import { SkillsStore } from './governance/skills';
+import { OutputStylesStore } from './edge/output-styles';
 import { Db, openDb } from './state/db';
 import { ArtifactStore } from './state/artifacts';
 import { AppStore } from './state/apps';
@@ -87,6 +90,9 @@ export class AgentOS {
   readonly settings: SettingsStore;
   /** Global skills library — Claude Code Skills materialised into every claude-code agent at launch. */
   readonly skills: SkillsStore;
+  /** Workspace output-style library — custom Claude Code output styles, materialised into every
+   *  claude-code agent at launch. Also the allowlist an `outputStyle` tuning value is validated against. */
+  readonly outputStyles: OutputStylesStore;
   /** The deliverables gallery — artifacts agents publish (PDF/Markdown/image), snapshotted + governed. */
   readonly artifacts: ArtifactStore;
   /** Hosted apps — the on-disk registry of small server-side apps humans + agents build. See apps-plan.md. */
@@ -122,6 +128,10 @@ export class AgentOS {
   readonly connectors: ConnectorStore;
   /** Composio connections their owner marked available to the whole team (composio-shares.ts). */
   readonly composioShares: ComposioShareStore;
+  /** What each Composio connection REALLY is — the account behind the entity (composio-identity.ts). */
+  readonly composioIdentities: ComposioIdentityStore;
+  /** Company connections claimed back as one member's own (composio-claims.ts) — sharing, inverted. */
+  readonly composioClaims: ComposioClaimStore;
   /** Host connections — governed reachable destinations (SSH / internal HTTP / DB). See host-connections-plan.md. */
   readonly hosts: HostStore;
   /** "Always approve THIS action" list, keyed on the decision-brief signature (auto-approvals.ts). */
@@ -147,12 +157,15 @@ export class AgentOS {
     this.secrets = new SqliteSecretsVault(this.db, resolveMasterKey(opts.paths?.home), new EnvSecretsVault());
     this.connectors = new ConnectorStore(this.db);
     this.composioShares = new ComposioShareStore(this.db);
+    this.composioIdentities = new ComposioIdentityStore(this.db);
+    this.composioClaims = new ComposioClaimStore(this.db);
     this.hosts = new HostStore(this.db);
     this.autoApprovals = new AutoApprovalStore(this.db);
     this.approvals = new SqliteApprovals(this.db);
     this.team = new TeamStore(this.db);
     this.settings = new SettingsStore(this.db);
     this.skills = new SkillsStore(opts.paths?.skills, this.db, opts.paths?.bundledSkills);
+    this.outputStyles = new OutputStylesStore(opts.paths?.outputStyles);
     this.artifacts = new ArtifactStore(this.db, opts.paths?.artifacts);
     // Apps are on-disk folders (like agents), not DB rows — the store just needs the apps dir.
     this.apps = new AppStore(opts.paths?.apps);
@@ -234,9 +247,15 @@ export class AgentOS {
     const opts = this.settings.memoryConfig()?.maintenance;
     if (!this.memory.maintain || !opts) return { pruned: 0, merged: 0 };
     const res = await this.memory.maintain(opts);
-    if (res.pruned || res.merged) {
-      this.audit.append({ ts: Date.now(), runId: '-', tenant: this.tenant, principal: by, type: 'memory.maintained', data: { ...res } });
-    }
+    // Audit EVERY pass, including the ones that changed nothing. This used to fire only when something
+    // was deleted, which made "upkeep is running and finding nothing" indistinguishable from "upkeep is
+    // not running at all" — a live instawp check read five days of silence as a broken scheduler when the
+    // store was simply clean. A pass is ~1 event/day/tenant against ~32k gate events/week, so the cost of
+    // saying so is nil, and `removed` is dropped from the payload (the ids are only useful to the caller
+    // replaying them onto a backend, and a long list bloats every row).
+    const { removed, ...summary } = res;
+    void removed;
+    this.audit.append({ ts: Date.now(), runId: '-', tenant: this.tenant, principal: by, type: 'memory.maintained', data: { ...summary, noop: !res.pruned && !res.merged } });
     return res;
   }
 

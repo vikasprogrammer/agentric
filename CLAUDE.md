@@ -188,16 +188,28 @@ Key modules:
   default) and exports `CLAUDE_MODEL`/`CLAUDE_EFFORT`/`CLAUDE_PERMISSION_MODE`, which `claude-launch.sh`
   maps onto `--model`/`--effort`/`--permission-mode` (model+effort both lanes; permission-mode interactive
   only — headless keeps `--dangerously-skip-permissions`; unset → `auto`, which only tunes the fallback for
-  tools the gate hook doesn't govern, never the gate itself). A fourth knob, **`verbosity`**
-  (`normal` | `terse`, same precedence chain), is NOT a CLI flag — `terse` appends `TERSE_OUTPUT_BRIEF`
-  (`src/edge/verbosity.ts`) to the system prompt via `buildCompanyMd`, so it reaches both runtimes. It
-  compresses the agent's NARRATION only; code/errors and every durable artifact (`report`, `remember`,
-  `kb_write`, task notes, chat replies) are explicitly exempt, because terse prose there would degrade the
-  learning loop and the human-facing surface far from the flag that caused it. It's a prompt instruction,
-  not an enforced transform, so it ships with its own falsifier: the resolved level is stamped onto
-  `term_sessions.verbosity` and `verbositySavings()` compares terse vs normal **per turn, per agent**
-  (Settings → Runtime defaults). Never quote a saving from the fleet-wide pair — it mixes different work.
-  It also resolves the agent's opt-in
+  tools the gate hook doesn't govern, never the gate itself). A fourth knob, **`outputStyle`**
+  (same precedence chain, `src/edge/output-styles.ts`), is NOT a CLI flag: the launcher writes it into
+  the session's `--settings` JSON as `outputStyle`, which is how Claude Code takes a style — the system
+  prompt PROPER, plus its own per-turn style reminder. Built-ins (`Default`, `Concise`, `Proactive`,
+  `Explanatory`, `Learning`) need no file; CUSTOM styles live in the workspace library
+  (`<home>/output-styles/<Name>.md`) and are materialised into each agent's `.claude/output-styles/` at
+  launch like skills. **claude-code only** — probe the `outputStyle` capability, never compare runtime ids.
+  Four traps, all verified: an UNKNOWN style name is silently ignored (exit 0, runs Default), so
+  `sanitizeRuntimeTuning` validating against `OutputStylesStore.names()` is the only place a typo is
+  caught; a custom style DROPS Claude Code's built-in software-engineering instructions unless its
+  frontmatter says `keep-coding-instructions: true`; subagents don't inherit a style; and a plugin with
+  `force-for-plugin` overrides the user's choice outright (one more reason for
+  `AOS_CLAUDE_CONFIG_ISOLATION=1`). The resolved style is stamped onto `term_sessions.output_style`, and
+  the console reports **adoption only** — `outputStyleAdoption()`, a count of who ran what. It never
+  reports a saving, deliberately: this knob REPLACED the old `verbosity`/`TERSE_OUTPUT_BRIEF` flag
+  (v0.406.0), whose two ancestors both shipped cost figures that could not mean what they said
+  (`output_tokens` is ~85% tool-call arguments, so narration is ~15% of it and the ceiling on any style's
+  effect on spend is ~1%). Effect belongs to `npm run bench:output-style` — paired, controlled, with a
+  bootstrap CI that refuses a verdict inside the noise — and to its **completeness** column ahead of its
+  token column. The full autopsy is in the header of `src/edge/output-styles.ts`; read it before
+  proposing a prompt-wording lever again.
+  The launcher also resolves the agent's opt-in
   **`shellSecrets`** (manifest list of vault keys, e.g. `["GH_TOKEN"]`) via `injectShellSecrets` and
   exports each as a shell env var (so a plain CLI like `gh` authenticates); connectors still get theirs
   via the MCP bag. Agent-scoped principal (widening to `*`), audited `shell.secret.injected`/`unresolved`.
@@ -266,6 +278,22 @@ Key modules:
   there. Bot-posted messages are still dropped (`ev.fromBot`) — an integration that POSTS reports belongs
   on a webhook automation. Slack filters are validated at save time (the predicate layer fails open at
   runtime, so that's the only place a typo is caught). Pinned by `scripts/slack-content-filter-test.cjs`.
+  **Three ingress traps Slack imposes, all fixed in v0.416.0 and all of which read to the human as the
+  bot ignoring them:** (1) a message with a file carries `subtype: "file_share"`, so the rule that drops
+  subtyped messages (edits/joins/deletes) used to swallow the WHOLE message, text included — `file_share`
+  is now routed as the ordinary message it is, and its files are DOWNLOADED with the bot token (Slack
+  hands out an authenticated URL, never bytes; needs the **`files:read`** scope) into the agent's own
+  `.inbox/`, the same folder the console's paste-a-file path uses. (2) `slack_threads` is keyed by
+  session id — one reply target per run — so a thread the BOT opened (`slack_send` posting a cron report)
+  had no row and a reply under it hit the unaddressed-chatter drop; the thread-keyed
+  **`slack_bot_threads`** index now records every thread the bot has spoken in, and *having spoken there*
+  is the targeting signal — an untagged reply is acted on and stays with the agent that owns the thread
+  (`fallbackAgent`), while a thread we never posted in is still ignored in silence. (3) Slack intercepts
+  a leading `/` as a slash command, so `/agent-name …` typed in a DM never leaves the client:
+  `normalizeChatCommand` now also accepts `@name …`, `name: …` and a bare `name …` (guarded on the first
+  token being a real agent id), and one declared **`/agentric <agent> <request>`** command arrives over
+  the SAME socket (`slash_commands` envelope) — its ack opens the thread the run is then bound to. Pinned
+  by `scripts/slack-ingress-test.cjs`. Discord's analogues are below.
   The socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
   (no `ws` dep). Slack here is INGRESS-native; Composio remains the webhook ingress lane.
 - `src/edge/discord-socket.ts` + `src/connectors/discord.ts` — **native Discord via the Gateway**: a
@@ -280,6 +308,28 @@ Key modules:
   thread-create failure → channel fallback). The `discord_reply` MCP tool is bound to `discord_threads`;
   `DISCORD_REPLY=1` exposes it. `discord.connected` records the READY guild count. Reconnect backoff + zombie
   detection mirror SlackSocket.
+  **The three Slack ingress traps have Discord analogues, fixed the SAME way but by different keys
+  (v0.417.0)** — attachments: Discord never drops the message (no `file_share` subtype) but
+  `attachments[]` was payload-only, so files are now downloaded into the agent's `.inbox/` with **no**
+  Authorization header (a signed CDN URL; the bot token has no business at that host) and at dispatch
+  time (the URL EXPIRES). Untagged replies: `discord_threads` is keyed by CHANNEL, which cannot cover a
+  proactive `discord_send` (no thread, and binding the whole channel would drag every unrelated message
+  into the run) — so **`discord_bot_messages`** records every message an agent posts and Discord's own
+  `message_reference.message_id` is the targeting signal. Slash interception: doesn't exist on Discord (an
+  unknown `/command` sends as plain text), and the shared `normalizeChatCommand` aliases already apply.
+  The chat ack now NAMES the agent that picked the message up (`chatAck`, shared by Slack/Discord/Telegram
+  — an anonymous "On it" leaves the sender unable to tell who answered when the auto-router chose). Pinned
+  by `scripts/discord-ingress-test.cjs`; full detail in `docs/connectors/slack.md` + `docs/connectors/discord.md`.
+  **ClickUp + Telegram close the same attachment family (v0.419.0), each by a different mechanism** —
+  ClickUp: `comment_text` is FLATTENED, so a screenshot leaves no trace in it; the files live only in the
+  structured `comment` blocks, behind a presigned `*.clickup.com` URL taking NO auth header and EXPIRING.
+  Telegram: worst of the four — `parseTelegramUpdate` returned null for any message with no text, so an
+  UNCAPTIONED photo was dropped whole; `photo` is an array smallest-first (take the LAST), a `file_id` is
+  opaque so each file costs a `getFile`, and ⚠ the resulting download URL EMBEDS THE BOT TOKEN in its path
+  (never log/audit/show it). ClickUp deliberately does NOT get the untagged-reply fix: a task's comment
+  section is a shared human workspace, not a thread the bot owns, so the `/command` gate stays the
+  addressing rule — and its ack names the agent only when the ROUTER chose it (a steered `/support-ops …`
+  keeps the quiet 👀 reaction). Pinned by `scripts/chat-attachments-test.cjs`.
   Per-automation **execution mode**: `headless` (default) and `interactive` now run the SAME way — an
   attachable interactive claude TUI (NOT `claude -p`) with `--dangerously-skip-permissions` (the PreToolUse
   gate hook still runs + blocks risky Bash under that flag). The difference is teardown: an `headless`
@@ -708,6 +758,30 @@ drift and prints the one-line fix.
   `terminal/claude-launch.sh` (`crossSessionInbound: "refuse"` + `isolatePeerMachines: true`) rather than
   by denying the tools, since the same `SendMessage` also serves subagents/agent teams inside one session.
   When claude-code updates, diff the tools reference against that routing table.
+- **A hosted tool router can hide every real action behind one tool name.** Composio's Tool Router
+  exposes exactly SIX meta-tools no matter how many apps are connected, and the real action rides at
+  `input.tools[].tool_slug` — so `args.tool` said `COMPOSIO_MULTI_EXECUTE_TOOL` and every plane keyed on
+  it (`normalize.ts`, the enricher's `emailSend`, `briefFor`) was blind. Two of the six are arbitrary
+  bash/Python on Composio's own sandbox, and the Python one can call `run_composio_tool(tool_slug=…)`
+  from inside a string. `src/capabilities/composio-envelope.ts` rewrites the envelope to the real effect
+  in `TerminalManager.gate` BEFORE `enrichArgs` — server-side, so it covers all three runtimes at once.
+  Treat this as the general shape: when a connector is a *router*, govern what it routes to, not its name.
+- **A Composio `user_id` is a SHELF, not an identity.** `service:<tenant>` vs an email says whose shelf an
+  app sits on, never which account is behind it — a COMPANY connection is routinely one teammate's
+  personal login (live: expresstech's company Google Sheets was a specific member's Google account, so
+  an agent "acting as the company" wrote into that person's Drive). The account is unreadable from the
+  connection record (every credential field returns the literal `REDACTED`) but IS disclosed by
+  `COMPOSIO_MANAGE_CONNECTIONS` as `current_user_info` — cached in `composio_identities` and named in
+  the console + every agent's prompt (`src/connectors/composio-identity.ts`). ⚠ Probing a toolkit with
+  no ACTIVE connection **creates one**, so always derive the probe list with `activeToolkits()`.
+- **Remote Control is pinned OFF for every governed session** (`remoteControlAtStartup: false` in
+  `terminal/claude-launch.sh`). It normally needs an explicit `/remote-control` (`/rc`), but auto-connect
+  is a **user-level** setting: the box owner flipping "Enable Remote Control for all sessions" would
+  register every tenant's every interactive session as a remote session on THEIR personal claude.ai
+  account — transcript mirrored to Anthropic servers, phone gets a prompt box into a governed agent.
+  Deliberately NOT `disableRemoteControl` (which kills the feature outright): a human attached in the
+  browser terminal can still type `/rc` on purpose. Same undeclared-input class as the `~/.claude` note
+  below.
 - **The box owner's `~/.claude` is an undeclared input to every agent.** A session runs as the same OS user
   as the human who owns the machine, so it loads their user-scope `settings.json` — `enabledPlugins` above
   all, which drags in a plugin's subagent types, skills, slash commands and **SessionStart prompt hooks**.

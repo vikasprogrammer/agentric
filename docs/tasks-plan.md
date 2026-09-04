@@ -485,6 +485,45 @@ call and it may have left work behind.
 
 Pinned by `scripts/wakeup-queue-test.cjs` (cases 8-9) and `scripts/stranded-human-stop-test.cjs`.
 
+### 3.9 WHO reads it — the sibling lane is a different conversation
+
+§3.6 asked which lane, §3.8 asked what a lane costs. Neither asked **who ends up reading the answer.**
+
+Lane 2 (`inject-sibling`) was written on the premise that a wake-up "carries the task id, title and the
+delegate's note, so it needs no transcript context". That is true of the *reading* and false of the
+*replying*: the sibling is the same agent mid-work on something else, usually for someone else, and it
+answers into ITS audience — its `report` card goes to its own session owner, its `slack_reply` into its own
+thread. That is the user report *"in some cases it sends data back to the wrong caller"*.
+
+Measured on instawp, 30 days: **369 of 1532 pokes took the sibling lane**, and of the 251 that could be
+joined to their task, **64 (25%) landed in a run acting as a different member than the task owner** — one
+person's task body and result inside a run accountable to someone else.
+
+So lane 2 now asks two questions about the recipient before speaking there (`acceptsSibling`):
+
+| Test | Why |
+|---|---|
+| identical `run_as` across every pending row and the destination | otherwise the answer reaches the wrong human, and one member's work is read inside another's run |
+| destination has **no** `slack_threads` / `discord_threads` / `telegram_threads` / `clickup_threads` / `session_dms` binding | a session with an outward conversation replies INTO it |
+
+…and `poke-done` gives up lane 2 outright: the cheapness that justified it was "in-context", and in a
+sibling it is by definition out of context, so what remains is good news delivered to the wrong
+conversation. A completion reaches its OWN pane or it stands on the task.
+
+A refused sibling is **not** a held wake-up — the batch falls through to the resume lane, which is the
+caller's own transcript and was always the right destination. Cost on the measured window: ~43 extra
+resumes in 30 days (~1.4/day), all of them replacing a mis-delivery.
+
+**And a drop leaves a mark.** `poke-done` at a cold caller is a decision, but from the board it is
+indistinguishable from a poke that got lost — which is exactly how it was reported. `dropDone` now writes
+one `status` line onto the task (`TaskStore.markWakeDropped`, once per task): *"… was not woken — it had no
+live run, so the result stands here"*. Deliberately not a card and not a DM (the owner already has the
+`task.notified` DM for the completion itself), and deliberately a `status` event rather than a `comment`,
+because `latestNote` reads the newest comment as THE result and delivery bookkeeping must never become the
+answer a later poke quotes.
+
+Pinned by `scripts/wakeup-queue-test.cjs` (cases 12-15).
+
 ---
 
 ## 4. Agent-facing MCP tools — `src/memory/memory-mcp.ts`

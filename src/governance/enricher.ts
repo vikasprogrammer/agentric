@@ -60,7 +60,10 @@ const DELETE_VERB = /delete|remove|purge|destroy|truncate|drop/i;
 // Matched on the TOOL NAME only (recipient parsing is separate), so `Bash` echoing "send_email" can't trip it.
 const EMAIL_SEND_TOOL = /gmail[a-z_]*send|send[a-z_]*e?mail|sendmail/i;
 // Recipient-bearing fields on an email tool's input. `from`/`sender` are deliberately excluded.
-const EMAIL_TO_KEY = /^(to|cc|bcc|recipient|recipients|recipient_email|to_email|to_recipients)$/i;
+// `extra_recipients` is Composio's Gmail schema for the additional to/cc list — it sat outside this
+// list, so until the envelope was unwrapped nothing noticed, and once it was, a send to one insider
+// plus four outsiders would have counted as one internal recipient. Keep provider spellings here.
+const EMAIL_TO_KEY = /^(to|cc|bcc|recipient|recipients|recipient_email|to_email|to_recipients|extra_recipients|cc_recipients|bcc_recipients|to_addresses)$/i;
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 

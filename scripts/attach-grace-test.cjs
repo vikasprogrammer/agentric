@@ -66,6 +66,15 @@ const runAttach = (name) =>
     p.on('close', () => resolve({ err, ms: Date.now() - t0 }));
   });
 
+// attach.sh polls on a fixed tick, and this test has to age a pane past its floor in REAL time — at the
+// shipped 0.25s tick that was 12.7s of every deploy spent sleeping. Run the script on a 5x faster tick
+// and scale every wait here by the same factor: the floor (12 ticks) and ceiling (480 ticks) are
+// unchanged in TICKS, so what's under test — "follow the marker, not a fixed guess" — is identical.
+const TICK_S = 0.05;
+const SCALE = TICK_S / 0.25;
+const ms = (shipped) => Math.round(shipped * SCALE); // a duration expressed in shipped-tick terms
+process.env.AOS_ATTACH_TICK_S = String(TICK_S);
+
 const marker = (id) => path.join(dir, `session-${id}.launching`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fail = (msg) => { console.error('FAIL ' + msg); cleanup(); process.exit(1); };
@@ -75,30 +84,30 @@ const fail = (msg) => { console.error('FAIL ' + msg); cleanup(); process.exit(1)
   const slow = 'ses_slowlaunch';
   fs.writeFileSync(marker(slow), '');
   const slowRun = runAttach('aos-' + slow);
-  await sleep(6000);
+  await sleep(ms(6000));
   spawnSync('tmux', ['-S', sock, 'new-session', '-d', '-s', 'aos-' + slow, 'sleep', '60'], { stdio: 'ignore' });
   fs.rmSync(marker(slow), { force: true }); // the server clears it once the pane exists
   const r1 = await slowRun;
   if (GONE.test(r1.err)) fail(`slow launch surfaced tmux's "can't find session" — the 13s-spawn bug is back:\n${r1.err.trim()}`);
   if (!NO_TTY.test(r1.err)) fail(`slow launch did not reach the pane (expected a no-tty attach failure), got:\n${r1.err.trim()}`);
-  if (r1.ms < 6000) fail(`slow launch returned in ${r1.ms}ms — it cannot have waited for a +6s pane`);
-  console.log(`  ok  slow launch (+6s pane) attaches after ${(r1.ms / 1000).toFixed(1)}s — no "can't find session"`);
+  if (r1.ms < ms(6000)) fail(`slow launch returned in ${r1.ms}ms — it cannot have waited for a +6s pane`);
+  console.log(`  ok  slow launch (pane at +6s in shipped ticks) attaches after ${(r1.ms / 1000).toFixed(1)}s — no "can't find session"`);
 
   // ---- 2. No marker, no pane: still a prompt ~3s give-up, so a dead session can't hang. ----------
   const r2 = await runAttach('aos-ses_neverexisted');
   if (!GONE.test(r2.err)) fail(`a genuinely dead session should end in tmux's not-found, got:\n${r2.err.trim()}`);
-  if (r2.ms > 6000) fail(`no-marker give-up took ${r2.ms}ms — the ~3s floor regressed into a long hang`);
+  if (r2.ms > ms(6000)) fail(`no-marker give-up took ${r2.ms}ms — the ~3s floor regressed into a long hang`);
   console.log(`  ok  no marker → gives up in ${(r2.ms / 1000).toFixed(1)}s (floor intact)`);
 
   // ---- 3. Failed launch: marker cleared, pane never came. Must not sit out the ceiling. ----------
   const bad = 'ses_launchfailed';
   fs.writeFileSync(marker(bad), '');
   const badRun = runAttach('aos-' + bad);
-  await sleep(2000);
+  await sleep(ms(2000));
   fs.rmSync(marker(bad), { force: true }); // launchAgentRuntime's `finally` — released on failure too
   const r3 = await badRun;
   if (!GONE.test(r3.err)) fail(`a failed launch should end in tmux's not-found, got:\n${r3.err.trim()}`);
-  if (r3.ms > 15000) fail(`failed launch waited ${r3.ms}ms — it sat toward the 120s ceiling instead of following the marker`);
+  if (r3.ms > ms(15000)) fail(`failed launch waited ${r3.ms}ms — it sat toward the 120s ceiling instead of following the marker`);
   console.log(`  ok  failed launch → releases in ${(r3.ms / 1000).toFixed(1)}s (follows the marker, not the ceiling)`);
 
   cleanup();

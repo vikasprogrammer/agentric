@@ -9,13 +9,14 @@
  * engine. Zero-dependency cron: a minimal 5-field parser below (minute hour dom month dow).
  */
 import { randomBytes } from 'crypto';
+import { requestMetrics } from './request-metrics';
 import { newId } from '../id';
 import * as os from 'os';
 import * as path from 'path';
 import { Strategist } from './strategist';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
-import { TerminalManager } from '../terminal';
+import { inboxFileName, TerminalManager } from '../terminal';
 import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDispatchBlock, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
 import { classifyIntent, SOCIAL_REPLY } from './intent';
@@ -291,6 +292,51 @@ const MAX_PAYLOAD_CHARS = 4000; // keep webhook payloads from flooding the task 
 /** A concise, human session title from a chat message — the meaningful label for a Slack/Discord thread
  *  session (vs a generic "Chat → agent"). Strips a leading `/agent` prefix + mention tokens, collapses
  *  whitespace, and trims to ~60 chars. Falls back to "Chat → <agent>" when the message is empty. */
+/**
+ * The line that tells an agent its chat message came with files. Names each attachment by the path it
+ * WILL have inside the agent's own folder (see `inboxFileName`) — the sockets download the bytes and
+ * `stageInboundFiles` writes them there right after the spawn, so the agent can just Read the path.
+ * An image is worth naming as such: without this the model has no reason to look at a file at all.
+ */
+/**
+ * The thread a chat message landed in, rendered for the prompt.
+ *
+ * A mention delivers one line. When a human tags the bot on the fifth message of a thread they mean
+ * "handle THIS conversation", and an agent given only the mention has three bad options: ask them to
+ * paste it back, answer the wrong question, or invent a reason it cannot see the rest. So the ingress
+ * fetches the thread and hands it over as plain context. Empty string when there is no thread, when the
+ * mention IS the thread's first message, or when the platform refused (the ingress audits that).
+ */
+export function threadNote(history?: string, unreadable?: string): string {
+  if (history) return `\nThe thread this arrived in, oldest first (the message above is the newest — you have already been given it):\n${history}\n`;
+  // Say WHY it is missing rather than nothing. An agent that knows a thread exists but cannot read it
+  // invents a reason and tells the human a wrong one; the real error is short, actionable and the thing
+  // the operator has to fix, so hand it over verbatim.
+  if (unreadable) return `\nThis message is part of a longer thread you could NOT be given — reading it failed with Slack error \`${unreadable}\`. Answer from what you have, and say plainly that you can only see the message that mentioned you${unreadable === 'missing_scope' ? ' because the Slack app is missing the history scope for this conversation (`groups:history` for a private channel, `mpim:history` for a group DM) — an admin adds it in Settings → Integrations and reinstalls' : ''}.\n`;
+  return '';
+}
+
+export function attachmentNote(files?: { name: string }[]): string {
+  if (!files?.length) return '';
+  const lines = files.map((f) => `• .inbox/${inboxFileName(f.name)}`).join('\n');
+  return `\nThe sender attached ${files.length} file(s), saved in your working folder — read them before answering:\n${lines}\n`;
+}
+
+/**
+ * The first thing a human sees after triggering a run: which agent picked it up. Naming the agent is the
+ * whole point — an anonymous "On it" leaves the sender unable to tell WHO answered, which matters most in
+ * a channel where several agents are reachable and the auto-router, not the sender, chose one.
+ * `bold`/`italic` differ per platform (Slack `*x*` vs Discord `**x**`), so the caller supplies the wrap.
+ */
+export function chatAck(agents: string[], bold = '*'): string {
+  const named = [...new Set(agents.filter(Boolean))];
+  if (!named.length) return '🤖 On it — working on this now.';
+  const list = named.map((a) => `${bold}${a}${bold}`).join(', ');
+  return named.length === 1
+    ? `🤖 ${list} is on it — working on this now.`
+    : `🤖 ${list} are on it — working on this now.`;
+}
+
 export function chatTitle(text: string, agentId: string): string {
   const clean = (text || '').replace(/^\s*\/[A-Za-z0-9][\w-]*\s*/, '').replace(/<@[^>]+>/g, '').replace(/\s+/g, ' ').trim();
   if (!clean) return `Chat → ${agentId}`;
@@ -849,7 +895,18 @@ export class Automations {
    *  `/<agent>` form route identically. Useful in shared spaces (ClickUp task comments) where a bare
    *  `/name` is ambiguous; a no-op for a plain `/<agent>`. */
   private normalizeChatCommand(text: string): string {
-    return (text || '').replace(/^(\s*)\/agent-?os\s+\/?/i, '$1/');
+    const t = (text || '').replace(/^(\s*)\/agent-?os\s+\/?/i, '$1/');
+    if (t.trimStart().startsWith('/')) return t; // already the canonical form
+    // Slack INTERCEPTS a leading `/` as a slash command: `/support-ops fix this` typed in a DM never
+    // leaves the client, so the documented way to address an agent is unusable in exactly the place a
+    // 1:1 chat happens. Accept the forms a human reaches for instead — `@support-ops …`,
+    // `support-ops: …`, or a bare `support-ops …` — and canonicalise them, so every downstream
+    // consumer (router, prefix strip, hand-off detection) keeps parsing one shape.
+    // Guarded on the first token being an actual agent id: without that, "hello there" would address
+    // an agent named `hello`.
+    const m = t.match(/^\s*@?([A-Za-z0-9][\w-]*)\s*[:,]?[ \t]*([\s\S]*)$/);
+    if (!m || !this.os.agents.has(m[1])) return t;
+    return `/${m[1]} ${m[2]}`;
   }
 
   private routeChat(text: string): { agentId?: string; help?: string } {
@@ -862,10 +919,13 @@ export class Automations {
     if (m && chatAgents.includes(m[1])) return { agentId: m[1] };
     // A real agent deliberately kept OFF the chat router → say so, don't pretend it doesn't exist.
     if (m && claudeAgents.some((a) => a.id === m[1])) return { help: `The \`${m[1]}\` agent isn't reachable from chat.` };
-    const list = chatAgents.length ? chatAgents.map((id) => `• \`/${id}\``).join('\n') : '_(no agents available)_';
+    const list = chatAgents.length ? chatAgents.map((id) => `• \`${id}\``).join('\n') : '_(no agents available)_';
+    // Slack eats a leading `/`, so the roster is quoted WITHOUT one and the alternatives are named —
+    // a help list whose every example the reader's client refuses to send is worse than no help list.
+    const how = 'Address an agent by name — `<agent>: your request`, `@<agent> …`, or `/agentric <agent> …`';
     const help = m
-      ? `I don't have an agent named \`/${m[1]}\`. Address one with \`/agent-os <agent>\` (or just \`/<agent>\`) and your request:\n${list}`
-      : `👋 Address an agent with \`/agent-os <agent>\` (or just \`/<agent>\`) followed by your request. Available:\n${list}`;
+      ? `I don't have an agent named \`${m[1]}\`. ${how}:\n${list}`
+      : `👋 ${how}. Available:\n${list}`;
     return { help };
   }
 
@@ -886,7 +946,7 @@ export class Automations {
       clickup?: { taskId: string; commentId: string };
       title?: string;
       resident?: boolean;
-      route?: { by: 'explicit' | 'auto' | 'auto-llm' | 'auto-disambiguated'; score?: number; runnerUp?: string };
+      route?: { by: 'explicit' | 'thread' | 'auto' | 'auto-llm' | 'auto-disambiguated'; score?: number; runnerUp?: string };
     },
   ): FireResult {
     // `resident` (Slack chat) → a warm interactive session (headless off) kept alive for fast follow-ups;
@@ -970,15 +1030,20 @@ export class Automations {
     text: string;
     extra: string;
     runAs?: string;
+    /** The agent already talking in this thread. An untagged follow-up under our own message belongs to
+     *  it — re-classifying intent there would hand the conversation to a different agent mid-sentence,
+     *  and falling back to the help list would answer a plain question with a roster. */
+    fallbackAgent?: string;
     slack?: { channel: string; threadTs: string };
     discord?: { channel: string; messageId: string };
     telegram?: { chat: string; messageThreadId?: string; messageId: string };
     clickup?: { taskId: string; commentId: string };
-  }): Promise<{ sessions: string[]; reply?: string }> {
+  }): Promise<{ sessions: string[]; agents: string[]; reply?: string }> {
     const sessions: string[] = [];
+    const agents: string[] = [];
     const spawn = (agentId: string, task: string, route: NonNullable<Parameters<Automations['spawnChatAgent']>[2]['route']>, text: string, runAs?: string) => {
       const r = this.spawnChatAgent(agentId, task, { runAs, slack: opts.slack, discord: opts.discord, telegram: opts.telegram, clickup: opts.clickup, title: chatTitle(text, agentId), resident: true, route });
-      if (r.ok) sessions.push(r.sessionId);
+      if (r.ok) { sessions.push(r.sessionId); agents.push(agentId); }
     };
 
     // 1) A reply to a disambiguation we asked in this thread → route the ORIGINAL request to the choice.
@@ -987,22 +1052,28 @@ export class Automations {
       const chosen = this.matchDisambiguation(opts.text, pend.candidates);
       if (chosen) {
         spawn(chosen, pend.extra, { by: 'auto-disambiguated' }, pend.text, pend.runAs ?? opts.runAs);
-        return { sessions };
+        return { sessions, agents };
       }
       // Unresolved reply → fall through and treat this message as a fresh routing attempt.
     }
 
     // The whole chat front door off → nothing to do (no help list either).
-    if (!this.os.settings.chatRouterEnabled()) return { sessions };
+    if (!this.os.settings.chatRouterEnabled()) return { sessions, agents };
 
     // 2) Explicit `/name` always wins over inference.
     const explicit = this.routeChat(opts.text);
     if (explicit.agentId) {
       spawn(explicit.agentId, opts.extra, { by: 'explicit' }, opts.text, opts.runAs);
-      return { sessions };
+      return { sessions, agents };
     }
 
-    // 3) Auto-route (when enabled) — the intent layer, mirrored from Cockpit. For `ask`/`action` we hand
+    // 3) A thread we are already in, with no explicit redirect → stay with the agent that owns it.
+    if (opts.fallbackAgent && this.os.agents.has(opts.fallbackAgent)) {
+      spawn(opts.fallbackAgent, opts.extra, { by: 'thread' }, opts.text, opts.runAs);
+      return { sessions, agents };
+    }
+
+    // 4) Auto-route (when enabled) — the intent layer, mirrored from Cockpit. For `ask`/`action` we hand
     //    off to the read-only concierge / action operator as THREAD-BOUND chat sessions: they do the work
     //    and reply IN-THREAD via the same chat-mirror primitive every chat agent uses (the "poke the
     //    thread"), not a bespoke client poll. `work` routes to the best-fit teammate. Fails safe.
@@ -1011,7 +1082,7 @@ export class Automations {
 
       if (intent === 'social') {
         // A bare "hey"/"thanks" — reply conversationally instead of routing or dumping the roster.
-        return { sessions, reply: SOCIAL_REPLY };
+        return { sessions, agents, reply: SOCIAL_REPLY };
       }
 
       if (intent === 'ask') {
@@ -1021,12 +1092,12 @@ export class Automations {
         const inline = await answerAsk(this.os, this.tm, this, me, opts.text);
         if (inline) {
           this.os.audit.append({ ts: Date.now(), runId: opts.key, tenant: this.os.tenant, principal: opts.runAs ? `member:${opts.runAs}` : 'chat', type: 'chat.answered', data: { source: inline.source, chars: inline.answer.length, runAs: opts.runAs ?? null } });
-          return { sessions, reply: inline.answer };
+          return { sessions, agents, reply: inline.answer };
         }
         ensureConcierge(this.os);
         if (this.os.agents.get(CONCIERGE_ID)?.dir) {
           spawn(CONCIERGE_ID, opts.extra, { by: 'auto' }, opts.text, opts.runAs);
-          return { sessions };
+          return { sessions, agents };
         }
         // Concierge unavailable → fall through to work routing (an agent can still answer conversationally).
       } else if (intent === 'action') {
@@ -1035,7 +1106,7 @@ export class Automations {
         ensureOperator(this.os);
         if (this.os.agents.get(OPERATOR_ID)?.dir) {
           spawn(OPERATOR_ID, opts.extra, { by: 'auto' }, opts.text, opts.runAs);
-          return { sessions };
+          return { sessions, agents };
         }
       }
 
@@ -1043,15 +1114,15 @@ export class Automations {
       const decision = await chooseAgent(this.os, opts.text);
       if (decision.kind === 'route') {
         spawn(decision.agentId, opts.extra, { by: decision.method === 'llm' ? 'auto-llm' : 'auto', score: decision.score, runnerUp: decision.runnerUp?.agentId }, opts.text, opts.runAs);
-        return { sessions };
+        return { sessions, agents };
       }
       if (decision.kind === 'disambiguate') {
         this.putPending(opts.key, { candidates: decision.candidates.map((c) => c.agentId), text: opts.text, extra: opts.extra, runAs: opts.runAs });
-        return { sessions, reply: this.disambiguationPrompt(decision.candidates) };
+        return { sessions, agents, reply: this.disambiguationPrompt(decision.candidates) };
       }
       // decision.kind === 'none' → fall back to the classic help list.
     }
-    return { sessions, reply: explicit.help };
+    return { sessions, agents, reply: explicit.help };
   }
 
   /**
@@ -1243,11 +1314,12 @@ export class Automations {
    * fire" is answerable from the audit row instead of by re-reading the filter.
    */
   async fireSlack(
-    event: { eventType: string; channel: string; threadTs: string; user: string; actorLabel: string; text: string; raw: unknown },
+    event: { eventType: string; channel: string; threadTs: string; user: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[]; history?: string; historyError?: string },
     runAsMember?: string,
-    opts: { channelWatch?: boolean; router?: boolean } = {},
-  ): Promise<{ fired: number; sessions: string[]; reply?: string; dropped?: string }> {
+    opts: { channelWatch?: boolean; router?: boolean; fallbackAgent?: string } = {},
+  ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string; dropped?: string }> {
     const sessions: string[] = [];
+    const agents: string[] = [];
     let dropped: string | undefined;
     // What the `when`/`unless` paths read. The raw Slack event, but with `text` replaced by the
     // mention-stripped body the agent will actually be given (so a filter matches what a human reads,
@@ -1258,7 +1330,9 @@ export class Automations {
     const extra =
       `Triggered from Slack by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}` +
       (event.threadTs ? ` (thread ${event.threadTs})` : '') + `.\n` +
-      `Message:\n${event.text}\n\n` +
+      `Message:\n${event.text}\n` +
+      attachmentNote(event.files) +
+      threadNote(event.history, event.historyError) + `\n` +
       `When you're done, call the \`slack_reply\` tool with your answer — it posts back to this exact ` +
       `Slack thread (you don't need a channel id). Keep it concise.\n\n` +
       `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
@@ -1273,7 +1347,7 @@ export class Automations {
         continue;
       }
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, slack: { channel: event.channel, threadTs: event.threadTs } });
-      if (r.ok) sessions.push(r.sessionId);
+      if (r.ok) { sessions.push(r.sessionId); agents.push(a.agentId); }
     }
     // No specific automation matched → the shared chat front door: resolve a pending disambiguation,
     // honour an explicit `/name`, else auto-route (route / ask / help list) — reachable fleet-wide.
@@ -1285,12 +1359,14 @@ export class Automations {
         text: event.text,
         extra,
         runAs: runAsMember,
+        fallbackAgent: opts.fallbackAgent,
         slack: { channel: event.channel, threadTs: event.threadTs },
       });
       sessions.push(...r.sessions);
+      agents.push(...r.agents);
       reply = r.reply;
     }
-    return { fired: sessions.length, sessions, reply, dropped };
+    return { fired: sessions.length, sessions, agents, reply, dropped };
   }
 
   /**
@@ -1299,6 +1375,48 @@ export class Automations {
    * with no channel-scoped automation keeps the old behaviour exactly (every plain channel message
    * dropped) and pays one in-memory scan, not a fire path.
    */
+  /** Has the bot spoken in this Slack thread? (Passthrough for the socket, which holds no TerminalManager.) */
+  knowsSlackThread(channel: string, threadTs: string): boolean {
+    return this.tm.knowsSlackThread(channel, threadTs);
+  }
+
+  /** Did an agent post the Discord message this one replies to? (Passthrough for the socket.) */
+  knowsDiscordMessage(channel: string, messageId: string): boolean {
+    return this.tm.knowsDiscordMessage(channel, messageId);
+  }
+
+  /** Which agent posted the Discord message this one replies to — the fallback route when the run that
+   *  wrote it is too old to resume. */
+  agentForDiscordMessage(channel: string, messageId: string): string | undefined {
+    return this.tm.sessionForDiscordMessage(channel, messageId)?.agent;
+  }
+
+  /** Record that an agent posted this Discord message. Passthrough for the socket. */
+  noteDiscordMessage(sessionId: string, channel: string, messageId: string): void {
+    this.tm.noteDiscordMessage(sessionId, channel, messageId);
+  }
+
+  /** Which agent last spoke in this Slack thread — the fallback route for an untagged follow-up under
+   *  our own message, when the run itself is too old to resume. */
+  agentForSlackThread(channel: string, threadTs: string): string | undefined {
+    return this.tm.sessionForSlackThread(channel, threadTs)?.agent;
+  }
+
+  /** Drop inbound chat attachments into a spawned session's agent folder. Passthrough for the sockets. */
+  stageInboundFiles(sessionId: string, files: { name: string; data: Buffer }[]): string[] {
+    return this.tm.stageInboundFiles(sessionId, files);
+  }
+
+  /** Point a session's Slack reply target at a thread learned after the spawn. Passthrough for the sockets. */
+  rebindSlackThread(sessionId: string, channel: string, threadTs: string): void {
+    this.tm.rebindSlackThread(sessionId, channel, threadTs);
+  }
+
+  /** Record that the bot has spoken in a Slack thread. Passthrough for the sockets. */
+  noteSlackThread(sessionId: string, channel: string, threadTs: string): void {
+    this.tm.noteSlackThread(sessionId, channel, threadTs);
+  }
+
   watchesSlackChannel(channel: string): boolean {
     const want = (channel || '').trim().toLowerCase();
     if (!want) return false;
@@ -1478,7 +1596,7 @@ export class Automations {
    * The socket posts no ack — the agent's own `slack_reply` is the feedback.
    */
   continueSlackThread(
-    event: { channel: string; threadTs: string; actorLabel: string; text: string; raw: unknown },
+    event: { channel: string; threadTs: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
   ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
     if (!event.threadTs) return { status: 'none' };
@@ -1491,12 +1609,15 @@ export class Automations {
     const runAs = runAsMember ?? bound.runAs;
     // The delivered message goes straight into a live TUI — strip a leading `/agent` (a re-mention) so
     // claude doesn't see it as a slash command, and drop mention tokens.
-    const msg = this.stripChatPrefix(event.text);
-    if (!msg) return { status: 'none' };
+    // Files land in the agent's folder BEFORE the message is typed in, so the path the message names is
+    // already readable by the time the agent acts on it.
+    const staged = this.tm.stageInboundFiles(bound.sessionId, event.files ?? []);
+    const msg = this.stripChatPrefix(event.text) + (staged.length ? `\n(attached: ${staged.join(', ')})` : '');
+    if (!msg.trim()) return { status: 'none' };
     const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
       ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
       principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
-      data: { mode, agent: bound.agent, session: bound.sessionId, channel: event.channel, thread: event.threadTs, runAs: runAs ?? null },
+      data: { mode, agent: bound.agent, session: bound.sessionId, channel: event.channel, thread: event.threadTs, runAs: runAs ?? null, files: staged.length || null },
     });
     // Warm path: live resident session → deliver by typing into it.
     if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
@@ -1566,20 +1687,27 @@ export class Automations {
    * own `discord_reply` is the feedback.
    */
   continueDiscordThread(
-    event: { channel: string; actorLabel: string; text: string; raw: unknown },
+    event: { channel: string; actorLabel: string; text: string; raw: unknown; replyToId?: string; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
   ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
-    const bound = this.tm.sessionForDiscordThread(event.channel);
+    // Two keys, in specificity order. The channel binding covers a branched thread; the reply reference
+    // covers a plain channel post an agent made proactively, where there is no thread to bind and
+    // binding the whole channel would drag every unrelated message into the run.
+    const bound = this.tm.sessionForDiscordThread(event.channel)
+      ?? this.tm.sessionForDiscordMessage(event.channel, event.replyToId || '');
     if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
     // Explicit `/other-agent …` in the thread overrides continuity → let the caller spawn it fresh.
     if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
     const runAs = runAsMember ?? bound.runAs;
-    const msg = this.stripChatPrefix(event.text);
-    if (!msg) return { status: 'none' };
+    // Files land in the agent's folder BEFORE the message is typed in, so the path it names is readable
+    // by the time the agent acts on it.
+    const staged = this.tm.stageInboundFiles(bound.sessionId, event.files ?? []);
+    const msg = this.stripChatPrefix(event.text) + (staged.length ? `\n(attached: ${staged.join(', ')})` : '');
+    if (!msg.trim()) return { status: 'none' };
     const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
       ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
       principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
-      data: { mode, platform: 'discord', agent: bound.agent, session: bound.sessionId, channel: event.channel, runAs: runAs ?? null },
+      data: { mode, platform: 'discord', agent: bound.agent, session: bound.sessionId, channel: event.channel, runAs: runAs ?? null, files: staged.length || null },
     });
     // Warm path: live resident session → deliver by typing into it.
     if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
@@ -1598,14 +1726,16 @@ export class Automations {
    * member; absent → the company identity. Event-driven, so no pile-up guard. Returns sessions started.
    */
   async fireClickup(
-    event: { taskId: string; commentId: string; text: string; taskUrl: string; actorLabel: string; raw: unknown },
+    event: { taskId: string; commentId: string; text: string; taskUrl: string; actorLabel: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
-  ): Promise<{ fired: number; sessions: string[]; reply?: string }> {
+  ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string }> {
     const sessions: string[] = [];
+    const agents: string[] = [];
     const bind = { taskId: event.taskId, commentId: event.commentId };
     const extra =
       `Triggered from ClickUp by ${event.actorLabel} on task ${event.taskId} (${event.taskUrl}).\n` +
-      `Comment (the user's request):\n${event.text}\n\n` +
+      `Comment (the user's request):\n${event.text}\n` +
+      attachmentNote(event.files) + `\n` +
       `Do this IN ORDER:\n` +
       `1. FIRST fetch the FULL task details for context — the ClickUp task DESCRIPTION holds the real ` +
       `content (customer email / "Cx:" fields, issue details, links, stack traces), not just this comment. ` +
@@ -1620,16 +1750,17 @@ export class Automations {
       const f = (a.filter || '').trim().toLowerCase();
       if (f && f !== '*' && f !== event.taskId.toLowerCase()) continue;
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, clickup: bind });
-      if (r.ok) sessions.push(r.sessionId);
+      if (r.ok) { sessions.push(r.sessionId); agents.push(a.agentId); }
     }
     // No specific automation matched → the shared chat front door (explicit `/name` / auto-route / help).
     let reply: string | undefined;
     if (sessions.length === 0) {
       const r = await this.routeUnmatched({ key: `clickup:${event.taskId}`, text: event.text, extra, runAs: runAsMember, clickup: bind });
       sessions.push(...r.sessions);
+      agents.push(...r.agents);
       reply = r.reply;
     }
-    return { fired: sessions.length, sessions, reply };
+    return { fired: sessions.length, sessions, agents, reply };
   }
 
   /**
@@ -1640,7 +1771,7 @@ export class Automations {
    * {@link fireClickup}. The route posts no ack — the agent's own `clickup_reply` is the feedback.
    */
   continueClickupThread(
-    event: { taskId: string; actorLabel: string; text: string; raw: unknown },
+    event: { taskId: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
   ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
     const bound = this.tm.sessionForClickupThread(event.taskId);
@@ -1648,12 +1779,15 @@ export class Automations {
     // Explicit `/other-agent …` on a shared task overrides continuity → let the caller spawn it fresh.
     if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
     const runAs = runAsMember ?? bound.runAs;
-    const msg = this.stripChatPrefix(event.text);
-    if (!msg) return { status: 'none' };
+    // Files land in the agent's folder BEFORE the comment is typed in, so the path it names is readable
+    // by the time the agent acts on it.
+    const staged = this.tm.stageInboundFiles(bound.sessionId, event.files ?? []);
+    const msg = this.stripChatPrefix(event.text) + (staged.length ? `\n(attached: ${staged.join(', ')})` : '');
+    if (!msg.trim()) return { status: 'none' };
     const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
       ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
       principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
-      data: { mode, platform: 'clickup', agent: bound.agent, session: bound.sessionId, task: event.taskId, runAs: runAs ?? null },
+      data: { mode, platform: 'clickup', agent: bound.agent, session: bound.sessionId, task: event.taskId, runAs: runAs ?? null, files: staged.length || null },
     });
     // Warm path: live resident session → deliver by typing into it.
     if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
@@ -1710,13 +1844,16 @@ export class Automations {
    * identity (the current default for Discord — see DiscordSocket.resolveMember). No pile-up guard.
    */
   async fireDiscord(
-    event: { eventType: string; channel: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown },
+    event: { eventType: string; channel: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
-  ): Promise<{ fired: number; sessions: string[]; reply?: string }> {
+    opts: { fallbackAgent?: string } = {},
+  ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string }> {
     const sessions: string[] = [];
+    const agents: string[] = [];
     const extra =
       `Triggered from Discord by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}.\n` +
-      `Message:\n${event.text}\n\n` +
+      `Message:\n${event.text}\n` +
+      attachmentNote(event.files) + `\n` +
       `When you're done, call the \`discord_reply\` tool with your answer — it posts back to this exact ` +
       `Discord channel as a reply (you don't need a channel id). Keep it concise.\n\n` +
       `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
@@ -1725,7 +1862,7 @@ export class Automations {
       const f = (a.filter || '').trim().toLowerCase();
       if (f && f !== '*' && f !== event.eventType.toLowerCase() && f !== event.channel.toLowerCase()) continue;
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId } });
-      if (r.ok) sessions.push(r.sessionId);
+      if (r.ok) { sessions.push(r.sessionId); agents.push(a.agentId); }
     }
     // No specific automation matched → the shared chat front door (auto-route / disambiguate / help).
     // See fireSlack. Discord threads are keyed by channel id (the socket binds the branched thread).
@@ -1736,12 +1873,14 @@ export class Automations {
         text: event.text,
         extra,
         runAs: runAsMember,
+        fallbackAgent: opts.fallbackAgent,
         discord: { channel: event.channel, messageId: event.messageId },
       });
       sessions.push(...r.sessions);
+      agents.push(...r.agents);
       reply = r.reply;
     }
-    return { fired: sessions.length, sessions, reply };
+    return { fired: sessions.length, sessions, agents, reply };
   }
 
   /**
@@ -1753,14 +1892,16 @@ export class Automations {
    * (+ forum topic) and replies land there as a reply to the triggering message.
    */
   async fireTelegram(
-    event: { eventType: string; chat: string; messageThreadId: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown },
+    event: { eventType: string; chat: string; messageThreadId: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
-  ): Promise<{ fired: number; sessions: string[]; reply?: string }> {
+  ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string }> {
     const sessions: string[] = [];
+    const agents: string[] = [];
     const bind = { chat: event.chat, messageThreadId: event.messageThreadId, messageId: event.messageId };
     const extra =
       `Triggered from Telegram by ${event.actorLabel} (${event.eventType}) in chat ${event.chat}.\n` +
-      `Message:\n${event.text}\n\n` +
+      `Message:\n${event.text}\n` +
+      attachmentNote(event.files) + `\n` +
       `When you're done, call the \`telegram_reply\` tool with your answer — it posts back to this exact ` +
       `Telegram chat as a reply (you don't need a chat id). Keep it concise.\n\n` +
       `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
@@ -1769,7 +1910,7 @@ export class Automations {
       const f = (a.filter || '').trim().toLowerCase();
       if (f && f !== '*' && f !== event.eventType.toLowerCase() && f !== event.chat.toLowerCase()) continue;
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, telegram: bind });
-      if (r.ok) sessions.push(r.sessionId);
+      if (r.ok) { sessions.push(r.sessionId); agents.push(a.agentId); }
     }
     // No specific automation matched → the shared chat front door (auto-route / disambiguate / help).
     // Telegram threads are keyed by chat id (+ forum topic); a plain follow-up continues via continueTelegramThread.
@@ -1783,9 +1924,10 @@ export class Automations {
         telegram: bind,
       });
       sessions.push(...r.sessions);
+      agents.push(...r.agents);
       reply = r.reply;
     }
-    return { fired: sessions.length, sessions, reply };
+    return { fired: sessions.length, sessions, agents, reply };
   }
 
   /**
@@ -1797,15 +1939,18 @@ export class Automations {
    * disabled in @BotFather for the plain follow-up to reach the bot at all.)
    */
   continueTelegramThread(
-    event: { chat: string; messageThreadId: string; actorLabel: string; text: string; raw: unknown },
+    event: { chat: string; messageThreadId: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
   ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
     const bound = this.tm.sessionForTelegramThread(event.chat, event.messageThreadId);
     if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
     if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
     const runAs = runAsMember ?? bound.runAs;
-    const msg = this.stripChatPrefix(event.text);
-    if (!msg) return { status: 'none' };
+    // Files land in the agent's folder BEFORE the message is typed in, so the path it names is readable
+    // by the time the agent acts on it.
+    const staged = this.tm.stageInboundFiles(bound.sessionId, event.files ?? []);
+    const msg = this.stripChatPrefix(event.text) + (staged.length ? `\n(attached: ${staged.join(', ')})` : '');
+    if (!msg.trim()) return { status: 'none' };
     const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
       ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
       principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
@@ -1834,7 +1979,7 @@ export class Automations {
   /** Check every ~20s; fire each due cron automation at most once per matching minute. */
   start(intervalMs = 20_000): void {
     this.stop();
-    this.timer = setInterval(() => this.tick(new Date()), intervalMs);
+    this.timer = setInterval(() => requestMetrics.phase('automations:tick', () => this.tick(new Date())), intervalMs);
     this.timer.unref?.(); // never keep the process alive just for the scheduler
   }
   stop(): void {

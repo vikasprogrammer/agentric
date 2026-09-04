@@ -526,7 +526,8 @@ was right — the subject was wrong).
 ### Step 5 — second signal (only now)
 
 Only after Steps 2–4 hold. Candidates, ranked by live evidence: **agent shape** (below — the largest
-measured cost of any candidate here), pending-approval pile-ups, automations failing repeatedly
+measured cost of any candidate here), **prompt shape** (below — 22M tokens/month of prompt re-load on
+instawp alone, and the only candidate here whose signal is already fully recorded), pending-approval pile-ups, automations failing repeatedly
 (`reliability.ts` already detects these), agents that never get used, stalled tasks. Each goes through
 the identical vertical: detect → card → action → measure.
 
@@ -611,6 +612,106 @@ budget (§ related) being the bigger lever.
 **Measured how** (Step 4's rule — measure the card, not our clicks): the fold's whole point is fewer
 sessions, so the outcome is `tasks` hand-offs to the named delegate before vs after, and the
 `task.subagent_only.refused` / `task.self_dispatch.refused` audits give the counterfactual directly.
+
+#### Candidate: **prompt shape** — "this prompt has become a filing cabinet"
+
+Sibling to *agent shape* above: that one asks whether a delegate should exist, this one asks what its
+prompt should still be carrying. Found by hand on 2026-09-03 while chasing a different complaint
+("stop writing massive comments in the PR"), which is itself the point — nothing was watching.
+
+**The evidence.** `agent_revisions` stores `claude_md` per revision, so growth is already recorded
+fleet-wide. instawp, agents with ≥3 revisions:
+
+| agent | revisions | first | latest | growth |
+|---|---|---|---|---|
+| `onboarding-assistant` | 15 | 8.2KB | **194KB** | **24x** |
+| `engineer` | 34 | 7.8KB | 81KB | 10x |
+| `qa` | 20 | 5.1KB | 48KB | 9x |
+| `website-bot` | 17 | 2.5KB | 34KB | 14x |
+| `vuln-watch` | 16 | 10KB | 48KB | 5x |
+
+Monotonic in every case. The growth is `agent_update` self-edits: an agent finishes a painful run and
+writes the lesson into its own system prompt, because that is the tool nearest to hand. Nothing ever
+takes one out. instawp carries **906KB of prompt across 51 agents**; instapods 355KB across 29.
+
+**Why it costs.** A prompt is re-read on **every session**, so its size multiplies by run volume.
+Across instawp's 3,261 sessions in 30 days that is **~88MB ≈ 22M tokens/month spent re-loading
+prompts** — and `onboarding-assistant` alone is 16.6MB of it on 84 runs.
+
+**The second cost is worse than the tokens: the register leaks into the work product.** instawp's
+`engineer`, at 81KB of ~35 essay-shaped "lesson" sections, wrote **109 PR comments in 14 days averaging
+≥1.6KB** — multi-paragraph reflections on its own process, posted where a reviewer needed a verdict and
+a SHA. An agent writes in the register its prompt is written in. The prompt is a style exemplar whether
+or not anyone intended it as one, which makes prompt bloat a *quality* signal, not only a cost one.
+
+**The third cost: a prompt has no re-measure loop.** `marketing-manager` asserted a "~70% branded
+share" for months after it had measured 42-43% — its own pitfall list says so. Numbers rot in a system
+prompt because nothing dates them or asks them to be re-run; the same number on a KB page is revisable
+and carries its measurement date.
+
+**The signal.** Computable today, no new instrumentation:
+
+| signal | source | reads as |
+|---|---|---|
+| `length(claude_md)` latest vs first | `agent_revisions` | accretion, with a growth multiple |
+| bytes × sessions in window | `agent_revisions` + `term_sessions` | the actual monthly re-load cost |
+| `kb.written` per agent vs its prompt growth | `audit_events`, `kb_pages` | whether it has anywhere else to put a lesson |
+| count of dated-incident sections (`On 2026-`, `Twice on`, `cost me`) | prompt text | how much is narrative, not instruction |
+| artifact size for the agent's own output (PR comment bytes) | `audit_events` shell args | whether the register has leaked yet |
+
+**⚠ The classifier is the hard part, and the naive one is actively harmful.** "Prompt is big ⇒ trim it"
+destroys agents. Four hand-migrations produced one rule and three different cuts:
+
+> **Move what a run reads CONDITIONALLY. Keep what fires on EVERY run.**
+
+- `engineer` (instawp) — whole-section moves. 21 lesson sections out, 1115 → 458 lines. The one-line
+  **rule stayed** in an index; only the incident and the numbers moved. Dropping the rules outright
+  would have regressed behaviour — these are hard rules ("a controller is not a library").
+- `qa` (instawp) — **partial extraction**. Two "standing mission" sections the owner asked for had to
+  keep the mission and shed only their mechanics. 589 → 270 lines.
+- `check-resolve-tickets` (instapods) — the 292-line Phase 3 was a **template library**: 12 templates, a
+  draft uses one. Moved; the prompt keeps the 12 class names, because classification still needs them.
+  Phase 1's 117 lines of context SQL **stayed** — it fires on every ticket.
+- `marketing-manager` (instapods) — **per-bullet split**: 10 pitfalls became 10 dated KB pages, while 6
+  genuinely one-line traps stayed inline because there was no evidence to move.
+
+Getting the line wrong on an every-run section fails **silently**: the agent pays a round-trip it did
+not before, or skips the read and works without something it used to have. No error, no audit event.
+
+**Not to be built: a one-click "migrate prompt → KB" button.** Same refusal as the fold button above,
+for the same reason — the mechanics are trivial and the judgement is the whole job. Add two failure
+modes specific to this one: the migration must **repair cross-references** (prose saying "the section
+above", "Speed rule 4", "at the end of this prompt" now points at nothing — 10 such refs across the four
+passes, one of them inside the moved pages themselves), and it must write through **`KbStore.write`**,
+never by dropping files into `<home>/kb/`, or the SQLite/FTS mirror never learns the page exists and
+`kb_search` stays blind to everything it just "migrated".
+
+**Honest sizing.** The four hand-migrations, priced at each agent's real 30-day run count:
+
+| agent | runs/30d | before | after | saved |
+|---|---|---|---|---|
+| instawp `engineer` | 490 | 41.1MB | 19.0MB | 22.1MB |
+| instawp `qa` | 387 | 19.3MB | 8.9MB | 10.4MB |
+| instapods `check-resolve-tickets` | 149 | 7.9MB | 5.4MB | 2.5MB |
+| instapods `marketing-manager` | 92 | 4.5MB | 2.7MB | 1.8MB |
+| **total** | | **72.8MB** | **36.0MB** | **36.8MB ≈ 9.2M tokens/month** |
+
+`onboarding-assistant` (194KB, untouched) is the single largest remaining item. Note the ranking is
+**bytes × runs**, not bytes: instawp `infra-ops` at 23KB costs more per month than `onboarding-assistant`
+at 194KB, because it runs 784 times to the other's 84. A card ranked by prompt size alone points at the
+wrong agent.
+
+**Measured how** (Step 4's rule — measure the card, not our clicks): prompt bytes per agent over time
+from `agent_revisions`, which gives before/after for free and shows **whether it grows back** — the
+failure mode is not "the migration didn't happen", it is "it happened and the prompt re-accreted in six
+weeks". So the durable outcome is the *slope* after a migration, not the one-time drop. The register
+leak has its own read: mean PR-comment bytes for that agent, which is what surfaced this in the first
+place.
+
+**Prerequisite, and it is a real one.** This card is only actionable for an agent whose tenant has a
+working KB habit — the migration needs somewhere to put the text and an agent that will read it back.
+instawp (890 pages) and instapods (179) both qualify; a fresh tenant does not, and there the honest
+recommendation is "write fewer lessons into the prompt", not "move them".
 
 ### Step 6 — retire what didn't earn its place
 

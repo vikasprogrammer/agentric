@@ -21,8 +21,9 @@
  * Consistency: this token exists solely to run `claude`, and a 1-token probe mirrors Claude Code's own
  * startup call — same lane as the actual use, not a side-channel. Never let a check throw into a handler.
  */
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, realpathSync } from 'fs';
+import { join, resolve } from 'path';
+import { homedir } from 'os';
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { RuntimeUsage, RuntimeUsageWindow } from '../state/runtime-accounts';
@@ -104,14 +105,35 @@ const describe = (u: RuntimeUsage): string => {
  * on a Mac after all, and the "signed in via the Keychain, can't be probed from here" badge was describing
  * the developer's ssh session, not the server's.
  *
- * ⚠ The same 36 is what `claude` itself gets, and it treats it as "not logged in" (its keychain read maps
- * exit 36 → null, then falls back to a plaintext `.credentials.json` that a Keychain-stored account has no
- * reason to own). So a credential dir that is perfectly signed in reports `Not logged in · Please run
- * /login` from an ssh shell and authenticates normally from the server — worth knowing before concluding a
- * pooled account is dead.
+ * ⚠ The same 36 is what `claude` itself gets, and it treats it as "not logged in". So a credential dir that
+ * is perfectly signed in reports `Not logged in · Please run /login` from an ssh shell and authenticates
+ * normally from the server — worth knowing before concluding a pooled account is dead.
+ *
+ * ⚠⚠ And it does NOT fall back to the plaintext `.credentials.json` here. Claude Code's credential store
+ * classifies keychain failures, and the locked/interaction-not-allowed family is TRANSIENT: its own
+ * `primary_transient_skip_fallback` path skips the plaintext file rather than reading (or writing) it. A
+ * locked login keychain is therefore a hard stop for every claude run on the box — see
+ * {@link credentialReadiness}, which exists because presence and readability are different questions.
  */
 export function keychainServiceFor(dir: string): string {
+  // The BOX DEFAULT login (`~/.claude`, i.e. no CLAUDE_CONFIG_DIR) is stored under the bare service name —
+  // only a non-default config dir gets the path-hash suffix. Without this case a readiness probe of the
+  // default dir looks up a service that cannot exist and reports "no login" for a box that is signed in.
+  if (isDefaultClaudeDir(dir)) return 'Claude Code-credentials';
   return `Claude Code-credentials-${createHash('sha256').update(dir).digest('hex').slice(0, 8)}`;
+}
+
+/** The box's own `claude` config dir — the one a session gets when neither rotation nor config isolation
+ *  put a `CLAUDE_CONFIG_DIR` in its environment. */
+export function defaultClaudeDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+}
+
+/** Same directory as {@link defaultClaudeDir}, compared through `realpath` so a symlinked home (macOS
+ *  `/var/folders` → `/private/var/…`) doesn't read as a different dir. */
+function isDefaultClaudeDir(dir: string): boolean {
+  const real = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
+  return real(dir) === real(join(homedir(), '.claude'));
 }
 
 /** Does the macOS Keychain hold a login for this config dir? Metadata-only lookup — no ACL prompt.
@@ -212,6 +234,71 @@ export function credentialDirHasLogin(runtime: CodingRuntimeId, dir: string): bo
     // macOS keeps claude's login in the Keychain, not in the dir — see keychainServiceFor.
     return runtime === 'claude-code' && keychainHasLogin(dir);
   } catch { return false; }
+}
+
+/**
+ * Is a `claude login` credential dir actually USABLE by a session we are about to spawn — not merely
+ * "a login exists somewhere for it"?
+ *
+ * The distinction is the whole point. {@link credentialDirHasLogin} answers presence, and on macOS a
+ * Keychain item's PRESENCE is readable (metadata lookup, exit 0) even when its VALUE is not. A locked
+ * login keychain therefore passes every existing check and fails at the only moment that matters: inside
+ * the spawned `claude`, which reads through the same locked keychain in the same security session.
+ *
+ * And it does NOT degrade to the plaintext file. Claude Code's credential store classifies keychain
+ * errors, and `errSecInteractionNotAllowed` / `errSecAuthFailed` (its `keychain_locked` /
+ * `interaction_not_allowed` cases) are TRANSIENT — the store's own `primary_transient_skip_fallback` path
+ * skips the plaintext fallback rather than reading or writing it. So a locked keychain is a hard stop for
+ * every claude run on the box, pool account and box default alike.
+ *
+ * Live incident (2026-09-01, instapods): the login keychain auto-locked overnight; the server kept
+ * spawning sessions for ~17 hours. Eight runs, every one $0 and one turn, three left `running`, and no
+ * alert anywhere — the pool badge still showed the last usage snapshot taken before the lock. Hence a
+ * launch-time readiness probe that reads the VALUE, and a caller that refuses rather than fails open.
+ */
+export type CredentialReadiness =
+  | { ok: true; via: 'file' | 'keychain' }
+  /** No login in this dir at all — the pre-existing "empty credential dir" case. */
+  | { ok: false; reason: 'missing' }
+  /** A login EXISTS in the Keychain but its value can't be read from this security session. */
+  | { ok: false; reason: 'keychain_locked'; service: string };
+
+export function credentialReadiness(runtime: CodingRuntimeId, dir: string): CredentialReadiness {
+  try {
+    if (existsSync(join(dir, CODING_RUNTIMES[runtime].credentialEnv.configDirFile))) return { ok: true, via: 'file' };
+    // Only claude-code keeps its login in the macOS Keychain; every other runtime is file-only, so an
+    // absent file there is simply missing.
+    if (runtime !== 'claude-code' || !keychainHasLogin(dir)) return { ok: false, reason: 'missing' };
+    return readKeychainCredentials(dir)
+      ? { ok: true, via: 'keychain' }
+      : { ok: false, reason: 'keychain_locked', service: keychainServiceFor(dir) };
+  } catch { return { ok: false, reason: 'missing' }; }
+}
+
+/** The credential dir a launch's environment will actually authenticate through: whatever rotation or
+ *  config isolation put in the runtime's config-dir var, else the box default. Null when the environment
+ *  carries a direct key/token instead (an `apikey`/`token` pool account), which needs no dir at all. */
+export function launchCredentialDir(runtime: CodingRuntimeId, env: Record<string, string>): string | null {
+  const { configDirVar, apiKeyVar, tokenVar } = CODING_RUNTIMES[runtime].credentialEnv;
+  if ((apiKeyVar && env[apiKeyVar]) || (tokenVar && env[tokenVar])) return null;
+  return env[configDirVar] || (runtime === 'claude-code' ? defaultClaudeDir() : null);
+}
+
+/**
+ * Launch pre-flight: can this environment authenticate at all? Returns the blocking condition, or null
+ * when the launch may proceed.
+ *
+ * Deliberately narrow — it refuses ONLY on `keychain_locked`, the state that is both certain (we just
+ * failed the same read the child will make) and undiagnosable from the outside (a $0 one-turn run).
+ * A `missing` dir keeps its long-standing fail-open behaviour: rotation already declines to select such an
+ * account, and a box with no login at all fails visibly at the CLI's own login picker.
+ */
+export function preflightCredential(runtime: CodingRuntimeId, env: Record<string, string>):
+  { dir: string; service: string } | null {
+  const dir = launchCredentialDir(runtime, env);
+  if (!dir) return null;
+  const state = credentialReadiness(runtime, dir);
+  return state.ok || state.reason !== 'keychain_locked' ? null : { dir, service: state.service };
 }
 
 /** Probe a Claude subscription OAuth token via a 1-token Messages call and read the usage headers. Never

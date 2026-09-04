@@ -52,10 +52,11 @@ const toolContext = new AsyncLocalStorage<string>();
 
 /** Headers for a loopback agent call: the session bearer + tenant route, plus any extras (e.g. JSON). */
 function H(extra: Record<string, string> = {}): Record<string, string> {
-  // `x-aos-tool` is TELEMETRY only — the server buckets per-tool latency by it (request-metrics.ts) and
-  // grants nothing on it. Authority stays with the session secret above.
+  // `x-aos-tool` and `x-aos-agent` are TELEMETRY only — the server buckets per-tool latency by the
+  // first (request-metrics.ts) and counts per-agent tool usage by the pair (tool-usage.ts). Neither
+  // grants anything. Authority stays with the session secret above.
   const tool = toolContext.getStore();
-  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...(tool ? { 'x-aos-tool': tool } : {}), ...extra };
+  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...(AGENT ? { 'x-aos-agent': AGENT } : {}), ...(tool ? { 'x-aos-tool': tool } : {}), ...extra };
 }
 
 interface JsonRpc {
@@ -339,7 +340,7 @@ const TOOL_ALLOW: Set<string> | null = (() => {
 // its inbox and records what it learned — strand an agent without them and the governance surface goes
 // dark (no completion, no blocking question, no lesson) while the run still burns quota. A manifest
 // typo must degrade the context saving, never the agent.
-const AGENT_CORE_TOOLS = ['report', 'update', 'ask_human', 'check_inbox', 'notify', 'recall', 'remember'];
+const AGENT_CORE_TOOLS = ['report', 'update', 'ask_human', 'check_inbox', 'recall', 'remember'];
 
 /** Apply the per-agent allowlist to a tool list. Core tools always survive. */
 function offered<T extends { name: string }>(tools: T[]): T[] {
@@ -566,30 +567,6 @@ const TOOLS = [
         important: { type: 'boolean', description: 'Highlight this as a key milestone or heads-up. Default false.' },
       },
       required: ['message'],
-    },
-  },
-  {
-    name: 'notify',
-    description:
-      'Notify a SPECIFIC teammate — the person who should know about something on this run, when that is ' +
-      'someone OTHER than the operator you already report to. By default your progress/updates go only to ' +
-      'the human who owns this session; use `notify` to deliberately loop in someone else: ' +
-      '"@alex the deploy you asked about is live", "flagging this to the on-call admin". Pass `to` (their ' +
-      'name or email) and a one-line `message`. They get an Inbox card + a DM. This does NOT block — keep ' +
-      'working. Use it purposefully for the RIGHT person, not to broadcast; there is no team-wide notify. ' +
-      'IMPORTANT — `notify` is ONE-WAY: the human CANNOT reply to it. If you need an ANSWER or a decision ' +
-      'from that person, use `ask_human` with `to` set to them instead: it blocks, it is answerable from ' +
-      'their Inbox or straight from the DM, and their reply comes back to you. Never post a question via ' +
-      '`notify` and then wait — nobody can respond, so you will wait forever.',
-    inputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        to: { type: 'string', description: "The teammate to notify — their name or email (e.g. \"Alex Rivera\" or \"alex@acme.com\")." },
-        message: { type: 'string', description: 'One line: what you want them to know.' },
-        important: { type: 'boolean', description: 'Flag as urgent/high-priority. Default false.' },
-      },
-      required: ['to', 'message'],
     },
   },
   {
@@ -1018,16 +995,16 @@ const TOOLS = [
         labels: { type: 'array', items: { type: 'string' }, description: 'Optional freeform labels.' },
         parentId: { type: 'string', description: 'Parent task id, to file this as a sub-task.' },
         goalId: { type: 'string', description: 'Link this task to a strategic goal it advances (see goal_list for ids). Its progress then counts toward that goal.' },
-        goal: { type: 'string', description: 'The single-line objective the delegate must achieve — the definition of done. On a headless auto-dispatched task the worker runs under this as a `/goal` and converges autonomously until it holds (alias for `criteria`). This is what to state when you delegate WITH a goal.' },
-        criteria: { type: 'string', description: 'A single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". When set on a headless auto-dispatched task, the worker runs under this as a `/goal` and converges autonomously until it holds. Synonym of `goal`.' },
-        poke_on_done: { type: 'boolean', description: 'Async wake-up: hand off, end your turn, and hear back without polling. The async counterpart to `wait` (which blocks in-line). DEFAULTS ON when you delegate to another agent. What it guarantees: a COMPLETION reaches you if you are still running when it lands, and stays on the task if you are not — it will not start a new run of you just to deliver good news; a HAND-BACK (blocked) or a delegate whose run dies WILL wake you even if you have exited, since only you can move those. So if you need the result to act on, either stay up, use `wait`, or read the task later. Ignored on a self-assignment or an open/human task (no separate caller to wake).' },
-        dependsOn: { type: 'array', items: { type: 'string' }, description: 'Task ids this task is BLOCKED BY — it will not dispatch until they are all done. To encode a pipeline: file the earlier steps first, capture their ids from the results, and pass them here so this step waits for them.' },
+        goal: { type: 'string', description: 'Single-line definition of done. On a headless dispatch the worker runs under it as a `/goal` and converges until it holds. Alias of `criteria`.' },
+        criteria: { type: 'string', description: 'Single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". Synonym of `goal`.' },
+        poke_on_done: { type: 'boolean', description: 'Wake me when it finishes, without polling. ON by default when you delegate to another agent. Asymmetric on purpose: a hand-back or a dead delegate wakes you even if you have exited; a plain completion does not — read the task later, or use `wait`. Ignored when you assign to yourself.' },
+        dependsOn: { type: 'array', items: { type: 'string' }, description: 'Task ids this one is BLOCKED BY — it will not dispatch until they are all done. File earlier steps first and pass their ids to build a pipeline.' },
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
-        model: { type: 'string', description: 'Override the model the DISPATCHED session runs on (e.g. a small/cheap model for a routine background sweep, a stronger one for hard work). Omit to use the assignee agent\'s own model / the workspace default.' },
-        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Override the reasoning effort of the DISPATCHED session — "low" for cheap mechanical work, up to "max" for the hardest tasks. Especially useful when delegating background work at a different cost/quality tier than your own. Omit to inherit the assignee agent / workspace default.' },
+        model: { type: 'string', description: 'Model for the dispatched session — cheaper for routine sweeps, stronger for hard work. Omit to inherit the assignee.' },
+        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Reasoning effort for the dispatched session — "low" for mechanical work, "max" for the hardest. Omit to inherit the assignee.' },
         due: { type: 'string', description: 'Optional soft deadline as an ISO date, e.g. "2026-07-15" or "2026-07-15T17:00:00Z".' },
-        wait: { type: 'boolean', description: 'If true, block until this task finishes and return its result (synchronous delegation). Implies autoDispatch. Only meaningful when assigned to an agent. Default false: file it and return immediately.' },
+        wait: { type: 'boolean', description: 'Block until it finishes and return the result (synchronous delegation). Implies autoDispatch; only meaningful when assigned to an agent.' },
         timeoutSeconds: { type: 'number', minimum: 10, maximum: 21600, description: 'When wait is true, max seconds to block before returning "still running" (default ~15 min headless / 1h interactive).' },
       },
       required: ['title'],
@@ -1544,7 +1521,10 @@ const TOOLS = [
       'value is encrypted at rest and is NOT recorded in the audit trail. Storing a secret is a governed, ' +
       'approval-gated action: this call BLOCKS until a human approves it (unless an approver is already ' +
       'attending your run). Keys are shared tenant-wide, so any agent can secret_get them — only store ' +
-      'things that are meant to be shared with the team.',
+      'things that are meant to be shared with the team. UPDATING one is the same call: putting an ' +
+      'existing key REPLACES its value in place (never delete-then-add), and the approver is shown that ' +
+      'it is a replacement. Only do that when you HOLD the new value — if the value is expired and you ' +
+      'do not have a fresh one, use secret_request({ rotate: true }) to have a human replace it.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1585,20 +1565,24 @@ const TOOLS = [
     name: 'secret_request',
     description:
       'Ask a human about a credential KEY you need — an API key, password, token, or connection string. ' +
-      'Two cases, handled automatically: (1) if the vault does NOT have the key, an owner/admin PROVIDES ' +
-      'it by typing the value into a secure form — use this INSTEAD of asking them to paste the secret to ' +
-      'you in chat, where the raw value would end up in this transcript; (2) if the key already EXISTS in ' +
-      'the vault but you cannot read it (it belongs to another agent or person), an owner/admin GRANTS you ' +
-      'ACCESS and the existing value is re-scoped to you — no one re-types it. Either way you pass only the ' +
-      'KEY name and why you need it, never a value. Once resolved: secret_get it by that key, or (if they ' +
-      'inject it) it is a shell env var on your next session. First check secret_list — you may already ' +
-      'have access.',
+      'Three cases, detected automatically: (1) if the vault does NOT have the key, an owner/admin ' +
+      'PROVIDES it by typing the value into a secure form — use this INSTEAD of asking them to paste the ' +
+      'secret to you in chat, where the raw value would end up in this transcript; (2) if the key already ' +
+      'EXISTS in the vault but you cannot read it (it belongs to another agent or person), an owner/admin ' +
+      'GRANTS you ACCESS and the existing value is re-scoped to you — no one re-types it; (3) if you CAN ' +
+      'read the key but the value is dead — the API answers 401/403/"expired"/"revoked" — pass ' +
+      'rotate:true and an owner/admin types a REPLACEMENT over it. Without rotate:true you are simply ' +
+      'told you already have the key, which is useless when the value you have is the broken thing. ' +
+      'Either way you pass only the KEY name and why, never a value. Once resolved: secret_get it by that ' +
+      'key, or (if they inject it) it is a shell env var on your next session. First check secret_list — ' +
+      'you may already have access.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         key: { type: 'string', description: 'The handle you will fetch the credential by — a letter/underscore then letters, digits or underscores, e.g. "STRIPE_API_KEY", "PROD_DB_URL".' },
-        reasoning: { type: 'string', description: 'One line for the human: what this credential is and why you need it (helps them fulfil it quickly).' },
+        reasoning: { type: 'string', description: 'One line for the human: what this credential is and why you need it (helps them fulfil it quickly). For a rotation, say what rejected it — the exact error beats "it did not work".' },
+        rotate: { type: 'boolean', description: 'Set true ONLY when you already have this key and its value is being REJECTED (expired/revoked/rotated upstream) and you want a human to replace it. Do not set it when you simply lack the key.' },
       },
       required: ['key'],
     },
@@ -2132,20 +2116,6 @@ async function update(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as { ok?: boolean; error?: string };
   return d.ok ? 'Progress posted to the inbox.' : `Could not post update: ${d.error ?? 'unknown error'}`;
-}
-
-async function notify(args: Record<string, unknown>): Promise<string> {
-  const to = String(args.to ?? '').trim();
-  const message = String(args.message ?? '').trim();
-  if (!to) return 'Who should I notify? (`to` is required — a teammate name or email.)';
-  if (!message) return 'Nothing to send (message is required).';
-  const res = await fetch(AOS_URL + '/api/notify', {
-    method: 'POST',
-    headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, to, message, important: args.important === true }),
-  });
-  const d = (await res.json()) as { ok?: boolean; to?: string; error?: string };
-  return d.ok ? `Notified ${d.to ?? to} (inbox + DM).` : `Could not notify: ${d.error ?? 'unknown error'}`;
 }
 
 async function publish(args: Record<string, unknown>): Promise<string> {
@@ -2692,7 +2662,7 @@ async function agentGet(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as {
     ok?: boolean; id?: string; self?: boolean; description?: string; category?: string; icon?: string;
-    model?: string; effort?: string; verbosity?: string; examplePrompts?: string[];
+    model?: string; effort?: string; outputStyle?: string; examplePrompts?: string[];
     claudeMd?: string; chars?: number; baseHash?: string; latestRev?: number | null; error?: string;
   };
   if (!d.ok) return `Could not read that agent: ${d.error ?? 'unknown error'}`;
@@ -2888,9 +2858,14 @@ async function secretPut(args: Record<string, unknown>): Promise<string> {
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify({ session: SESSION, key, value, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
   });
-  const d = (await res.json()) as { status?: string; detail?: string; error?: string };
+  const d = (await res.json()) as { status?: string; detail?: string; replaced?: boolean; error?: string };
   if (d.error) return `Could not store the secret: ${d.error}`;
-  if (d.status === 'stored') return `Stored secret "${key}" in the shared vault. Hand it off by NAME — tell the other agent to secret_get "${key}". Never paste the value into a message, memory, or report.`;
+  if (d.status === 'stored') {
+    return (d.replaced
+      ? `REPLACED the shared secret "${key}" — every agent that resolves that key now gets the new value.`
+      : `Stored secret "${key}" in the shared vault.`) +
+      ` Hand it off by NAME — tell the other agent to secret_get "${key}". Never paste the value into a message, memory, or report.`;
+  }
   if (d.status === 'denied') return `Storing "${key}" was not approved${d.detail ? `: ${d.detail}` : ''}.`;
   return `Could not store the secret${d.detail ? `: ${d.detail}` : ''}.`;
 }
@@ -2925,15 +2900,21 @@ async function secretList(): Promise<string> {
 async function secretRequest(args: Record<string, unknown>): Promise<string> {
   const key = String(args.key ?? '').trim();
   if (!key) return 'secret_request needs the key name of the credential you need, e.g. secret_request({ key: "STRIPE_API_KEY" }).';
+  const rotate = args.rotate === true;
   const res = await fetch(AOS_URL + '/api/agent/secret/request', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, key, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
+    body: JSON.stringify({ session: SESSION, key, rotate, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
   });
-  const d = (await res.json()) as { ok?: boolean; status?: string; mode?: string; error?: string };
+  const d = (await res.json()) as { ok?: boolean; status?: string; mode?: string; locations?: string[]; error?: string };
   if (!d.ok) return `Could not request the secret: ${d.error ?? 'unknown error'}`;
-  if (d.status === 'exists') return `"${key}" is already in the vault and available to you — secret_get "${key}".`;
+  // `exists` can't come back on a rotation — that short-circuit is exactly what rotate:true is for.
+  if (d.status === 'exists') return `"${key}" is already in the vault and available to you — secret_get "${key}". If you HAVE it and it is being rejected (expired or revoked), ask for a replacement with secret_request({ key: "${key}", rotate: true, reasoning: "…" }).`;
   if (d.status === 'duplicate') return `A request for "${key}" is already awaiting review.`;
+  if (d.mode === 'rotate') {
+    const n = d.locations?.length ?? 0;
+    return `Requested a ROTATION of "${key}" — an owner/admin will type a replacement value, overwriting the current one${n > 1 ? ` everywhere it is stored (${n} places)` : ''}. Do not keep retrying with the old value; it will not start working. Once rotated, secret_get "${key}" again for the new value (a shell env var only refreshes on your next session).`;
+  }
   if (d.mode === 'access') return `Requested ACCESS to "${key}" — it's already in the vault but scoped away from you. An owner/admin will grant you access (the existing value is re-scoped to you; no one re-types it). Once granted, secret_get "${key}", or it'll be a shell env var on your next session if they inject it.`;
   return `Requested "${key}" — an owner/admin will provide it into the vault (they type the value, you never see it pasted here). Once fulfilled, secret_get "${key}", or it'll be a shell env var on your next session if they inject it.`;
 }
@@ -3243,7 +3224,13 @@ async function handle(req: JsonRpc): Promise<void> {
     const args = (params?.arguments as Record<string, unknown>) || {};
     // Everything this call does downstream runs inside the tool's name, so each loopback request carries
     // `x-aos-tool` (see H()) and the server can report latency per TOOL, not only per route.
-    return toolContext.run(name ?? 'unknown', async () => {
+    //
+    // `session_open({summary:true})` reports as its OWN bucket. Its clock is a spawned `claude -p`, not
+    // work this process does — 17.9 s on a live tenant — while the same tool WITHOUT `summary` is one
+    // indexed row-test and a by-id build. Sharing a bucket made the tool table rank a deliberate model
+    // call second-slowest in the system and hid any regression on the cheap path behind its average.
+    const label = name === 'session_open' && args.summary ? 'session_open:summary' : name;
+    return toolContext.run(label ?? 'unknown', async () => {
     try {
       const text =
         name === 'recall' ? await recall(args)
@@ -3260,7 +3247,6 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'answer' ? await answer(args)
         : name === 'report' ? await report(args)
         : name === 'update' ? await update(args)
-        : name === 'notify' ? await notify(args)
         : name === 'publish' ? await publish(args)
         : name === 'skill_propose' ? await skillPropose(args)
         : name === 'skill_get' ? await skillGet(args)

@@ -20,6 +20,17 @@
 
 const CLICKUP_API = 'https://api.clickup.com/api/v2';
 
+/** A file attached to a ClickUp comment, normalized for download + hand-off to an agent. */
+export interface ClickupFileRef {
+  id: string;
+  name: string;
+  mimetype: string;
+  /** Bytes, as ClickUp reports them (0 when unknown) — the cheap pre-check before we spend a download. */
+  size: number;
+  /** The presigned attachment URL. Public but EXPIRING, so it is fetched now, not handed over as a link. */
+  url: string;
+}
+
 /** A ClickUp task comment resolved from the API (the Automation webhook itself carries no text). */
 export interface ClickupComment {
   id: string;
@@ -28,6 +39,8 @@ export interface ClickupComment {
   userId: string;
   /** The commenter's email (lowercased) — the join key for member run-as ('' if unknown). */
   userEmail: string;
+  /** Files attached to the comment (screenshots, logs, PDFs). Empty when there are none. */
+  files: ClickupFileRef[];
 }
 
 /** Fetch the most recent comment on a task. ClickUp returns comments newest-first. Never throws. */
@@ -45,9 +58,72 @@ export async function fetchLatestComment(token: string, taskId: string): Promise
       text: String(c.comment_text || ''),
       userId: String(c.user?.id || ''),
       userEmail: String(c.user?.email || '').trim().toLowerCase(),
+      files: parseClickupAttachments(c),
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Pull the attachments out of a comment. `comment_text` is the FLATTENED text — an attached screenshot
+ * leaves no trace in it at all — so the files live only in the structured `comment` block array (blocks
+ * of `{ type: 'attachment', attachment: {…} }`) and, on some payload shapes, a sibling `attachments`
+ * array. Both are read; ids de-duplicate the overlap.
+ */
+export function parseClickupAttachments(comment: any): ClickupFileRef[] {
+  const blocks = Array.isArray(comment?.comment) ? comment.comment : [];
+  const raw = [
+    ...blocks.map((b: any) => (b && typeof b === 'object' ? b.attachment : undefined)),
+    ...(Array.isArray(comment?.attachments) ? comment.attachments : []),
+  ];
+  const out: ClickupFileRef[] = [];
+  const seen = new Set<string>();
+  for (const a of raw) {
+    if (!a || typeof a !== 'object') continue;
+    const rec = a as Record<string, unknown>;
+    const url = String(rec.url_w_query || rec.url || rec.url_w_host || '');
+    const id = String(rec.id || url);
+    if (!url || seen.has(id)) continue;
+    seen.add(id);
+    const ext = String(rec.extension || '');
+    const title = String(rec.title || rec.name || 'file');
+    out.push({
+      id: String(rec.id || ''),
+      // ClickUp's `title` often drops the extension; the agent needs it to know what it is looking at.
+      name: ext && !title.toLowerCase().endsWith(`.${ext.toLowerCase()}`) ? `${title}.${ext}` : title,
+      mimetype: String(rec.mimetype || rec.type || ''),
+      size: Number(rec.size) || 0,
+      url,
+    });
+  }
+  return out;
+}
+
+/**
+ * Download a ClickUp attachment. The URL is presigned and needs NO Authorization header — and must not be
+ * sent one, since the API token has no business reaching the attachment host — but it EXPIRES, which is
+ * why the bytes are taken at dispatch rather than handed to the agent as a link to open later.
+ * Host-checked against `*.clickup.com` (the URL arrives inside an untrusted webhook-driven fetch) and
+ * bounded by `maxBytes`. Returns `{ error }` (never throws).
+ */
+export async function downloadClickupFile(
+  url: string,
+  maxBytes: number,
+): Promise<{ data: Buffer; contentType: string } | { error: string }> {
+  let host = '';
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return { error: 'unparseable attachment url' }; }
+  if (host !== 'clickup.com' && !host.endsWith('.clickup.com')) return { error: 'refusing to download a non-ClickUp URL' };
+  try {
+    const res = await fetch(url, { redirect: 'follow' });
+    if (!res.ok) return { error: `download failed (${res.status})` };
+    const declared = Number(res.headers.get('content-length')) || 0;
+    if (declared > maxBytes) return { error: `file is ${declared} bytes, over the ${maxBytes}-byte limit` };
+    const data = Buffer.from(await res.arrayBuffer());
+    if (data.length > maxBytes) return { error: `file is ${data.length} bytes, over the ${maxBytes}-byte limit` };
+    return { data, contentType: String(res.headers.get('content-type') || '') };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'download failed' };
   }
 }
 

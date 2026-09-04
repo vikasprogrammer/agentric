@@ -27,6 +27,11 @@ const { TerminalManager } = require(path.join(ROOT, 'dist/terminal.js'));
 
 const aos = loadAgentOS();
 const tm = new TerminalManager(aos, 'http://127.0.0.1:0', path.join(HOME, 'tmux.sock'));
+// Each section below isolates ONE clock. The AGE ceiling (section 7b) would otherwise fire underneath
+// them — several fixtures are deliberately 200–400h old to exercise an idle/claim/blocked rule — so it
+// stays off until the section that owns it, and is switched off again afterwards.
+assert(aos.settings.interactiveMaxHours() === 168, 'AGE ceiling: unset → 168h (7d) default'); // asserted here, before anything sets it
+aos.settings.setInteractiveMaxHours(0);
 // Stub the backend so the sweep is deterministic without a real tmux server.
 let attached = new Set();               // tmux names with a "client" attached
 const killed = [];
@@ -174,6 +179,56 @@ askAt(blockedForever, 150);
 tm.reapIdleSessions();
 assert(statusOf(blockedForever) === 'running', '0 → a 150h-old block is never cut');
 
+console.log('\n\x1b[1m7b) the LIFETIME ceiling — the backstop the idle clocks structurally cannot be\x1b[0m');
+{
+  // Every other clock here measures IDLENESS, and `markTurnBusy` stamps `last_activity` on EVERY tool
+  // call. So a session whose agent keeps working never looks idle however old it gets. Live instawp,
+  // measured after the wake-queue fix had already removed the biggest source of that traffic: 15
+  // interactive sessions running at 120–1007h, every one reporting under a day idle, skipped every tick.
+  aos.settings.setInteractiveIdleTimeoutHours(72);
+  aos.settings.setBlockedMaxHours(72);
+  aos.settings.setClaimedMaxHours(72);
+
+  assert(aos.settings.setInteractiveMaxHours(0) === 0, 'set 0 → off');
+  assert(aos.settings.setInteractiveMaxHours(99999) === 24 * 90, 'clamps to 90 days max');
+
+  // off = the old behaviour: age alone never closes anything.
+  aos.settings.setInteractiveMaxHours(0);
+  const ancientOff = mkSession({ created_at: Date.now() - 1007 * H, last_activity: Date.now() - 18 * H });
+  tm.reapIdleSessions();
+  assert(statusOf(ancientOff) === 'running', '0 → a 1007h session with 18h idle is never cut');
+
+  aos.settings.setInteractiveMaxHours(168);
+  // THE LIVE SHAPE: ancient, but recently active — invisible to every idle-based clock.
+  const ancientBusy = mkSession({ created_at: Date.now() - 1007 * H, last_activity: Date.now() - 18 * H });
+  const weekOldBusy = mkSession({ created_at: Date.now() - 266 * H, last_activity: Date.now() - 19 * H });
+  const youngBusy   = mkSession({ created_at: Date.now() - 120 * H, last_activity: Date.now() - 3 * H });
+  tm.reapIdleSessions();
+  assert(statusOf(ancientBusy) === 'stopped', '1007h old + 18h idle → closed on AGE (the live case)');
+  assert(statusOf(weekOldBusy) === 'stopped', '266h old + 19h idle → closed on age');
+  assert(statusOf(youngBusy) === 'running', '120h old is under the 168h ceiling → left alone');
+
+  const ev = aos.db.prepare("SELECT data FROM audit_events WHERE type='session.reaped' AND run_id=? ORDER BY ts DESC LIMIT 1").get(ancientBusy);
+  assert(ev && JSON.parse(ev.data).reason === 'max-lifetime', 'audited as max-lifetime, not idle-interactive', ev && ev.data);
+
+  // It overrides the exemptions the other ceilings honour — past this age the session is abandoned by
+  // definition, whoever claimed it or whatever it is waiting on.
+  const ancientClaimed = mkSession({ created_at: Date.now() - 400 * H, last_activity: Date.now() - 1 * H, claimed_by: 'm_bob' });
+  const ancientBlocked = mkSession({ created_at: Date.now() - 400 * H, last_activity: Date.now() - 1 * H });
+  askAt(ancientBlocked, 1);   // asked an hour ago — nowhere near the blocked ceiling
+  tm.reapIdleSessions();
+  assert(statusOf(ancientClaimed) === 'stopped', 'age overrides an active take-over claim');
+  assert(statusOf(ancientBlocked) === 'stopped', 'age overrides a fresh block on a human');
+
+  // …but never the one rule that matters: somebody is literally attached right now.
+  const ancientAttached = mkSession({ created_at: Date.now() - 1007 * H, last_activity: Date.now() - 1 * H, tmux: 'aos-LIFETIME-ATTACHED' });
+  attached.add('aos-LIFETIME-ATTACHED');
+  tm.reapIdleSessions();
+  assert(statusOf(ancientAttached) === 'running', 'ATTACHED → never cut, whatever the age');
+
+  aos.settings.setInteractiveMaxHours(0); // hand the baton back — later sections own other clocks
+}
+
 console.log('\n\x1b[1m7) the claim ceiling — a take-over expires, it is not a permanent exemption\x1b[0m');
 aos.settings.setInteractiveIdleTimeoutHours(48);
 aos.settings.setBlockedMaxHours(72);
@@ -218,6 +273,113 @@ tm.reapIdleSessions();
 assert(statusOf(claimedShortCeiling) === 'stopped', 'claim ceiling below the idle timeout still applies');
 assert(statusOf(unclaimedSameAge) === 'running', '…and the longer idle timeout still protects unclaimed rows');
 
-console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}IDLE REAPER: ${pass}/${pass + fail} passed\x1b[0m`);
-try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
-process.exit(fail === 0 ? 0 : 1);
+console.log('\n\x1b[1m8) crashed rows: reaped when abandoned, RESTORED when resurrected\x1b[0m');
+// A crash mark is a claim, not a fact. It plants no stay-stopped sentinel (a crash must stay
+// recoverable), so ttyd's reconnect re-runs attach.sh, `new-session -A` revives the pane and
+// `claude --resume` carries on — while the row stays `crashed` for ever. Live insta-ai had three such
+// rows, two with a human attached, the oldest marked 577h earlier. The inverse case is stayflexi's:
+// a genuinely abandoned crashed pane holding ~430MB of claude for 93h that no reaper's query could see.
+aos.settings.setInteractiveIdleTimeoutHours(48);
+aos.settings.setClaimedMaxHours(72);
+attached = new Set();
+killed.length = 0;
+
+// Only these rows report a live pane; everything else looks gone, so the older sections stay quiet.
+// A killed pane really disappears here, as it does in tmux — that is what stops the sweep re-reaping and
+// re-auditing a terminal row every tick (the `!alive.has(tmux)` guard is the only thing holding it, since
+// a reaped `crashed`/`done` row deliberately keeps its status).
+const livePanes = new Set();
+tm.backend.aliveNames = () => new Set(livePanes);
+tm.backend.kill = (_space, tmux) => { killed.push(tmux); livePanes.delete(tmux); };
+
+const crashedAt = Date.now() - 90 * H;
+// (a) resurrected + someone attached right now — the insta-ai case
+const resAttached = mkSession({ status: 'crashed', tmux: 'aos-RES-ATTACHED', created_at: Date.now() - 577 * H, updated_at: crashedAt, last_activity: null });
+livePanes.add('aos-RES-ATTACHED'); attached.add('aos-RES-ATTACHED');
+// (b) resurrected + working since the mark, nobody watching
+const resWorking = mkSession({ status: 'crashed', tmux: 'aos-RES-WORKING', created_at: Date.now() - 400 * H, updated_at: crashedAt, last_activity: Date.now() - 1 * H });
+livePanes.add('aos-RES-WORKING');
+// (c) live pane but NOTHING since the mark — genuinely abandoned, the stayflexi case
+const crashedZombie = mkSession({ status: 'crashed', tmux: 'aos-CRASH-ZOMBIE', created_at: Date.now() - 93 * H, updated_at: Date.now() - 1 * H, last_activity: crashedAt });
+livePanes.add('aos-CRASH-ZOMBIE');
+// (d) crashed with the pane truly gone — must be left entirely alone
+const crashedGone = mkSession({ status: 'crashed', tmux: 'aos-CRASH-GONE', created_at: Date.now() - 93 * H, updated_at: crashedAt, last_activity: null });
+
+// The stale "Crashed — <agent>" card the restore has to close.
+aos.db.prepare("INSERT INTO messages (id,type,session_id,agent,title,body,status,outcome,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+  .run('msg_res1', 'completed', resAttached, 'website-bot', 'Crashed — website-bot', 'died', 'open', 'crashed', crashedAt);
+
+tm.reapIdleSessions();
+
+assert(statusOf(resAttached) === 'running', 'crashed + live pane + ATTACHED → restored to running');
+assert(!killed.includes('aos-RES-ATTACHED'), '…and its pane was NOT killed');
+assert(statusOf(resWorking) === 'running', 'crashed + live pane + activity since the mark → restored');
+assert(!killed.includes('aos-RES-WORKING'), '…and its pane was NOT killed');
+// The v0.408.1 reap must survive the restore: neither proof holds here, so it stays terminal and dies.
+assert(statusOf(crashedZombie) === 'crashed', 'crashed + live pane + nothing since the mark → NOT restored');
+assert(killed.includes('aos-CRASH-ZOMBIE'), '…it is reaped on sight, keeping its crashed status');
+assert(statusOf(crashedGone) === 'crashed', 'crashed + pane genuinely gone → left alone');
+assert(!killed.includes('aos-CRASH-GONE'), '…and not re-killed (no re-audit loop every tick)');
+
+const card = aos.db.prepare("SELECT status FROM messages WHERE id='msg_res1'").get();
+assert(card && card.status === 'resolved', 'the stale "Crashed" inbox card is closed on restore');
+const rev = aos.db.prepare("SELECT data FROM audit_events WHERE type='session.restored' AND run_id=? LIMIT 1").get(resAttached);
+assert(rev && JSON.parse(rev.data).via === 'attached', 'audited session.restored with the proof used');
+const rev2 = aos.db.prepare("SELECT data FROM audit_events WHERE type='session.restored' AND run_id=? LIMIT 1").get(resWorking);
+assert(rev2 && JSON.parse(rev2.data).via === 'activity', '…and "activity" for the unattended one');
+
+// Idempotence: a second tick must not re-restore, re-audit or re-kill anything.
+const before = aos.db.prepare("SELECT COUNT(*) c FROM audit_events WHERE type='session.restored'").get().c;
+killed.length = 0;
+tm.reapIdleSessions();
+assert(aos.db.prepare("SELECT COUNT(*) c FROM audit_events WHERE type='session.restored'").get().c === before, 'a second sweep restores nothing again');
+assert(!killed.includes('aos-CRASH-ZOMBIE'), '…and does not re-kill the already-reaped zombie (its pane is gone now)');
+
+// Runs LAST and async, because writeEpisode stores through the memory provider — a promise that audits
+// in `.then()` — so its record lands a tick after the sweep returns. Everything above is synchronous.
+(async () => {
+  const settle = () => new Promise((r) => setImmediate(() => setImmediate(() => setTimeout(r, 40))));
+
+  console.log('\n\x1b[1m9) a janitor-reaped session is REMEMBERED\x1b[0m');
+  // Every OTHER teardown path writes an episode — markEnded (normal end, and teardownUnattended through
+  // it), markCrashed, and stopSession (the human kill button). The idle-interactive janitor did its own
+  // teardown and skipped it, so an abandoned interactive session evaporated. Measured over 30 days
+  // before this: 3 of 29 reaped sessions on instapods and 18 of 136 on instawp had an episode, and those
+  // came from a `report` earlier in the run, not from the reap. Episodes are what Dreaming and the
+  // consolidator read, so the learning loop was seeing only sessions that ended tidily.
+  aos.settings.setInteractiveIdleTimeoutHours(48);
+  aos.settings.setInteractiveMaxHours(0);
+  aos.settings.setClaimedMaxHours(72);
+  aos.settings.setBlockedMaxHours(72);
+  // Restore the file's default liveness stub. Section 8 replaces it to exercise crash detection, and
+  // sweep 0 runs FIRST — leaving it in place marks these rows `crashed` before the idle sweep sees them,
+  // and markCrashed would write the episode instead, so the test would pass without exercising the fix.
+  tm.backend.aliveNames = () => new Set(aos.db.prepare('SELECT tmux FROM term_sessions').all().map((r) => r.tmux));
+
+  const worked = mkSession({ created_at: Date.now() - 100 * H, task: 'How are we doing marketing-wise for InstaPods?' });
+  for (let i = 0; i < 3; i++) aos.audit.append({ ts: Date.now(), runId: worked, tenant: aos.tenant, principal: 'caller', type: 'gate.decision', data: '{}' });
+  tm.reapIdleSessions();
+  assert(statusOf(worked) === 'stopped', 'the idle session is still reaped');
+  await settle();
+  const ep = aos.db.prepare("SELECT COUNT(*) n FROM audit_events WHERE run_id=? AND type='episode.stored'").get(worked).n;
+  assert(ep === 1, 'and its run is remembered — an episode is written before the pane dies', `got ${ep}`);
+  // Match THIS session's own task text, not "the newest memory" — that would pass on one an earlier
+  // section happened to write.
+  const mem = aos.db.prepare("SELECT content FROM memories WHERE tenant=? AND content LIKE '%marketing-wise%' LIMIT 1").get(aos.tenant);
+  assert(mem && /Outcome: stopped/.test(mem.content), 'the episode records that it was stopped, not that it succeeded', mem && mem.content.slice(0, 90));
+
+  // A DELETED session leaves its audit events behind (the log is append-only) but has no row. Composing
+  // from those alone would write a task-less episode attributed to an agent we can no longer name.
+  const ghost = mkSession({ created_at: Date.now() - 100 * H });
+  aos.audit.append({ ts: Date.now(), runId: ghost, tenant: aos.tenant, principal: 'caller', type: 'gate.decision', data: '{}' });
+  aos.db.prepare('DELETE FROM term_sessions WHERE id = ?').run(ghost);
+  const before = aos.db.prepare('SELECT COUNT(*) n FROM memories WHERE tenant=?').get(aos.tenant).n;
+  tm.reapIdleSessions();
+  await settle();
+  const after = aos.db.prepare('SELECT COUNT(*) n FROM memories WHERE tenant=?').get(aos.tenant).n;
+  assert(after === before, 'a deleted session writes no episode — junk addressed to nobody', `${before} -> ${after}`);
+
+  console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}IDLE REAPER: ${pass}/${pass + fail} passed\x1b[0m`);
+  try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
+  process.exit(fail === 0 ? 0 : 1);
+})();

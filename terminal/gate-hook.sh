@@ -26,9 +26,10 @@
 # (AOS_UNATTENDED_APPROVAL_WAIT_S, default 180s) and then FAILS CLOSED (deny) — it never falls through
 # to allow; the approval stays pending in the inbox for a human to act on and re-run (#138). (A human can
 # still "take over" the run and approve within the window — see docs/attachable-sessions-plan.md.)
-# Built-in Read/Glob/Grep and the OS-owned mcp__agentos__* tools aren't world side effects, so
-# the hook stays silent (bare exit 0) and defers to Claude's normal permission flow — that's
-# what keeps the crown-jewel `permissions.deny` Read rules in force for the built-in Read tool.
+# The OS-owned mcp__agentos__* tools aren't world side effects, so the hook stays silent (bare exit 0)
+# and defers to Claude's normal permission flow. Built-in Read/Glob/Grep are silent too EXCEPT on the
+# crown-jewel paths in $AOS_PROTECTED_PATHS, which the hook denies locally without a gateway call — see
+# the Read arm below for why that protection can't live in `permissions.deny` any more.
 #
 # Env: AOS_URL, SESSION, AGENT, AOS_RUNTIME  (exported when the session is launched)
 set -u
@@ -113,7 +114,55 @@ case "$TOOL" in
   # (`{toolkits:["gmail"]}`), a benign read that was needlessly owner-gated. Route it to connector.call
   # (allowed) like any other connector tool; a real grant goes through INITIATE_CONNECTION above.
   mcp__*) CAP="connector.call" ;;
-  *) exit 0 ;;  # any other built-in tool (Read/Glob/Grep/…) isn't a world side effect → allow
+  # The built-in READ tools. A read isn't a world side effect, so these do NOT go to the gateway — but
+  # the crown-jewel paths (ssh keys, the tenant DB, the connector bag) still have to be unreadable, and
+  # that protection used to live in `permissions.deny` Read rules written by claude-launch.sh. It can't:
+  # on claude-code 2.1.259 the mere EXISTENCE of a `Read()` deny rule makes Claude escalate every Bash
+  # command shaped `cd <dir> && <command with a relative path>` to a human-only approval, and it outranks
+  # this hook's allow (verified live 2026-09-03 — see the long note in claude-launch.sh). So enforcement
+  # moved here: local, no gateway round-trip (these tools fire constantly, and a read is not a decision
+  # the policy engine has anything to say about), and a denial the model can actually read.
+  Read|Glob|Grep|NotebookRead)
+    hit=$(printf '%s' "$INPUT" | AOS_TOOL="$TOOL" node -e '
+      const path=require("path");
+      let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{
+        let i={};try{i=JSON.parse(d||"{}")}catch(e){}
+        const tool=process.env.AOS_TOOL||"";
+        // Which field carries a PATH differs per tool, and Grep`s `pattern` is a regex while Glob`s is a
+        // path glob — reading the wrong field would either miss a real hit or deny on a coincidence.
+        const raw=[];
+        if(tool==="Read")raw.push(i.file_path);
+        else if(tool==="NotebookRead")raw.push(i.notebook_path);
+        else if(tool==="Grep")raw.push(i.path||".");
+        else if(tool==="Glob"){raw.push(i.path||".");
+          if(typeof i.pattern==="string")raw.push(path.join(i.path||".",i.pattern));}
+        // Compare REAL paths on both sides. A home reached through a symlink (macOS `/var` -> `/private/var`
+        // is the everyday one) otherwise spells the same directory two ways and the protection silently
+        // misses. realpath only resolves what exists, so walk up to the deepest existing ancestor and
+        // re-attach the rest.
+        const fs=require("fs");
+        const real=p=>{try{return fs.realpathSync(p)}catch(e){const d=path.dirname(p);
+          return d===p?p:path.join(real(d),path.basename(p));}};
+        const prot=(process.env.AOS_PROTECTED_PATHS||"").split("\n").map(s=>s.trim()).filter(Boolean);
+        const clean=s=>s.replace(/\/+$/,"");
+        for(const r of raw){
+          if(typeof r!=="string"||!r)continue;
+          // Cut the glob at its first magic char: everything past it is unknown, everything before it is
+          // a literal prefix we can compare.
+          const t=clean(real(path.resolve(process.cwd(),r.split(/[*?[{]/)[0])));
+          for(const p of prot){
+            const b=clean(real(p));
+            // Both directions: the target inside a protected path (reading it), AND a protected path
+            // inside the target (a recursive Grep/Glob that would walk into it).
+            if(t===b||t.startsWith(b+"/")||b.startsWith(t+"/")){console.log(b);return;}
+          }
+        }
+      });' 2>/dev/null)
+    if [ -n "$hit" ]; then
+      emit deny "Agentric: $hit is a protected path (credentials / tenant state) and is not readable by an agent. If you genuinely need something from it, ask a human with ask_human."
+    fi
+    exit 0 ;;
+  *) exit 0 ;;  # any other built-in tool isn't a world side effect → allow
 esac
 
 payload=$(node -e 'const[s,a,cap,t,inp,st,si]=process.argv.slice(1);let input={};try{input=JSON.parse(inp||"{}")}catch(e){};const o={sessionId:s,agent:a,capability:cap,args:{tool:t,input},reasoning:(process.env.AOS_RUNTIME||"claude-code")+" PreToolUse: "+t};if(st){o.subagentType=st;if(si)o.subagentId=si;}console.log(JSON.stringify(o))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$INPUT" "$SUBTYPE" "$SUBID")

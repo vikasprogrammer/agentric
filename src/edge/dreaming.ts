@@ -40,6 +40,10 @@ interface DreamState {
    *  fall into the gap between a pass's `until` and the next `since` and be silently skipped. Absent on
    *  states written before this field existed → we fall back to the old marker (see `dream`). */
   watermark?: number;
+  /** The tenant-shared Insight this pass wrote, so the NEXT pass can retire it. One summary per pass,
+   *  each superseding the last — without this they accumulate: live instapods held 51 and instawp 48,
+   *  two thirds of everything in the shared pool. */
+  lastInsightId?: string;
   /** Which topic EXTRACTOR produced `topics`. Bumped when the extractor changes meaning; a state carrying
    *  an older version has its topic map reset on the next pass (see TOPICS_VERSION). */
   topicsVersion?: number;
@@ -84,7 +88,7 @@ const MIN_TOPIC_COUNT = 3;
  * `scripts/insights-signal-test.cjs` now fingerprints the extractor and fails the build when it changes
  * without a bump.
  */
-export const TOPICS_VERSION = 4;
+export const TOPICS_VERSION = 5;
 const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none',
   // Procedural / plumbing words — they describe HOW an agent worked, not WHAT the fleet works on, so they
   // drown the real topics ("slack, check, report, completed, summary" is a useless "frequently works on").
@@ -100,7 +104,23 @@ const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'th
   // ACRONYM to `properNouns` (short, all-caps, standing alone), which promoted it to a proper noun —
   // instawp's first clean pass told every agent "the fleet frequently works on: freescout, apache2,
   // WAIT". These are states a run passes through, never subjects it works on.
-  'wait', 'waiting', 'block', 'blocked', 'blocking', 'advanced', 'live', 'record', 'records', 'library', 'note', 'notes']);
+  'wait', 'waiting', 'block', 'blocked', 'blocking', 'advanced', 'live', 'record', 'records', 'library', 'note', 'notes',
+  // CALENDAR words. Recurring automations name their cadence in the task title ("friday-ops-report", the
+  // Monday routine), and a cron repeats verbatim, so these compound FASTER than real subjects: four days
+  // after the topic map began accumulating for real, `friday:33` and `monday:33` ranked #2 and #3 on
+  // instapods and were being injected into every agent's prompt as work the fleet does.
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'weekly', 'daily', 'nightly',
+  'january', 'february', 'march', 'april', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+  // FORMATS + PROTOCOLS. How a thing was written down, not what was worked on. (Databases and products
+  // are deliberately NOT here — `postgres`, `sqlite`, `stripe`, `wordpress` are real subjects.)
+  'http', 'https', 'html', 'css', 'json', 'yaml', 'yml', 'xml', 'csv', 'png', 'pngs', 'jpg', 'jpeg', 'svg', 'pdf',
+  'url', 'urls', 'bash', 'shell', 'stdout', 'stderr', 'utf-8',
+  // GENERIC VERBS + STATE WORDS that reached the threshold on live tenants, and their obvious siblings.
+  // These describe what happened to something, never the something.
+  'evaluate', 'evaluated', 'detect', 'detected', 'revise', 'revised', 'remove', 'removed', 'return', 'returned',
+  'success', 'successful', 'urgent', 'restrict', 'restricted', 'confirming', 'confirmed', 'drafting', 'drafted',
+  'persist', 'automate', 'automated', 'select', 'selected', 'cover', 'covered', 'edited', 'stale', 'final',
+  'tier', 'tiers']);
 
 export class DreamingEngine {
   constructor(private readonly os: AgentOS) {}
@@ -279,6 +299,18 @@ export class DreamingEngine {
       const topTopics = topTopicList(state.topics, 6).filter(([, v]) => v.count >= MIN_TOPIC_COUNT).map(([k]) => k).join(', ') || '—';
       const summary = `Fleet self-learning (pass ${state.passes}, since ${new Date(state.firstPass).toISOString().slice(0, 10)}): ${t.sessions} sessions — ${t.success} reported success, ${t.unknown} never reported an outcome. Recurring topics: ${topTopics}. Friction so far: ${t.rejected} approvals rejected, ${t.budgetStops} budget stops, ${t.errors} errors. Details: [[${DREAM_SECTION}/${DREAM_SLUG}]].`;
       const rec = await this.os.memory.store({ tenant: this.os.tenant, agentId: 'dreamer', content: summary, tags: ['dreaming', 'learned'], type: 'Insight', importance: 0.6, scope: 'tenant', metadata: { passes: state.passes, window, sessions: win.sessions } });
+      // SUPERSEDE the previous pass's summary. It is a cumulative snapshot — pass N+1 restates everything
+      // pass N said, over a longer window — so keeping both is keeping a stale copy. One per pass with no
+      // retirement is how the shared pool filled with them (51 of 72 on instapods, 48 of 85 on instawp),
+      // and a shared memory reaches EVERY agent. Best-effort and ordered after the write, so a failure
+      // leaves one extra summary rather than none.
+      const prior = state.lastInsightId;
+      state.lastInsightId = rec.id;
+      this.os.settings.setDreamingState(state as unknown as Record<string, unknown>, by);
+      if (prior && prior !== rec.id) {
+        try { await this.os.memory.delete({ tenant: this.os.tenant, agentId: 'dreamer', id: prior, admin: true }); }
+        catch { /* the next pass will try again */ }
+      }
       insightId = rec.id;
     } catch { /* best-effort */ }
 
@@ -315,7 +347,10 @@ export function normalizeState(raw: Record<string, unknown>): DreamState {
   // permanently below the bar — its "the fleet frequently works on …" guidance line never fired once, and
   // the fleet Insight every agent recalls read "Recurring topics: —".
   const topicsVersion = Number.isFinite(Number(raw.topicsVersion)) ? Number(raw.topicsVersion) : undefined;
-  return { firstPass: num(raw.firstPass, Date.now()), passes: num(raw.passes, 0), totals, topics, recent, watermark, topicsVersion };
+  // Carried for the same reason as `topicsVersion`, and dropped here would fail the same way: the pass
+  // would forget which Insight it wrote and stop superseding it, so they would pile up again.
+  const lastInsightId = typeof raw.lastInsightId === 'string' && raw.lastInsightId ? raw.lastInsightId : undefined;
+  return { firstPass: num(raw.firstPass, Date.now()), passes: num(raw.passes, 0), totals, topics, recent, watermark, topicsVersion, lastInsightId };
 }
 
 function zeroTally(): Tally {
@@ -350,7 +385,14 @@ export function topicCounts(episodes: EpisodeRow[], nameStop: Set<string> = new 
 
 /** The first meaningful line of an episode, with the `Task:` prefix stripped. */
 function firstLine(e: EpisodeRow): string {
-  return (e.content.split('\n').map((l) => l.trim()).find((l) => l) ?? '').replace(/^Task:\s*/i, '');
+  const raw = (e.content.split('\n').map((l) => l.trim()).find((l) => l) ?? '').replace(/^Task:\s*/i, '');
+  // Strip EMAIL ADDRESSES before either extractor sees the line. A support/billing task names the
+  // customer it is about, and the local part tokenises into what looks like a proper noun — live
+  // instapods surfaced `ahmad.hekma`, `justinhuckaby8`, `luke.collins2710` and instawp `sarahmohib8` as
+  // things "the fleet frequently works on", and the domain half put `gmail.com` at count 8. Neither is a
+  // subject, and a customer's identifier has no business riding in every agent's system prompt. Corpus-
+  // internal, so it needs no roster: the `@` is the evidence. `memberNameStop` still covers the team.
+  return raw.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ');
 }
 
 const WORD_RE = /[A-Za-z][A-Za-z0-9.-]{3,}/g;
@@ -452,6 +494,11 @@ function isEntity(token: string, proper: Set<string>): boolean {
   // Bounded by length so short legitimate names (`log4j`, `s3`) are untouched, and a token the corpus
   // consistently capitalizes is a name whatever its shape, so `proper` still wins.
   if (!proper.has(token) && token.length >= 7 && /\d/.test(token.replace(/[\d-]+$/, ''))) return false;
+  // A GENERATED HANDLE — the `adjective-animal-NN` shape this product mints for pods. It ends in digits,
+  // so the mid-token rule above deliberately spares it, and `token.includes('.')`/`\d` admits it. Live
+  // instapods carried `proud-ibis-22`, `jolly-owl-72`, `calm-tiger-80`, `warm-ibis-87`, `happy-raven-26`,
+  // `bold-falcon-22` and `fancy-raven-20` as fleet topics. One customer's pod is not a workstream.
+  if (/^[a-z]+-[a-z]+-\d+$/.test(token)) return false;
   // A FILENAME qualifies on its base name, never its extension — otherwise the dot rule (meant for
   // hostnames and versions) admits every path an agent mentions, including format placeholders like
   // `yyyy-mm-dd.md`. `.com`/`.io` are not code extensions, so real hostnames still pass below.

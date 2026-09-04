@@ -56,6 +56,22 @@ async function main() {
   assert(base.includes('a fact (memory) vs. your standing instructions (CLAUDE.md)'), 'self-improvement subsection present');
   assert(/agent_update\b/.test(base) && /change to how you ALWAYS operate → your CLAUDE\.md/.test(base), 'self-improvement explains agent_update vs remember vs both');
   assert(base.includes('agent:peer') && !base.includes('agent:tester'), 'fleet roster lists peers, excludes self');
+
+  // MEMORY vs KB. The old rule split them by AUDIENCE — "facts only you reuse" vs "the whole fleet" —
+  // which asks the agent to predict who will need a fact, at the moment it cannot know. Reading 22 live
+  // runs that wrote to BOTH stores showed what agents actually do, and it is decidable at write time:
+  // the KB gets the FINDING (a root cause, a measured result, a runbook — 'proven end-to-end against
+  // production', 'measured on 1026/1026 zones'), memory gets the TECHNIQUE (dev10 is the only box with
+  // Stripe keys; psysh evaluates line by line; a `return 404` guard cannot be canaried by status code).
+  // 19 of 22 pairs were complementary, 1 a pointer, 2 near-duplicates. The prompt now states the rule
+  // they had already converged on.
+  assert(base.includes('Memory or the Knowledge Base?'), 'the memory-vs-KB rule is stated');
+  assert(/The finding goes in the KB/.test(base) && /The technique goes in memory/.test(base), 'and it splits by KIND of knowledge, not audience');
+  assert(!/Memory is for facts only \*you\* reuse/.test(base), 'the old audience-based rule is gone — it was not decidable at write time');
+  // `shared: true` is no longer advertised: 22 of 2,523 memories on one live tenant and 37 of 10,907 on
+  // another used it, while kb_write did the same job. The capability remains in the tool schema; we just
+  // stop offering a third destination nobody picks. Every choice offered is a chance to choose wrong.
+  assert(!/shared: ?true/.test(base), 'the unused shared-memory channel is no longer advertised in the prompt');
   assert(!base.includes('Messaging — use the native integration first'), 'no native-messaging block when Slack/Discord unconfigured');
   assert(!base.includes('What you already know'), 'no recall preamble when preload is off');
 
@@ -85,24 +101,48 @@ async function main() {
   assert(!preloadOff.includes('What you already know'), 'preamble still absent while preload disabled');
 
   aos.settings.setMemoryConfig({ backend: 'sqlite', preload: { enabled: true, count: 8 } });
-  const preloadOn = build('tester');
-  assert(preloadOn.includes('What you already know — your most salient memories'), 'preamble present when preload enabled');
+  // v0.399.0 moved the preamble OUT of buildCompanyMd: it is I/O (a recall), so the async launcher
+  // resolves it and hands it in, keeping prompt assembly synchronous. These assertions still called the
+  // old one-arg shape and had been failing ever since — invisibly, because this file was never wired into
+  // `npm run test:governance`. Both are fixed below: build the preamble the way the launcher does, and
+  // the file now runs in CI so it cannot rot again.
+  const withPreamble = async (agent, task) => tm.buildCompanyMd(agent, undefined, false, await tm.memoryPreamble(agent, task));
+
+  // The preamble is one section of a longer prompt, and later sections use "- " too — so bound the count
+  // to the preamble's own block (up to the next heading) rather than everything after its title.
+  const preambleBullets = (md) => {
+    const i = md.indexOf('What you already know');
+    if (i < 0) return 0;
+    const rest = md.slice(i);
+    const end = rest.indexOf('\n#', 1);
+    return (end > 0 ? rest.slice(0, end) : rest).split('\n').filter((l) => l.startsWith('- ')).length;
+  };
+  aos.settings.setMemoryConfig({ backend: 'sqlite', preload: { enabled: true, count: 8 } });
+  const preloadOn = await withPreamble('tester', 'deploy the service and restart it after the build');
+  assert(preloadOn.includes('What you already know'), 'preamble present when preload enabled');
   assert(preloadOn.includes('PRIVATE-DEPLOY-GOTCHA'), "preamble includes the agent's own memories");
   assert(preloadOn.includes('SHARED-COMPANY-FACT'), 'preamble includes tenant-shared memories');
   assert(!preloadOn.includes('OTHERS-PRIVATE-SECRET'), "preamble does NOT leak another agent's private memories");
-  // Importance ordering: the 0.9 private fact should sort above the 0.2 note (both present, high first).
-  assert(preloadOn.indexOf('PRIVATE-DEPLOY-GOTCHA') < preloadOn.indexOf('low-value note'), 'preamble ranks by importance (high before low)');
+  // Selection is now by RELEVANCE to the task (v0.399.0), not importance — and an irrelevant memory is
+  // not ranked last, it is not seeded AT ALL. That is the stronger property, so assert it directly: the
+  // deploy gotcha is in, the unrelated note is out, for a deploy task.
+  assert(!preloadOn.includes('low-value note'), 'a memory irrelevant to the task is not seeded at all');
 
-  // count clamp
+  // count clamp. Needs TWO task-relevant memories, or the cap is untestable — with only one relevant
+  // memory a count of 1 and a count of 8 both yield one bullet, and the assertion would pass for the
+  // wrong reason.
+  await aos.memory.store({ tenant: aos.tenant, agentId: 'tester', content: 'SECOND-DEPLOY-FACT the build step must run before the restart', importance: 0.7 });
+  aos.settings.setMemoryConfig({ backend: 'sqlite', preload: { enabled: true, count: 8 } });
+  const two = await withPreamble('tester', 'deploy the service and restart it after the build');
+  assert(preambleBullets(two) >= 2, 'both task-relevant memories are seeded when the count allows', 'got ' + preambleBullets(two));
   aos.settings.setMemoryConfig({ backend: 'sqlite', preload: { enabled: true, count: 1 } });
-  const one = build('tester');
-  const bullets = (one.split('What you already know')[1] || '').split('\n').filter((l) => l.startsWith('- ')).length;
-  assert(bullets === 1, 'preamble honours the count (1 requested → 1 bullet)', `got ${bullets}`);
+  const one = await withPreamble('tester', 'deploy the service and restart it after the build');
+  assert(preambleBullets(one) === 1, 'preamble honours the count (1 requested → 1 bullet)', 'got ' + preambleBullets(one));
 
   console.log('\n\x1b[1m3) OS-owned MCP tool list (dist/memory/memory-mcp.js)\x1b[0m');
   const always = await mcpTools({});
   const alwaysNames = always.map((t) => t.name);
-  const EXPECTED_ALWAYS = ['recall', 'remember', 'revise', 'forget', 'kb_search', 'kb_write', 'ask', 'report', 'update', 'publish', 'schedule', 'task_create', 'task_update', 'agent_update', 'secret_put', 'secret_get', 'check_inbox'];
+  const EXPECTED_ALWAYS = ['recall', 'remember', 'revise', 'forget', 'kb_search', 'kb_write', 'ask_human', 'report', 'update', 'publish', 'schedule', 'task_create', 'task_update', 'agent_update', 'secret_put', 'secret_get', 'check_inbox'];
   const missing = EXPECTED_ALWAYS.filter((n) => !alwaysNames.includes(n));
   assert(missing.length === 0, `always-on tools all present (${alwaysNames.length} total)`, `missing: ${missing.join(', ')}`);
   assert(!alwaysNames.some((n) => /slack|discord/.test(n)), 'no slack/discord tools without egress flags');
@@ -120,6 +160,25 @@ async function main() {
   const reply = await mcpTools({ SLACK_REPLY: '1', DISCORD_REPLY: '1' });
   const rNames = reply.map((t) => t.name);
   assert(rNames.includes('slack_reply') && rNames.includes('discord_reply'), 'reply tools appear with *_REPLY=1');
+
+  // EVERY TOOL THE PROMPT NAMES MUST EXIST. `ask` was renamed `ask_human`, and the prompt kept telling
+  // agents to call `ask` — in the operating notes twice and in the unattended-turn brief once. Nothing
+  // caught it: this file is the only thing that checks the prompt, and it was never wired into
+  // `npm run test:governance`, so it had been failing silently since the signature change in v0.399.0.
+  // A prompt that names a tool which does not exist is a prompt that teaches agents to fail.
+  console.log('\n\x1b[1m2b) Every tool the prompt names exists\x1b[0m');
+  {
+    const { AGENT_OS_OPERATING_NOTES } = require(path.join(ROOT, 'dist/terminal.js'));
+    const { UNATTENDED_TURN_BRIEF } = require(path.join(ROOT, 'dist/edge/background-work.js'));
+    const prose = AGENT_OS_OPERATING_NOTES + '\n' + (UNATTENDED_TURN_BRIEF || '');
+    // Field names and statuses are also backticked, so only check identifiers that look like tool calls:
+    // snake_case, or a known bare-word tool. Anything else is prose and is skipped deliberately.
+    const cited = [...new Set((prose.match(/`([a-z][a-z0-9_]{2,})`/g) || []).map((x) => x.slice(1, -1)))]
+      .filter((x) => x.includes('_') || ['recall', 'remember', 'revise', 'forget', 'report', 'update', 'publish', 'notify', 'schedule', 'unschedule', 'stop'].includes(x));
+    const unknown = cited.filter((c) => !alwaysNames.includes(c) && !eNames.includes(c) && !rNames.includes(c));
+    assert(unknown.length === 0, 'every tool named in the prompt is actually exposed', unknown.join(', '));
+  }
+
 
   console.log('\n\x1b[1m4) Launch-script permission pre-allow (claude-launch.sh)\x1b[0m');
   const launch = fs.readFileSync(path.join(ROOT, 'terminal/claude-launch.sh'), 'utf8');

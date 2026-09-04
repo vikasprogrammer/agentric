@@ -19,6 +19,1153 @@ new version heading in the same commit.
   tmux pane. `AOS_UID_ISOLATION` stays off, so the app's own `/terminal/` proxy means one published
   port is enough. Carries no host, tenant or token — all deployment identity stays in runtime config.
 
+## [0.424.0] - 2026-09-04
+### Added
+- **A Slack agent can read the thread it was tagged into.** A mention delivers one message, so an agent
+  pulled into the fifth reply of a live thread saw one line and nothing before it — and then either asked
+  the human to paste the conversation back or answered confidently about a thread it had never read. The
+  bot is already in the channel and already receives the event, so the rest was one authenticated call
+  away: the ingress now reads the thread (`conversations.replies`, last 30 messages, 800 chars each) and
+  hands it to the agent oldest-first, senders resolved to member names and other apps named by their bot
+  profile. Narrow on purpose — no call when the message *opens* its thread, none on the continuity path
+  (that session already holds the transcript), and never fatal. ⚠ History scopes are per conversation
+  type: `channels:history` is public channels only, a **private** channel needs **`groups:history`**
+  (`mpim:history` / `im:history` for group DMs / DMs). All four are in the bundled manifest, but an app
+  installed before them answers `missing_scope` — surfaced verbatim in the `slack.thread.unreadable`
+  audit line, in an amber banner on Settings → Integrations, and in the agent's prompt. Add the scope and
+  reinstall. Pinned by `scripts/slack-ingress-test.cjs`.
+- **The missing scope is warned about deterministically, in the thread.** Telling the agent it is blind
+  is a *request* — the model may relay it, paraphrase it into something wrong, or answer as though
+  nothing were missing, and the run least able to notice it is blind is exactly this one. So the server
+  appends the warning to its own ack: which scope, for this conversation type (`groups:history` in a
+  private channel, `mpim:history` in a group DM), and that the app must be **reinstalled** after adding
+  it. `not_in_channel` gets the different fix it actually needs (invite the bot). And because the person
+  who tagged the bot is rarely the person who can add a scope, the same failure drives a banner on
+  Settings → Integrations for the admin, who never sees the thread.
+
+## [0.423.0] - 2026-09-04
+### Added
+- **A company Composio connection can be claimed back as one person's own** — the exact inverse of
+  sharing a personal one with the team, and it exists for the same reason. Someone completes the hosted
+  OAuth on the *company* shelf while signed in to their own Google/Slack account, and the result is a
+  connection every agent in the tenant can act through wearing one individual's identity; that is the
+  shape of the incident this whole thread started from. An account's entity is immutable on Composio's
+  side, so a claim can no more be a move than a share can - it is a marker the launcher enforces by
+  minting everyone ELSE's company session without it (`composio_claims`, `exclusionFor`). Console:
+  **Make it personal** / **Give back to company** on a company row, mirroring Share with team.
+  `POST /api/connections/claim`, audited `connector.claimed` / `connector.released`.
+- Two exclusions are expressible and the code picks between them: the claimed account is the only ACTIVE
+  one of its toolkit ⇒ `toolkits.disable` (Composio rejects an empty account pin), other active accounts
+  remain ⇒ pin the session to exactly those. Both verified against the live endpoint - a disabled toolkit
+  is genuinely unreachable, not merely hidden.
+
+### Note
+- Automation and system runs are excluded too: they act as nobody, so they have no business acting as the
+  claimer. A toolkit that cannot be enumerated is disabled rather than left open - over-restricting is
+  recoverable, under-restricting is the bug. The prompt follows the mint, so a claimed app is hidden from
+  every other run and shown to its claimer marked as their own.
+- Owner/admin only, since a company connection is org property and privatising one takes a capability
+  away from everyone. Whose it is comes from the account resolved in v0.422.0; when no member matches,
+  the caller names one.
+
+## [0.422.2] - 2026-09-03
+### Changed
+- **The expired-connection card no longer DMs Slack/Discord — Inbox only.** Every other review card is
+  an agent BLOCKED on a human (a credential, a skill, a policy change: nothing proceeds until someone
+  answers), so interrupting them out-of-band is the point. An expired connection is not that - it is a
+  standing condition nobody is waiting on, true for as long as it is true, and it retires itself once
+  the app is reconnected. A DM for it is a notification about state, which is exactly the noise that
+  makes the cards people MUST answer easy to miss. `postReviewCard` gained a `quiet` flag for this
+  class; the DM path is otherwise unchanged.
+
+## [0.422.1] - 2026-09-03
+### Fixed
+- **An expired-connection card outlived the problem.** Reported within the hour of v0.422.0 shipping:
+  the expired connections were removed, the cache dropped to zero expired rows, and both cards sat in
+  NEEDS YOU still claiming an app was unavailable - with no way to clear them, since a review card
+  carries no reject path, so "I fixed this" and "I am ignoring this" looked identical. The card is now
+  DERIVED state, reconciled on every connection refresh: it stands only while at least one toolkit it
+  names still has an expired connection on that shelf, and reconnecting, deleting or pruning all retire
+  it (`connector.expired.cleared`). It also gained a Dismiss button as the manual escape hatch, and says
+  in its own body that it clears itself.
+- **A reconnected app no longer raises a card at all.** An expired row whose toolkit is live again is
+  housekeeping - "Clear replaced" in Connections deals with it - so it is recorded and marked notified
+  but never put in front of a human. Only an app with NO live account left is something anyone can act
+  on. Previously a card titled "gmail unavailable" also carried a clickup line reading "already
+  reconnected, this is the old record", which is not news.
+- **Two expired accounts of the same app were listed twice.** A live card read "google_search_console,
+  google_search_console unavailable" and "Reconnect google_search_console, google_search_console". The
+  card is now one line per toolkit, with the account beside it.
+- **"2 the company Composio connections have expired."** Fixed the sentence, and each app is now named
+  once rather than in both the opening line and the list.
+
+## [0.422.0] - 2026-09-03
+### Added
+- **Every Composio connection now says whose account it actually is.** A Composio `user_id` is a SHELF,
+  not an identity: `service:<tenant>` means "the company's shelf" and an email means "that member's", and
+  neither says which third-party account was OAuth'd onto it. Live consequence - the *company* Google
+  Sheets connection on one tenant was a specific teammate's personal Google account, so an agent acting
+  "as the company" created a spreadsheet in that person's Drive while the console showed only
+  `googlesheets_seba-artal`. The account cannot be read from the connection record (every credential
+  field comes back as the literal `REDACTED`) but the Tool Router discloses it, so it is resolved,
+  cached in the new `composio_identities` table, and surfaced as `account` on `GET /api/connections`,
+  on each console row, and in every agent's prompt.
+- **Agents are told which namespace is whose.** Until now a session saw two indistinguishable MCP
+  servers, `composio` and `composio-company`, and the Tool Router picks tools by relevance - so which
+  identity acted was decided by ranking, not intent. `buildCompanyMd` now names each namespace, whose
+  shelf it is, and the resolved account per app, and instructs the agent to `ask` rather than proceed
+  when the account that would act is not the one the task implies. Prompt and mint are derived from one
+  `composioSessionPlan`, so the agent can never be told about a namespace it does not have.
+- **Expired connections are no longer silent.** One tenant's company ClickUp had three expired accounts
+  and zero live ones for two weeks with nothing anywhere saying so. A refresh now posts a
+  `connection.expired` card (audited `connector.expired`) to whoever can reauthorise it - the shelf's
+  member, or the admins tier for the company shelf - deduped per connection for a week, and says whether
+  the app is merely an old row or genuinely unavailable. The console shows expired rows with a
+  **Reconnect** button and hides "Share with team" on them, plus **Check accounts** (refresh on demand)
+  and **Clear replaced**.
+- `POST /api/connections/refresh` and `POST /api/connections/prune`. Prune deletes only **superseded**
+  expired connections - an expired account for an (entity, toolkit) that also has a live one, older than
+  7 days. Deliberately not "delete everything expired": an expired connection with no replacement is the
+  only record that a capability is missing, so sweeping it would erase the very thing that tells a human
+  to reconnect.
+
+### Note
+- The identity refresh is a mint plus two MCP round trips per entity, so it stays OFF the launch path: a
+  launch fires it in the background at most every 6h per entity and never waits on it. A failed probe
+  degrades to "we learned nothing this time" and never blanks a label already cached.
+- ⚠ `COMPOSIO_MANAGE_CONNECTIONS` does not report "no connection" for a toolkit - it **initiates** one
+  and returns an OAuth link. The probe list is therefore always derived from `activeToolkits()`.
+
+## [0.421.0] - 2026-09-03
+### Fixed
+- **A delegate's result could come back to the wrong caller.** The wake queue delivers per AGENT, so when
+  the caller's own transcript was cold it typed the result into any other live session of that agent
+  (`inject-sibling`) - which is the same agent mid-work on something else, usually for someone else, and
+  it answers into ITS audience. Measured on a live tenant over 30 days: 369 of 1532 pokes took that lane
+  and **64 of the 251 joinable ones landed in a run acting as a different member than the task owner**.
+  Lane 2 now refuses a destination whose `run_as` differs from the batch, or that has a Slack / Discord /
+  Telegram / ClickUp thread or DM binding of its own to reply into; a refused sibling falls through to the
+  resume lane - the caller's own transcript, which was always the right destination (`acceptsSibling` in
+  `src/edge/wakeups.ts`).
+- **`poke-done` no longer takes the sibling lane at all.** The cheapness that justified it was
+  "in-context"; in a sibling it is by definition out of context, so what was left was good news delivered
+  to the wrong conversation. A completion now reaches its own pane or it stands on the task.
+- **A dropped completion leaves a mark on the task.** `poke-done` at a cold caller is deliberately dropped
+  (v0.375.0), but from the board that is indistinguishable from a poke that got lost - which is how it was
+  reported. `dropDone` writes one `status` line onto the task via `TaskStore.markWakeDropped` ("... was not
+  woken - it had no live run, so the result stands here"): no extra card and no extra DM (the owner already
+  has the `task.notified` DM), and a `status` event rather than a `comment` so it can never become the
+  result `latestNote` quotes. `agent.poke.skipped` now distinguishes `done-cold-caller` /
+  `done-no-own-pane` / `done-wedged-caller`.
+- `scripts/wakeup-queue-test.cjs` gains cases 12-15 (63 assertions); docs/tasks-plan.md gains §3.9.
+
+## [0.420.0] - 2026-09-03
+### Fixed
+- **Every Composio action was governed as one anonymous `connector.call`.** Composio's Tool Router
+  exposes exactly six meta-tools no matter how many apps an entity has connected, and the real action
+  rides at `input.tools[].tool_slug` - so `args.tool` always read `COMPOSIO_MULTI_EXECUTE_TOOL` and every
+  plane keyed on it was blind: `resolveCapability` never fired (`payments.refund`, `email.send`, ...),
+  the enricher never set `emailSend` so recipients were never judged, and the approval card said
+  *"Write to Composio multi execute tool"*. Live evidence: an expresstech run sent two customer-facing
+  Gmail messages, both audited `connector.call` / allow / green / "no rule matched". The gate now unwraps
+  the envelope to the real effect before enriching (`src/capabilities/composio-envelope.ts`,
+  `gate.composio.unwrapped`) - server-side, so claude-code, codex and opencode are all covered by one
+  implementation. A batch (up to 50 actions, one verdict) is governed at the risk of its worst member and
+  names the rest on the card.
+- **Two of those six meta-tools are arbitrary remote code and were waved through as generic connector
+  calls.** `COMPOSIO_REMOTE_BASH_TOOL` is a shell and `COMPOSIO_REMOTE_WORKBENCH` is a persistent Python
+  sandbox whose code can call `run_composio_tool(tool_slug=...)` - any Composio action, from inside a
+  string. Both are now `shell.exec` with the code as the governed command, carrying `composioRemote` so a
+  workspace can rule on remote execution as a class; their auto-approve signature is namespaced apart, so
+  an "always approve" for a local command can never clear the same command on Composio's box.
+  `COMPOSIO_MANAGE_CONNECTIONS` (which with `reinitiate_all` **replaces** a live connection) is now
+  `connector.connect`.
+- **`extra_recipients` did not count as recipients.** It is Composio's Gmail schema for the additional
+  to/cc list and sat outside the enricher's recipient keys, so a send to one insider plus four outsiders
+  would have scored as a single internal recipient. Latent until the unwrap above made the email facts
+  fire at all.
+### Docs
+- **Insights Step 5: "prompt shape" added as a second-signal candidate** (`docs/insights-revisit.md`).
+  Agent prompts accrete monotonically through `agent_update` self-edits and nothing ever removes a
+  section: instawp's `onboarding-assistant` went 8.2KB -> 194KB over 15 revisions, `engineer` 7.8KB ->
+  81KB over 34. Because a prompt is re-read every session, instawp spends ~22M tokens/month re-loading
+  them. Two costs beyond tokens: the prompt's register leaks into the work product (an 81KB
+  essay-shaped prompt produced 109 PR comments in 14 days averaging >=1.6KB), and numbers rot in a
+  prompt because nothing dates or re-runs them. The signal is already fully recorded in
+  `agent_revisions` + `term_sessions`; ranking must be **bytes x runs**, not bytes. Includes the rule
+  four hand-migrations produced ("move what a run reads conditionally, keep what fires every run"),
+  the refusal to build a one-click migrate button, and measured sizing: 36.8MB/30d (~9.2M tokens/month)
+  freed across four agents.
+
+## [0.419.3] - 2026-09-03
+### Fixed
+- **A single `make-live.sh` run could put two tenants on two different commits.** Every checkout fetched
+  and then resolved `$REF` for itself, which is a race with whoever is merging: a box that fetched a
+  second later got a newer commit than its siblings. One run on 2026-09-03 put one tenant live on 0.419.2
+  and two on 0.419.1 and reported success for all three — each box really had been verified against the
+  version it had itself built, so nothing in the deploy was in a position to notice. `$REF` is now
+  resolved exactly once, up front (from the first local checkout, or the first remote on a remote-only
+  box), every checkout is pinned to that sha, and a checkout that does not have the commit after its
+  fetch fails by name instead of quietly deploying something else. The run now opens with the line
+  `deploy target: origin/main @ <sha>`.
+
+## [0.419.2] - 2026-09-03
+### Fixed
+- **A task room's Session tab had no way to open that session on its own.** The embedded pane was
+  rendered with `standalone` - the flag that means "this IS the chrome-less popout at `#/term/<tmux>`,
+  so drop the Pop out and Focus buttons" - so inside a task room the terminal silently lost both, and
+  the only way to get a session into its own tab was to leave the room and find the run on the Sessions
+  page. The room is an embedded pane, not the popout, so it no longer passes the flag: "Pop out" (a real
+  anchor, so cmd/middle-click work) opens just the session, chrome-free, in a new browser tab.
+
+## [0.419.1] - 2026-09-03
+### Fixed
+- **`make-live.sh` deployed only the FIRST remote tenant, and failed confusingly on the second.** Every
+  remote phase is a `while read ... done <<EOF` over the target list, and the `ssh` inside it inherited
+  that heredoc as stdin - so the first connection slurped the remaining entries and the loop ended one
+  tenant early. Preflight and the fetch/resolve phase silently skipped the second remote; the parallel
+  build phase, whose background subshells do NOT share that stdin, then did reach it and died on the
+  state file the earlier phase never wrote (`cat: .../<key>.old: No such file or directory`), naming a
+  tenant nothing in the log had mentioned. Invisible while exactly one remote was configured. `ssh -n`
+  closes it.
+
+## [0.419.0] - 2026-09-03
+### Fixed
+- **A file sent through ClickUp or Telegram reached the agent as nothing** — the last two of the four chat
+  lanes, after Slack (v0.416.0) and Discord (v0.417.0). Each needed a different fix:
+  - **ClickUp**: `comment_text` is the flattened text, so a screenshot dropped on a task leaves no trace in
+    it — the files live only in the structured `comment` block array (and, on some payloads, a sibling
+    `attachments` array). Both are read and de-duplicated, then downloaded into the agent's own `.inbox/`.
+    The presigned URL takes **no** Authorization header (the API token has no business at the attachment
+    host) and **expires**, so the bytes are taken at dispatch. ClickUp's `title` drops the extension, so it
+    is re-appended — an agent needs to know it is looking at a `.png`.
+  - **Telegram**: the worst of the four. `parseTelegramUpdate` returned null for any message with **no
+    text**, and an uncaptioned photo is the most natural way a person reports a bug — so the message was
+    dropped whole. It now routes. `photo` is an array of ascending sizes and the largest is taken (the
+    first is a thumbnail); Telegram hands out an opaque `file_id` rather than a URL, so each file costs a
+    `getFile` first. ⚠ That download URL embeds the bot token in its path — it is never logged, audited or
+    shown to an agent.
+  Both are bounded at 5 files / 8 MB each and land in the same `.inbox/` the console's paste-a-file path
+  uses, with the prompt naming each by the relative path it will have.
+
+### Changed
+- **ClickUp names the agent in its ack only when the router chose it.** A dispatch the commenter steered
+  (`/support-ops …`) still posts no "on it" comment — the 👀 reaction is enough, and a second comment is
+  noise on a task's shared comment section. But an automation, an auto-route or a resolved disambiguation
+  leaves the commenter with no way to know who took it, so that case posts a one-line named ack.
+- Telegram's ack names the agent too, completing the `chatAck` rollout across all four lanes.
+- `docs/connectors/clickup.md` and `docs/connectors/telegram.md` document the attachment paths, plus — for
+  ClickUp — **why the Slack/Discord untagged-reply fix deliberately does not transfer**: a task's comment
+  section is a shared human workspace, not a thread the bot owns, so the `/command` gate stays the
+  addressing rule.
+
+## [0.418.0] - 2026-09-03
+### Added
+- **Eight more proven agent shapes in Docs → Use cases, plus the readback practice.** Generalised from
+  the recurring unattended workflows production installs actually run: an **SLA radar** (breach list,
+  internal-only, deliberately not the agent that answers tickets), an **exception monitor** (watermarked
+  log sweep — without the watermark it re-reports the same hundred errors and the channel dies), a
+  **record reconciler** (drift between two systems of record), a **build failure sweep** (CI shouts once
+  and never again; the costly failures are weeks old), an **edge protection tuner** (the real output is
+  the false-positive list — blocked customers), a **pipeline status reporter** (keeps the tracker the
+  team steers by honest), a **pipeline watchdog** (an unattended chain stalls silently; keep it dumb) and
+  an **output quality reviewer** (must be a different agent than the one graded). New
+  **Pre-registered readbacks** section: an agent books its own follow-up before it finishes, criterion
+  written before the result is known — the honest input to "did this work?". The trigger catalog gains
+  the sixth trigger that makes it possible, a deferred self-schedule.
+
+## [0.417.0] - 2026-09-03
+### Fixed
+- **A Discord message's attachments reached the agent as nothing at all.** Discord never dropped the
+  message (there is no `file_share` subtype to trip over), but `attachments[]` went into the raw payload
+  and nowhere else — so an agent told "see the screenshot" had no screenshot. Files are now downloaded
+  (≤5 per message, ≤8 MB each) into the agent's own `.inbox/`, and the prompt names each by the relative
+  path it will have. Two Discord-specific rules: the CDN URL is signed and is fetched with **no**
+  Authorization header (the bot token has no business reaching the CDN host), and it **expires**, which is
+  why the bytes are taken at dispatch instead of handed over as a link. Host-checked against
+  `cdn.discordapp.com` / `media.discordapp.net`.
+- **A reply to something an agent posted in Discord went nowhere.** `discord_threads` is keyed by channel,
+  which covers a branched thread and cannot cover a proactive `discord_send` — that posts into a channel
+  with no thread, and binding the whole channel would drag every unrelated message into the run. So a
+  reply under a cron report was dropped as guild chatter. Discord marks a reply with
+  `message_reference.message_id`, and having *written* that message is the targeting signal: the new
+  `discord_bot_messages` index records every message an agent posts (`discord_reply`, `discord_send`, and
+  the ack), a reply to one is acted on with no @mention, and it stays with that message's agent rather
+  than being re-classified or answered with a roster. A plain guild message, and a reply to somebody
+  else's message, are both still ignored in full silence.
+
+### Changed
+- **The ack that opens a chat thread now names the agent that picked the message up** — "🤖 `support-ops`
+  is on it" rather than an anonymous "On it". Where several agents are reachable and the auto-router, not
+  the sender, chose one, the old ack left the sender unable to tell who answered. Shared by Slack, Discord
+  and Telegram (`chatAck`); `fireSlack`/`fireDiscord`/`fireTelegram` and the chat router now report which
+  agents they started.
+- Discord's DM-continuity hint quotes `agent-name: your request` instead of the `/agent-name` form, and
+  the Slack and Discord connector docs are brought up to date with both this release and v0.416.0.
+
+## [0.416.0] - 2026-09-03
+### Fixed
+- **A Slack message with a file attached was dropped whole — text and all.** Slack marks such a message
+  `subtype: "file_share"`, and `parseSlackEvent` dropped every subtyped message (the rule that correctly
+  ignores edits, joins and deletes), so pasting a screenshot at an agent read as the bot ignoring you.
+  `file_share` now routes as the ordinary user message it is.
+- **An untagged reply in a thread Agentric itself started went nowhere.** The `slack_threads` binding is
+  keyed by session id — one reply target per run — so a thread the BOT opened (a cron report posted with
+  `slack_send`, a proactive nudge) had no row at all, and a reply under it fell through to the
+  "unaddressed channel chatter" drop. A new thread-keyed index (`slack_bot_threads`) records every thread
+  the bot has spoken in, written both at spawn and whenever `slack_reply`/`slack_send` opens a new one.
+  Having spoken in a thread is now the targeting signal: a reply there is acted on with no @mention, and
+  stays with the agent that owns the thread rather than being re-classified or answered with a roster.
+  A thread we have never posted in is still ignored in full silence.
+
+### Added
+- **Attachments reach the agent as files it can open.** Slack hands out metadata and an authenticated
+  URL, never bytes, so an agent told "see the screenshot" had nothing to read. Inbound files are now
+  downloaded with the bot token (≤5 files, ≤8 MB each) into the agent's own `.inbox/` — the same folder
+  the console's paste-a-file path uses — and the prompt names each by the relative path it will have.
+  Needs the new `files:read` scope; Slack answering a download with its sign-in HTML is reported as that
+  missing scope rather than saved as a "file", and a non-Slack URL is refused outright.
+- **Addressing an agent from a Slack DM.** Slack intercepts a leading `/` as a slash command, so
+  `/support-ops fix this` typed in a DM never left the client — the one syntax the help list advertised
+  was the one that could not be sent. `@support-ops …`, `support-ops: …` and a bare `support-ops …` now
+  route identically (guarded on the first token being a real agent id, so an ordinary sentence is not
+  read as addressing an agent), and a single declared `/agentric <agent> <request>` slash command,
+  delivered over the existing Socket Mode connection, gives the slash form a real home. Its ack opens a
+  thread and the run is bound to it, so the answer and every follow-up stay in one place. The help list
+  no longer quotes a `/name` form Slack refuses to send.
+
+## [0.415.2] - 2026-09-03
+### Changed
+- **The governance suite runs in 40s instead of 88s.** Three of its 88 scripts were 61s of the total, all
+  of it real sleeping: `loop-stall-attribution` blocked the event loop for 1.2s some thirty times to cross
+  a hardcoded 1000ms stall threshold (39s), `attach-grace` aged tmux panes against `attach.sh`'s 0.25s
+  poll tick (12.7s), and `opencode-gate` sat out the plugin's 1s approval beat and 2s gate backoff (9.1s).
+  Each of those three constants is now env-overridable — `AOS_STALL_MS`, `AOS_ATTACH_TICK_S` /
+  `AOS_ATTACH_FLOOR_TICKS` / `AOS_ATTACH_CEILING_TICKS`, `AOS_GATE_POLL_MS` — and the tests set small
+  values, scaling their own waits by the same factor. Production sets none of them and its timing is
+  unchanged. What each test proves is threshold-independent (a block that CROSSES the line; a pane that
+  lands past the floor in ticks), so the shortened runs are the same proofs. Deliberately left alone:
+  `loopOverSecond`, a reported metric whose meaning IS its one-second threshold, and gate-hook.sh's twin
+  poll loop, which counts in whole seconds with shell arithmetic. Verified over three consecutive runs of
+  all three scripts with no flakes. Combined with v0.415.1, a steady-state 3-target deploy goes from ~314s
+  to well under a minute of build-and-test.
+
+## [0.415.1] - 2026-09-03
+### Changed
+- **`make-live.sh` builds every checkout in parallel and runs the governance suite once per commit.** A
+  deploy was spending ~93% of its wall clock in the suite, sequentially, once per checkout — measured on
+  this box: tsc 2.8s, console build 6.2s, governance suite **88.3s**, times three targets on the same sha.
+  The suite is a property of the COMMIT, not the checkout, so re-running it for the second and third local
+  checkout re-proved the same shas on the same node on the same box. It now runs once across the local
+  checkouts when they're all landing on the same commit (and in each of them when they aren't). Every
+  REMOTE still runs its own — a different node major and libc is exactly where the portable-SQL bugs turn
+  up — deduped only across remotes sharing both a host and a commit. Phase 1 also splits: the cheap,
+  informative half (fetch, resolve, refuse a dirty tree) stays sequential and up front, while the
+  expensive half runs one job per checkout concurrently, each job's output captured and replayed whole in
+  target order. The build-everything-then-restart-everything guarantee is unchanged — the wait loop
+  collects every exit code and one failure anywhere stops the deploy before a single service restarts.
+  Two smaller fixes ride along: the local suite run now sets `AOS_NO_TTYD=1` like the remote one already
+  did (a suite run that builds a TenantRegistry leaks a ttyd per tenant on a live box), and the build/test
+  log paths are keyed per checkout instead of one fixed `/tmp` file that parallel jobs would overwrite.
+
+## [0.415.0] - 2026-09-03
+### Fixed
+- **Crown-jewel read protection moved from `permissions.deny` into the gate hook, un-sticking every
+  `cd <dir> && <relative path>` command.** On claude-code 2.1.259 the mere existence of a `Read()` deny
+  rule makes Claude escalate any Bash command of that shape to a **human-only** approval — it can't
+  statically prove the relative target resolves outside a denied path, so it fails closed ("only you can
+  approve running it anyway"). An absolute `cd` doesn't help; the relative *target* is the trigger. That
+  is most of what an agent types, and the escalation outranks us: verified live (instapods session
+  `ses_d985eefa4b8c4165`) that the gate hook had already returned `permissionDecision:"allow"` for the
+  exact command at 12:28:22 and Claude escalated anyway at 12:28:37 — `permissions.deny` beats a hook
+  allow, the same precedence that keeps deny rules in force under `--dangerously-skip-permissions`. So an
+  interactive run parked on a Yes/No for an ordinary grep. `claude-launch.sh` now exports the crown-jewel
+  list as `AOS_PROTECTED_PATHS` and writes no `Read()` deny rule (the `AskUserQuestion` deny stays — a
+  tool-name rule doesn't trip the check), and `gate-hook.sh` enforces those paths itself on
+  `Read`/`Glob`/`Grep`/`NotebookRead`: a local decision with no gateway round-trip, matching in both
+  directions (reading *into* a protected path, and a recursive search rooted *above* one), on real paths
+  so a symlinked home can't spell the same directory two ways. Net gains beyond the fix — a blocked read
+  now carries a **model-visible** reason instead of an opaque refusal, and it lands in the audit trail,
+  which a `permissions.deny` hit never did. Pinned by `scripts/protected-path-guard-test.cjs`.
+
+## [0.414.8] - 2026-09-03
+### Fixed
+- **A session reaped by the idle-interactive janitor is now remembered.** Every other teardown path writes
+  an episode — `markEnded` (normal end, and `teardownUnattended` through it), `markCrashed`, and
+  `stopSession`, the human kill button. The janitor did its own teardown and skipped it, so an abandoned
+  interactive session simply evaporated. Over 30 days: **3 of 29** janitor-reaped sessions on instapods
+  and **18 of 136** on instawp had an episode, and those came from a `report` earlier in the run, not from
+  the reap — ~144 sessions closed with nothing kept. The `max-lifetime` ceiling added in v0.410.5 inherited
+  the same gap.
+
+  **The point is not recall value.** These runs never filed a `report`, so they take the audit branch and
+  read *"Task: … / Outcome: stopped / Activity: 315 governed actions"* — and episodes are already excluded
+  from launch preambles. The point is that episodes are what **Dreaming and the consolidator read**, and
+  they were seeing only sessions that ended tidily. Every abandoned interactive run was invisible to topic
+  extraction — and those carry the fleet's human-initiated work (*"How are we doing marketing-wise"*,
+  *"give me the top gainers of the past 10 days"*). A biased sample is worse than a thin one. Volume is
+  ~5/day across both tenants, already covered by dedupe and prune.
+- **A deleted session no longer produces a phantom episode.** Audit events outlive the row (the log is
+  append-only), so composing from them alone wrote an episode with no task line, attributed to an agent
+  that can no longer be named. `writeEpisode` now returns when the session row is gone. Seen live on
+  instawp: one janitor-reaped run whose row had been deleted mid-flight, its activity list still carrying
+  `session.deleted`.
+
+## [0.414.7] - 2026-09-02
+### Added
+- **Named the three synchronous steps behind the one route that still blocks the loop.** With the
+  recorder running for an hour, `POST /api/tasks/update` is the only remaining loop-blocker on the live
+  tenant — three stalls of 1.00–1.05 s, each with an `openMs` of 44–87 ms, i.e. the phase had just begun
+  when the block started, so it IS the cause (unlike the parked `task_wait` false positive #766 fixed).
+  Its own store call is 0.5–1.5 ms measured against a copy of the live DB, so the second is spent
+  somewhere else on that path: the audit sink (`audit:append` — a SQLite insert plus an `appendFileSync`
+  per run file, on the path of every governed action), the task store write (`task:update.store`) or the
+  Inbox card the notifier writes inline (`task:notify.card`). All three now name themselves, so the next
+  occurrence says which — rather than another round of reading code and guessing.
+
+## [0.414.6] - 2026-09-02
+### Added
+- **Per-agent MCP tool-usage counters — the read tools are finally visible.** The `mcp__agentos__*` tools
+  are loopback calls sitting *before* the member-auth gate, so the PreToolUse hook never sees them, and
+  only the ones that WRITE something audit anything. Every read tool — `recall`, `kb_search`, `kb_read`,
+  `task_list`, `check_inbox`, `list_capabilities`, `session_history` — recorded nothing at all. Asked in
+  2026-09 whether the 77 KB tool schema could be gated per agent, the honest answer was **no**: write-tool
+  usage was measurable (engineer 18 of 31 on instawp, typical agents 5–13) but roughly half the schema was
+  invisible, and gating on a measurement that cannot see reads would have stripped the tools agents lean
+  on hardest. `src/edge/tool-usage.ts` closes that: the MCP client already stamped `x-aos-tool` on every
+  request for latency bucketing, so it now also stamps `x-aos-agent`, and the server counts the pair per
+  day. Read at `GET /api/metrics/tools` (owner/admin; `?days=`, `?flush=1` to force pending counts down
+  first).
+
+  **Counters, not events, and never on the hot path.** A row per `(tenant, agent, tool, day)`, not an
+  audit event per call — the question is *which tools does this agent use*, not what happened in one call,
+  and auditing reads would roughly double audit volume on a busy tenant (instapods already writes ~33k
+  gate events a week). `record()` bumps an in-memory Map; a 60s timer does the writing, per tenant,
+  because the DB file is the tenant boundary. A crash loses at most one interval of a histogram — not
+  worth a synchronous SQLite write on the one path every agent call passes through. The headers are
+  agent-supplied and advisory: they buy no authority, over-long or empty identifiers are refused, and the
+  accumulator is capped. Pinned by `scripts/tool-usage-test.cjs`, including end-to-end through a real
+  request and that a failed call still counts — what the agent reached for is the measurement, not whether
+  it worked.
+
+## [0.414.5] - 2026-09-02
+### Fixed
+- **The Claude Code Notification hook has never once fired — a second route was sitting on its path.**
+  `terminal/notify-hook.sh` posts `{sessionId, agent, kind, message}` to `POST /api/notify`; that is how
+  "Claude needs you" — a permission prompt, an idle wait, `agent_needs_input` — becomes an inbox card.
+  Since **v0.95.0 (2026-07-10)** the `notify` tool registered a *second* `POST /api/notify` **above** it,
+  reading `b.session`. Routes match in order, so the tool's route swallowed every hook post, read an empty
+  session, and returned **404** — and the hook is fail-open, so nothing surfaced. Live instapods:
+  `session.notified` fired **0 times in 30 days**, and all 26 notification cards ever came from other
+  paths. Retiring `notify` (below) removes the shadow; `scripts/notify-hook-route-test.cjs` posts the
+  hook's exact payload and pins that it is handled, so a future duplicate route fails the build instead of
+  silently eating the signal. All 4 of its assertions fail on the previous code.
+
+### Removed
+- **The `notify` tool is retired.** It sent a one-way, *unanswerable* FYI to one named teammate — and its
+  own description told agents to use `ask_human` with `to` instead whenever they needed a reply, which is
+  nearly always. Usage bears that out: **22 of 2,523 memories-era runs on one live tenant, 37 of 10,907 on
+  another**, and it appears in the never-used set on both. Agents reached for the tool that could not
+  strand them. `ask_human({ to })` reaches the same person, writes the same card, sends the same DM, and
+  is answerable. Removing it also drops `TerminalManager.notifyMember`, whose only caller was the
+  shadowing route. 64 → 63 tools.
+
+## [0.414.4] - 2026-09-02
+### Changed
+- **`task_create`'s schema is 20% smaller.** Every tool schema is re-sent on every API call, and
+  `task_create` was the largest at **5,034 bytes** — 6× the median tool. The bulk was not its description
+  (898 bytes) but its 18 parameter descriptions, led by `poke_on_done` at **688 bytes** explaining the
+  whole delivery contract: which wake-ups reach a cold caller and which do not. That is documentation, and
+  it already lives in `docs/agent-mcp-tools.md`; repeating it in the schema billed it to every request.
+  Seven parameters rewritten to keep only what changes a caller's decision — `poke_on_done` still states
+  the one asymmetry an agent cannot guess (a hand-back wakes you after you exit, a plain completion does
+  not), `effort`/`model` stop restating their own enums. **5,034 → 4,030 bytes.** Behaviour is unchanged:
+  these are descriptions, not validation.
+
+  Honest scale: this is **~1.3% of the 77 KB schema**, not the 15–20% an earlier estimate suggested — that
+  figure assumed also dropping never-used tools, which is deliberately not done here.
+## [0.414.3] - 2026-09-02
+### Fixed
+- **A parked long-poll no longer collects the blame for other code's stalls.** The first stall the
+  recorder named on the live tenant was a 1,153 ms block pinned on `POST /api/tasks/wait` — a route whose
+  own handler time never exceeds 20 ms. `task_wait`/`ask` park their request for as long as a human or a
+  delegate takes, so on a busy tenant one is open across every block that happens meanwhile, and being
+  open is not being at fault. Blocking-by-design requests are now marked unattributable, and every stall
+  reports `openMs` — how long the blamed phase had already been open when the block began — so a phase
+  that was merely present is visible as such in Settings → System rather than reading as the culprit.
+
+## [0.414.2] - 2026-09-02
+### Fixed
+- **A stall caused by a request now names the request.** The first stall the new recorder caught on the
+  live tenant read `unattributed` — a 1,028 ms block whose cause was sitting in the table right beside it
+  (`POST /api/tasks/update`, max 1,117 ms), unnamed only because requests weren't phases. They are now,
+  and attribution picks the **innermost** phase — the one begun last — rather than the outermost, which is
+  what makes marking a whole request safe: a request parked on an await is open while a timer blocks
+  inside it, and the timer, not the route, gets the blame. Both cases are pinned in
+  `scripts/loop-stall-attribution-test.cjs`.
+
+## [0.414.1] - 2026-09-02
+### Fixed
+- **The hand-off chain rail stopped scanning the whole session table per node.** `GET /api/sessions/:id/chain`
+  (66 ms average on live instawp, 4,193 sessions) resolved a conversation by `claude_session_id`, its
+  delegated runs by `spawned_by`, and the caller above it by `tasks.caller_claude_id` — three columns with
+  **no index between them**, so every one of those was a full `SELECT *` scan, repeated for the climb and
+  again for each node of the descent. Three indexes (`idx_sessions_claude`, `idx_sessions_spawned_by`,
+  `idx_tasks_caller`) plus per-walk memoisation of the thread reads and one read of the tenant's pending
+  approvals instead of one per node: **63 ms → 1.4 ms per chain**, byte-identical output over 40 live
+  chains. Pinned by a new section in `scripts/chain-model-test.cjs`.
+
+### Added
+- **Event-loop stalls now say what caused them.** The lag sampler reported a **156-second** block on the
+  live instawp tenant and nothing else — no route had a handler time near it, the audit stream had no
+  burst, the WAL was 26 MB, the disk idle, the journal empty. A number with no subject is not a lead. Every
+  long synchronous phase in the process now names itself (`upkeep:auditRetention`, `automations:tick`,
+  `reaper:idleSessions`, `janitor:sweep`, `spawn:git fetch`, `spawn:composio-mint`, …), a stall is
+  attributed to the phase open across it, and the worst blocks are listed under Settings → System →
+  Endpoint timings. Anything past 5 s also lands in the audit stream as `loop.stall`, so a block that
+  happened while nobody was watching survives the restart that clears the in-memory ring. `unattributed`
+  is a finding in itself: it means the blocker is code with no marker. Pinned by
+  `scripts/loop-stall-attribution-test.cjs`.
+
+### Fixed
+- **Nothing that shells out for minutes runs on the event loop any more.** The self-update apply
+  (`git pull` + two `npm install`s + two builds), the dependency installer and the npm-dep upgrade all used
+  `spawnSync` with a **ten-minute** timeout — the largest blocking budget in the codebase by two orders of
+  magnitude. One click froze the entire process for the duration: every tenant on the box, every poll, every
+  gate decision, every scheduler tick. They now await a promise-based `runCommand` (`src/edge/exec.ts`).
+  The short probes (`command -v`, `--version`, `tmux list-sessions`) stay synchronous — that is what they
+  were chosen for — but are named, so they can never be an anonymous stall either.
+## [0.414.0] - 2026-09-02
+### Added
+- **Handing a session to another member now DMs them.** `POST /api/sessions/:id/transfer` reassigns a
+  run's `run_as` — the new owner inherits accountability for something they didn't start — but the only
+  trace was an audit event and a row that quietly changed owner in someone else's console. A hand-off
+  nobody sees is a hand-off nobody picks up, so `transferSession` now fires a `TransferNotice` and the
+  registry DMs the new owner on their linked Slack/Discord (one line: who handed it over, the session
+  title, a console deep link). Always-on rather than gated on the `dm` preference — a transfer is one
+  person deliberately making another accountable, an ask rather than a lifecycle beat. The DM is bound to
+  the session, so replying in chat picks the conversation up with the agent. Audited
+  `session.transfer.notified`.
+## [0.413.5] - 2026-09-02
+### Fixed
+- **The prompt told agents to call a tool that doesn't exist.** `ask` was renamed `ask_human`, and three
+  injected instructions still named the old one — twice in the operating notes, once in the
+  unattended-turn brief. A prompt that names a missing tool teaches agents to fail. Nothing caught it:
+  `scripts/context-injection-test.cjs` is the only thing that checks the prompt and **it was never wired
+  into `npm run test:governance`**, so it had been failing silently — six assertions, since
+  `buildCompanyMd`'s signature changed under it. It is now wired in, its stale assertions rewritten
+  against the current contract, and it carries a new guard: **every tool the prompt names must exist**.
+
+### Changed
+- **The memory-vs-KB rule now splits by KIND of knowledge, not audience.** The prompt said *"memory is
+  for facts only you reuse; the KB is for the whole fleet"* — a test the agent cannot apply at write
+  time, because it asks them to predict who will need a fact later. Reading **22 live runs that wrote to
+  both stores** showed what agents had already converged on, and it *is* decidable: the **KB gets the
+  finding** (a root cause, a measured result, a runbook — *"proven end-to-end against production"*,
+  *"measured on 1026/1026 zones"*), **memory gets the technique** (*dev10 is the only box with Stripe
+  keys*; *psysh evaluates line by line*; *a `return 404` guard cannot be canaried by status code*). 19 of
+  22 pairs were complementary, 1 a pointer to the page, 2 near-duplicates. The prompt now states the rule
+  they were already following.
+- **`shared: true` is no longer advertised.** 22 of 2,523 memories on one live tenant used it, 37 of
+  10,907 on another — while `kb_write` did the same job. The capability remains in the tool schema; the
+  prompt stops offering a third destination nobody picks.
+
+## [0.413.4] - 2026-09-02
+### Fixed
+- **The Sessions view stopped rebuilding the whole history every six seconds.** `GET /api/sessions` is
+  now the most expensive route on the live instawp tenant (186 ms average, 4,122 rows, **1.29 MB
+  gzipped per call**), and the console's Sessions/Chat views re-fetched all of it every `FULL_LIST_MS`
+  — ten times a minute, per open tab, for a list whose live half already arrives every 1.5 s on the
+  cheap summary poll. The cadence is now **30 s**, and the reason it could not be raised before is
+  fixed rather than tolerated: a row the client holds as LIVE that drops out of the summary (a run that
+  ended — invisible to the summary when it was somebody else's, since its ended tail is viewer-scoped)
+  is re-read **by id** on that same tick, using the Phase-1 batch fetch. Verified in a headless browser
+  against a scratch tenant: **2 full rebuilds in 15 s → 0**, and another member's run still flipped out
+  of "ready" **2.1 s** after it ended, off a single by-id fetch.
+- **Session insight stamping is batched instead of six queries per row.** `stampInsights` — the
+  governance fingerprint, verdict, tuning, human-wait and deliverable count each list row carries —
+  fired six point queries for every row it touched, and a LIVE row re-stamps on every poll, so the
+  1.5 s summary poll paid 6 × (live rows) queries forever and a first list over an unstamped history
+  paid 6 × (rows). Same six lookups, now `run_id IN (…)` + GROUP BY, chunked at 400. Byte-identical
+  output over all 4,124 rows of a copy of the live DB; the summary path drops 21 → 17.9 ms. Pinned by
+  `scripts/session-insights-stamp-test.cjs`.
+## [0.413.3] - 2026-09-02
+### Fixed
+- **The Agents page stopped blocking the whole server for two seconds.** `GET /api/agents/stats` —
+  the fleet maturity roll-up the Agents page fetches on mount — measured **1,966 ms average** on the
+  live instawp tenant (576k audit rows) and was, in the process metrics, the slowest handler in the
+  product by 25×. It counted governed actions by SELECTing every matching audit ROW and JSON.parsing
+  each one: 386k rows carrying **238 MB of `data`**, on the single-threaded event loop, every time the
+  page opened — so it stalled every OTHER request too. It now aggregates in SQL over a new covering
+  index `(type, run_id)` and never touches `data` for the seven event types that only need a count; the
+  two whose verdict lives in the payload are read separately, and policy denies (~0.2% of
+  `gate.decision`) come off a new PARTIAL index. Measured against a copy of the live DB: **1,972 ms →
+  49 ms, byte-identical output for all 49 agents.** Pinned by `scripts/agent-stats-rollup-test.cjs`.
+- **The Tasks board stopped shipping 2 MB of chat prose it doesn't render.** `GET /api/tasks` was
+  **2.4 MB / 780 ms** live, of which **2.07 MB was `discussions`** — a per-task rollup built by walking
+  every `task.chat` message in the tenant (6,879 rows / 12.6 MB materialised) to keep the last one per
+  task, for all 1,986 tasks that have a discussion when the board renders 500, each with a full
+  unclipped body behind a one-line `truncate`. It is now two aggregate queries, scoped to the tasks in
+  the response and reading only a prefix of the preview body: **2.07 MB → 27 KB, 86 ms → 23 ms**,
+  identical rollups for every board task. The board's PR-link scan is scoped the same way (it filtered
+  in JS after reading 8.4 MB of bodies): **83 ms → 14 ms**, identical output. Pinned by
+  `scripts/task-discussion-rollup-test.cjs`.
+## [0.413.2] - 2026-09-02
+### Added
+- **Settings → Memory shows the backend's actual vitals.** The provider collapsed automem's whole
+  `/health` body into a single `detail` string, so everything an operator needs during an incident was
+  invisible. A by-hand fleet sweep surfaced, from that discarded body: a **775-row store/mirror gap**, an
+  enrichment queue nobody could see, and **25% of instawp's memories truncated at the backend's 2000-char
+  cap** — none of it in the product. `MemoryHealthResult.diagnostics` now carries round-trip latency,
+  backend memory + vector counts, sync status, dependency reachability (falkordb/qdrant), embedding width,
+  and the enrichment queue; Settings → Memory renders them beside the existing drift banner. Vectors
+  trailing memories and a non-`synced` state are amber, and an embedding-width **mismatch** gets its own
+  callout because it silently degrades every recall. Every field is optional — a backend that cannot
+  answer is rendered as absent rather than as zero, and `sqlite` shows nothing at all. The one-line
+  `detail` is unchanged, so nothing that read it regresses. Pinned by `scripts/automem-health-test.cjs`.
+
+  Not included: **automem exposes no version over its API** (neither `/health` nor `/stats`), so a
+  version-vs-upstream check isn't buildable from the product. Both deployments are currently on 0.16.1
+  against upstream 0.16.2, and that gap is only visible by reading the CHANGELOG on the box.
+
+## [0.413.1] - 2026-09-02
+### Fixed
+- **The resume path could still start an un-authenticated run.** v0.412.0 refuses a launch whose credential
+  can't be read, but a *resurrection* never passes through the server's launch path: `attach.sh` re-execs
+  `claude-launch.sh` with `RESUME=1`, which sources the persisted env and starts the runtime directly. On
+  instapods that gap produced a session at 05:44Z — 34 minutes after the operator believed the box was
+  fixed — that came up `Not logged in`, burned a turn and ended at $0. The launcher now asks the server
+  first, over the same loopback + session-secret channel it already uses for `/api/ended`
+  (`POST /api/credential-check` → `TerminalManager.checkResumeCredentials`), so detection stays in ONE
+  implementation instead of being rewritten in bash. Fails **open** by construction: no `AOS_URL`, an
+  unreachable server, a 5 s timeout or any unparseable answer proceeds exactly as before — only an explicit
+  `ok:false` stops the launch. A refusal holds the pane open with a shell rather than exiting, since ttyd
+  re-dials the instant a pane dies and would otherwise spin the refusal in a loop.
+- The launch and resume refusals now share one `refuseForLockedCredential` path (audit, crashed row, owner
+  card, pool badge, cooldown alert), so they cannot drift apart. Nine new assertions in
+  `scripts/credential-preflight-test.cjs`.
+
+## [0.413.0] - 2026-09-02
+### Fixed
+- **A stale cross-agent edit proposal no longer clobbers a newer prompt silently.** Several agents
+  proposing edits to ONE agent is by design (the 10-card cap is per-proposer; only an identical delta
+  from the same proposer is deduped), but every `agent.update.proposed` card carries a **full
+  replacement** CLAUDE.md resolved when it was written — so approving a second card reverts the first.
+  The approve route already detected that (`baseHash` mismatch) and returned `staleBase` + a warning,
+  but `web/src/lib/api.ts` didn't type either field, so the console dropped them: an owner clicking
+  Approve on three queued cards saw three successes and never learned two were undone. Now
+  `GET /api/agents/proposals` stamps `stale` on each card whose pinned `baseHash` no longer matches the
+  target's prompt, the target's settings page badges those cards **out of date** (with Reject as the
+  weighted button and a confirm dialog that spells out the replacement), a banner names the collision
+  whenever more than one queued card rewrites the prompt, and the post-approve warning is surfaced —
+  stickily on the agent page, inline on the Inbox card. Pinned by a new section 4 in
+  `scripts/proposal-surfacing-test.cjs`.
+
+### Changed
+- **README trimmed by a quarter and brought back in step with the code.** It still claimed **two**
+  runtimes (opencode has been the third since v0.391.0), never mentioned the setup wizard, runtime
+  install/update management, the self-update watcher, per-agent skills/tools allowlists, Telegram and
+  ClickUp triggers, Slack content filters and channel watch, or secret rotation — and it credited
+  approvals to chat surfaces that cannot answer them. 3,444 → 2,552 words with wider coverage: the six
+  feature tables collapse to five with one clause per row, the "Humans and agents on the same team"
+  section folds into *Why it exists*, and the deployment/status-line prose loses its repetition. Both
+  console screenshots, the gateway diagram, the data-home tree and both code samples stay.
+
+
+## [0.412.2] - 2026-09-02
+### Fixed
+- **A hosted app's dispatch is owned by a real human again** (#559). `POST /api/app/dispatch` looked the
+  run-as identity up by email only and stored an **email** in `tasks.owner` — two defects in three lines.
+  The forwarded `X-Aos-Member` is an email, but `manifest.owner` (written by `app_create`) is a member
+  **id**, so the documented "else the app's accountable owner" fallback never resolved and a background
+  dispatch was created ownerless. And every consumer reads that column as an id: the task notifier
+  (`resolveRecipients` → `getMember`) delivered to nobody, `t.owner === me.id` never matched the owner's
+  own board, and the value rode through `dispatchTask` into the session's `run_as`. The route now
+  resolves **both forms** and stores the id.
+### Changed
+- **One definition of the both-forms member lookup** — `TeamStore.resolveMemberRef(ref)` (id **or**
+  email → member). It replaces the four hand-rolled `getMember(raw) ?? getMemberByEmail(raw)` pairs in
+  `server.ts`, `terminal.ts` (×2) and `task-reconcile.ts`; behaviour is unchanged at those call sites.
+- **Migration: `tasks.owner` emails are canonicalised to member ids**, the sibling of the `run_as` sweep
+  from v0.307.1. An email matching no member is left alone rather than discarded. `scripts/run-as-identity-test.cjs`
+  grows a fourth section covering the lookup, the delivery consequence and the migration (36 checks).
+
+## [0.412.1] - 2026-09-02
+### Changed
+- **Console dependency refresh (lockfile only).** Batched the ten open Dependabot bumps for `web/` into
+  one update — `hono` 4.12.25→4.13.5, `@hono/node-server` 1.19.14→1.19.17, `nanoid` 3.3.12→3.3.18,
+  `js-yaml` 4.2.0→4.3.2, `postcss` 8.5.15→8.5.26, `fast-uri` 3.1.2→3.1.6, `ip-address` 10.2.0→10.7.0,
+  `brace-expansion` 5.0.6→5.0.9, `body-parser` 2.2.2→2.3.0, `browserslist` 4.28.2→4.28.8. All are
+  transitive (none appear in `web/package.json`), so only `web/package-lock.json` moves. `npm audit`
+  reports 0 vulnerabilities and the console bundle builds clean.
+
+## [0.412.0] - 2026-09-02
+### Fixed
+- **A locked macOS login keychain silently killed every run for 17 hours.** On instapods the login
+  keychain auto-locked overnight (2026-09-01 ~17:30Z); the server kept spawning sessions until the next
+  morning. Eight runs, every one **$0 and one turn**, three left `running`, and no alert anywhere — the
+  pool badge still showed the usage snapshot taken before the lock, so the console read healthy. Two
+  causes, both fixed:
+  - Every existing check asked whether a login *exists*. On macOS a Keychain item's **presence** is
+    readable (metadata lookup, exit 0) while its **value** is not, so `credentialDirHasLogin` passed and
+    the launch proceeded. New `credentialReadiness` asks the question the spawned CLI will actually ask —
+    it reads the value — and distinguishes `keychain_locked` from `missing`.
+  - Falling through to the box default, the fail-open move used everywhere else in the credential path,
+    does not help: the box default reads through the *same* locked keychain. So the launch now **fails
+    closed** on `keychain_locked` (`preflightCredential` → `session.launch.refused`, session marked
+    crashed with a card to its owner) instead of starting a run that authenticates as nobody. A `missing`
+    credential keeps its fail-open behaviour — only an unreadable one is certain enough to refuse.
+  - The pool row is badged with the cause, and admins get one Inbox card + DM per 30 min (not one per
+    spawn) carrying the unlock command.
+  - Also corrected a claim in `runtime-account-check.ts`: claude does **not** fall back to the plaintext
+    `.credentials.json` when the keychain is locked. Its credential store classifies that failure as
+    transient and skips the fallback (`primary_transient_skip_fallback`), which is why a locked keychain
+    is a hard stop rather than a degradation.
+  - Pinned by `scripts/credential-preflight-test.cjs` (15 assertions, in `npm run test:governance`),
+    including the box-default case: `~/.claude` is stored under the **bare** `Claude Code-credentials`
+    service name, so probing it under a path-hashed name would report "no login" for a signed-in box.
+
+## [0.411.2] - 2026-09-01
+### Fixed
+- **Session cost and token counts were roughly double.** Claude Code writes one transcript line per
+  *content block* of an assistant message — `[thinking]`, `[tool_use]`, `[tool_use]` — and every one of
+  those lines repeats the **same `message.id` with a byte-identical `usage` object**. `readSessionCost`
+  summed usage per LINE, so each billed request was counted once per block it happened to emit. On a
+  single live instapods run: **36 usage-bearing lines for 19 distinct message ids**, and the session row
+  read **$4.05** where the agent's own status line showed **$1.88**. Usage is now accumulated once per
+  message id; recomputing that run gives exactly $1.88. This inflated `cost_usd`, `input_tokens`,
+  `output_tokens`, `cache_read_tokens` and `cache_write_tokens` on every session row, so any spend or
+  context figure read from the DB — including the "301k context per call" fleet number — was overstated
+  by a similar factor. `toolCalls` was always correct and is deliberately **not** deduped: the blocks are
+  split across those lines rather than repeated, so per-line counting already counts each call once. A
+  line with no `message.id` is still billed rather than dropped. Pinned by `scripts/session-cost-test.cjs`.
+
+## [0.411.1] - 2026-09-01
+### Fixed
+- **The tenant-shared memory pool carries knowledge again, not fleet statistics.** A shared memory reaches
+  EVERY agent, and the self-learning pass writes one tenant-scoped digest per pass — *"Fleet self-learning
+  (pass 31, since 2026-07-01): 768 sessions, 43% success. Recurring topics: …"* — with nothing retiring
+  it. They accumulated until they **were** the shared pool: **51 of 72 shared memories on instapods, 48 of
+  85 on instawp**. Observed directly while running the loop experiment: an agent with no memories of its
+  own got a launch preamble that was **6 of 8 slots of fleet statistics** and nothing about its task. Two
+  changes. (1) A dreaming digest is now **preamble noise** (`isPreambleNoise`, alongside episodes) on both
+  the task-ranked and salience-fallback paths — it stays fully recallable, since an oversight agent asking
+  "how is the fleet doing" wants exactly this, it is simply not launch context. (2) Each pass now
+  **supersedes** the previous digest instead of appending: the id rides on `dreaming_state.lastInsightId`
+  (preserved through `normalizeState`, the same field-dropping trap `topicsVersion` fell into) and the old
+  one is deleted after the new one is written, so a failure leaves one extra rather than none. A digest is
+  a cumulative snapshot — pass N+1 restates everything pass N said — so keeping both was keeping a stale
+  copy.
+
+## [0.411.0] - 2026-09-01
+### Fixed
+- **The session summarizer stopped silently degrading — it now uses the runtime-account pool.** Chasing a
+  17.9 s `session_open` in the v0.404.0 tool metrics turned up something worse than a slow tool. That call
+  spawns a throwaway `claude -p` (deliberately, so the target session's context is never polluted) and
+  falls back to a deterministic recap when it fails. On live instawp **43 of 97 summaries — 44% — had been
+  falling back**, in one unbroken band from 2026-08-04 to 08-24, and nothing anywhere reported it.
+  - **Root cause:** `summarizeConversation` ran on `{...process.env}` — i.e. always the BOX DEFAULT
+    account — while every governed launch goes through `applyRuntimeAccount` → `runtimeAccounts.pick()`,
+    which skips a limited account. So when the default hit its weekly quota (`runtime.usage_limited`
+    2026-07-30 → 08-15, `runtime.account.limited` from 08-04) every session rotated away and kept working
+    while the summarizer kept calling the exhausted credential for three weeks. New
+    `TerminalManager.outOfBandCredentialEnv()` routes this call through the same pool, fail-open exactly
+    like the launch path (no pool / nothing usable / unresolvable → the box default, as before).
+  - **The reason is no longer swallowed.** A bare `catch {}` discarded the failure, so the only trace was
+    a `via` field in an audit row nobody reads. Failures are now classified — `usage_limit`, `auth`,
+    `not_installed`, `timeout`, `empty_output`, `error` — and recorded on `session.summarized` along with
+    the account the call ran under.
+  - **`session_open:summary` is its own metrics bucket, flagged `blocking`.** Its clock is a spawned
+    model, not work this process does; the same tool WITHOUT `summary` is one indexed row-test. Sharing a
+    bucket ranked a deliberate 17.9 s model call second-slowest in the system — the exact misreading
+    `BLOCKING_TOOLS` exists to prevent — and hid any regression on the cheap path behind its average.
+### Added
+- **A `summarizer-degraded` insight alert.** Fires when session summaries fall back at ≥50% over the last
+  7 days, names the dominant cause and where to fix it, and rides that cause in its key so a different
+  failure re-alerts instead of being suppressed by the previous one's cooldown. Built to the alert rules:
+  a denominator (rate over attempts, with "no transcript yet" excluded), a sample floor (≥5 attempts) and
+  a short present-tense window, so a resolved outage stops alerting. Pinned by
+  `scripts/summarizer-degradation-test.cjs` (23 assertions), including that a LIMITED account is skipped
+  and rotation picks the healthy one.
+
+## [0.410.5] - 2026-09-01
+### Added
+- **A hard age ceiling for detached interactive sessions** (`interactiveMaxHours`, default **168 h**,
+  Settings → Concurrency). Every existing timeout measures *idleness*, and `markTurnBusy` stamps
+  `last_activity` on **every tool call** — so a session whose agent keeps working never looks idle however
+  old it gets, and none of the idle clocks can reach it. Measured on live instawp *after* the wake-queue
+  fix had already removed the biggest source of that traffic: **18 sessions still running, 15 interactive,
+  at 1007 h / 266 h / 263 h / 166 h / 120 h — every one reporting only 18–24 h idle**, skipped by the 72 h
+  reaper on every tick. The oldest had been open **42 days**. Age is the honest question for those. Like
+  the ceilings beside it, this one overrides the claimed and blocked-on-a-human exemptions (past it the
+  session is abandoned by definition) but **never** cuts one with somebody attached. Clamped 1 h–90 d;
+  `0` disables. Audited `session.reaped` with `reason: 'max-lifetime'`.
+
+### Fixed
+- **Memory upkeep now records that it ran, even when it changed nothing.** `runMemoryMaintenance` audited
+  only `if (res.pruned || res.merged)`, which made "upkeep is running and finding nothing" indistinguishable
+  from "upkeep is not running at all" — a live instawp check read five days of silence as a broken
+  scheduler when the store was simply clean. Every pass now writes `memory.maintained` with a `noop` flag;
+  the `removed` id list is left out of the row (it is only useful to the caller replaying it onto a
+  backend, and would bloat every pass). ~1 event/day/tenant against ~32k gate events/week.
+
+## [0.410.4] - 2026-09-01
+### Fixed
+- **`GET /api/sessions` stopped costing the box a fifth of its event loop.** Measured on the live
+  instawp tenant (v0.410.3, 4,019 sessions, 598 MB DB) with the v0.404.0 MCP instrumentation: in a
+  51-minute window that one route was called 3,789 times and burned **654 s of handler time — 21% of a
+  single-threaded process** — because the Sessions/Chat views re-fetch the FULL list (3,951 unarchived
+  rows, **5.03 MB**) on the shared 1.5 s poll. The traffic was two people with the Sessions tab open.
+  Three separate causes, fixed in three places, none of them an index — every query plan is clean
+  (`idx_sessions_live`, and `idx_audit_run_type` is covering):
+  - **Compression moved off the main thread.** `zlib.gzipSync` over that payload blocks the event loop
+    for ~38 ms, and `GZIP_CACHE` is keyed by the ETag — which covers derived fields (`alive`, `working`,
+    `blocked`, cost backfills) that move every tick on a tenant with live runs, so nearly every poll was
+    a cache MISS. At ~74 polls/min that is ~2.8 s per minute of hard-stalled loop, and it surfaced as a
+    1.66 s `maxStallMs` on `/health`, `/api/messages` and every other route — the precise misattribution
+    `request-metrics` was built to prevent. Now `zlib.gzip` (libuv threadpool). Measured directly: over
+    53 ms of synchronous compression the loop served **0** timer callbacks; asynchronously it served 9.
+  - **The live overlay is decoupled from the full list.** Live state still refreshes every 1.5 s, but off
+    the cheap `/api/sessions/summary` (the only rows whose state actually moves), merged over the rows
+    already held; the full list — which exists for client-side search/filter/sort/chain-grouping over the
+    whole history — is rebuilt on route entry and every 6 s after. Filters keep their exact meaning, so
+    *"N of 3,951"* stays true. Full-list builds drop ~4×. Deliberately NOT server-side pagination: the
+    Sessions view derives its agent/owner options, chain grouping and select-all from the whole array, so
+    a truncating default would silently narrow them.
+  - **`backfillCosts` stopped re-probing transcripts that will never exist.** 25 rows on that tenant were
+    `cost_usd IS NULL` with a `claude_session_id` and no `.jsonl` on disk — runs that crashed before
+    their runtime opened one. The self-healing "stamp zeros" branch only fired when `cost_usd != null`,
+    so those rows consumed the entire 20-parse budget on EVERY poll, forever, each miss making
+    `findTranscript` readdir every project dir under every transcript root. An unpriced row now heals the
+    same way once it is past a one-hour settle window — long enough that a transcript merely slow to
+    flush is never stamped a premature zero. Pinned by `scripts/sessions-list-perf-test.cjs` (17
+    assertions), which also holds the compression path to a body that decodes back to the full list, a
+    still-short-circuiting 304, and untouched identity bytes for the gate hook / MCP loopback callers
+    that send no `accept-encoding`.
+
+## [0.410.3] - 2026-08-31
+### Added
+- **Console Docs: "Connectors & integrations"** — a new user-facing page in the in-app Docs section
+  (`web/src/docs/connectors.md`, sitting between *Working with agents* and *Automations*). Covers what to
+  connect and why, the shared chat model (address any agent with `/agent-name`, runs act as the sender
+  once their Chat ID is linked, replies thread and follow-ups continue the same conversation), ClickUp's
+  comment-on-a-task flow, per-member GitHub authorship, Composio company-vs-personal apps and what
+  sharing one actually means, and a symptom→cause troubleshooting table for the traps that bite users
+  (Slack Messages Tab, Discord MESSAGE CONTENT, Telegram Group Privacy, `/command`-only ClickUp
+  comments). Complements the engineering reference added in 0.410.1 under `docs/connectors/`.
+
+## [0.410.2] - 2026-08-31
+### Fixed
+- **The topic list names subjects again, now that it actually compounds.** v0.402.1 stopped the nightly
+  wipe, and four days of real accumulation showed what the wipe had been masking: instapods' injected
+  guidance read *"the fleet frequently works on: composio, **friday**, **monday**, dataforseo, gmail"* —
+  two of five were days of the week, at 33 each, ranked #2 and #3. Compounding didn't create that; a cron
+  repeats its title verbatim, so a cadence word outruns real subjects. Four rules, each from a class
+  observed on a live tenant: **calendar + cadence words** are stopped (`friday`, `monday`, `weekly`,
+  month names); **formats and protocols** are stopped (`http`, `html`, `json`, `bash`, `urls`, `pngs` —
+  databases and products deliberately are not, so `postgres`, `sqlite`, `stripe`, `wordpress` survive);
+  **generic verbs and state words** that reached the threshold are stopped (`evaluate`, `detect`,
+  `revise`, `success`, `urgent`, `tier`); and **email addresses are stripped before either extractor sees
+  the line**, which kills both the local part (`ahmad.hekma`, `justinhuckaby8`, `sarahmohib8` were all
+  fleet "topics") and the domain half (`gmail.com` at count 8) — a customer's identifier has no business
+  in every agent's system prompt. Plus the **generated `adjective-animal-NN` pod handle** (`proud-ibis-22`,
+  `jolly-owl-72`, `calm-tiger-80`) is no longer an entity. Replayed over the 714 real episodes that
+  produced the bad line, the guidance becomes *"composio, dataforseo, gmail, instapods, instapods.com"* —
+  all five real. `TOPICS_VERSION` → 5, so both tenants rebuild; the fingerprint guard added in v0.402.1
+  caught the un-bumped change on the first run, which is what it was built for.
+
+## [0.410.1] - 2026-08-31
+### Added
+- **Per-connector reference docs** — a new `docs/connectors/` set documenting every shipped native
+  connector as built: [ClickUp](docs/connectors/clickup.md) (webhook ingress via a ClickUp Automation,
+  the comment-id loop-guard, the `/command`-only gate, `clickup_threads` + `clickup_reply`),
+  [Slack](docs/connectors/slack.md) (Socket Mode, filters + channel watch, the three egress tools),
+  [Discord](docs/connectors/discord.md) (Gateway, privileged MESSAGE_CONTENT, real per-mention threads),
+  [Telegram](docs/connectors/telegram.md) (long polling, Group Privacy vs continuity),
+  [GitHub](docs/connectors/github.md) (App-minted bot token vs per-member user token, `github_refresh`)
+  and [Composio](docs/connectors/composio.md) (the minted Tool Router URL, `composio_shares`). Each page
+  carries setup, ingress path, egress tools, data model, audit events and the gotchas that already bit us.
+  The [index](docs/connectors/README.md) holds what every channel shares — run-as resolution, the `/agent`
+  router, thread continuity, governance — and `docs/connectors-and-triggers.md` now points at it.
+
+## [0.410.0] - 2026-08-31
+### Changed
+- **Remote Control is off by default for every governed session** — `terminal/claude-launch.sh` now writes
+  `"remoteControlAtStartup": false` into each session's `--settings` file. Remote Control (claude.ai/code
+  and the Claude mobile app driving a local session) normally waits for an explicit `/remote-control`
+  (`/rc`), but auto-connect is a **user-level** toggle: the box owner turning on "Enable Remote Control for
+  all sessions" in their own `~/.claude/settings.json` would silently register EVERY tenant's every
+  interactive session as a remote session on THEIR personal claude.ai account — each transcript mirrored to
+  Anthropic servers for sync, and a phone handed a prompt box into a governed agent. Same undeclared-input
+  class as `enabledPlugins` (see `AOS_CLAUDE_CONFIG_ISOLATION`), and the same fix shape as
+  `crossSessionInbound: "refuse"`: pin it at the settings layer, where a `--settings` value outranks user
+  settings and a project/local `false` outranks even managed settings. Deliberately **not**
+  `disableRemoteControl`, which kills the feature outright — a human attached in the browser terminal can
+  still type `/rc` to connect that one session on purpose.
+
+## [0.409.1] - 2026-08-31
+### Fixed
+- **A resurrected session stayed marked `crashed` for ever, while a human worked in it.** A crash mark is
+  a *claim* — "the pane is gone" — and unlike a human `stop` it plants no stay-stopped sentinel, because a
+  crash must remain recoverable. So ttyd's reconnect re-runs `attach.sh`, its `new-session -A` revives the
+  pane, `claude --resume` picks the transcript back up, and the work carries on. Nothing put the ROW back:
+  the only restore path, `restoreRunningAfterDelivery`, is scoped `AND status = 'done'` on purpose. Live
+  insta-ai (2026-08-31): **three** such rows, two with a person attached at that moment and one billing
+  `$313.64`, the oldest crash-marked **577 h** earlier. The cost is not RAM — it is that the console renders
+  live work as dead, `canResume` refuses to reopen it, and the concurrency cap under-counts real load.
+  `restoreResurrectedCrashes` now runs immediately after crash detection and puts such a row back to
+  `running` on either of two independent proofs: a client is **attached**, or `last_activity` is newer than
+  the `updated_at` stamped at the moment of the mark (governed work done *since* being declared dead). Both
+  are needed — a member's interactive session rarely stamps `last_activity`, and a detached-but-working run
+  has no client. It closes the stale "Crashed — <agent>" inbox card and audits `session.restored` with the
+  proof it used. What it does not undo: questions/approvals cancelled by `markCrashed` stay cancelled, and
+  the episode stays written.
+- This deliberately does not fight the crashed-orphan reap from 0.408.1. An **abandoned** crashed pane
+  satisfies neither proof, stays `crashed`, and is still reaped on sight; only a resurrected one is
+  restored, and it then lives or dies by the ordinary idle clock like any other running session. Both
+  paths, and their idempotence across ticks, are pinned by a new section 8 in
+  `scripts/idle-reaper-test.cjs`.
+
+## [0.409.0] - 2026-08-31
+### Added
+- **`WAITING_BRIEF` — every agent, both lanes: short polls, never one long sleep.** Two agents were
+  caught blocking inside a single tool call within four days — `watchdog` (unattended, a 600 s wait)
+  and `shield-optimizer` (a member's own interactive session, a 600 s wait plus an `until` loop that
+  held ~74% of a 28-minute run). `UNATTENDED_TURN_BRIEF` already forbids idling, but only on the
+  unattended lane and only as a statement about the turn boundary, so an agent that stays inside its
+  turn and sleeps has obeyed it to the letter. This brief covers how to wait, not whether.
+  - Names both limits the agent cannot see: a `Bash` call is killed at ~2 min (a `sleep 240` loses the
+    whole call — it cost one run 120 s for nothing), and prompt caching expires at ~5 min.
+  - The cache limit is the non-obvious one and it is measured: across three watchdog runs,
+    consolidating waits into one 600 s block cut tool calls 40 → 29 and **raised** cost $8.37 → $11.83,
+    with `cache_write` tripling 0.27M → 0.73M, while wall clock got slightly worse (862.7 s → 892.5 s).
+    "Fewer turns is cheaper" is true up to the cache TTL and false past it, and an agent optimising
+    turn count in good faith sails straight through the crossover.
+  - Explicitly does **not** walk back the batching advice that produced the largest measured win
+    (103 → 29 tool calls): the rule is scoped to a single call sitting idle, not to batching. Pinned by
+    `scripts/waiting-brief-test.cjs`, which fails if a future edit lets it read as "batch less" or
+    re-gates it behind the unattended lane.
+
+## [0.408.1] - 2026-08-31
+### Fixed
+- **A `crashed` session could hold its pane for ever — no reaper's query could see it.** All three sweeps in
+  `sessionSweep` selected `status IN ('running','done')` (or `'done' OR headless running`), so `crashed` fell
+  through every one of them. It is not a harmless omission: the sweep stamps `crashed` when a liveness poll
+  can't find the pane, so a *transient* poll failure — or ttyd's auto-reconnect re-running `attach.sh`
+  afterwards — leaves a terminal row whose pane is very much alive, and which nothing will ever select again.
+  Live stayflexi (2026-08): one such row held a pane and ~430 MB of `claude` for **93 hours**. `crashed` now
+  counts as terminal alongside `done` in all three sweeps — reaped on sight, keeping its status rather than
+  being rewritten to `stopped`, and audited as `crashed-orphan` so it is distinguishable from a done-orphan.
+- **The claim ceiling could not be set from the console.** `claimedMaxHours` had a server handler and was
+  returned by `GET /api/settings/concurrency`, but the console never read or sent it — so the one knob that
+  stops a take-over claim from creating an immortal pane was reachable only by hand-writing a `PUT`. The
+  exact mirror of the `blockedMaxHours` gap fixed earlier. Settings → Runtime now carries the control.
+
+## [0.408.0] - 2026-08-31
+### Added
+- **The box now tells you when its agent runtime has fallen behind, too.** `src/edge/runtime-update-watch.ts`
+  is the sibling of the self-update watcher, over the `claude` CLI every session launches. The mechanism
+  already existed — `checkDepUpdates()` asks the npm registry, `updateNpmDep()` upgrades in place — but
+  nothing ever asked on a timer, so a box pinned to a months-old runtime reported a green "all dependencies
+  installed" and looked healthy. Same three modes (`off` / `notify`, default, every 12h / `ask`) as a
+  **separate** setting, because a box may reasonably want its own code current and its runtime pinned.
+- **It is deliberately stricter than the OS watcher, and there is no unattended tier.** Updating Agentric
+  moves code we gate with a test suite; updating the runtime CLI can add **tools** — and the gate hook's
+  tool→capability table ends in `*) exit 0`, so a tool it has no row for runs ungoverned. claude 2.1.224's
+  cross-session messaging was exactly that. So the strongest mode is `ask`, floored at ask/owner (an
+  `allow` policy still only asks), the card names the risk in the specific rather than the abstract, and
+  **approving is the review**: the landed version is stamped as the one this box's gate routing has been
+  signed off against, so the next card reports what changed since a human last looked instead of repeating
+  a warning nobody reads. An owner upgrading by hand from Settings → System → Dependencies stamps the same
+  value, so the two paths cannot disagree; a failed upgrade stamps nothing; and the stamp records what
+  LANDED, not what the card named (an upgrade races the registry).
+- Cards say that running sessions keep the CLI they launched with and the new one applies to the next
+  session — which is also when a newly-added tool would first appear.
+- New falsifier `scripts/runtime-update-watch-test.cjs` (49 checks, in `npm run test:governance`), driving
+  the real routes for the manual-upgrade and role-gating paths. `docs/self-update-watch.md` gains the
+  sibling section, including the standing gap: nothing yet *checks* the tool surface — a human reads
+  release notes — and a machine-readable tool list is the prerequisite for ever having an unattended tier.
+
+## [0.407.3] - 2026-08-30
+### Fixed
+- **The browser terminal can be scrolled from a tablet.** A touch drag emits no wheel events, so the
+  wheel bridge in `Xterm.tsx` never fired on an iPad and the scrollback was simply unreachable — the pane
+  could not be scrolled at all. A one-finger vertical drag now translates into the same SGR wheel events
+  (button 64/65) the wheel handler sends while an app wants the mouse — so claude's TUI and tmux scroll
+  identically however you drive them — and into a local `term.scrollLines()` when no app does.
+  `touch-action: none` on the pane is what stops Safari panning the page instead of yielding the gesture;
+  it is restored on teardown. Rescued from a live box, where it had been hand-applied and re-stashed
+  across two deploys — box-local work is one `git reset --hard` from gone.
+
+## [0.407.2] - 2026-08-30
+### Fixed
+- **`degraded` automem is a lag, not an outage.** automem reports `degraded` / `drift_detected` while its
+  graph and its vector store disagree — the normal state during a bulk write (the node lands before the
+  vector; a worker reconciles on a timer), with reads and writes working throughout. The provider failed
+  the health check on it, so the memory migration — which pre-flights health before every batch — refused
+  to write into the store it was importing into, batch after batch, and Settings → Memory went red
+  mid-import. Health now passes on `degraded` and says so in the detail line; only `unhealthy` or an
+  unreachable endpoint is a stop. Pinned by `scripts/automem-health-test.cjs`.
+
+## [0.407.1] - 2026-08-30
+### Fixed
+- **Moving a memory backend to a different endpoint is a STORE switch, and now stamps the migration
+  horizon.** Switching backend TYPE stamped `memory_backend_switched_at` (the marker that says which local
+  mirror rows still need migrating up); pointing `automem` at a different endpoint did not — it was filed
+  as a same-backend re-save. But the new deployment is empty in exactly the same way: recall goes blind
+  while the Memory hub keeps counting the local mirror, and Settings → Memory reports "already consistent"
+  over a store holding none of the tenant's memories. The horizon now keys on a store IDENTITY (backend +
+  where its data lives), so an endpoint move reconciles like a backend switch, while a token / ranking /
+  preload re-save on the same endpoint still does NOT move it (that would re-migrate migrated rows as
+  duplicates). The `memory.backend.changed` audit event names both stores. Found while moving instapods
+  off its remote automem pod. Pinned by `scripts/memory-store-switch-test.cjs`.
+
+## [0.407.0] - 2026-08-30
+### Added
+- **The box now tells you when it has fallen behind.** `src/edge/updater.ts` could always answer "is this
+  checkout behind origin?" and apply an update — but nothing ever asked it. Its only callers were console
+  routes, so the check ran exactly when a human had the console open, which on a headless remote is never;
+  boxes drifted 13+ versions with no signal anywhere. `src/edge/update-watch.ts` adds the periodic ask, in
+  two modes (Settings → System → Software, owner-only): **`notify`** (default) posts an Inbox card and DMs
+  the owner when the box falls behind, applying nothing — the drift alarm; **`ask`** additionally raises an
+  **owner approval** whose approval pulls, rebuilds and restarts that box, so one tap from a phone replaces
+  an ssh session. `off` disables it. Box-scoped rather than per-tenant (one checkout, one fact) and run
+  against the seed tenant, whose owner is the person with shell on the box.
+- **A blocked update is now something you hear about.** A dirty tree already refused an ff-only apply,
+  correctly — but silently, so a box hand-patched months ago quietly stopped updating and looked identical
+  to a current one. It now gets its own card naming the files in the way (`UpdateStatus.dirtyFiles`), in
+  `ask` mode too, where there is nothing to approve. A failed apply, and an apply that built but could not
+  restart, likewise each get a card: a self-update that fails silently is worse than one that never ran,
+  because the box looks current from the outside.
+- Governance: applying is classified as **`os.update`** and **floored at ask/owner** — a permissive tenant
+  policy (default `allow`, which the live tenants have) can never turn a self-update into something that
+  applies unattended; policy may only tighten it. A hard `never` on `os.update` disables the apply lane but
+  still notifies, because knowing you are behind is not permission to change the box. Full audit vocabulary
+  in `docs/self-update-watch.md`, which also records why unattended apply is deliberately NOT a mode yet
+  (it needs a canary soak and post-restart rollback verification) and the shared-checkout limit.
+- Notifications dedupe on the upstream **commit** (`UpdateStatus.head`), not the version or behind-count —
+  either would re-card a busy box every tick. A newer commit supersedes the previous card instead of
+  stacking, and the card is retired once the update lands.
+- New falsifier `scripts/update-watch-test.cjs` (52 checks, in `npm run test:governance`).
+
+## [0.406.0] - 2026-08-30
+### Added
+- **Output styles — the runtime knob for an agent's role, tone and default response shape.**
+  `RuntimeTuning.outputStyle` joins model / effort / permission-mode on the same precedence chain
+  (per-run override → agent manifest → workspace default → `Default`). It is not a CLI flag: the
+  launcher writes it into the session's `--settings` JSON as `outputStyle`, which is how Claude Code
+  takes a style — the system prompt PROPER, plus the CLI's own per-turn style reminder. Claude Code's
+  built-ins (`Default`, `Concise`, `Proactive`, `Explanatory`, `Learning`) need no file; CUSTOM styles
+  are a workspace library at `<home>/output-styles/<Name>.md` (`OutputStylesStore`, `GET|PUT|DELETE
+  /api/output-styles/*`, owner/admin to write), materialised into every claude-code agent's
+  `.claude/output-styles/` at launch exactly like the skills library — whole library, no allowlist,
+  since only the selected style applies. Picker on each agent's runtime card and on
+  **Settings → Runtime defaults**, where the library is also edited. `claude-code` only: the
+  `outputStyle` runtime capability is false for codex and opencode, an inherited style is dropped for
+  them at resolve, and an explicit one is refused at the API edge rather than stored and ignored.
+  Verified against claude 2.1.251 in a fresh untrusted directory (i.e. an agent folder): the style
+  arrives through the `--settings` flag we already write, a project-level `.claude/output-styles/*.md`
+  is discovered with no trust dialog, and a style COEXISTS with `--append-system-prompt-file`, so the
+  company context, persona, dreaming guidance and unattended brief all still land.
+- **Four traps the CLI is silent about, handled here because nothing downstream will be.**
+  (1) An **unknown style name is silently ignored** — `--settings '{"outputStyle":"NoSuchStyle"}'` exits
+  0 and runs Default, with no warning anywhere. So `sanitizeRuntimeTuning` validates against
+  `OutputStylesStore.names()` (built-ins + library); that is the only place a typo is ever caught, and
+  deleting a library style now reports which agents were pinned to it. (2) A custom style **drops Claude
+  Code's built-in software-engineering instructions** unless its frontmatter sets
+  `keep-coding-instructions: true`, and the default is `false` — a silent quality cliff for a coding
+  agent, so the starter template sets it and both the save response and the console flag a style that
+  doesn't. (3) **Subagents don't inherit a style** (they run their own system prompt). (4) A plugin
+  shipping a style with `force-for-plugin` **overrides the user's choice outright** — a fresh instance of
+  the documented "`~/.claude` is an undeclared input to every agent" hazard, and one more reason to run
+  `AOS_CLAUDE_CONFIG_ISOLATION=1`. `Concise` also declares a version floor (claude 2.1.237): an older box
+  silently falls back, so saving one warns instead of pretending.
+- **`npm run bench:output-style`** — the paired, controlled harness, re-pointed rather than retired. The
+  treatment is now `--settings '{"outputStyle":…}'` (the launcher's own mechanism) instead of an appended
+  brief, so the system prompt becomes the CONDITION alone and is identical across arms; `--style` is
+  repeatable and every candidate shares one control arm; `--cwd-styles` measures a custom style through
+  the same discovery path an agent uses. It refuses to start on an unknown style name, because the CLI
+  would accept it silently and the run would compare the control against itself and report a fake 0%.
+
+### Removed
+- **The terse-output feature is gone — `verbosity`, `TERSE_OUTPUT_BRIEF` and `src/edge/verbosity.ts`.**
+  This is evidence-led, and the evidence now lives in the header of `src/edge/output-styles.ts` so it
+  outlives the file. The brief was a compression instruction APPENDED to the system prompt; two quite
+  different wordings were benchmarked head to head against a shared control (504 calls, 6 reps) and BOTH
+  landed inside the noise — every bootstrap CI spanned zero, and the rewrite with the better prior
+  trended worse. Per-call narration length has a ~20-23% coefficient of variation whatever you put in
+  the prompt, so the runs could rule out any effect above ~10%, and did. The multi-turn harness then
+  found the one mechanism that measured — re-asserting the instruction beside each user message,
+  +6.8% [+0.5, +13.3], flat across turn index, i.e. PROXIMITY rather than decay prevention — and it was
+  never wired because it is worth ~$0.13/month fleet-wide. An output style is that same lever done from
+  the other side of the boundary, and Anthropic owns the wording. Also removed:
+  `verbositySavings()`'s successor panel, `GET /api/settings/verbosity-adoption`,
+  `bench:verbosity`/`bench:verbosity-turns` and their fixtures. `term_sessions.verbosity` and
+  `agent_revisions.verbosity` are left on disk unread — SQLite's `DROP COLUMN` rewrites the whole table,
+  and those rows are the only surviving record of which live runs launched under the brief.
+
+### Changed
+- **The console reports output-style ADOPTION, and no cost figure at all.** `outputStyleAdoption()` /
+  `GET /api/settings/output-style-adoption` count sessions per style per agent over a trailing window,
+  stamped from `term_sessions.output_style`. Two ancestors of this panel rendered savings
+  (`verbositySavings()`, retired v0.389.0, and the terse adoption counts that replaced it); the caption
+  now states why neither could work: `output_tokens` is ~85% `tool_use` arguments, so narration is ~15%
+  of it and the ceiling on any style's effect on spend is about 1%. A style is an ANSWER-SHAPE feature —
+  read the benchmark's **completeness** column before its token column, since the only durable finding
+  from the terse work was that per-turn reinforcement made answers shorter *and* more complete
+  (60/90 vs 48/90, p=0.036).
+- **A runtime switch no longer 400s on a knob the new runtime has never heard of.** `runtimeTuningPatch`
+  gains `dropStyle`, the sibling of `dropModel`: moving a claude-code agent to Codex drops its inherited
+  `outputStyle` instead of failing validation on a field the form doesn't even show for that runtime. An
+  explicitly re-stated style is still refused by name — that is a mistake the human just made, not
+  inherited state.
+
+## [0.405.0] - 2026-08-30
+### Added
+- **An expired credential has a route that isn't delete-then-add.** `secret_request` gains a third mode,
+  `rotate`. An agent that HOLDS a key whose value is being rejected (expired token, revoked key, rotated
+  upstream) used to hit the `exists` short-circuit — "you already have this" — which is useless precisely
+  when the value it has is the broken thing; the only fix was a human deleting the key and adding it
+  again. `secret_request({ key, rotate: true, reasoning })` now posts a *rotation* card and an owner/admin
+  types a replacement in **Settings → Secrets**. Still value-free on the agent's side: it sends only the
+  key and why. Three deliberate choices: a rotation overwrites **every principal holding that key**
+  (re-derived at fulfil time), because a half-rotated secret is worse than a missing one — whoever
+  resolves the stale copy fails against a credential that *looks* present; `rotate` outranks `access`,
+  since an agent can hold a key by shell injection *without* `secret_get` rights and must still be able
+  to report it dead; and injection **merges** the requester into the assignment list instead of replacing
+  it, which on a shared key would silently un-inject everyone else. A rotate for a key the vault doesn't
+  hold degrades to `provide`; without `rotate` the old short-circuit is unchanged, so a merely forgetful
+  agent still can't nag a human. Audited `secret.request.rotated` (principals, never the value).
+
+### Changed
+- **`secret_put` over a live key now announces itself as a replacement.** The vault write was always an
+  upsert, so updating a secret never needed a delete first — but nothing said so, and the approval card
+  read `store secret "X"` whether it was a first write or a clobber of a credential the whole fleet
+  resolves. The card now reads `REPLACE secret "X"` and names when and by whom it was last set, `replaced`
+  rides in the classify args (so a workspace can write a policy rule on it) and in the `secret.put` audit
+  alongside the prior `updatedAt`/`updatedBy`, and the tool tells the agent it replaced rather than
+  stored. Metadata only — neither value appears anywhere. The tool description now states that an
+  existing key is updated in place, and points an agent without the new value at `rotate` instead.
+- New falsifier `scripts/secret-rotation-test.cjs` (in `npm run test:governance`) pins all of it: the
+  short-circuit is only bypassed by `rotate`, the mode precedence, whole-key overwrite, assignment merge,
+  the 404 when the key vanished before a human acted, and REPLACE-vs-store on the approval card.
+
+## [0.404.1] - 2026-08-29
+### Fixed
+- **A merged skill proposal now stops asking to be reviewed.** The Skills console acts on the SKILL —
+  publish a draft, apply or discard a parked edit, delete one — and none of those routes ever touched the
+  `skill.proposed` Inbox card they resolve. Since "Needs you" is driven by `messages.status`, every
+  proposal a human had already merged sat there "awaiting review" forever (live tenants were carrying
+  several). The four routes now close the matching card (`POST /api/skills/:name/publish` and
+  `…/edit/apply` → approved; `…/edit/discard` and `DELETE /api/skills/:name` → rejected), matched by the
+  card's `args.skill` plus the `edit` flag that tells the draft and edit lanes apart, and the count is
+  audited alongside the act. Cards left open by the old code are healed once at boot from the library's own
+  state (a published draft reads as approved, a deleted one as rejected, an edit with nothing parked as
+  `resolved` — applied vs discarded is no longer distinguishable); anything genuinely pending is left
+  alone. The Inbox row renders the resolution (`published` / `applied` / `dismissed`) instead of a
+  permanent violet "review in Skills" badge, and names the edit lane for what it is. Pinned by
+  `scripts/skill-edit-proposal-test.cjs` (7 new checks, all of which fail against the old code).
+
 ## [0.404.0] - 2026-08-27
 ### Added
 - **Per-tool latency for every agent-facing MCP tool.** The request-metrics collector already answered

@@ -392,12 +392,61 @@ export function Xterm({
     }
     host.addEventListener('mouseup', onMouseUp)
 
+    // ── touch scrolling (iPad / tablets) ─────────────────────────────────────────────────────────
+    // A touch drag emits no wheel events, so the wheel bridge above never fires on a tablet and the
+    // scrollback is unreachable — the pane simply cannot be scrolled at all from an iPad. Translate a
+    // one-finger vertical drag into the SAME SGR wheel events the wheel handler sends while an app wants
+    // the mouse (claude's TUI / tmux), or a local term.scrollLines() otherwise, so the two input methods
+    // reach the app identically. Drag direction follows the content: finger up = look further down.
+    //
+    // `touch-action: none` is what stops Safari from panning the PAGE instead of giving us the gesture.
+    // Its cost is that pinch-zoom and page-pan no longer work while the finger is over the terminal —
+    // deliberate: the pane is the full-height surface on a tablet, so a gesture there is always meant for
+    // it. Restored on teardown rather than left on the node.
+    const priorTouchAction = host.style.touchAction
+    host.style.touchAction = 'none'
+    let touchY: number | null = null
+    let touchAcc = 0
+    const onTouchStart = (e: TouchEvent) => { if (e.touches.length === 1) { touchY = e.touches[0].clientY; touchAcc = 0 } else { touchY = null } }
+    const onTouchMove = (e: TouchEvent) => {
+      if (touchY === null || e.touches.length !== 1) return
+      const t = e.touches[0]
+      const cellH = host.clientHeight / Math.max(1, term.rows)
+      touchAcc += (touchY - t.clientY)
+      touchY = t.clientY
+      const lines = Math.trunc(touchAcc / cellH)
+      if (lines === 0) return
+      touchAcc -= lines * cellH
+      e.preventDefault()
+      if (appMouseWanted) {
+        const rect = host.getBoundingClientRect()
+        const col = Math.min(term.cols, Math.max(1, Math.floor(((t.clientX - rect.left) / rect.width) * term.cols) + 1))
+        const rowY = Math.min(term.rows, Math.max(1, Math.floor(((t.clientY - rect.top) / rect.height) * term.rows) + 1))
+        const btn = lines > 0 ? 65 : 64
+        let seq = ''
+        for (let k = 0; k < Math.min(Math.abs(lines), 8); k++) seq += `\x1b[<${btn};${col};${rowY}M`
+        send(C_INPUT + seq)
+      } else {
+        term.scrollLines(lines)
+      }
+    }
+    const onTouchEnd = () => { touchY = null }
+    host.addEventListener('touchstart', onTouchStart, { passive: true })
+    host.addEventListener('touchmove', onTouchMove, { passive: false })
+    host.addEventListener('touchend', onTouchEnd)
+    host.addEventListener('touchcancel', onTouchEnd)
+
     // Reflow on container resize.
     const ro = new ResizeObserver(() => { try { fit.fit() } catch { /* ignore */ } })
     ro.observe(host)
 
     return () => {
       host.removeEventListener('mouseup', onMouseUp)
+      host.removeEventListener('touchstart', onTouchStart)
+      host.removeEventListener('touchmove', onTouchMove)
+      host.removeEventListener('touchend', onTouchEnd)
+      host.removeEventListener('touchcancel', onTouchEnd)
+      host.style.touchAction = priorTouchAction
       ro.disconnect()
       dataDisp?.dispose(); resizeDisp?.dispose(); titleDisp?.dispose()
       try { ws.close() } catch { /* ignore */ }

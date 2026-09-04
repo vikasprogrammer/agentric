@@ -82,6 +82,16 @@ export function readSessionCost(claudeSessionId: string): SessionCost | null {
   let turns = 0;
   let toolCalls = 0;
   let prevTs = 0;
+  // One BILLED REQUEST can span several transcript lines. Claude Code writes a line per content block —
+  // `[thinking]`, `[tool_use]`, `[tool_use]` — and every one of them repeats the SAME `message.id` with a
+  // byte-identical `usage` object. Summing per line therefore bills each request once per block it
+  // happened to emit. Live instapods, a single engineer run: 36 usage-bearing lines for 19 distinct
+  // message ids, so 47% of billed lines were counted twice and the row read $4.05 against the $1.88 the
+  // agent's own status line showed. Usage is accumulated once per id.
+  //
+  // `toolCalls` is deliberately NOT deduped: the blocks are SPLIT across those lines rather than repeated,
+  // so counting `tool_use` blocks per line already counts each call exactly once.
+  const billed = new Set<string>();
 
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
@@ -115,6 +125,12 @@ export function readSessionCost(claudeSessionId: string): SessionCost | null {
     if (o.type !== 'assistant') continue;
     const u = o.message?.usage;
     if (!u) continue;
+    // No id (a malformed or older line) → fall back to counting it, rather than silently dropping spend.
+    const msgId = typeof o.message?.id === 'string' ? o.message.id : '';
+    if (msgId) {
+      if (billed.has(msgId)) continue;
+      billed.add(msgId);
+    }
 
     const rate = rateFor(String(o.message?.model || ''));
     const inp = u.input_tokens || 0;

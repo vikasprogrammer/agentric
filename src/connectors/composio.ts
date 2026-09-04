@@ -13,6 +13,7 @@
  * launch stalled every other request on this single-threaded server.
  */
 import { spawnSync } from 'child_process';
+import { requestMetrics } from '../edge/request-metrics';
 import { createHmac, timingSafeEqual } from 'crypto';
 
 /** The connector `type` whose URL is minted at launch rather than stored. */
@@ -205,6 +206,12 @@ export async function initiateConnection(
  */
 export interface MintOptions {
   toolkits?: string[];
+  /** Toolkits to REMOVE from an otherwise unrestricted session. Used by claims (composio-claims.ts): a
+   *  company app privately claimed by one member is disabled in everyone else's company session. Verified
+   *  against the live endpoint — a disabled toolkit is genuinely unreachable, not merely hidden, and
+   *  `COMPOSIO_SEARCH_TOOLS` reports no connection for it. Mutually exclusive with `toolkits`: one mint
+   *  is either an allowlist (a borrowed share) or a denylist (a company session minus claims). */
+  disableToolkits?: string[];
   connectedAccounts?: Record<string, string[]>;
   manageConnections?: boolean;
 }
@@ -213,7 +220,9 @@ export interface MintOptions {
 function mintBody(userId: string, opts: MintOptions): string {
   return JSON.stringify({
     user_id: userId,
-    ...(opts.toolkits?.length ? { toolkits: { enable: opts.toolkits } } : {}),
+    ...(opts.toolkits?.length
+      ? { toolkits: { enable: opts.toolkits } }
+      : opts.disableToolkits?.length ? { toolkits: { disable: opts.disableToolkits } } : {}),
     ...(opts.connectedAccounts && Object.keys(opts.connectedAccounts).length
       ? { connected_accounts: opts.connectedAccounts }
       : {}),
@@ -250,13 +259,13 @@ function mintResult(text: string): MintResult {
 export function mintToolRouterSession(apiKey: string, userId: string, opts: MintOptions = {}): MintResult {
   if (!apiKey) return { error: 'no Composio API key' };
   const url = `${apiBase()}/api/v3.1/tool_router/session`;
-  const res = spawnSync(
+  const res = requestMetrics.phase('spawn:composio-mint', () => spawnSync(
     'curl',
     ['-sS', '--max-time', '20', '-X', 'POST', url,
      '-H', `${COMPOSIO_KEY_HEADER}: ${apiKey}`, '-H', 'content-type: application/json',
      '-d', mintBody(userId, opts)],
     { encoding: 'utf8' },
-  );
+  ));
   if (res.error) return { error: `curl failed: ${res.error.message}` };
   if (res.status !== 0) return { error: `curl exited ${res.status}: ${(res.stderr || '').trim()}` };
   return mintResult(res.stdout || '');

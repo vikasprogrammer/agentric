@@ -41,6 +41,9 @@ async function load({ unattended = false, responses = [], statuses = [] } = {}) 
   process.env.AOS_TENANT = 'acme';
   process.env.UNATTENDED = unattended ? '1' : '';
   process.env.AOS_UNATTENDED_APPROVAL_WAIT_S = '2';
+  // The plugin polls the gate on a 1s beat and backs off 2s on an unreachable one, so the fail-closed
+  // cases here sat in real sleeps for 9.1s of every deploy. Shorten the beat, not the behaviour.
+  process.env.AOS_GATE_POLL_MS = '50';
   const calls = { classify: 0, status: 0, reported: [] };
   globalThis.fetch = async (url, init) => {
     const u = String(url);

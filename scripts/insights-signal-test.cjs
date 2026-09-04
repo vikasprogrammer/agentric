@@ -24,7 +24,7 @@ delete process.env.AGENT_OS_SECRET_KEY;
 let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
-const { deriveGuidance, deriveRecommendations, recommendationResolved, topicCounts, TOPICS_VERSION } = require(path.join(ROOT, 'dist/edge/dreaming.js'));
+const { deriveGuidance, deriveRecommendations, recommendationResolved, topicCounts, normalizeState, TOPICS_VERSION } = require(path.join(ROOT, 'dist/edge/dreaming.js'));
 const crypto = require('crypto');
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
 const { detectAlerts } = require(path.join(ROOT, 'dist/edge/alerts.js'));
@@ -153,6 +153,32 @@ console.log('\n\x1b[1mInsights signal — no prompt-injected or DM\'d number off
   assert(has('php8') && has('dev3') && has('oauth2'), 'php8 / dev3 / oauth2 survive');
   assert(has('log4j'), 'a short name with an interior digit is below the length bound and survives');
   assert(has('freescout'), 'a plain product name survives');
+
+  // ── the classes that reached the guidance line once the map started compounding for real ──────────
+  // Four days after TOPICS_VERSION 4 stopped the nightly wipe, instapods' injected guidance read
+  // "the fleet frequently works on: composio, friday, monday, dataforseo, gmail" — two of five were days
+  // of the week. Compounding did not create these; it made them visible and load-bearing, because a cron
+  // repeats its title verbatim and so outruns real subjects.
+  const got2 = new Map(topicCounts([
+    ep('Task: Use skill_propose to propose a new reusable skill named "friday-ops-report" for the weekly wrap.'),
+    ep('Task: Run the Monday marketing routine per your CLAUDE.md, then post the weekly digest.'),
+    ep('Task: Stop PPU billing + refund review for sarahmohib8@gmail.com (user 147627, FreeScout #3264).'),
+    ep('Task: Diagnose why ahmad.hekma@example.org cannot reach the dashboard.'),
+    ep('Task: Pod proud-ibis-22 is serving 502s; jolly-owl-72 and calm-tiger-80 look fine.'),
+    ep('Task: Return the HTML and JSON payloads over HTTP, then evaluate the urls.'),
+    ep('Task: Evaluate the Postgres restore and confirm Stripe webhooks still fire.'),
+  ]));
+  const has2 = (t) => got2.has(t);
+
+  assert(!has2('friday') && !has2('monday'), 'a day of the week is a cadence, not a subject', [...got2.keys()].join(','));
+  assert(!has2('weekly') && !has2('daily'), 'nor is a cadence word');
+  assert(!has2('sarahmohib8') && !has2('ahmad.hekma'), "a customer's email local part never becomes a topic");
+  assert(!has2('gmail.com') && !has2('example.org'), '…and neither does the domain half');
+  assert(!has2('proud-ibis-22') && !has2('jolly-owl-72') && !has2('calm-tiger-80'), 'a generated pod handle is not a workstream');
+  assert(!has2('html') && !has2('json') && !has2('http') && !has2('urls'), 'formats and protocols are how, not what');
+  assert(!has2('return') && !has2('evaluate'), 'a generic verb is not a subject');
+  // …and the real subjects in the same lines survive every one of those rules.
+  assert(has2('postgres') && has2('stripe') && has2('freescout'), 'real products still come through', [...got2.keys()].join(','));
 }
 
 // ── the extractor and TOPICS_VERSION must move together ─────────────────────────────────────────────
@@ -196,7 +222,7 @@ console.log('\n\x1b[1mInsights signal — no prompt-injected or DM\'d number off
 
   // ⚠ When this fails: the extractor changed. Bump TOPICS_VERSION in src/edge/dreaming.ts so every live
   // tenant rebuilds its topic map from the current corpus, THEN paste the new hash here.
-  const PINNED = { version: 4, hash: 'bc0f006a6d11ecf2' };
+  const PINNED = { version: 5, hash: '9a38a1fda7cb687d' };
 
   assert(hash === PINNED.hash,
     'the extractor is unchanged since TOPICS_VERSION was last bumped',
@@ -206,6 +232,22 @@ console.log('\n\x1b[1mInsights signal — no prompt-injected or DM\'d number off
   assert(TOPICS_VERSION === PINNED.version,
     'TOPICS_VERSION matches the version this fingerprint was taken at',
     `TOPICS_VERSION=${TOPICS_VERSION}, fingerprint pinned at ${PINNED.version}`);
+}
+
+// ── the shared Insight supersedes, it does not accumulate ────────────────────────────────────────────
+// The dreaming pass writes ONE tenant-scoped digest per pass, and every shared memory reaches EVERY
+// agent. With no retirement they piled up: 51 of 72 shared memories on live instapods, 48 of 85 on
+// instawp — two thirds of the whole shared pool, all superseded snapshots of each other.
+{
+  console.log('\n\x1b[1m6) the shared Insight supersedes rather than accumulates\x1b[0m');
+  // `lastInsightId` is what lets pass N+1 retire pass N's digest. Dropping it in normalizeState would
+  // silently restore the pile-up — the exact failure mode topicsVersion already had once.
+  const rt = normalizeState({ firstPass: 1, passes: 3, totals: {}, topics: {}, recent: [], lastInsightId: 'mem_abc' });
+  assert(rt.lastInsightId === 'mem_abc', 'lastInsightId survives normalizeState (else the digests pile up again)', JSON.stringify(rt.lastInsightId));
+  const legacy = normalizeState({ firstPass: 1, passes: 1, totals: {}, topics: {}, recent: [] });
+  assert(legacy.lastInsightId === undefined, 'a state written before the field carries none, and simply has nothing to retire');
+  const junk = normalizeState({ firstPass: 1, passes: 1, totals: {}, topics: {}, recent: [], lastInsightId: 42 });
+  assert(junk.lastInsightId === undefined, 'a non-string id is discarded rather than passed to delete()');
 }
 
 fs.rmSync(HOME, { recursive: true, force: true });

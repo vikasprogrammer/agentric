@@ -110,6 +110,41 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_composio_shares_owner ON composio_shares (owner_member_id);
 
+    -- What each Composio connected account REALLY is (composio-identity.ts). Composio's entity id says
+    -- whose SCOPE an account sits in (service:<tenant> = company, an email = that member's own) — it
+    -- says nothing about which third-party account is actually behind it, and the API redacts the token
+    -- payload. So a company Google Sheets connection can be an individual's personal Google account, and
+    -- for a long time nothing anywhere recorded that: the console showed the opaque Composio word-id and
+    -- agents acted through it blind. This caches the account the Tool Router itself reports
+    -- (current_user_info), plus the live status, so both the console and every agent's prompt can name
+    -- the real identity without a round trip. Cache only — Composio remains the source of truth.
+    CREATE TABLE IF NOT EXISTS composio_identities (
+      id         TEXT PRIMARY KEY,        -- the Composio connected-account id (ca_…)
+      user_id    TEXT NOT NULL,           -- the Composio entity it sits under (scope, not identity)
+      toolkit    TEXT NOT NULL,           -- toolkit slug (gmail, googlesheets, …)
+      account    TEXT NOT NULL DEFAULT '',-- the REAL account behind it (email / login / account name)
+      status     TEXT NOT NULL DEFAULT '',-- last seen status (ACTIVE / EXPIRED / …)
+      checked_at INTEGER NOT NULL,        -- when we last resolved it
+      notified_at INTEGER                 -- when we last told a human it had expired (dedupes the card)
+    );
+    CREATE INDEX IF NOT EXISTS idx_composio_identities_user ON composio_identities (user_id);
+
+    -- Company Composio connections that are really ONE person's account (composio-claims.ts) — the exact
+    -- inverse of composio_shares. Someone completes the hosted OAuth on the company shelf while signed in
+    -- to their own Google/Slack account, and the result is a connection every agent can act through
+    -- wearing that individual's identity. The entity is immutable on Composio's side, so this cannot be a
+    -- move: it is a marker the launcher enforces by minting everyone ELSE's company session without it.
+    CREATE TABLE IF NOT EXISTS composio_claims (
+      id         TEXT PRIMARY KEY,       -- the Composio connected-account id (ca_...) on the company entity
+      toolkit    TEXT NOT NULL,          -- toolkit slug — what gets disabled or re-pinned for everyone else
+      user_id    TEXT NOT NULL,          -- the company service entity (unchanged; it cannot be moved)
+      member_id  TEXT NOT NULL,          -- the member it really belongs to (prunes with the member)
+      account    TEXT NOT NULL DEFAULT '', -- resolved account at claim time, for display
+      claimed_by TEXT NOT NULL,          -- email of the owner/admin who filed it
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_composio_claims_member ON composio_claims (member_id);
+
     -- Host connections — reachable destinations (SSH box / internal HTTP / DB) an agent may talk to,
     -- as a first-class governed thing (docs/host-connections-plan.md). Phase 2a stores them; the
     -- governance that reads them (net.connect/ssh.exec + allow-list) is Phase 2b. Mirrors connectors'
@@ -250,6 +285,21 @@ function migrate(db: Db): void {
       created_at INTEGER NOT NULL
     );
 
+    -- Every Slack thread the bot is PART OF, keyed by the thread itself rather than by session.
+    -- slack_threads is keyed by session_id (one reply target per run) and is written only when a
+    -- message TRIGGERS a run — so a thread the bot itself opened (a cron report posted with slack_send,
+    -- a proactive nudge) had no row, and a human replying in it was dropped as unaddressed chatter. This
+    -- table is the "have we spoken here" index: a reply in any thread listed here is addressed to us,
+    -- even when the run that posted has long since ended.
+    CREATE TABLE IF NOT EXISTS slack_bot_threads (
+      channel    TEXT NOT NULL,
+      thread_ts  TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (channel, thread_ts)
+    );
+    CREATE INDEX IF NOT EXISTS idx_slack_bot_threads_session ON slack_bot_threads (session_id);
+
     -- Native Discord egress binding (the analogue of slack_threads): the channel + message a
     -- Discord-triggered session should reply into. Written when a discord automation spawns a session;
     -- read by the agentos discord_reply tool so the agent posts back to the SAME channel as a reply to
@@ -260,6 +310,21 @@ function migrate(db: Db): void {
       message_id TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+
+    -- Every message the BOT has posted to Discord, keyed by the message itself. Discord's analogue of
+    -- slack_bot_threads: there is no thread root on a plain channel post, but a human replying to one of
+    -- our messages carries message_reference.message_id, and that reference is the targeting signal —
+    -- a reply to something an agent wrote is addressed to that agent, @mention or not. Without this a
+    -- proactive discord_send (a cron report) was a dead end: every reply under it was dropped as
+    -- ordinary guild chatter.
+    CREATE TABLE IF NOT EXISTS discord_bot_messages (
+      channel    TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (channel, message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_discord_bot_messages_session ON discord_bot_messages (session_id);
 
     -- Native ClickUp egress binding (the analogue of slack_threads): the task a ClickUp-triggered
     -- session should reply into. Written when a /agentname comment on a task spawns a session; read by
@@ -412,6 +477,18 @@ function migrate(db: Db): void {
       expires_at   INTEGER NOT NULL         -- give up (mark 'expired') after this hard cap
     );
     CREATE INDEX IF NOT EXISTS idx_video_jobs_status ON video_jobs(status);
+
+    -- Per-agent MCP tool usage, counted not evented (src/edge/tool-usage.ts). The loopback tools bypass
+    -- the gate and only the writing ones audit anything, so READ tools were invisible; this is the
+    -- histogram that makes "which tools does this agent use" answerable without doubling audit volume.
+    CREATE TABLE IF NOT EXISTS tool_usage (
+      tenant TEXT NOT NULL,
+      agent  TEXT NOT NULL,
+      tool   TEXT NOT NULL,
+      day    TEXT NOT NULL,          -- YYYY-MM-DD, UTC
+      n      INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (tenant, agent, tool, day)
+    );
 
     -- A queryable mirror of the audit event stream (JSONL remains the durable system of record).
     CREATE TABLE IF NOT EXISTS audit_events (
@@ -1104,13 +1181,21 @@ function migrate(db: Db): void {
   addColumn(db, 'approvals', 'escalated_at', 'INTEGER');       // when the stale-approval reminder fired
   addColumn(db, 'questions', 'escalated_at', 'INTEGER');       // when the stale-question reminder fired
 
-  // Narration verbosity the run LAUNCHED with ('normal' | 'terse'), stamped from the `session.tuning`
-  // audit alongside model/effort. It's the join key the savings comparison groups on — without it on the
-  // row, "did terse actually cost less" needs a JSON scan of the audit stream per session. NULL = a run
-  // from before the flag existed: attributable to neither arm, and deliberately excluded from both.
+  // The Claude Code OUTPUT STYLE the run LAUNCHED with ('Default' | 'Concise' | a library style),
+  // stamped from the `session.tuning` audit alongside model/effort. It is the join key adoption groups
+  // on — without it on the row, "which agents ran which style" needs a JSON scan of the audit stream per
+  // session. NULL = a run from before the knob existed, or one on a runtime with no output styles:
+  // attributable to no style, and deliberately excluded from the counts.
+  addColumn(db, 'term_sessions', 'output_style', 'TEXT');
+  // …and on the revision snapshot, so reverting an agent restores the style it was saved with rather
+  // than silently leaving the current one in place.
+  addColumn(db, 'agent_revisions', 'output_style', 'TEXT');
+  // The columns these replaced — `term_sessions.verbosity` / `agent_revisions.verbosity`, the retired
+  // terse-narration flag (v0.406.0). Left in place rather than dropped: SQLite's DROP COLUMN rewrites
+  // the whole table, and the historical rows are the only surviving record of which live runs launched
+  // under the terse brief. Nothing reads or writes them any more. `addColumn` is a no-op on a fresh DB
+  // where they never existed, which is the correct end state.
   addColumn(db, 'term_sessions', 'verbosity', 'TEXT');
-  // …and on the revision snapshot, so reverting an agent restores the verbosity it was saved with
-  // rather than silently leaving the current one in place.
   addColumn(db, 'agent_revisions', 'verbosity', 'TEXT');
   // Context-shaping allowlists (AgentManifest.skills / .tools) — snapshotted so a revert restores the
   // agent's offer alongside its prompt. JSON arrays; '[]' reads as "everything", matching a manifest
@@ -1153,6 +1238,16 @@ function migrate(db: Db): void {
              WHERE run_as IS NOT NULL AND instr(run_as, '@') > 0
                AND EXISTS (SELECT 1 FROM members m WHERE m.email = lower(term_sessions.run_as))`);
 
+  // Same shape, one table over: `tasks.owner` is the accountable human and is read as a MEMBER id
+  // everywhere (`resolveRecipients` → `getMember`, `t.owner === me.id` on the board, `dispatchTask`
+  // passing it through as the session's run-as). `POST /api/app/dispatch` stored an EMAIL there, so a
+  // run triggered from a hosted app notified nobody and never matched its own owner's board. The route
+  // now stores an id; this canonicalises the rows already written, on the same terms as the sweep above
+  // — an email that resolves to no member is left alone rather than discarded.
+  db.exec(`UPDATE tasks SET owner = (SELECT m.id FROM members m WHERE m.email = lower(tasks.owner))
+             WHERE owner IS NOT NULL AND instr(owner, '@') > 0
+               AND EXISTS (SELECT 1 FROM members m WHERE m.email = lower(tasks.owner))`);
+
   // WHEN an approval was decided (epoch ms), NULL while pending. `questions` already records `answered_at`;
   // this brings approvals to parity so the unified feed (src/state/feed.ts) can order a RESOLVED decision
   // by when you decided it, not by when it was raised — without a per-row scan of `audit_events`.
@@ -1168,6 +1263,15 @@ function migrate(db: Db): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_last_session ON tasks(last_session_id)');
 
+  // The hand-off CHAIN's three lookups — every one of them a full SCAN of `term_sessions`/`tasks` before
+  // this, repeated ONCE PER NODE of the walk (`GET /api/sessions/:id/chain` measured 66 ms average on the
+  // live instawp tenant, 4,193 sessions, and the walk re-runs the same scans for the climb and again for
+  // every child). A conversation is `claude_session_id`, a delegation is `spawned_by = task:<id>`/`ask:<id>`,
+  // and the caller one level up is `tasks.caller_claude_id`.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_claude ON term_sessions(claude_session_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_spawned_by ON term_sessions(spawned_by)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_caller ON tasks(caller_claude_id)');
+
   // audit_events by TYPE. The existing index is (run_id, type, ts) — useless to the many callers that ask
   // "when did this type last happen" / "how many since T" WITHOUT a run: the digest, the alert staleness
   // checks, dreaming's watermark, measurement, the Audit page's type filter. Those were full scans of the
@@ -1176,6 +1280,21 @@ function migrate(db: Db): void {
   // Also serves the retention sweep, which deletes by `ts` alone.
   db.exec('CREATE INDEX IF NOT EXISTS idx_audit_type_ts ON audit_events(type, ts)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)');
+
+  // audit_events by (type, run_id) — the shape the per-agent maturity roll-up asks for, and the reason
+  // `GET /api/agents/stats` measured **1,966 ms average** on the live instawp tenant (576k audit rows):
+  // it read every `gate.attempt`/`gate.decision` ROW to count them, materialising 238 MB of `data` JSON
+  // per call and JSON.parsing all of it. Grouped in SQL over this COVERING index the same roll-up is a
+  // 40 ms index-only scan and the `data` column is never touched. (It is a separate index from
+  // idx_audit_type_ts because a `ts` second column can't answer "count per run".)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_type_run ON audit_events(type, run_id)');
+  // The one predicate the roll-up still can't answer from a count: WHICH runs hit a policy deny. Denies
+  // are ~0.2% of `gate.decision` rows, so a PARTIAL index over just those is tiny — and the predicate is
+  // a LIKE, deliberately NOT json_extract: an index build that parses JSON would abort the whole
+  // migration on the first malformed `data` row ever written. The LIKE is a pre-filter; the caller
+  // re-checks each of the few matches with a real JSON.parse, so a false positive can't skew a stat.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_deny ON audit_events(run_id)
+             WHERE type = 'gate.decision' AND data LIKE '%"effect":"deny"%'`);
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

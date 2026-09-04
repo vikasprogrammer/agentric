@@ -14,13 +14,18 @@ import { newId } from './id';
 import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
+import { clipText } from './state/session-activity';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { listConnectedAccounts } from './connectors/composio';
+import { activeToolkits, resolveIdentities } from './connectors/composio-identity';
+import { exclusionFor } from './connectors/composio-claims';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { isolateClaudeConfig } from './edge/config-isolation';
 import { resolveCapability } from './capabilities/normalize';
+import { unwrapComposioEnvelope } from './capabilities/composio-envelope';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
@@ -38,8 +43,7 @@ import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVide
 import { understandMedia } from './edge/media-understand';
 import { readSessionCost } from './edge/session-cost';
 import { readTranscriptEnd } from './edge/outcome';
-import { TERSE_OUTPUT_BRIEF } from './edge/verbosity';
-import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF } from './edge/background-work';
+import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF, WAITING_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
 import { readConversation, findTranscript, registerTranscriptRoot, Conversation } from './edge/conversation';
 
@@ -66,6 +70,13 @@ const MID_TURN_MAX_MS = 2 * 3600_000;
  *  tool call (96% of fleet runs within 30s) — and either one PROMOTES `busy_since` off `created_at`
  *  ({@link markTurnBusy}), which is what makes "unconfirmed" a decidable state rather than a guess. */
 const LAUNCH_TURN_GRACE_MS = 5 * 60_000;
+/** How long after a run goes terminal we keep re-probing for a transcript that isn't on disk before
+ *  concluding it never will be. A run that crashed before its runtime opened a `.jsonl` has no cost to
+ *  read, ever; without a ceiling those rows are re-probed on every sessions poll forever (see the
+ *  no-transcript branch in {@link TerminalManager.backfillCosts}). Generous on purpose — the only thing
+ *  a too-long grace costs is a few more probes, while a too-short one would stamp a zero over a
+ *  transcript that was merely slow to flush. */
+const TRANSCRIPT_SETTLE_MS = 60 * 60_000;
 /** How long an idle INTERACTIVE session keeps its spawn-cap slot after its last turn ended. Long enough
  *  that a human thinking between turns never loses their slot to a scheduled spawn; short enough that a
  *  TUI someone walked away from stops blocking the scheduler. Only affects ADMISSION — the session stays
@@ -115,7 +126,7 @@ import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
 import { guidanceStale } from './edge/dreaming';
 import { GithubIdentity } from './edge/github-identity';
-import { credentialDirHasLogin } from './edge/runtime-account-check';
+import { credentialDirHasLogin, preflightCredential } from './edge/runtime-account-check';
 import type { RuntimeAccount } from './state/runtime-accounts';
 import { RuntimeLoginManager } from './edge/runtime-login';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -152,12 +163,21 @@ into this prompt — you must reach for it:
   self-contained fact per memory; skip routine steps and run-specific trivia — remembering everything
   is as useless as remembering nothing.
 
+**Memory or the Knowledge Base?** Ask what KIND of thing you learned, not who might want it:
+- **The finding goes in the KB** (\`kb_write\`) — what is true about the system, written for someone who
+  wasn't there: a root cause, a measured result, a runbook, a convention. It gets a title and a reader.
+- **The technique goes in memory** (\`remember\`) — how to work on this system, for your own next run:
+  which box has the credentials, which tool lies to you, which probe can't fail, the flag that wasted an
+  hour. Nobody wants a wiki page called "psysh evaluates line by line", and you will want it again.
+When one run produces both, write both — the page for the finding, the memory for what it cost you to
+get there. If the finding is big, a memory pointing at the page is worth more than a second copy of it.
+
 ## Talking to the human — use the Inbox, not just the terminal
 Your terminal output may not be read. The operator lives in the Inbox:
-- \`ask\` when you're blocked on a judgement only the human can make — it waits for their reply. Prefer
+- \`ask_human\` when you're blocked on a judgement only the human can make — it waits for their reply. Prefer
   asking over guessing on anything risky or ambiguous. This is the ONLY way to ask a person here: there
   is no human at your terminal, so a native multiple-choice/interactive prompt just hangs unanswered —
-  always use \`ask\` (or plain text if you're in a chat), never an interactive picker.
+  always use \`ask_human\` (or plain text if you're in a chat), never an interactive picker.
 - \`report\` exactly once when you finish, with the outcome and a one-line summary, so the result is
   visible without anyone reading the terminal. If the task taught you something durable, pass it in
   \`lessons\` — it's saved to your memory as a note to your future self.
@@ -194,9 +214,7 @@ Other agents run in this workspace and you share state with them. You are a node
   a draft for a human to approve.
 - **Knowledge Base** (\`kb_*\`) is the fleet's shared, living wiki. \`kb_search\` before assuming a fact
   isn't already written down; \`kb_write\` durable facts, runbooks, and conventions that help *other*
-  agents and humans. (Memory is for facts only *you* reuse; the KB is for the whole fleet.)
-- **Shared memory**: \`remember\` with \`shared: true\` publishes a fact fleet-wide instead of only to
-  your own recall — use it for things the whole team should know.
+  agents and humans. (Which store gets what: see "Memory or the Knowledge Base?" above.)
 - **Skills** (\`skill_propose\`): when you work out HOW to do something repeatable and non-obvious — a
   multi-step procedure another agent could follow verbatim — propose it as a skill. That's *procedural*
   memory (a reusable playbook), distinct from a *fact* (\`remember\`/\`report\` lessons) or a wiki page
@@ -373,9 +391,10 @@ export interface Session {
    *  per-task overridable, so "what ran this, how hard" reads next to what it cost. */
   model?: string;
   effort?: string;
-  /** Narration verbosity the run launched with ('normal' | 'terse'). Undefined on runs that predate the
-   *  flag — those are excluded from the savings comparison rather than assumed normal. */
-  verbosity?: string;
+  /** Claude Code output style the run launched with ('Default' | 'Concise' | a library style).
+   *  Undefined on runs that predate the knob, and on runtimes that have no output styles — those are
+   *  excluded from the adoption counts rather than assumed Default. */
+  outputStyle?: string;
   /** Total milliseconds the run sat BLOCKED on a human — approval gates plus `ask` questions. The
    *  governed-OS latency no other field captures; a big number next to a small `activeMs` is a run that
    *  mostly waited on people. Undefined until stamped; 0 when it never blocked. */
@@ -484,7 +503,7 @@ function markDuplicateDispatches(nodes: ChainNode[]): void {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request';
+  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request' | 'connection.expired';
   sessionId: string;
   agent: string;
   title: string;
@@ -575,7 +594,7 @@ interface SessionRow {
   gov_errors: number | null;
   model: string | null;
   effort: string | null;
-  verbosity: string | null;
+  output_style: string | null;
   blocked_ms: number | null;
   artifacts: number | null;
 }
@@ -684,10 +703,15 @@ export interface MemberNotice {
  *  until an owner happened to open Settings. The registry DMs the `admins` tier — the audience every one of
  *  these cards is already addressed to. `kind` is the card type (drives the DM icon + deep-link); `title`
  *  and `summary` are the card's own heading/body reused verbatim. */
+/** The review kinds that are also a `messages.type` — i.e. everything an AGENT raises. `system.update`
+ *  is deliberately excluded: it is an OS-raised notice delivered as a plain `notification` card, so it
+ *  travels the DM path without inventing a message type nothing renders. */
+export type ReviewCardKind = Exclude<ReviewNotice['kind'], 'system.update'>;
+
 export interface ReviewNotice {
   sessionId: string;
   agent: string;
-  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'goal.update.proposed' | 'connection.request';
+  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'goal.update.proposed' | 'connection.request' | 'connection.expired' | 'system.update';
   title: string;
   summary: string;
   /** Whom to DM. Defaults (in the registry's `notifyReview`) to the `admins` tier — the audience nearly
@@ -700,6 +724,17 @@ export interface ReviewNotice {
    *  of dropping the reviewer on the Agents index to find it themselves (parity with the inbox row, which
    *  has deep-linked by target all along). `label` names the destination in the DM text. */
   link?: { page: string; detail?: string; label?: string };
+}
+
+/** What an agent's `secret_request` is asking a human to do with the KEY it named:
+ *  `provide` (the vault has nothing — type a value), `access` (it exists but is scoped away — grant it),
+ *  `rotate` (the agent CAN read it but the value is being rejected — replace it). Detected server-side
+ *  in {@link TerminalManager.requestSecret}; the agent only says which key and why. */
+export type SecretRequestMode = 'provide' | 'access' | 'rotate';
+
+/** Read a `secret.request` card's stored `mode`, defaulting to 'provide' for an unknown/legacy value. */
+function parseSecretRequestMode(v: unknown): SecretRequestMode {
+  return v === 'access' || v === 'rotate' ? v : 'provide';
 }
 
 /** The spec an agent proposes for a new automation — the subset of `AddAutomationInput` an agent may
@@ -735,6 +770,22 @@ export interface SessionEventNotice {
   message: string;
 }
 
+/** What the transfer sink receives when a session is handed off to another member ({@link
+ *  TerminalManager.transferSession}). The new owner inherits accountability for a run they didn't start,
+ *  so the registry DMs them out-of-band on their linked Slack/Discord — a hand-off nobody sees is a
+ *  hand-off nobody picks up. Always-on (not gated on the `dm` pref): a deliberate person-to-person
+ *  reassignment is a direct ask, not a lifecycle beat. */
+export interface TransferNotice {
+  sessionId: string;
+  agent: string;
+  /** Member id of the new owner (the session's new `run_as`). */
+  to: string;
+  /** The human who performed the hand-off. */
+  byName: string;
+  /** Session display title, when it has one. */
+  title?: string;
+}
+
 /** Everything the runtime launcher needs for ONE launch of a session row. Named (rather than inline)
  *  because the launch is now scheduled and executed in two steps — see `launchAgentRuntime`. */
 interface LaunchSpec {
@@ -751,6 +802,16 @@ interface LaunchSpec {
    *  launcher's FORK_FROM branch runs `claude --resume <forkFrom> --fork-session --session-id
    *  <claudeSessionId>` on first launch; a reattach (resume:true) resumes the fork's own branch. */
   forkFrom?: string;
+}
+
+/**
+ * The name an inbound chat attachment takes inside an agent's `.inbox/`. Exported because the chat
+ * sockets must name the file in the PROMPT before the session (and therefore the agent folder) exists
+ * — if the two sanitizers ever disagreed, the agent would be told to Read a path that isn't there.
+ */
+export function inboxFileName(name: string): string {
+  const clean = (name || 'file').split(/[\\/]/).pop()!.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 80);
+  return clean || 'file';
 }
 
 export class TerminalManager {
@@ -878,6 +939,11 @@ export class TerminalManager {
    *  once the chat sockets exist; absent = no push (the inbox card is always written regardless). */
   private sessionEventNotifier?: (notice: SessionEventNotice) => void;
   setSessionEventNotifier(fn: (notice: SessionEventNotice) => void): void { this.sessionEventNotifier = fn; }
+  /** Optional sink notified when a session is handed off to another member, so the registry can DM the
+   *  new owner. Set by the registry once the chat sockets exist; absent = no push (the transfer itself
+   *  still happens and is audited regardless). */
+  private transferNotifier?: (notice: TransferNotice) => void;
+  setTransferNotifier(fn: (notice: TransferNotice) => void): void { this.transferNotifier = fn; }
   private fireSessionEvent(sessionId: string, agent: string, kind: SessionEventNotice['kind'], title: string, message: string): void {
     try { this.sessionEventNotifier?.({ sessionId, agent, kind, title, message }); } catch { /* advisory — never let a push wedge the caller */ }
   }
@@ -908,6 +974,39 @@ export class TerminalManager {
     });
     this.refreshTranscriptRoots();
     this.sweepLaunchMarkers();
+    this.sweepStaleSkillProposals();
+  }
+
+  /** One-shot boot heal for review cards left open by the pre-v0.404.1 skills routes, which resolved the
+   *  SKILL but never its 'skill.proposed' card — so a published draft / applied edit sat in "Needs you"
+   *  forever. Re-derives each open card's fate from the library (the only source of truth left): a draft
+   *  that is now published reads as approved, one whose folder is gone as rejected, and an edit card with
+   *  no parked edit as `resolved` (applied vs discarded is no longer distinguishable — and the card is
+   *  dead either way). Anything still genuinely pending is left alone. Cheap: open cards only, once per
+   *  process. */
+  private sweepStaleSkillProposals(): void {
+    try {
+      const rows = this.db
+        .prepare(`SELECT id, args FROM messages WHERE type = 'skill.proposed' AND status = 'open'`)
+        .all<{ id: string; args: string | null }>();
+      if (!rows.length) return;
+      const upd = this.db.prepare(`UPDATE messages SET status = ? WHERE id = ?`);
+      let healed = 0;
+      for (const r of rows) {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { continue; }
+        const name = String(a.skill ?? '');
+        if (!name) continue;
+        const skill = this.os.skills.get(name);
+        let status: string | undefined;
+        if (a.edit === true) { if (!skill || !this.os.skills.pendingEdit(name)) status = 'resolved'; }
+        else if (!skill) status = 'rejected';
+        else if (!skill.proposed) status = 'approved';
+        if (!status) continue;
+        upd.run(status, r.id); healed++;
+      }
+      if (healed) this.audit('-', 'system', 'skill.proposals.healed', { count: healed });
+    } catch { /* advisory — never block boot on a heal */ }
   }
 
   /** Teach the transcript reader where rotated sessions wrote their conversations. Without it the console's
@@ -1145,12 +1244,24 @@ export class TerminalManager {
         continue;                                       // transcript unreadable — retry on a later poll
       }
       if (!cost) {
-        // No transcript. For an unpriced row that's "not written yet" — retry on a later poll. But a row
-        // that's ALREADY priced and lands here has had its transcript pruned since; we were only after
-        // its shape, so stamp zeros rather than re-probe a file that's never coming back (which would
-        // otherwise eat this budget on every poll forever and starve genuinely new rows).
-        if (r.cost_usd != null) {
-          this.db.prepare('UPDATE term_sessions SET active_ms = 0, turns = 0, tool_calls = 0 WHERE id = ?').run(r.id);
+        // No transcript. Two ways a row lands here, and only one of them is temporary:
+        //
+        //  - the run JUST ended and claude hasn't flushed its `.jsonl` yet — genuinely "not written
+        //    yet", so retry on a later poll;
+        //  - the transcript is never coming. Either it was pruned since (the row is ALREADY priced and
+        //    we were only after its shape) or it was never written at all — a run that crashed before
+        //    claude opened one, which on the live instawp tenant is 25 rows of dead `consolidator` /
+        //    `qa` sessions, every one of them `cost_usd IS NULL`.
+        //
+        // The second case used to be handled ONLY when `cost_usd != null`, so those 25 rows re-probed
+        // forever: `findTranscript` readdirs every project dir under every transcript root, they
+        // consumed the whole 20-parse budget on EVERY list poll, and nothing was ever stamped to stop
+        // them. Age is what separates the two cases — a transcript still absent long after the run went
+        // terminal is not coming — so an unpriced row heals the same way once it is past the grace.
+        const settled = r.cost_usd != null || (r.updated_at ?? r.created_at) < Date.now() - TRANSCRIPT_SETTLE_MS;
+        if (settled) {
+          this.db.prepare('UPDATE term_sessions SET cost_usd = COALESCE(cost_usd, 0), active_ms = 0, turns = 0, tool_calls = 0 WHERE id = ?').run(r.id);
+          r.cost_usd = r.cost_usd ?? 0;
           r.active_ms = 0;
           r.turns = 0;
           r.tool_calls = 0;
@@ -1190,81 +1301,121 @@ export class TerminalManager {
    * Mutates the rows in place, so the same response carries what it just computed.
    */
   private stampInsights(rows: SessionRow[]): void {
-    for (const r of rows) {
-      const live = r.status === 'running';
-      // Fully stamped = both tiers present (`artifacts` is the tier-2 marker, like `gov_approvals` for
-      // tier-1). A row stamped by an older build carries the gov_* set but NULL tier-2 columns, so it
-      // re-stamps once to fill them, then this guard retires it. Terminal state can no longer change.
-      if (!live && r.gov_approvals != null && r.artifacts != null) continue;
+    // Fully stamped = both tiers present (`artifacts` is the tier-2 marker, like `gov_approvals` for
+    // tier-1). A row stamped by an older build carries the gov_* set but NULL tier-2 columns, so it
+    // re-stamps once to fill them, then this guard retires it. Terminal state can no longer change.
+    const todo = rows.filter((r) => r.status === 'running' || r.gov_approvals == null || r.artifacts == null);
+    if (!todo.length) return;
+    // BATCHED, not per row: this used to fire six point queries for EVERY row it stamped, and the live
+    // rows re-stamp on every poll — so the 1.5 s summary poll paid ~6 × (live rows) queries forever.
+    // Each lookup below is the same query with `run_id IN (…)` + GROUP BY, chunked so the parameter list
+    // stays bounded. Same indexes (`idx_audit_run_type`), same numbers, one round of work.
+    const ids = todo.map((r) => r.id);
+    const chunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += 400) chunks.push(ids.slice(i, i + 400));
+    const each = <T>(sql: (holes: string) => string, fn: (row: T) => void): void => {
+      for (const page of chunks) {
+        for (const row of this.db.prepare(sql(page.map(() => '?').join(','))).all<T>(...page)) fn(row);
+      }
+    };
 
-      const counts = this.db.prepare(`SELECT
+    interface Counts { actions: number; approvals: number; denied: number; errors: number }
+    const counts = new Map<string, Counts>();
+    each<{ run_id: string; actions: number | null; approvals: number | null; gateDenied: number | null; rejected: number | null; errors: number | null }>(
+      (h) => `SELECT run_id,
           SUM(type = 'gate.decision') AS actions,
           SUM(type = 'approval.requested') AS approvals,
           SUM(type = 'gate.decision' AND data LIKE '%"effect":"deny"%') AS gateDenied,
           SUM(type = 'approval.resolved' AND data LIKE '%"approved":false%') AS rejected,
           SUM(type = 'session.error') AS errors
-        FROM audit_events WHERE run_id = ?`)
-        .get<{ actions: number | null; approvals: number | null; gateDenied: number | null; rejected: number | null; errors: number | null }>(r.id);
-      const actions = counts?.actions ?? 0;
-      const approvals = counts?.approvals ?? 0;
-      const denied = (counts?.gateDenied ?? 0) + (counts?.rejected ?? 0);
-      const errors = counts?.errors ?? 0;
+        FROM audit_events WHERE run_id IN (${h}) GROUP BY run_id`,
+      (c) => counts.set(c.run_id, {
+        actions: c.actions ?? 0,
+        approvals: c.approvals ?? 0,
+        denied: (c.gateDenied ?? 0) + (c.rejected ?? 0),
+        errors: c.errors ?? 0,
+      }),
+    );
 
-      // The agent's own end-of-session verdict. Latest wins — a resumed run can report more than once.
-      const report = this.db
-        .prepare("SELECT data FROM audit_events WHERE run_id = ? AND type = 'session.reported' ORDER BY ts DESC LIMIT 1")
-        .get<{ data: string }>(r.id);
+    // The agent's own end-of-session verdict, and the tuning the run launched with. Latest wins — a
+    // resumed run can report more than once — which the ASC scan expresses as last-write-wins.
+    const reported = new Map<string, string>();
+    const tuned = new Map<string, string>();
+    each<{ run_id: string; type: string; data: string }>(
+      (h) => `SELECT run_id, type, data FROM audit_events
+               WHERE run_id IN (${h}) AND type IN ('session.reported', 'session.tuning') ORDER BY ts ASC`,
+      (e) => (e.type === 'session.reported' ? reported : tuned).set(e.run_id, e.data),
+    );
+
+    // Human-wait: `ask` questions (own table carries the answered timestamp) + approval gates (no
+    // resolved_at column, so pair the audit spans by approvalId). Only closed waits count — a still-
+    // pending block hasn't cost a measurable duration yet, and this run is terminal by here anyway.
+    const qWait = new Map<string, number>();
+    each<{ run_id: string; ms: number }>(
+      (h) => `SELECT run_id, COALESCE(SUM(answered_at - created_at), 0) AS ms FROM questions
+               WHERE run_id IN (${h}) AND answered_at IS NOT NULL GROUP BY run_id`,
+      (q) => qWait.set(q.run_id, q.ms),
+    );
+    const apWait = new Map<string, number>();
+    const requestedAt = new Map<string, number>(); // approvalId → ts, across the whole scan
+    each<{ run_id: string; ts: number; type: string; data: string }>(
+      (h) => `SELECT run_id, ts, type, data FROM audit_events
+               WHERE run_id IN (${h}) AND type IN ('approval.requested', 'approval.resolved') ORDER BY ts ASC`,
+      (e) => {
+        let id: string | undefined;
+        try { id = (JSON.parse(e.data) as { approvalId?: string }).approvalId; } catch { /* skip */ }
+        if (!id) return;
+        if (e.type === 'approval.requested') { requestedAt.set(id, e.ts); return; }
+        const t0 = requestedAt.get(id);
+        if (t0 == null) return;
+        apWait.set(e.run_id, (apWait.get(e.run_id) ?? 0) + Math.max(0, e.ts - t0));
+        requestedAt.delete(id);
+      },
+    );
+
+    const artifactCounts = new Map<string, number>();
+    each<{ session_id: string; n: number }>(
+      (h) => `SELECT session_id, COUNT(*) AS n FROM artifacts WHERE session_id IN (${h}) GROUP BY session_id`,
+      (a) => artifactCounts.set(a.session_id, a.n),
+    );
+
+    const write = this.db.prepare('UPDATE term_sessions SET gov_actions = ?, gov_approvals = ?, gov_denied = ?, gov_errors = ?, outcome = ?, report_summary = ?, model = ?, effort = ?, output_style = ?, blocked_ms = ?, artifacts = ? WHERE id = ?');
+    for (const r of todo) {
+      const live = r.status === 'running';
+      const c = counts.get(r.id);
+      const actions = c?.actions ?? 0;
+      const approvals = c?.approvals ?? 0;
+      const denied = c?.denied ?? 0;
+      const errors = c?.errors ?? 0;
+
       let outcome = live ? null : 'unknown';
       let summary: string | null = null;
+      const report = reported.get(r.id);
       if (report) {
         try {
-          const d = JSON.parse(report.data) as { outcome?: string; summary?: string };
+          const d = JSON.parse(report) as { outcome?: string; summary?: string };
           if (d.outcome) outcome = d.outcome;
           if (d.summary) summary = d.summary.trim() || null;
         } catch { /* malformed audit payload — fall back to 'unknown' */ }
       }
 
-      // Runtime tuning the run launched with (set once at launch — present even while live).
-      const tuning = this.db
-        .prepare("SELECT data FROM audit_events WHERE run_id = ? AND type = 'session.tuning' ORDER BY ts DESC LIMIT 1")
-        .get<{ data: string }>(r.id);
       let model: string | null = null;
       let effort: string | null = null;
-      let verbosity: string | null = null;
+      let outputStyle: string | null = null;
+      const tuning = tuned.get(r.id);
       if (tuning) {
         try {
-          const d = JSON.parse(tuning.data) as { model?: string; effort?: string; verbosity?: string };
+          const d = JSON.parse(tuning) as { model?: string; effort?: string; outputStyle?: string };
           model = d.model ?? null;
           effort = d.effort ?? null;
           // Absent on runs launched before the flag shipped — left NULL, which the savings comparison
           // reads as "attributable to neither arm" rather than silently counting it as normal.
-          verbosity = d.verbosity ?? null;
+          outputStyle = d.outputStyle ?? null;
         } catch { /* malformed — leave all null */ }
       }
 
-      // Human-wait: `ask` questions (own table carries the answered timestamp) + approval gates (no
-      // resolved_at column, so pair the audit spans by approvalId). Only closed waits count — a still-
-      // pending block hasn't cost a measurable duration yet, and this run is terminal by here anyway.
-      const qWait = this.db
-        .prepare('SELECT COALESCE(SUM(answered_at - created_at), 0) AS ms FROM questions WHERE run_id = ? AND answered_at IS NOT NULL')
-        .get<{ ms: number }>(r.id)?.ms ?? 0;
-      const apEvents = this.db
-        .prepare("SELECT ts, type, data FROM audit_events WHERE run_id = ? AND type IN ('approval.requested', 'approval.resolved') ORDER BY ts ASC")
-        .all<{ ts: number; type: string; data: string }>(r.id);
-      const requestedAt = new Map<string, number>();
-      let apWait = 0;
-      for (const e of apEvents) {
-        let id: string | undefined;
-        try { id = (JSON.parse(e.data) as { approvalId?: string }).approvalId; } catch { /* skip */ }
-        if (!id) continue;
-        if (e.type === 'approval.requested') requestedAt.set(id, e.ts);
-        else { const t0 = requestedAt.get(id); if (t0 != null) { apWait += Math.max(0, e.ts - t0); requestedAt.delete(id); } }
-      }
-      const blockedMs = qWait + apWait;
-
-      const artifacts = this.db
-        .prepare('SELECT COUNT(*) AS n FROM artifacts WHERE session_id = ?')
-        .get<{ n: number }>(r.id)?.n ?? 0;
+      const blockedMs = (qWait.get(r.id) ?? 0) + (apWait.get(r.id) ?? 0);
+      const artifacts = artifactCounts.get(r.id) ?? 0;
 
       r.gov_actions = actions;
       r.gov_approvals = approvals;
@@ -1274,13 +1425,11 @@ export class TerminalManager {
       r.report_summary = summary;
       r.model = model;
       r.effort = effort;
-      r.verbosity = verbosity;
+      r.output_style = outputStyle;
       r.blocked_ms = blockedMs;
       r.artifacts = artifacts;
       if (live) continue; // still moving — surface it, but don't freeze it onto the row
-      this.db
-        .prepare('UPDATE term_sessions SET gov_actions = ?, gov_approvals = ?, gov_denied = ?, gov_errors = ?, outcome = ?, report_summary = ?, model = ?, effort = ?, verbosity = ?, blocked_ms = ?, artifacts = ? WHERE id = ?')
-        .run(actions, approvals, denied, errors, outcome, summary, model, effort, verbosity, blockedMs, artifacts, r.id);
+      write.run(actions, approvals, denied, errors, outcome, summary, model, effort, outputStyle, blockedMs, artifacts, r.id);
     }
   }
 
@@ -1450,11 +1599,19 @@ export class TerminalManager {
     if (viewer && !this.canViewRow(seed.spawned_by, seed.run_as, viewer)) return null;
 
     const threadOf = (r: SessionRow): string => r.claude_session_id ?? r.id;
+    // MEMOIZED for the walk: the climb re-reads the same thread on every hop and the descent reads each
+    // child's thread again to decide whether to visit it, so an unmemoized read ran this query several
+    // times per node. The rows are a snapshot either way — the whole walk is one response.
+    const threadRows = new Map<string, SessionRow[]>();
     const rowsOfThread = (threadId: string): SessionRow[] => {
+      const hit = threadRows.get(threadId);
+      if (hit) return hit;
       const rows = this.db
         .prepare('SELECT * FROM term_sessions WHERE claude_session_id = ? OR (claude_session_id IS NULL AND id = ?) ORDER BY created_at ASC')
         .all<SessionRow>(threadId, threadId);
-      return viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+      const out = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+      threadRows.set(threadId, out);
+      return out;
     };
     // The task a conversation was dispatched FOR (its first `task:`/`ask:` run), and from it the caller
     // conversation one level up.
@@ -1483,6 +1640,7 @@ export class TerminalManager {
     const nodes: ChainNode[] = [];
     const seen = new Set<string>();
     const alive = this.backend.aliveNames(); // one tmux poll for the whole walk, not one per node
+    const pendingApprovals = this.os.approvals.pending(this.os.tenant); // one read for the whole walk too
     const visit = (threadId: string, depth: number, parentThreadId?: string): void => {
       if (seen.has(threadId) || nodes.length >= CHAIN_MAX_NODES || depth > CHAIN_MAX_DEPTH) return;
       const rows = rowsOfThread(threadId);
@@ -1499,7 +1657,7 @@ export class TerminalManager {
       // the newest row is the wrong label for the conversation. Prefer the freshest real verdict — and
       // take the outcome from the SAME run as the summary, or a conversation whose last resume ended
       // quietly reads "no report" right beside the report it filed.
-      const pending = this.chainPending(rows);
+      const pending = this.chainPending(rows, pendingApprovals);
       const voice = [...rows].reverse();
       const reported = voice.find((r) => r.report_summary?.trim());
       const summary = reported?.report_summary ?? undefined;
@@ -1560,7 +1718,7 @@ export class TerminalManager {
   /** What a chain node is waiting on a human for: its unanswered `ask` questions and unresolved approval
    *  gates, over every run of the conversation. This is what makes the rail actionable — a delegate's
    *  question is answered from the CALLER's pane, instead of being hunted down in the Inbox. */
-  private chainPending(rows: SessionRow[]): ChainPending[] {
+  private chainPending(rows: SessionRow[], pendingApprovals?: ReturnType<AgentOS['approvals']['pending']>): ChainPending[] {
     const ids = rows.map((r) => r.id);
     if (!ids.length) return [];
     const out: ChainPending[] = [];
@@ -1571,7 +1729,9 @@ export class TerminalManager {
       out.push({ kind: 'question', id: q.id, sessionId: q.run_id, agent: q.agent, text: q.prompt, createdAt: q.created_at });
     }
     const own = new Set(ids);
-    for (const a of this.os.approvals.pending(this.os.tenant)) {
+    // The caller passes the tenant's pending set once for a whole chain walk; alone (the single-run
+    // callers) this still reads it itself.
+    for (const a of pendingApprovals ?? this.os.approvals.pending(this.os.tenant)) {
       if (!own.has(a.runId)) continue;
       out.push({ kind: 'approval', id: a.id, sessionId: a.runId, agent: rows.find((r) => r.id === a.runId)?.agent ?? '', text: a.reason || a.attempt.capabilityId, capability: a.attempt.capabilityId, level: a.level, createdAt: a.createdAt });
     }
@@ -1717,7 +1877,7 @@ export class TerminalManager {
     const asMember = (v?: string): string | undefined => {
       const raw = (v ?? '').trim();
       if (!raw) return undefined;
-      return (this.os.team.getMember(raw) ?? this.os.team.getMemberByEmail(raw))?.id;
+      return this.os.team.resolveMemberRef(raw)?.id;
     };
     return asMember(runAs) ?? asMember(spawnedBy);
   }
@@ -2144,16 +2304,85 @@ export class TerminalManager {
    * (unresumable → the caller falls back to a fresh spawn).
    */
   sessionForSlackThread(channel: string, threadTs: string): { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    // UNION of the two bindings: `slack_threads` (the run's reply target, written when a message
+    // triggered it) and `slack_bot_threads` (every thread the bot has spoken in, including ones IT
+    // opened with a proactive post). The second is what makes a reply under a cron report continue the
+    // run that wrote the report instead of dying as unaddressed chatter.
     const row = this.db
       .prepare(
-        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId
+        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId, t.created_at AS createdAt
            FROM slack_threads s JOIN term_sessions t ON t.id = s.session_id
           WHERE s.channel = ? AND s.thread_ts = ?
-          ORDER BY t.created_at DESC LIMIT 1`,
+          UNION
+         SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId, t.created_at AS createdAt
+           FROM slack_bot_threads b JOIN term_sessions t ON t.id = b.session_id
+          WHERE b.channel = ? AND b.thread_ts = ?
+          ORDER BY createdAt DESC LIMIT 1`,
       )
-      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(channel, threadTs);
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(channel, threadTs, channel, threadTs);
     if (!row) return undefined;
     return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
+
+  /**
+   * Record that the bot has spoken in a Slack thread — the thread-keyed index behind
+   * {@link knowsSlackThread}. Called when a session is bound at spawn AND when an agent's own post
+   * (`slack_reply` / `slack_send`) opens a NEW thread, which is the case `slack_threads` structurally
+   * cannot cover (it is keyed by session, one reply target per run). Newest writer wins the row, so a
+   * later run replying in the same thread becomes the one a follow-up continues.
+   */
+  noteSlackThread(sessionId: string, channel: string, threadTs: string): void {
+    if (!sessionId || !channel || !threadTs) return;
+    try {
+      this.db.prepare('INSERT OR REPLACE INTO slack_bot_threads (channel, thread_ts, session_id, created_at) VALUES (?, ?, ?, ?)')
+        .run(channel, threadTs, sessionId, Date.now());
+    } catch { /* best-effort index; never break a post over it */ }
+  }
+
+  /** Point a session's Slack reply target at a (possibly newly created) thread. Used by the slash-command
+   *  path, which can only learn the thread root by posting it — the session is already spawned by then. */
+  rebindSlackThread(sessionId: string, channel: string, threadTs: string): void {
+    if (!sessionId || !channel || !threadTs) return;
+    try {
+      this.db.prepare('INSERT OR REPLACE INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?)')
+        .run(sessionId, channel, threadTs, Date.now());
+      this.noteSlackThread(sessionId, channel, threadTs);
+    } catch { /* best-effort */ }
+  }
+
+  /** Has the bot spoken in this Slack thread? The deterministic "is this addressed to us" test the
+   *  socket uses before dropping an untagged channel message: a reply under something we posted is a
+   *  reply to us, whether or not the run behind it is still alive. */
+  knowsSlackThread(channel: string, threadTs: string): boolean {
+    if (!channel || !threadTs) return false;
+    return !!this.db
+      .prepare('SELECT 1 FROM slack_bot_threads WHERE channel = ? AND thread_ts = ? UNION SELECT 1 FROM slack_threads WHERE channel = ? AND thread_ts = ? LIMIT 1')
+      .get(channel, threadTs, channel, threadTs);
+  }
+
+  /**
+   * Drop inbound chat attachments into a session's agent folder, under the same `.inbox/` the console's
+   * paste-a-file path uses — so an agent Reads `.inbox/<name>` by a relative path inside its own
+   * workspace and the gate's containment rules hold unchanged. `name` is sanitized to a basename here;
+   * the caller has already bounded the count and size. Returns the relative paths actually written.
+   */
+  stageInboundFiles(sessionId: string, files: { name: string; data: Buffer }[]): string[] {
+    if (!files.length) return [];
+    const row = this.db.prepare('SELECT agent FROM term_sessions WHERE id = ?').get<{ agent: string }>(sessionId);
+    const dir = row ? this.os.agents.get(row.agent)?.dir : undefined;
+    if (!dir) return [];
+    const written: string[] = [];
+    for (const f of files) {
+      const clean = inboxFileName(f.name);
+      try {
+        const target = path.join(dir, '.inbox');
+        fs.mkdirSync(target, { recursive: true });
+        fs.writeFileSync(path.join(target, clean), f.data);
+        written.push(path.join('.inbox', clean));
+      } catch { /* one unwritable file must not lose the rest */ }
+    }
+    if (written.length) this.audit(sessionId, 'chat', 'session.attachment', { paths: written, source: 'chat' });
+    return written;
   }
   /**
    * The MOST RECENT session bound to a Discord channel — the thread-continuity twin of
@@ -2174,6 +2403,44 @@ export class TerminalManager {
     if (!row) return undefined;
     return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
   }
+  /**
+   * The session that posted a given Discord message — the reply-reference continuity key. A guild
+   * message that doesn't @mention us but REPLIES to something an agent wrote is addressed to that
+   * agent; `discord_threads` (channel-keyed) can't see it, because a proactive `discord_send` posts
+   * into a channel with no thread and binding the whole channel would make every unrelated message in
+   * it continue the run.
+   */
+  sessionForDiscordMessage(channel: string, messageId: string): { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    if (!channel || !messageId) return undefined;
+    const row = this.db
+      .prepare(
+        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId
+           FROM discord_bot_messages m JOIN term_sessions t ON t.id = m.session_id
+          WHERE m.channel = ? AND m.message_id = ?
+          ORDER BY t.created_at DESC LIMIT 1`,
+      )
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(channel, messageId);
+    if (!row) return undefined;
+    return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
+
+  /** Record that an agent posted this Discord message, so a reply to it routes back to that run.
+   *  Written by `discord_reply` and `discord_send` — the agent's own voice. */
+  noteDiscordMessage(sessionId: string, channel: string, messageId: string): void {
+    if (!sessionId || !channel || !messageId) return;
+    try {
+      this.db.prepare('INSERT OR REPLACE INTO discord_bot_messages (channel, message_id, session_id, created_at) VALUES (?, ?, ?, ?)')
+        .run(channel, messageId, sessionId, Date.now());
+    } catch { /* best-effort index; never break a post over it */ }
+  }
+
+  /** Did an agent post the message this one replies to? The deterministic "is this addressed to us"
+   *  test the Discord socket uses before dropping a guild message that carries no @mention. */
+  knowsDiscordMessage(channel: string, messageId: string): boolean {
+    if (!channel || !messageId) return false;
+    return !!this.db.prepare('SELECT 1 FROM discord_bot_messages WHERE channel = ? AND message_id = ?').get(channel, messageId);
+  }
+
   /**
    * The MOST RECENT session bound to a ClickUp task — the thread-continuity twin of
    * {@link sessionForSlackThread}, keyed on the task id (the natural ClickUp "thread"). A follow-up
@@ -2398,6 +2665,7 @@ export class TerminalManager {
     if (slack?.channel) {
       this.db.prepare('INSERT OR REPLACE INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?)')
         .run(id, slack.channel, slack.threadTs || '', Date.now());
+      if (slack.threadTs) this.noteSlackThread(id, slack.channel, slack.threadTs);
     }
     // Native Discord egress: the exact analogue — bind the channel + triggering message for discord_reply.
     if (discord?.channel) {
@@ -2570,8 +2838,6 @@ export class TerminalManager {
     const mcpJson = await this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer, o.hasClickup, o.hasTelegram);
     const runtime: CodingRuntimeId = isCodingRuntime(manifest.runtime) ? manifest.runtime : 'claude-code';
     const caps = CODING_RUNTIMES[runtime].capabilities;
-    // Resolved BEFORE the company payload is built: `verbosity` rides the appended system prompt rather
-    // than a CLI flag, so buildCompanyMd needs the resolved value (the other knobs are just env below).
     const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults(), o.tuning, runtime);
     // The unattended brief rides the same appended prompt, on exactly the lane `markTurnIdle` tears down
     // at turn-end (headless, non-resident) — a resident chat pane and a member's own session both survive
@@ -2580,12 +2846,15 @@ export class TerminalManager {
     // async launcher — and handed to `buildCompanyMd`, which stays a pure synchronous assembly of the
     // prompt. Keeps every other caller (and four governance tests) on the sync signature.
     const preamble = await this.memoryPreamble(o.agent, o.task);
-    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, tuning.verbosity, !!o.headless && !o.resident, preamble);
+    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, !!o.headless && !o.resident, preamble);
     // Skills + sub-agents are materialised as native filesystem conventions (`.claude/skills`,
     // `.claude/agents`), so they only apply to a runtime that discovers them. Codex has its own
     // (differently-shaped) skills mechanism — not wired yet, so we skip rather than write files it
     // would ignore. The agent still gets its persona + Company context via the launcher's AGENTS.md.
     if (caps.nativeSkills) this.materializeSkills(o.id, o.agent, manifest.dir);
+    // Custom output styles are the same filesystem convention (`.claude/output-styles/`), and only the
+    // SELECTED one applies — so the whole library is synced and no per-agent allowlist is needed.
+    if (caps.outputStyle) this.materializeOutputStyles(o.id, o.agent, manifest.dir);
     if (caps.nativeSubagents) this.materializeSubagents(o.id, o.agent, manifest);
     // Unattended (automation/cron/task) runs are now an attachable interactive TUI, not `claude -p` — so a
     // human can take one over mid-run by simply attaching (no kill, no resume). The launcher's UNATTENDED
@@ -2604,7 +2873,6 @@ export class TerminalManager {
     // we don't wrap the shell in Seatbelt/bubblewrap. Real OS containment is the Linux uid-isolation path.
     // Per-agent model / effort / permission-mode fall back to the workspace default; the launcher maps
     // them onto `--model`/`--effort`/`--permission-mode` (permission-mode on the interactive lane only).
-    // (`tuning` itself is resolved further up — buildCompanyMd needs its `verbosity`.)
     if (runtime === 'codex') {
       // Codex reads model/effort from the config.toml the launcher generates; it has no
       // --permission-mode (Agentric is the sole authority there via approval_policy = "never"), so
@@ -2620,8 +2888,12 @@ export class TerminalManager {
       if (tuning.model) env.CLAUDE_MODEL = tuning.model;
       if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
       if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
+      // Not a CLI flag — the launcher writes it into the `--settings` JSON as `outputStyle`, which is
+      // how Claude Code takes a style. `Default` is left unset: naming it is a no-op, and an absent key
+      // keeps a lower settings layer (or a plugin's forced style) doing whatever it already did.
+      if (tuning.outputStyle && tuning.outputStyle !== 'Default') env.CLAUDE_OUTPUT_STYLE = tuning.outputStyle;
     }
-    this.audit(o.id, o.agent, 'session.tuning', { runtime, model: tuning.model, effort: tuning.effort, permissionMode: caps.permissionMode ? tuning.permissionMode : undefined, verbosity: tuning.verbosity, override: o.tuning ?? null });
+    this.audit(o.id, o.agent, 'session.tuning', { runtime, model: tuning.model, effort: tuning.effort, permissionMode: caps.permissionMode ? tuning.permissionMode : undefined, outputStyle: tuning.outputStyle, override: o.tuning ?? null });
     // Account rotation: if a POOL is configured for this runtime, pick an available account and point the
     // session at its credentials via the runtime's own env vars (CODING_RUNTIMES[runtime].credentialEnv).
     // INERT when the pool is empty — pick() returns null, we set nothing, the CLI uses the box default (i.e.
@@ -2631,6 +2903,13 @@ export class TerminalManager {
     // Then, only if rotation left the credentials on the box default, swap the USER-SCOPE config layer for
     // a tenant-owned one (opt-in) — see applyConfigIsolation.
     this.applyConfigIsolation(env, o.id, o.agent, runtime);
+    // Credentials are now settled (pool account, isolated dir, or the box default) — so this is the one
+    // place that can ask the question that actually matters: can this environment authenticate? A locked
+    // macOS login keychain answers no for every claude run on the box, and answers it INVISIBLY unless we
+    // check: the CLI starts, burns a turn, exits at $0, and the pool badge still shows the usage snapshot
+    // it took before the lock. Refuse instead — one crashed session that says why beats an unbounded run
+    // of them that don't. See preflightCredential.
+    if (!this.assertCredentialsUsable(env, o, runtime)) return;
     if (caps.pinnedSessionId) {
       // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
       // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
@@ -3148,19 +3427,30 @@ export class TerminalManager {
     // `crashed` and fire its (always-on) notification NOW, instead of waiting for the next console poll.
     this.sweepCrashed(alive);
 
+    // (0b) …and the inverse. A crash mark is a CLAIM ("the pane is gone"), and unlike a human `stop` it
+    // plants no stay-stopped sentinel — deliberately, because a crash should be recoverable. So ttyd's
+    // reconnect re-runs `attach.sh`, whose `new-session -A` revives the pane and `claude --resume`s the
+    // transcript, and the work simply carries on. Nothing put the ROW back: the only restore path,
+    // `restoreRunningAfterDelivery`, is scoped `AND status = 'done'` on purpose. The result is a session
+    // that is alive, attached and billing while the console renders it dead, `canResume` refuses it, and
+    // the concurrency cap under-counts it. Live insta-ai (2026-08-31): THREE such rows, two with a human
+    // attached at that moment, the oldest crash-marked 577 h earlier.
+    this.restoreResurrectedCrashes(alive);
+
     // (1) resident warm-chat idle reap. This is what BOUNDS the warm-pane model: a chat session holds a
     // live claude (hundreds of MB) between turns, so it must give the box back when the conversation
     // goes quiet — the next message revives it in place, resuming the same transcript.
-    //   - `status IN ('running','done')`: a chat turn that ends by calling `report` flips the row to
-    //     `done` while its pane keeps running. Reaping only `running` left those panes alive forever
+    //   - `status IN ('running','done','crashed')`: a chat turn that ends by calling `report` flips the
+    //     row to `done` while its pane keeps running. Reaping only `running` left those panes alive forever
     //     (sweep 3, the interactive janitor, excludes `resident = 1`), which is precisely the leak the
-    //     cold-per-turn design never had.
+    //     cold-per-turn design never had. `crashed` rides along for the same reason it does in sweeps 2
+    //     and 3 — see the note there: the status is terminal, the pane isn't necessarily gone.
     //   - `busy_since`: never reap a turn that is actually generating. A long turn's `last_activity` is
     //     the moment the message was delivered, so a slow one would otherwise be killed mid-answer. The
     //     ceiling keeps that from becoming a way to never reap: a "turn" still running after
     //     MID_TURN_MAX_MS is wedged, not working.
     const midTurnFloor = Date.now() - MID_TURN_MAX_MS;
-    const residents = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status IN ('running','done') AND COALESCE(last_activity, created_at) < ? AND (busy_since IS NULL OR busy_since < ?)")
+    const residents = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status IN ('running','done','crashed') AND COALESCE(last_activity, created_at) < ? AND (busy_since IS NULL OR busy_since < ?)")
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(cutoff, midTurnFloor);
     for (const r of residents) {
       try {
@@ -3178,9 +3468,10 @@ export class TerminalManager {
 
     // (2) DONE-ORPHAN + unattended-straggler backstop — the safety net for markTurnIdle. Two ways a run leaks
     // a live pane:
-    //   (a) DONE ORPHAN — an UNATTENDED (chat/automation/task/ask) run that ended via `report`, which flips
+    //   (a) TERMINAL ORPHAN — an UNATTENDED (chat/automation/task/ask) run that ended via `report`, which flips
     //       the row to 'done' while its interactive TUI pane is still live; such a run has no human owning its
-    //       lifecycle, so a done row should hold NO pane — reap on sight. This catches an unattended run whose
+    //       lifecycle, so a terminal row should hold NO pane — reap on sight. `crashed` counts as terminal
+    //       here for the same reason (see the note in the loop). This catches an unattended run whose
     //       Stop beacon never landed. **Excluded here: a MEMBER's own console session** (`headless=0`,
     //       `spawned_by` = a bare member id, no `chat:`/`automation:`/`task:`/`ask:` colon). The human opened
     //       that TUI and owns its lifecycle — calling `report` is a status signal, not "kill my terminal" — so
@@ -3210,16 +3501,23 @@ export class TerminalManager {
     // fires gate.attempt on its first tool (see hasMadeProgress). Settings → Runtime; default 30m, 0 = off.
     const noProgMin = this.os.settings.unattendedNoProgressMinutes();
     const noProgCutoff = noProgMin > 0 ? Date.now() - noProgMin * 60_000 : null;
-    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity, created_at FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
+    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity, created_at FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status IN ('done','crashed') OR (headless = 1 AND status = 'running'))")
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; headless: number; last_activity: number | null; created_at: number }>();
     for (const r of unattended) {
       try {
+        // TERMINAL = the run is over, whichever way it ended. `crashed` used to be missing from every
+        // reaper's query (this one, sweep 1 and sweep 3 alike), and a crashed row is exactly as capable of
+        // holding a live pane as a done one: the sweep marks `crashed` when a liveness poll can't see the
+        // pane, so a TRANSIENT poll failure — or ttyd's auto-reconnect re-running attach.sh afterwards —
+        // leaves a terminal row whose pane is alive and which no query could ever select again. Live
+        // stayflexi (2026-08): a `crashed` row holding a pane and ~430MB of `claude` for 93 HOURS.
+        const terminal = r.status === 'done' || r.status === 'crashed';
         // A MEMBER's own interactive console session is never a done-orphan: the human owns its lifecycle,
         // so its agent calling `report` (which flips the row to 'done') must not cost it its live pane. Its
         // spawn provenance is a bare member id (no colon), unlike chat:/automation:/task:/ask: runs. Leave it
         // to the idle-interactive janitor (sweep 3); reaping it here yanks the TUI out from under an active
         // user seconds after the agent reports. Unattended-lane done runs fall through and are reaped below.
-        if (r.status === 'done' && !r.headless && r.spawned_by && !r.spawned_by.includes(':')) continue;
+        if (terminal && !r.headless && r.spawned_by && !r.spawned_by.includes(':')) continue;
         // A headless run past the hard runtime ceiling is reaped on wall-clock age ALONE — no turn-end beacon
         // required (that's the whole point: it's stuck mid-turn). Headed sessions never reach here (the query
         // only pulls headless running rows besides done orphans), so this can't cut a member mid-work.
@@ -3257,12 +3555,12 @@ export class TerminalManager {
         // tmux pane + ~430MB of `claude` each, the oldest 3 days old, pinned open by cards nobody could
         // deliver an answer to. A finished run cannot consume one — reap it and let teardownUnattended cancel
         // the card, which is what makes it dismissable in the Inbox instead of hanging there.
-        if (!overMaxAge && r.status !== 'done' && this.hasPendingHumanBlock(r.id)) continue;
-        this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : noProgress ? 'stuck-no-progress' : r.status === 'done' ? 'done-orphan' : 'idle-backstop');
+        if (!overMaxAge && !terminal && this.hasPendingHumanBlock(r.id)) continue;
+        this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : noProgress ? 'stuck-no-progress' : r.status === 'crashed' ? 'crashed-orphan' : terminal ? 'done-orphan' : 'idle-backstop');
       } catch { /* one bad row must not stop the sweep */ }
     }
 
-    // (3) idle INTERACTIVE (member) sessions — running OR done. A member's own attachable session holds a
+    // (3) idle INTERACTIVE (member) sessions — running, done OR crashed. A member's own attachable session holds a
     // `claude` process too, but — unlike a resident chat (sweep 1) or an unattended run (turn-end / sweep 2) —
     // nothing else reaps it. It's the ONLY reaper for a member's `done` session now that sweep 2 leaves those
     // to the human (a report-ended member run keeps its live TUI so a follow-up still works). A forgotten,
@@ -3296,38 +3594,66 @@ export class TerminalManager {
       // still never cut (checked below) — that is what "a human owns it" should have meant all along.
       const claimedHours = this.os.settings.claimedMaxHours();
       const claimedCutoff = claimedHours > 0 ? Date.now() - claimedHours * 3600_000 : null;
-      // Widen the scan to the more permissive of the two clocks, then decide per row — otherwise a claim
-      // ceiling SHORTER than the idle timeout would never see its own rows.
+      // LIFETIME CEILING. Every clock above measures IDLENESS, and `markTurnBusy` stamps `last_activity`
+      // on every tool call — so a session whose agent still works never goes idle, however old it gets,
+      // and none of them can ever see it. Live instawp after the wake-queue fix: 15 interactive sessions
+      // `running` at 1007 h / 266 h / 263 h / 166 h / 120 h, every one reporting 18–24 h idle, skipped on
+      // every tick. Age answers what idleness cannot. See `interactiveMaxHours`.
+      const lifetimeHours = this.os.settings.interactiveMaxHours();
+      const lifetimeCutoff = lifetimeHours > 0 ? Date.now() - lifetimeHours * 3600_000 : null;
+      // Widen the scan to the more permissive of the two IDLE clocks, then decide per row — otherwise a
+      // claim ceiling SHORTER than the idle timeout would never see its own rows. The lifetime ceiling is
+      // ORed in rather than folded into that max: it reads `created_at`, and the rows it exists for are
+      // precisely the ones a `last_activity` filter excludes.
       const scanCutoff = claimedCutoff == null ? idleCutoff : Math.max(idleCutoff, claimedCutoff);
-      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, claimed_by, last_activity, created_at FROM term_sessions WHERE headless = 0 AND resident = 0 AND status IN ('running','done') AND COALESCE(last_activity, created_at) < ?")
-        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; claimed_by: string | null; last_activity: number | null; created_at: number }>(scanCutoff);
+      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, claimed_by, last_activity, created_at FROM term_sessions WHERE headless = 0 AND resident = 0 AND status IN ('running','done','crashed') AND (COALESCE(last_activity, created_at) < ? OR (? IS NOT NULL AND created_at < ?))")
+        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; claimed_by: string | null; last_activity: number | null; created_at: number }>(scanCutoff, lifetimeCutoff, lifetimeCutoff);
       for (const r of stale) {
         try {
           const idleSince = r.last_activity ?? r.created_at;
+          const terminal = r.status === 'done' || r.status === 'crashed'; // see sweep 2 — a crashed row can still hold a pane
           // Claimed: exempt unless the claim itself has gone stale. Unclaimed: the ordinary idle clock —
           // re-checked here because the scan may have been widened past it for the claimed rows.
+          // Past the lifetime ceiling every idle-based exemption is moot — that is the point of it.
+          const overLifetime = lifetimeCutoff != null && r.created_at < lifetimeCutoff;
           if (r.claimed_by) {
-            if (claimedCutoff == null || idleSince >= claimedCutoff) continue;
-          } else if (idleSince >= idleCutoff) {
+            if (!overLifetime && (claimedCutoff == null || idleSince >= claimedCutoff)) continue;
+          } else if (!overLifetime && idleSince >= idleCutoff) {
             continue;
           }
           // A reaped 'running' row flips to 'stopped' and drops out of the query next tick; a 'done' row keeps
           // its status (below), so skip one whose pane is already gone to avoid re-killing / re-auditing it
           // every tick. Only applies when we can poll liveness (local backend); null → fall through as before.
-          if (r.status === 'done' && alive && !alive.has(r.tmux)) continue;
+          if (terminal && alive && !alive.has(r.tmux)) continue;
           const space = this.spaceFor(r.run_as ?? r.spawned_by);
           if (this.backend.hasClient(space, r.tmux) === true) continue; // someone's attached — it's in use
           // Blocked on a person: leave it — unless nobody has answered inside the ceiling above, at which
           // point it is abandoned, not waiting.
-          let reason = r.claimed_by ? 'claimed-abandoned' : 'idle-interactive';
+          let reason = overLifetime ? 'max-lifetime' : r.claimed_by ? 'claimed-abandoned' : 'idle-interactive';
           const blockedAt = this.oldestPendingBlockAt(r.id);
           if (blockedAt !== undefined) {
-            if (blockedCutoff == null || blockedAt >= blockedCutoff) continue;
-            reason = 'blocked-timeout';
+            // Blocked on a person: leave it — unless nobody answered inside the ceiling, or the session is
+            // past its lifetime, at which point it is abandoned rather than waiting.
+            if (!overLifetime && (blockedCutoff == null || blockedAt >= blockedCutoff)) continue;
+            if (!overLifetime) reason = 'blocked-timeout';
           }
+          // Remember the run before killing it. Every OTHER teardown path writes an episode —
+          // `markEnded` (normal end, and `teardownUnattended` through it), `markCrashed`, and
+          // `stopSession` (the human kill button) — but this janitor did its own teardown and skipped it,
+          // so an abandoned interactive session evaporated. Measured over 30 days: 3 of 29 reaped
+          // sessions on instapods and 18 of 136 on instawp had an episode, and those came from a `report`
+          // earlier in the run, not from the reap.
+          //
+          // The point is NOT recall value — these take the audit branch (no `report` was ever filed), so
+          // they read "Task: … / Outcome: stopped / Activity: 315 governed actions". It is that episodes
+          // are what Dreaming and the consolidator READ, and they were seeing only sessions that ended
+          // tidily. Every abandoned interactive run — and those carry the fleet's human-initiated work,
+          // "How are we doing marketing-wise", "give me the top gainers of the past 10 days" — was
+          // invisible to topic extraction. A biased sample is worse than a thin one.
+          this.writeEpisode(r.id, r.agent, terminal ? undefined : 'stopped');
           this.backend.kill(space, r.tmux);
           // Preserve a completed session's outcome — only a still-running one becomes 'stopped'.
-          this.db.prepare("UPDATE term_sessions SET status = ?, busy_since = NULL, updated_at = ? WHERE id = ?").run(r.status === 'done' ? 'done' : 'stopped', Date.now(), r.id);
+          this.db.prepare("UPDATE term_sessions SET status = ?, busy_since = NULL, updated_at = ? WHERE id = ?").run(terminal ? r.status : 'stopped', Date.now(), r.id);
           this.cancelPendingQuestions(r.id, 'system');
           this.cancelPendingApprovals(r.id, 'system');
           this.blockResume(r.id); // stay reaped against a ttyd auto-reconnect; a deliberate Resume clears it
@@ -3545,6 +3871,47 @@ export class TerminalManager {
     this.audit(sessionId, 'system', 'session.reaped', { reason });
   }
 
+  /**
+   * Put back a `crashed` row whose pane is demonstrably alive AND in use — the crash claim has been
+   * falsified by evidence, exactly as {@link restoreRunningAfterDelivery} does for a `done` row that kept
+   * running. Two independent proofs, either sufficient:
+   *   · a client is ATTACHED — someone is looking at it right now;
+   *   · `last_activity` is NEWER than `updated_at`, which `markCrashed` stamps at the moment of the mark —
+   *     i.e. the session has done governed work SINCE being declared dead.
+   * Both are needed: a member's interactive session rarely stamps `last_activity` (so attachment covers
+   * it), and a detached-but-working run has no client (so the activity clock covers it).
+   *
+   * This deliberately does NOT fight the crashed-orphan reap added alongside it. A genuinely abandoned
+   * crashed pane satisfies neither proof, stays `crashed`, and is reaped on sight; only a resurrected one
+   * is restored, and it then lives or dies by the ordinary idle clock like any other running session.
+   * Requires a real liveness poll — with none we can falsify nothing, so we leave every row alone.
+   *
+   * What it does NOT undo: the questions/approvals `markCrashed` cancelled stay cancelled (someone may
+   * have acted on that), and the episode stays written. Only the row's status, the stale "Crashed" inbox
+   * card, and the audit trail are corrected.
+   */
+  private restoreResurrectedCrashes(alive: Set<string> | null): void {
+    if (!alive) return; // no liveness signal — nothing can be falsified
+    const rows = this.db.prepare("SELECT id, tmux, agent, run_as, spawned_by, last_activity, updated_at FROM term_sessions WHERE status = 'crashed'")
+      .all<{ id: string; tmux: string; agent: string; run_as: string | null; spawned_by: string | null; last_activity: number | null; updated_at: number }>();
+    for (const r of rows) {
+      try {
+        if (!alive.has(r.tmux)) continue;                       // pane really is gone — the mark was right
+        const attached = this.backend.hasClient(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux) === true;
+        const workedSince = r.last_activity != null && r.last_activity > r.updated_at;
+        if (!attached && !workedSince) continue;
+        const restored = this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ? AND status = 'crashed'")
+          .run(Date.now(), r.id);
+        if (!restored.changes) continue;                        // raced with another writer — leave it be
+        // The "Crashed — <agent>" card is now a lie about a live session; close it rather than leave the
+        // owner's Inbox asserting a death that didn't stick.
+        this.db.prepare("UPDATE messages SET status = 'resolved' WHERE session_id = ? AND type = 'completed' AND outcome = 'crashed' AND status = 'open'")
+          .run(r.id);
+        this.audit(r.id, r.agent, 'session.restored', { from: 'crashed', via: attached ? 'attached' : 'activity' });
+      } catch { /* one bad row must not stop the sweep */ }
+    }
+  }
+
   /** Is this session blocked on a human right now (a pending question OR a pending approval)? Used to
    *  keep an unattended run's pane alive while it legitimately waits, instead of reaping mid-`ask`. */
   private hasPendingHumanBlock(sessionId: string): boolean {
@@ -3608,6 +3975,89 @@ export class TerminalManager {
     this.audit(sessionId, agent, 'claude.config.isolated', { dir: r.dir, credentials: r.credentials, projects: r.projects });
   }
 
+  /** Wall-clock of the last keychain-locked alert, so a locked box pings the owner once rather than once
+   *  per spawn. In-memory on purpose: a restart re-alerting is the correct behaviour, since a restart is
+   *  also the moment an operator is most likely to believe the box was fixed. */
+  private lastCredentialAlertAt = 0;
+  private static readonly CREDENTIAL_ALERT_COOLDOWN_MS = 30 * 60_000;
+
+  /** Launch pre-flight for the run's credentials. True = proceed. False = the launch was REFUSED and the
+   *  session has already been marked crashed and explained to its owner; the caller must return.
+   *
+   *  Fails CLOSED, unlike every other credential path here, because the alternative isn't a degraded run —
+   *  it's a run that cannot authenticate at all. Falling through to the box default (the fail-open move
+   *  everywhere else) does not help either: on macOS the box default reads through the SAME locked
+   *  keychain. */
+  private assertCredentialsUsable(env: Record<string, string>, o: { id: string; agent: string }, runtime: CodingRuntimeId): boolean {
+    let blocked: { dir: string; service: string } | null = null;
+    try { blocked = preflightCredential(runtime, env); }
+    catch { return true; }                              // a probe that can't run must never block a launch
+    if (!blocked) return true;
+    this.refuseForLockedCredential(o.id, o.agent, runtime, blocked.dir, blocked.service);
+    return false;
+  }
+
+  /**
+   * The same question, asked by the RESUME path instead of the launch path.
+   *
+   * A resurrection does not go through `launch()` at all: `attach.sh` re-execs `claude-launch.sh` with
+   * `RESUME=1`, which sources the persisted env file and starts claude directly — pure shell, no server
+   * decision in the middle. So the launch pre-flight cannot see it, and on 2026-09-02 a session
+   * resurrected that way came up `Not logged in` and burned a turn 34 minutes after the operator believed
+   * the box was fixed. The launcher now asks HERE, over the same loopback + session-secret channel it
+   * already uses for `/api/ended` and `/api/resumed`, so detection stays in one implementation rather
+   * than being re-written in bash.
+   *
+   * `configDir` is whatever the resumed environment carries (empty → the box default). Returns the
+   * blocking condition, having already recorded it, or null to proceed.
+   */
+  checkResumeCredentials(sessionId: string, configDir: string, runtime: CodingRuntimeId = 'claude-code'): { reason: 'keychain_locked'; dir: string; message: string } | null {
+    const agent = this.sessionAgent(sessionId) ?? 'system';
+    let blocked: { dir: string; service: string } | null = null;
+    try { blocked = preflightCredential(runtime, configDir ? { [CODING_RUNTIMES[runtime].credentialEnv.configDirVar]: configDir } : {}); }
+    catch { return null; }
+    if (!blocked) return null;
+    this.refuseForLockedCredential(sessionId, agent, runtime, blocked.dir, blocked.service);
+    return { reason: 'keychain_locked', dir: blocked.dir, message: TerminalManager.lockedCredentialWhy(runtime, blocked.dir) };
+  }
+
+  private static lockedCredentialWhy(runtime: CodingRuntimeId, dir: string): string {
+    return `the macOS login keychain is locked, so ${CODING_RUNTIMES[runtime].label} cannot read the credential for ${dir} — this run would start, authenticate as nobody and end with no work done`;
+  }
+
+  /** Record a refused run: audit, crash the row, tell its owner, badge the pool account, alert admins.
+   *  Shared by the launch and resume pre-flights so the two can never disagree about what a refusal is. */
+  private refuseForLockedCredential(sessionId: string, agent: string, runtime: CodingRuntimeId, dir: string, service: string): void {
+    const why = TerminalManager.lockedCredentialWhy(runtime, dir);
+    this.audit(sessionId, agent, 'session.launch.refused', { runtime, reason: 'credential unreadable: keychain locked', dir, service });
+    this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    this.addMessage({ type: 'completed', sessionId, agent, title: `Could not start — ${agent}`, body: `Did not launch: ${why}.`, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: sessionId });
+    // Badge the pool row this dir belongs to, so Settings → Runtime shows the cause where an operator
+    // would go looking for it rather than only in one session's card.
+    try {
+      const acct = this.os.runtimeAccounts.list().find((a) => a.runtime === runtime && a.configDir === dir);
+      if (acct) this.os.runtimeAccounts.recordCheck(runtime, acct.name, { ok: false, note: 'macOS login keychain is locked — the credential cannot be read from this security session' });
+    } catch { /* badging is a nicety */ }
+    this.alertCredentialsLocked(dir);
+  }
+
+  /** Tell a human, once per cooldown. This is the half the 2026-09-01 incident was missing: the refusal
+   *  above makes each run honest, but nothing about a crashed session reaches someone who is not looking. */
+  private alertCredentialsLocked(dir: string): void {
+    const now = Date.now();
+    if (now - this.lastCredentialAlertAt < TerminalManager.CREDENTIAL_ALERT_COOLDOWN_MS) return;
+    this.lastCredentialAlertAt = now;
+    try {
+      this.postSystemCard({
+        topic: 'credentials-locked',
+        type: 'notification',
+        title: 'Agent runs are blocked — the macOS login keychain is locked',
+        body: `Claude Code stores this box's logins in the macOS Keychain, and its value cannot be read right now, so no session can authenticate (${dir}). Runs are being refused rather than started and left to fail silently. Unlock it on the box itself:\n\n    security unlock-keychain ~/Library/Keychains/login.keychain-db\n\nThen re-run the check from Settings → Runtime → Runtime accounts.`,
+        audience: { kind: 'admins' },
+      });
+    } catch { /* the audit line above is the durable record */ }
+  }
+
   /** Select a rotation-pool account for this runtime and point the session's credentials at it, via the
    *  runtime's own env vars (`CODING_RUNTIMES[runtime].credentialEnv`). Records which account the run used
    *  (`term_sessions.runtime_account`) so limit detection at teardown can park the right one. No-op — leaving
@@ -3669,6 +4119,40 @@ export class TerminalManager {
       return null;
     }
     return { vars: { [varName]: value }, varName };
+  }
+
+  /**
+   * Credential env for an OUT-OF-BAND runtime call that belongs to no session — today, the session
+   * summarizer's throwaway `claude -p`.
+   *
+   * It exists because that call used to run on `{...process.env}`, i.e. always the BOX DEFAULT account,
+   * while every governed launch goes through {@link applyRuntimeAccount} and rotates off an exhausted
+   * one. On live instawp that split silently degraded the summarizer for three weeks: `runtime.usage_limited`
+   * ran 2026-07-30 → 08-15 and `runtime.account.limited` from 08-04, and across exactly that band 43 of
+   * 97 `session.summarized` events came back `via:'fallback'` — sessions kept working on rotated
+   * accounts while the summarizer kept calling the limited default and quietly returned the
+   * deterministic recap instead. `pick()` already skips a limited account, so routing this through the
+   * same pool is the whole fix.
+   *
+   * Fail-open like the launch path: no pool, nothing usable, or an unresolvable credential → null, and
+   * the caller runs on the box default exactly as before. Audited under a synthetic run id so a pool
+   * that can't serve this call is visible rather than inferred from a fallback rate.
+   */
+  outOfBandCredentialEnv(runtime: CodingRuntimeId = 'claude-code'): { vars: Record<string, string>; account: string } | null {
+    try {
+      // `pick` already restricts to the runtime's `liveCredentialKinds` and can only be narrowed, never
+      // widened — for claude-code that is `['oauth']`, i.e. the same credential DIRS the TUI lane rotates
+      // through, which is exactly what we want here. The extra narrowing drops a static `token` on
+      // runtimes that do accept one: it carries no refresh token, and a summarizer that trips "OAuth
+      // access token has expired" is the same silent degradation this method exists to end.
+      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), { kinds: ['oauth', 'apikey'] });
+      if (!acct) return null;
+      const resolved = this.credentialEnvFor(acct, runtime, '-', 'summarizer');
+      if (!resolved) return null;
+      return { vars: resolved.vars, account: acct.name };
+    } catch {
+      return null; // rotation must never break an out-of-band call — fall through to the box default
+    }
   }
 
   /** Snapshot a live pane's scrollback to `<connectors>/session-<id>.log` (0600) so the console's
@@ -3983,7 +4467,7 @@ export class TerminalManager {
           }),
           timeout,
         ]);
-        lines = distinctLines(hits.filter((h) => !isEpisodeRecord(h)).map((h) => h.content), n);
+        lines = distinctLines(hits.filter((h) => !isPreambleNoise(h)).map((h) => h.content), n);
         relevant = lines.length > 0;
       } catch {
         /* fall through to the salience ordering below */
@@ -4002,6 +4486,7 @@ export class TerminalManager {
               `SELECT content FROM memories
                WHERE tenant = ? AND (scope = 'tenant' OR (scope = 'agent' AND agent_id = ?))
                  AND COALESCE(tags, '') NOT LIKE '%"episode"%'
+                 AND COALESCE(tags, '') NOT LIKE '%"dreaming"%'
                ORDER BY COALESCE(importance, 0.5) DESC, COALESCE(last_recalled_at, created_at) DESC
                LIMIT ?`,
             )
@@ -4030,7 +4515,7 @@ export class TerminalManager {
    *  We tack on OS-owned operating notes after the user's content. The terminal here is a browser
    *  xterm (over ttyd) running the TUI on the alternate screen with mouse reporting on, so embedded
    *  terminal hyperlinks (OSC 8) aren't clickable — the agent must surface raw URLs as plain text. */
-  private buildCompanyMd(selfAgent?: string, actingMember?: string, verbosity?: Verbosity, unattended = false, preamble = ''): string {
+  private buildCompanyMd(selfAgent?: string, actingMember?: string, unattended = false, preamble = ''): string {
     const company = this.os.settings.company().companyMd.trim();
     // Per-member personal context: free-text the human you run AS chose to inject into their sessions
     // (their working style, standing preferences, domain notes). Self-service, owner-scoped — set on
@@ -4207,15 +4692,18 @@ export class TerminalManager {
         'review as a second opinion, not a verdict: verify each point against the code before acting, and ' +
         'remember every change you make still passes through the gateway.';
     }
-    // Terse mode (Settings → Runtime defaults, per-agent overridable). Placed LAST so its carve-outs —
-    // "never compress a report/kb_write/chat reply" — are read after the sections that tell the agent to
-    // write those things, and so it can't be mistaken for guidance about the company itself.
-    const terse = verbosity === 'terse' ? TERSE_OUTPUT_BRIEF : '';
     // Unattended lane only (see the call site). Placed after the operating notes and the fleet/team
     // sections, because it points at `task_wait` / `ask` / `schedule` / `task_create` as the ways to wait
     // — it reads as a correction to "just wait for it" only once those tools have been introduced.
     const lane = unattended ? UNATTENDED_TURN_BRIEF : '';
-    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, codeReview, goalsSection, fleet, team, preamble, learned, lane, terse]
+    // BOTH lanes. How to wait is not a lane question: the two limits that make a long sleep wrong (the
+    // ~2-minute Bash kill, the ~5-minute cache TTL) apply identically to a member's own interactive
+    // session, and the first two agents caught doing it were one of each.
+    // Whose account each Composio namespace holds. Sits next to the messaging steer because it answers
+    // the same class of question — "which of these lookalike tools is the right one" — and because both
+    // are about acting as the right identity rather than the first tool that matches.
+    const composio = this.composioContext(actingMember, selfAgent ?? '');
+    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, composio, github, codeReview, goalsSection, fleet, team, preamble, learned, lane, WAITING_BRIEF]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -4249,29 +4737,18 @@ export class TerminalManager {
       // `composio` → the running member's OWN connected apps (their email as user_id); `composio-company`
       // → apps connected under the shared service entity, usable by every agent. Automation/system spawns
       // get only the company entity (no person's personal credentials).
-      const sessions: Array<{ id: string; userId: string; scope: string; opts?: MintOptions }> = [
-        { id: 'composio-company', userId: serviceUserId(this.os.tenant), scope: 'company' },
-      ];
-      if (memberId) sessions.unshift({ id: 'composio', userId: this.composioUserId(memberId, agent), scope: 'personal' });
-      // Connections a TEAMMATE marked "available to the team". A connected account's owning entity is
-      // immutable on Composio's side, so sharing is a marker we enforce here: one extra session per
-      // sharing owner, minted under THEIR entity but allowlisted to the shared toolkits and pinned to
-      // the shared account ids — so the borrower reaches exactly what was shared and nothing else of
-      // that person's Composio account. Connection management is off: a borrower must not be able to
-      // add or revoke connections under an entity that isn't theirs.
-      for (const m of this.os.composioShares.mintsFor(memberId)) {
-        sessions.push({
-          id: `composio-shared-${m.ownerMemberId}`,
-          userId: m.userId,
-          scope: 'shared',
-          opts: { toolkits: m.toolkits, connectedAccounts: m.connectedAccounts, manageConnections: false },
-        });
-      }
+      const sessions = this.composioSessionPlan(memberId, agent);
       // Minted CONCURRENTLY, not one after another: each mint is a ~0.5–1s round trip to Composio, so
       // a launch with a personal + company (+ shared) session used to serialise into ~1.5s of dead time
       // — and, on the old `spawnSync` transport, ~1.5s with the event loop stopped, which stalled every
       // other request on this single-threaded server. Failures stay per-session (audited, that connector
       // dropped), exactly as before.
+      // Refresh what these entities actually hold — WHOSE account each app is, and what has expired —
+      // so the next launch's prompt can name them. Fire-and-forget and rate-limited: a probe costs a
+      // mint plus two round trips per entity, and no session may wait on it. Nothing here changes this
+      // launch; it changes what the NEXT one is able to tell the agent.
+      const due = sessions.filter((s) => this.composioIdentityStale(s.userId)).map((s) => ({ userId: s.userId, ownerMemberId: s.ownerMemberId }));
+      if (due.length) void this.refreshComposioConnections(due).catch(() => { /* advisory */ });
       const minted = await Promise.all(sessions.map((s) => mintToolRouterSessionAsync(apiKey, s.userId, s.opts)));
       for (const [i, s] of sessions.entries()) {
         const res = minted[i];
@@ -4331,6 +4808,278 @@ export class TerminalManager {
     return JSON.stringify(config, null, 2);
   }
 
+  /** ACTIVE company accounts grouped by toolkit, from the identity cache — what `exclusionFor` needs to
+   *  decide between disabling a toolkit outright and re-pinning it to the accounts nobody has claimed.
+   *  A toolkit absent here is unknown to us, and `exclusionFor` disables it rather than leaving a claimed
+   *  account reachable; over-restricting is recoverable, under-restricting is the bug. */
+  private activeCompanyAccounts(entity: string): Map<string, string[]> {
+    const byToolkit = new Map<string, string[]>();
+    for (const i of this.os.composioIdentities.forEntity(entity)) {
+      if (i.status.toUpperCase() !== 'ACTIVE') continue;
+      byToolkit.set(i.toolkit, [...(byToolkit.get(i.toolkit) ?? []), i.id]);
+    }
+    return byToolkit;
+  }
+
+  /** Has this entity's cached identity/status gone stale (or never been resolved)? Keeps the launch-time
+   *  refresh to roughly once every six hours per entity rather than once per session. */
+  private composioIdentityStale(userId: string, maxAgeMs = 6 * 60 * 60 * 1000): boolean {
+    const rows = this.os.composioIdentities.forEntity(userId);
+    if (!rows.length) return true;
+    return Math.min(...rows.map((r) => r.checkedAt)) < Date.now() - maxAgeMs;
+  }
+
+  /**
+   * Re-resolve what a set of Composio entities actually hold: the live account list (status), and for
+   * every toolkit with an ACTIVE account, WHICH account that is. Caches both, forgets connections that
+   * no longer exist, and tells a human once about anything that has expired.
+   *
+   * Deliberately OFF the launch path — a probe is a mint plus two MCP round trips per entity, and a
+   * session must not wait on Composio to start. Callers fire it and forget (the launcher) or await it
+   * where latency is already expected (the console's Connections page). Every failure degrades to "we
+   * learned nothing this time": a probe that fails never blanks a label we already had.
+   *
+   * `owners` maps an entity to the member accountable for it, so an expiry card reaches the person who
+   * can actually reauthorise it; an entity with no owner (the company shelf) goes to the admins tier.
+   */
+  async refreshComposioConnections(
+    entities: Array<{ userId: string; ownerMemberId?: string }>,
+    opts: { notify?: boolean } = {},
+  ): Promise<{ resolved: number; expired: number }> {
+    const key = this.os.settings.composioApiKey();
+    if (!key || !entities.length) return { resolved: 0, expired: 0 };
+    const seen = new Map<string, string | undefined>();
+    for (const e of entities) if (e.userId && !seen.has(e.userId)) seen.set(e.userId, e.ownerMemberId);
+    let resolved = 0;
+    let expired = 0;
+    for (const [userId, ownerMemberId] of seen) {
+      const accounts = await listConnectedAccounts(key, userId);
+      if (!accounts.length) continue;
+      // Status first, so an expired connection is recorded even when the identity probe fails.
+      this.os.composioIdentities.upsert(accounts.map((a) => ({ id: a.id, userId, toolkit: a.toolkit, status: a.status })));
+      const liveIds = new Set(accounts.map((a) => a.id));
+      this.os.composioIdentities.pruneEntity(userId, liveIds);
+      // A claim on a connection that no longer exists would keep disabling its toolkit for the whole
+      // tenant forever, with nothing in the console left to explain why.
+      this.os.composioClaims.pruneEntity(userId, liveIds);
+      // ONLY toolkits with a live account — probing one without would make Composio initiate a
+      // connection rather than report its absence (see composio-identity.ts).
+      const found = await resolveIdentities(key, userId, activeToolkits(accounts));
+      if (found.length) {
+        const byId = new Map(accounts.map((a) => [a.id, a]));
+        this.os.composioIdentities.upsert(
+          found
+            .filter((f) => byId.has(f.connectionId))
+            .map((f) => ({ id: f.connectionId, userId, toolkit: f.toolkit, account: f.account, status: byId.get(f.connectionId)!.status })),
+        );
+        resolved += found.length;
+      }
+      const stale = accounts.filter((a) => a.status.toUpperCase() === 'EXPIRED');
+      expired += stale.length;
+      if (opts.notify !== false && stale.length) this.notifyExpiredConnections(userId, ownerMemberId);
+      // ALWAYS, including when nothing is expired — that is exactly the case that has to retire a card
+      // whose problem the human has already fixed.
+      this.reconcileExpiredCards(userId);
+    }
+    this.audit('-', 'system', 'connector.identity.refreshed', { entities: [...seen.keys()], resolved, expired });
+    return { resolved, expired };
+  }
+
+  /**
+   * Tell someone that a Composio connection has expired. An expired connection is silent by
+   * construction — the agent simply finds the app missing and works around it — which is how one
+   * tenant's company ClickUp sat dead for two weeks with nothing anywhere saying so. One card per
+   * entity, deduped for a week per connection, addressed to whoever can actually reauthorise it.
+   */
+  private notifyExpiredConnections(userId: string, ownerMemberId?: string): void {
+    const QUIET_MS = 7 * 24 * 60 * 60 * 1000;
+    const due = this.os.composioIdentities.unnotifiedExpired(userId, QUIET_MS);
+    if (!due.length) return;
+    const live = new Set(
+      this.os.composioIdentities.forEntity(userId).filter((i) => i.status.toUpperCase() === 'ACTIVE').map((i) => i.toolkit),
+    );
+    // Reconnecting leaves the old row behind, so an expired connection whose toolkit is live again is
+    // housekeeping, not news — "Clear replaced" in Connections deals with it. Only a toolkit with NO
+    // live account left is a capability the fleet has actually lost, and only that is worth a card in
+    // someone's NEEDS YOU column. Mark the rest notified so they stop being reconsidered every refresh.
+    const lostToolkits = [...new Set(due.filter((d) => !live.has(d.toolkit)).map((d) => d.toolkit))];
+    this.os.composioIdentities.markNotified(due.map((d) => d.id));
+    this.audit('-', 'system', 'connector.expired', {
+      entity: userId, toolkits: [...new Set(due.map((d) => d.toolkit))], lost: lostToolkits,
+    });
+    if (!lostToolkits.length) return;
+    // One line per TOOLKIT, not per connection row: two expired accounts of the same app are one
+    // problem, and listing "google_search_console, google_search_console" reads like a bug (it was one).
+    const accountOf = (t: string): string => due.find((d) => d.toolkit === t && d.account)?.account ?? '';
+    const whose = ownerMemberId ? 'Your' : 'The company';
+    const n = lostToolkits.length;
+    // Each app is named ONCE — in the list, where its account can sit beside it. The opening line stays
+    // generic so a single-app card doesn't say the same slug twice in three lines.
+    const body = [
+      `${whose} Composio connection${n === 1 ? ' has' : 's have'} expired, and nothing else is connected for ${n === 1 ? 'this app' : 'these apps'} — so agents cannot use ${n === 1 ? 'it' : 'them'} at all:`,
+      ...lostToolkits.map((t) => `- ${t}${accountOf(t) ? ` (${accountOf(t)})` : ''}`),
+      '',
+      `Reconnect ${n === 1 ? 'it' : 'them'} in Connections to restore ${n === 1 ? 'it' : 'them'}. This card clears itself once nothing is expired.`,
+    ].join('\n');
+    this.postReviewCard({
+      type: 'connection.expired',
+      sessionId: '-',
+      agent: 'system',
+      title: `Connection expired — ${lostToolkits.join(', ')} unavailable`,
+      body,
+      args: { entity: userId, toolkits: lostToolkits, lost: lostToolkits },
+      audience: ownerMemberId ? { kind: 'member', id: ownerMemberId } : { kind: 'admins' },
+      // Inbox only. An expired connection is a standing condition, not a question anyone is blocked on:
+      // it stays true until someone reconnects the app, and the card retires itself when they do. A DM
+      // for it is a notification about state, which is exactly the kind of chat noise that makes the
+      // approvals and questions people MUST answer harder to see.
+      quiet: true,
+    });
+  }
+
+  /**
+   * Close any expired-connection card whose premise has gone away.
+   *
+   * A card that outlives its condition is worse than no card: it sits in NEEDS YOU claiming an app is
+   * unavailable after the human has already dealt with it, and there is nothing they can do to make it
+   * go away — a review card carries no reject path, so "I fixed this" and "I am ignoring this" look
+   * identical. That happened the same afternoon this shipped: the expired connections were removed, the
+   * cache dropped to zero expired rows, and both cards stayed open.
+   *
+   * So the card is DERIVED state, reconciled on every refresh: it stands only while at least one of the
+   * toolkits it names still has an expired connection under that entity. Reconnected, deleted, or
+   * pruned all clear it — the card is about an expiry, and once no expiry remains there is nothing to
+   * report. Mirrors how an approval message derives its status from the approvals table at read time.
+   */
+  private reconcileExpiredCards(userId: string): number {
+    const expired = new Set(
+      this.os.composioIdentities.forEntity(userId)
+        .filter((i) => i.status.toUpperCase() === 'EXPIRED')
+        .map((i) => i.toolkit),
+    );
+    const open = this.db
+      .prepare(`SELECT id, args FROM messages WHERE type = 'connection.expired' AND status = 'open'`)
+      .all<{ id: string; args: string | null }>();
+    let closed = 0;
+    for (const row of open) {
+      let a: Record<string, unknown> = {};
+      try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
+      if (String(a.entity ?? '') !== userId) continue;
+      const named: string[] = Array.isArray(a.toolkits) ? (a.toolkits as unknown[]).map(String) : [];
+      // No toolkits recorded (a card from before this shape) → it can never be reconciled by name, so
+      // treat "nothing is expired on this shelf" as enough to retire it.
+      if (named.some((t) => expired.has(t))) continue;
+      this.db.prepare(`UPDATE messages SET status = 'resolved' WHERE id = ?`).run(row.id);
+      closed++;
+      this.audit('-', 'system', 'connector.expired.cleared', { entity: userId, toolkits: named });
+    }
+    return closed;
+  }
+
+  /**
+   * Which Composio Tool Router sessions this run gets, and under whose entity each is minted. Pure
+   * (DB reads only, no network), because TWO places must agree on it and disagreeing is exactly the
+   * failure we are fixing: `buildMcpConfigJson` mints them, and `composioContext` tells the agent in
+   * its prompt what each one actually is. Deriving the prompt from the same plan means the agent can
+   * never be told about a namespace it doesn't have, or left blind about one it does.
+   */
+  private composioSessionPlan(memberId: string | undefined, agent: string): Array<{ id: string; userId: string; scope: 'personal' | 'company' | 'shared'; ownerMemberId?: string; opts?: MintOptions }> {
+    const companyEntity = serviceUserId(this.os.tenant);
+    // Claims (composio-claims.ts): a company connection that is really ONE person's account is minted
+    // OUT of everyone else's company session — including automation/system runs, which have no member
+    // and so no business acting as one. The exact inverse of a share, enforced in the same place.
+    const claims = this.os.composioClaims.list().filter((c) => c.userId === companyEntity);
+    const companyOpts: MintOptions = claims.length
+      ? exclusionFor(claims, this.activeCompanyAccounts(companyEntity), memberId)
+      : {};
+    const sessions: Array<{ id: string; userId: string; scope: 'personal' | 'company' | 'shared'; ownerMemberId?: string; opts?: MintOptions }> = [
+      { id: 'composio-company', userId: companyEntity, scope: 'company', ...(claims.length ? { opts: companyOpts } : {}) },
+    ];
+    // `composio` → the running member's OWN connected apps (their email as user_id); `composio-company`
+    // → apps connected under the shared service entity, usable by every agent. Automation/system spawns
+    // get only the company entity (no person's personal credentials).
+    if (memberId) sessions.unshift({ id: 'composio', userId: this.composioUserId(memberId, agent), scope: 'personal', ownerMemberId: memberId });
+    // Connections a TEAMMATE marked "available to the team". A connected account's owning entity is
+    // immutable on Composio's side, so sharing is a marker we enforce here: one extra session per
+    // sharing owner, minted under THEIR entity but allowlisted to the shared toolkits and pinned to
+    // the shared account ids — so the borrower reaches exactly what was shared and nothing else of
+    // that person's Composio account. Connection management is off: a borrower must not be able to
+    // add or revoke connections under an entity that isn't theirs.
+    for (const m of this.os.composioShares.mintsFor(memberId)) {
+      sessions.push({
+        id: `composio-shared-${m.ownerMemberId}`,
+        userId: m.userId,
+        scope: 'shared',
+        ownerMemberId: m.ownerMemberId,
+        opts: { toolkits: m.toolkits, connectedAccounts: m.connectedAccounts, manageConnections: false },
+      });
+    }
+    return sessions;
+  }
+
+  /**
+   * The prompt section that tells an agent WHOSE accounts each Composio namespace holds.
+   *
+   * Without it the agent sees two indistinguishable MCP servers named `composio` and
+   * `composio-company`, and the Tool Router auto-selects tools from whichever answers — so the choice
+   * of identity is made by relevance ranking, not by intent. That is not hypothetical: one run created
+   * a Google Sheet through `composio-company` (whose Google account turned out to belong to a specific
+   * teammate, so the file landed in that person's Drive) and then sent mail through `composio`, which
+   * is the run-as member's own Gmail, because the company entity had no Gmail at all. Both were
+   * reasonable guesses from a name alone. Names are not identities, so we state the identities.
+   *
+   * Reads the CACHE only (`composio_identities`), never the network — `buildCompanyMd` is a synchronous
+   * assembly and a launch must not wait on Composio. An entity we have not resolved yet degrades to its
+   * scope line without an account list, which is still strictly more than the agent knew before.
+   */
+  private composioContext(memberId: string | undefined, agent: string): string {
+    if (!this.os.settings.composioApiKey()) return '';
+    const plan = this.composioSessionPlan(memberId, agent);
+    const cached = this.os.composioIdentities;
+    // A claimed app sits on the company shelf but belongs to one person. The claimer's own runs still
+    // reach it, and they are told so explicitly — otherwise "it is on the company shelf" reads as
+    // "it is the company's", which is the misreading that put a teammate's Drive in an agent's hands.
+    const claimedBy = new Map(this.os.composioClaims.list().map((c) => [c.id, c.memberId]));
+    const claimNote = (id: string): string =>
+      claimedBy.has(id) ? ' — your OWN account, kept on the company shelf; no other agent can use it' : '';
+    const lines: string[] = [];
+    for (const s of plan) {
+      const who = s.scope === 'personal'
+        ? `the connected apps of **${this.os.team.getMember(memberId ?? '')?.name || s.userId}**, the person this run acts as`
+        : s.scope === 'company'
+          ? 'the apps connected at the COMPANY level, shared by every agent'
+          : `apps **${this.os.team.getMember(s.ownerMemberId ?? '')?.name || s.userId}** lent to the team`;
+      let accounts = cached.forEntity(s.userId).filter((i) => i.status.toUpperCase() === 'ACTIVE');
+      // A claimed company app is minted out of this session unless the run acts as its claimer, so it
+      // must not be advertised here either — telling an agent about an app it cannot reach is the same
+      // class of lie as not telling it whose account an app is.
+      if (s.scope === 'company') {
+        const mine = new Map(this.os.composioClaims.list().filter((c) => c.userId === s.userId).map((c) => [c.id, c.memberId]));
+        accounts = accounts.filter((a) => !mine.has(a.id) || mine.get(a.id) === memberId);
+      }
+      const detail = accounts.length
+        ? accounts.map((a) => `    - ${a.toolkit} — ${a.account || 'account unknown'}${claimNote(a.id)}`).join('\n')
+        : '    - (nothing resolved yet — check Connections in the console before assuming an app is there)';
+      lines.push(`- **\`${s.id}\`** — ${who}:\n${detail}`);
+    }
+    if (!lines.length) return '';
+    return (
+      '# Composio — whose account you are about to act as\n\n' +
+      'Each Composio namespace below is a SEPARATE set of third-party accounts, and the tool you pick ' +
+      'decides which real person or company the world sees. The namespace name says whose SHELF an app ' +
+      'sits on, not whose account it is: a company connection is still somebody\'s individual login ' +
+      'underneath, and that is who owns the documents you create and who appears as the sender of the ' +
+      'mail you send. The resolved account is named below — read it before you act.\n\n' +
+      lines.join('\n') +
+      '\n\nRules: prefer the namespace whose account matches the identity the task calls for; when a task ' +
+      'is company work, use `composio-company`, and when it is this person\'s own work, use `composio`. ' +
+      'If the account that would act is NOT the one the task implies — a company task that would send ' +
+      'from an individual\'s mailbox, or a personal task that would write into a teammate\'s Drive — stop ' +
+      'and `ask` a human instead of proceeding. Never assume an app exists on a shelf because it exists ' +
+      'on another one.'
+    );
+  }
+
   /**
    * The `user_id` a Composio session is scoped to. A human spawn → that member's email, so the agent
    * sees exactly the apps that member connected on composio.dev. An automation/system spawn has no
@@ -4380,6 +5129,21 @@ export class TerminalManager {
         });
     } catch (e) {
       this.audit(sessionId, agent, 'skills.error', { error: String(e) });
+    }
+  }
+
+  /**
+   * Sync the workspace output-style library into the agent's `<dir>/.claude/output-styles/` so the
+   * launched claude discovers a CUSTOM style by name (built-ins need no file). Whole library, no
+   * allowlist: an unselected style file is inert, and only `CLAUDE_OUTPUT_STYLE` decides which applies.
+   * Best-effort — a style failure must never block a session.
+   */
+  private materializeOutputStyles(sessionId: string, agent: string, agentDir: string): void {
+    try {
+      const names = this.os.outputStyles.materialize(path.join(agentDir, '.claude'));
+      if (names.length) this.audit(sessionId, agent, 'output-styles.materialized', { count: names.length, styles: names });
+    } catch (e) {
+      this.audit(sessionId, agent, 'output-styles.error', { error: String(e) });
     }
   }
 
@@ -4502,6 +5266,20 @@ export class TerminalManager {
     if (this.os.settings.hostGovernanceEnabled()) {
       const runAs = this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(sessionId)?.run_as ?? undefined;
       hostGrants = this.os.hosts.grantsFor(runAs);
+    }
+    // Composio Tool Router envelope (composio-envelope.ts): its session exposes only six meta-tools, so
+    // the REAL action lives inside `input` and every plane keyed on `args.tool` — normalization, the
+    // enricher's email facts, the decision brief — was reading the envelope's name instead. Rewrite to
+    // the real effect FIRST, so everything below governs a Composio action exactly as it governs a
+    // first-class connector tool. Not an envelope → null, and nothing changes.
+    const envelope = unwrapComposioEnvelope(capability, rawArgs, this.emailOrgDomains());
+    if (envelope) {
+      this.audit(sessionId, agent, 'gate.composio.unwrapped', {
+        from: rawArgs.tool, to: envelope.args.tool, kind: envelope.kind,
+        capability: envelope.capability, actions: envelope.actions,
+      });
+      rawArgs = envelope.args;
+      capability = envelope.capability;
     }
     const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns(), hostGrants);
     // An outbound email is its own governed capability: reclassify so the policy gates it by recipient
@@ -4689,15 +5467,21 @@ export class TerminalManager {
     key: string,
     value: string,
     reasoning: string,
-  ): Promise<{ status: 'stored' | 'denied' | 'error'; detail?: string }> {
+  ): Promise<{ status: 'stored' | 'denied' | 'error'; detail?: string; replaced?: boolean }> {
     if (this.os.settings.killSwitch().engaged) {
       this.audit(sessionId, agent, 'gate.killswitch', { capability: 'secret.put', key });
       return { status: 'denied', detail: 'workspace emergency stop is engaged' };
     }
+    // A put over an EXISTING shared key is a replacement, not a create — every other agent resolving it
+    // starts getting the new value. Say so in the classify args, the card and the audit (metadata only,
+    // still never the value), so an approver can't wave through a clobber of a live credential thinking
+    // they're approving a first write.
+    const prior = this.os.secrets.list(this.os.tenant).find((sec) => sec.principal === '*' && sec.key === key);
+    const replaced = prior !== undefined;
     // Gate on the KEY only — the value is deliberately absent from classify/audit/the approval card.
-    const attempt: ActionAttempt = { capabilityId: 'secret.put', args: { key }, reasoning };
+    const attempt: ActionAttempt = { capabilityId: 'secret.put', args: { key, replaced }, reasoning };
     const decision: Decision = this.os.policy.classify(attempt, this.ctx(sessionId, agent));
-    this.audit(sessionId, agent, 'gate.attempt', { capability: 'secret.put', args: { key }, reasoning });
+    this.audit(sessionId, agent, 'gate.attempt', { capability: 'secret.put', args: { key, replaced }, reasoning });
     this.audit(sessionId, agent, 'gate.decision', { capability: 'secret.put', decision });
     if (decision.effect === 'deny') return { status: 'denied', detail: decision.reason };
     if (decision.effect === 'approve') {
@@ -4718,12 +5502,14 @@ export class TerminalManager {
           type: 'approval',
           sessionId,
           agent,
-          title: `Approval needed — store secret "${key}"`,
-          body: reasoning,
+          title: replaced ? `Approval needed — REPLACE secret "${key}"` : `Approval needed — store secret "${key}"`,
+          body: replaced
+            ? `${reasoning}\n\nThis OVERWRITES the existing shared "${key}" (last set ${prior!.updatedBy ? `by ${prior!.updatedBy} ` : ''}${new Date(prior!.updatedAt).toISOString().slice(0, 10)}). Every agent resolving that key gets the new value.`
+            : reasoning,
           status: 'pending',
           approvalId: req.id,
           capability: 'secret.put',
-          args: { key },
+          args: { key, replaced },
           level: decision.level,
           audienceKind: aud.kind,
           audienceId: audienceIdOf(aud),
@@ -4738,8 +5524,8 @@ export class TerminalManager {
     // green (allow) or approved → write the encrypted row under the shared tenant-wide principal.
     try {
       this.os.secrets.set(this.os.tenant, key, value, { principal: '*', updatedBy: `agent:${agent}` });
-      this.audit(sessionId, agent, 'secret.put', { key, principal: '*' });
-      return { status: 'stored' };
+      this.audit(sessionId, agent, 'secret.put', { key, principal: '*', replaced, ...(prior ? { previousUpdatedAt: prior.updatedAt, previousUpdatedBy: prior.updatedBy } : {}) });
+      return { status: 'stored', replaced };
     } catch (e) {
       return { status: 'error', detail: e instanceof Error ? e.message : String(e) };
     }
@@ -4793,9 +5579,12 @@ export class TerminalManager {
    */
   policyCheck(sessionId: string, agent: string, capability: string, args: Record<string, unknown>): Decision {
     if (this.os.settings.killSwitch().engaged) return { effect: 'deny', riskClass: 'deny', reason: 'workspace emergency stop is engaged' };
-    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
-    // Mirror the gate: email promotion first, then capability normalization (§4.2), so a dry-run preview
+    // Mirror the gate exactly, in the same order: unwrap a Composio envelope to the real action, then
+    // enrich, then email promotion, then capability normalization (§4.2) — so a dry-run preview
     // classifies the same canonical capability the live gate will.
+    const unwrapped = unwrapComposioEnvelope(capability, args, this.emailOrgDomains());
+    if (unwrapped) { args = unwrapped.args; capability = unwrapped.capability; }
+    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
     const cap = enriched.emailSend === true
       ? 'email.send'
       : resolveCapability(capability, typeof enriched.tool === 'string' ? enriched.tool : undefined);
@@ -4900,6 +5689,57 @@ export class TerminalManager {
   }
 
   /**
+   * Post an inbox card the OS itself raises — no session, no agent behind it. Today's caller is the
+   * self-update watcher (`src/edge/update-watch.ts`): "this box is behind origin", "an update is blocked
+   * by uncommitted changes", "an update was applied/failed". Uses a `system:<topic>` sentinel for
+   * `session_id` (no matching `term_sessions` row) so visibility is decided entirely by the Audience,
+   * exactly like {@link postTaskCard}. Returns the row id so a caller can supersede its own earlier card.
+   *
+   * A `notification` needs no `approvalId`; an `approval` card carries one plus its `level`, which is
+   * what makes the Inbox render Approve/Reject and route it through the normal decide endpoint — the
+   * watcher does not need (and must not have) an approval path of its own.
+   */
+  postSystemCard(input: {
+    topic: string;
+    type: 'notification' | 'approval';
+    title: string;
+    body: string;
+    audience: Audience;
+    args?: Record<string, unknown>;
+    approvalId?: string;
+    level?: string;
+    capability?: string;
+    notify?: boolean;
+  }): string {
+    const id = this.addMessage({
+      type: input.type, sessionId: `system:${input.topic}`, agent: 'system',
+      title: input.title, body: input.body, status: input.type === 'approval' ? 'pending' : 'open',
+      ...(input.args ? { args: input.args } : {}),
+      ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+      ...(input.level ? { level: input.level } : {}),
+      ...(input.capability ? { capability: input.capability } : {}),
+      audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
+    });
+    // A card nobody is logged in to see is the whole problem this solves on a headless box, so the
+    // out-of-band DM is the point rather than a nicety — but it stays advisory: a chat outage must not
+    // stop the card being recorded.
+    if (input.notify !== false) {
+      try { this.reviewNotifier?.({ sessionId: `system:${input.topic}`, agent: 'system', kind: 'system.update', title: input.title, summary: input.body, audience: input.audience, link: { page: 'settings', detail: 'updates', label: 'Settings → Updates' } }); }
+      catch { /* out-of-band push is advisory */ }
+    }
+    return id;
+  }
+
+  /** Close an OS-raised card (the watcher superseding its own earlier notice when origin moves on, or
+   *  retiring one once the update landed). Scoped to `system:` sentinels so it can only touch its own. */
+  closeSystemCards(topic: string, status: 'approved' | 'rejected' | 'cancelled' = 'cancelled', exceptId?: string): number {
+    const r = this.db
+      .prepare(`UPDATE messages SET status = ? WHERE session_id = ? AND status IN ('open','pending') AND id != ?`)
+      .run(status, `system:${topic}`, exceptId ?? '');
+    return Number(r.changes) || 0;
+  }
+
+  /**
    * Post one message into a task's **Discussion** (the task-detail conversation — see
    * `docs/task-rooms-plan.md`). A Discussion message is a `messages` row with `type='task.chat'` +
    * `audience_kind:'task'` on the `task:<id>` sentinel session; it is EXCLUDED from the Inbox feed
@@ -4964,24 +5804,74 @@ export class TerminalManager {
     return row?.n ?? 0;
   }
 
-  /** Per-task Discussion rollups for the board/list cards (unread for `viewer`, last-message preview,
-   *  participant set), keyed by task id. One scan over the tenant's `task.chat` rows. */
-  taskDiscussionSummaries(viewer: Member): Record<string, TaskDiscussionSummary> {
-    const rows = this.db
-      .prepare(`SELECT m.session_id AS sid, m.source AS source, m.agent AS agent, m.body AS body, m.created_at AS at, ms.read_at AS read_at
+  /**
+   * Per-task Discussion rollups for the board/list cards (unread for `viewer`, last-message preview,
+   * participant set), keyed by task id.
+   *
+   * AGGREGATED IN SQL, and scoped to the tasks the caller is actually rendering. The row-by-row version
+   * read every `task.chat` message in the tenant with its FULL body to keep only the last one per task:
+   * on live instawp that was 6,879 rows / 12.6 MB materialised per poll, and it shipped **2.07 MB of the
+   * 2.4 MB `/api/tasks` response** — rollups for 1,986 tasks when the board renders 500, each carrying an
+   * unclipped body that the card renders as one `truncate`d line.
+   *
+   * @param taskIds restrict to these tasks (the page's own list). Omitted = every task, as before.
+   * @param bodyClip clip the preview body to N chars (the card truncates it to one line anyway).
+   */
+  taskDiscussionSummaries(viewer: Member, taskIds?: string[], bodyClip?: number): Record<string, TaskDiscussionSummary> {
+    // Scope clause shared by both queries. `session_id` is `task:<id>`, so an id list becomes an IN over
+    // exact keys; an empty list means "nothing to render", not "everything".
+    const sids = taskIds?.map((id) => `task:${id}`);
+    if (sids && !sids.length) return {};
+    const scope = sids ? ` AND m.session_id IN (${sids.map(() => '?').join(',')})` : '';
+    const args = sids ?? [];
+    // Read a PREFIX rather than the whole body — the preview is one truncated line. `clipText` collapses
+    // whitespace before it counts, and collapsing only ever shortens, so a 4× prefix is what makes the
+    // clipped result identical to clipping the full body (it would take >3/4 of the prefix being runs of
+    // whitespace to differ). Verified byte-for-byte against the unclipped path on the live instawp board.
+    const body = bodyClip && bodyClip > 0 ? `substr(m.body, 1, ${bodyClip * 4 + 16})` : 'm.body';
+
+    const out: Record<string, TaskDiscussionSummary> = {};
+    const entry = (sid: string): TaskDiscussionSummary => {
+      const taskId = sid.slice('task:'.length);
+      return out[taskId] ?? (out[taskId] = { unread: 0, participants: [] });
+    };
+
+    // 1. participants + unread, one row per (task, participant). `firstAt` preserves the old
+    //    first-appearance ordering of the participant list, which the avatar rail reads as arrival order.
+    for (const r of this.db
+      .prepare(`SELECT m.session_id AS sid,
+                       COALESCE(m.source, CASE WHEN m.agent IS NOT NULL THEN 'agent:' || m.agent ELSE 'system' END) AS who,
+                       MIN(m.created_at) AS firstAt,
+                       SUM(CASE WHEN ms.read_at IS NULL AND (m.source IS NULL OR m.source != ?) THEN 1 ELSE 0 END) AS unread
                   FROM messages m
                   LEFT JOIN message_state ms ON ms.message_id = m.id AND ms.member_id = ?
-                 WHERE m.type = 'task.chat' AND m.session_id LIKE 'task:%'
-                 ORDER BY m.created_at ASC`)
-      .all<{ sid: string; source: string | null; agent: string | null; body: string; at: number; read_at: number | null }>(viewer.id);
-    const out: Record<string, TaskDiscussionSummary> = {};
-    for (const r of rows) {
-      const taskId = r.sid.slice('task:'.length);
-      const e = out[taskId] ?? (out[taskId] = { unread: 0, participants: [] });
-      const who = r.source ?? (r.agent ? `agent:${r.agent}` : 'system');
-      e.last = { body: r.body, author: who, agentId: r.agent || undefined };
-      if (!e.participants.includes(who)) e.participants.push(who);
-      if (r.read_at === null && r.source !== viewer.id) e.unread++;
+                 WHERE m.type = 'task.chat' AND m.session_id LIKE 'task:%'${scope}
+                 GROUP BY sid, who
+                 ORDER BY firstAt ASC`)
+      .all<{ sid: string; who: string; firstAt: number; unread: number }>(viewer.id, viewer.id, ...args)) {
+      const e = entry(r.sid);
+      if (!e.participants.includes(r.who)) e.participants.push(r.who);
+      e.unread += r.unread;
+    }
+
+    // 2. the newest message per task, for the one-line preview. Joined against each task's MAX(created_at)
+    //    rather than ordering the whole table; ties (same millisecond) resolve by rowid = insertion order,
+    //    which is what "last write wins" meant when this walked the rows in ASC order.
+    for (const r of this.db
+      .prepare(`SELECT m.session_id AS sid, ${body} AS body, m.source AS source, m.agent AS agent, m.rowid AS rid
+                  FROM messages m
+                  JOIN (SELECT session_id, MAX(created_at) AS mx FROM messages
+                         WHERE type = 'task.chat' AND session_id LIKE 'task:%'
+                         GROUP BY session_id) last
+                    ON last.session_id = m.session_id AND m.created_at = last.mx
+                 WHERE m.type = 'task.chat' AND m.session_id LIKE 'task:%'${scope}
+                 ORDER BY m.created_at ASC, m.rowid ASC`)
+      .all<{ sid: string; body: string; source: string | null; agent: string | null; rid: number }>(...args)) {
+      entry(r.sid).last = {
+        body: bodyClip ? clipText(r.body, bodyClip) : r.body,
+        author: r.source ?? (r.agent ? `agent:${r.agent}` : 'system'),
+        agentId: r.agent || undefined,
+      };
     }
     return out;
   }
@@ -5192,7 +6082,7 @@ export class TerminalManager {
    * fires in ONE place — parity with how approvals/questions/tasks already reach a human. The notifier is
    * advisory: a failed push never wedges the request.
    */
-  private postReviewCard(input: { type: ReviewNotice['kind']; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string; audience?: Audience; link?: ReviewNotice['link'] }): void {
+  private postReviewCard(input: { type: ReviewCardKind; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string; audience?: Audience; link?: ReviewNotice['link']; quiet?: boolean }): void {
     // Providing/publishing/granting is an owner/admin act — address the review card to the admin tier by
     // default. A caller can override (e.g. a personal connection request, which only its own member can
     // complete) by passing an explicit `audience`.
@@ -5203,6 +6093,12 @@ export class TerminalManager {
       ...(input.args ? { args: input.args } : {}),
       audienceKind: audience.kind, audienceId: audienceIdOf(audience),
     });
+    // `quiet`: Inbox only, no Slack/Discord DM. Every OTHER review card is an agent BLOCKED on a human —
+    // it asked for a credential, a skill, a policy change, and nothing proceeds until someone answers, so
+    // interrupting them is the point. A card the OS raises about its own state is not that: nobody is
+    // waiting on it, it is true for as long as it is true, and it self-heals. Pushing it out-of-band adds
+    // to the chat noise that already makes the signal cards easy to miss.
+    if (input.quiet) return;
     try { this.reviewNotifier?.({ sessionId: input.sessionId, agent: input.agent, kind: input.type, title: input.title, summary: input.summary ?? input.body, audience, ...(input.link ? { link: input.link } : {}) }); }
     catch { /* out-of-band push is advisory — never let it wedge the request */ }
   }
@@ -5782,6 +6678,28 @@ export class TerminalManager {
     this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'skill.request'`).run(status, id);
   }
 
+  /** Mark the open 'skill.proposed' review card(s) for a skill resolved once a human acted on it —
+   *  published/dismissed a proposed DRAFT, or applied/discarded a proposed EDIT. Unlike `skill.request`
+   *  (approved by card id) the skills console acts on the SKILL, not the card, so the card is found by
+   *  its payload: `args.skill` plus the `edit` flag that tells the two lanes apart. Without this the
+   *  card sat "awaiting review" in the Inbox forever after the human had already merged it. Returns how
+   *  many cards were closed. */
+  resolveSkillProposals(skill: string, lane: 'new' | 'edit', status: 'approved' | 'rejected'): number {
+    const rows = this.db
+      .prepare(`SELECT id, args FROM messages WHERE type = 'skill.proposed' AND status = 'open'`)
+      .all<{ id: string; args: string | null }>();
+    const upd = this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'skill.proposed'`);
+    let closed = 0;
+    for (const r of rows) {
+      let a: Record<string, unknown> = {};
+      try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate a corrupt payload */ }
+      if (String(a.skill ?? '') !== skill) continue;
+      if ((a.edit === true ? 'edit' : 'new') !== lane) continue;
+      upd.run(status, r.id); closed++;
+    }
+    return closed;
+  }
+
   /** Open (unresolved) skill.request cards — the Skills page's agent-request review section. */
   openSkillRequests(): { id: string; skill: string; source: string; agent: string; rationale?: string; createdAt: number }[] {
     return this.db
@@ -5794,8 +6712,13 @@ export class TerminalManager {
       });
   }
 
+  /** Principals in this tenant's vault that currently hold `key` — metadata only, never a value. */
+  private secretPrincipals(key: string): string[] {
+    return this.os.secrets.list(this.os.tenant).filter((s) => s.key === key).map((s) => s.principal);
+  }
+
   /**
-   * Agent asks a human about a credential KEY it needs (the `secret_request` tool). Auto-detects two
+   * Agent asks a human about a credential KEY it needs (the `secret_request` tool). Auto-detects three
    * modes so the agent doesn't have to know which case it's in:
    *   • **provide** — the key isn't in the vault at all: a human types the value into a secure form
    *     (encrypted at rest) instead of the agent asking them to paste the raw secret into the session
@@ -5803,47 +6726,66 @@ export class TerminalManager {
    *   • **access** — the key already EXISTS in the vault but under a principal this agent can't read
    *     (another agent / a member / a non-shared scope): a human GRANTS access, and the server re-scopes
    *     the existing sealed value to this agent — no value is ever re-typed or exposed.
+   *   • **rotate** — the agent CAN read the key but the value is dead (expired token, revoked key): a
+   *     human types a REPLACEMENT. Without this the `exists` short-circuit below answers "you already
+   *     have this" — useless precisely when the value it has is what's broken, leaving delete-then-add
+   *     by a human as the only route. Reached only on an explicit `rotate`, so a merely forgetful agent
+   *     is still short-circuited rather than nagging someone.
    * Either way it never carries a value — only the KEY and why. Short-circuits if the agent can already
    * resolve the key (it has access) or an identical request is already open, else posts an owner/admin
    * 'secret.request' card tagged with the detected `mode` and audits `secret.requested`. A human resolves
    * it via POST /api/secrets/requests/:id/fulfill. */
-  requestSecret(sessionId: string, agent: string, key: string, reasoning?: string): { ok: boolean; status?: 'requested' | 'exists' | 'duplicate'; mode?: 'provide' | 'access'; error?: string } {
+  requestSecret(
+    sessionId: string,
+    agent: string,
+    key: string,
+    reasoning?: string,
+    opts: { rotate?: boolean } = {},
+  ): { ok: boolean; status?: 'requested' | 'exists' | 'duplicate'; mode?: SecretRequestMode; locations?: string[]; error?: string } {
     const k = (key || '').trim();
     if (!k) return { ok: false, error: 'a secret key is required' };
+    // Where the key lives today decides the mode — and, for a rotation, which rows the replacement lands
+    // on (the fulfill route re-derives this rather than trusting the card, which can be hours stale).
+    const locations = this.secretPrincipals(k);
+    // A rotate for a key the vault doesn't hold has nothing to replace, so it degrades to a provide.
+    const rotating = opts.rotate === true && locations.length > 0;
     // Already resolvable for this agent (its own principal or the shared `*`) → no need to ask a human.
-    if (this.os.secrets.getSync(this.os.tenant, agent, k) !== undefined) return { ok: true, status: 'exists' };
-    // Detect mode: does the key exist ANYWHERE in the vault (a principal this agent just can't read)?
-    // If so this is an access-grant request; otherwise the vault has nothing and a human must provide it.
-    const inVault = this.os.secrets.list(this.os.tenant).some((s) => s.key === k);
-    const mode: 'provide' | 'access' = inVault ? 'access' : 'provide';
+    if (!rotating && this.os.secrets.getSync(this.os.tenant, agent, k) !== undefined) return { ok: true, status: 'exists' };
+    const mode: SecretRequestMode = rotating ? 'rotate' : locations.length ? 'access' : 'provide';
     // Dedupe against an already-open request for the same key from the same agent.
     const open = this.db
       .prepare(`SELECT 1 FROM messages WHERE type = 'secret.request' AND status = 'open' AND agent = ? AND json_extract(args, '$.key') = ?`)
       .get(agent, k);
     if (open) return { ok: true, status: 'duplicate', mode };
-    const defaultBody = mode === 'access'
-      ? `${agent} is requesting access to the existing credential "${k}".`
-      : `${agent} needs the credential "${k}" to continue.`;
+    const defaultBody = mode === 'rotate'
+      ? `${agent} reports the current value of "${k}" is being rejected and needs replacing.`
+      : mode === 'access'
+        ? `${agent} is requesting access to the existing credential "${k}".`
+        : `${agent} needs the credential "${k}" to continue.`;
+    const title = mode === 'rotate'
+      ? `Secret rotation requested — ${k}`
+      : mode === 'access' ? `Secret access requested — ${k}` : `Secret requested — ${k}`;
     this.postReviewCard({
       type: 'secret.request', sessionId, agent,
-      title: mode === 'access' ? `Secret access requested — ${k}` : `Secret requested — ${k}`,
+      title,
       body: (reasoning?.trim() || defaultBody).trim(),
-      args: { key: k, mode, ...(reasoning ? { reasoning } : {}) },
+      args: { key: k, mode, ...(mode === 'rotate' ? { locations } : {}), ...(reasoning ? { reasoning } : {}) },
     });
-    this.audit(sessionId, agent, 'secret.requested', { key: k, mode, reasoning });
-    return { ok: true, status: 'requested', mode };
+    this.audit(sessionId, agent, 'secret.requested', { key: k, mode, ...(mode === 'rotate' ? { locations } : {}), reasoning });
+    return { ok: true, status: 'requested', mode, ...(mode === 'rotate' ? { locations } : {}) };
   }
 
   /** Read a 'secret.request' card's payload (for the fulfill/dismiss routes). undefined if not one.
-   *  `mode` is 'access' (grant an existing key) or 'provide' (a human enters a new value). */
-  secretRequestCard(id: string): { key: string; agent: string; mode: 'provide' | 'access'; reasoning?: string; status: string } | undefined {
+   *  `mode` is 'access' (grant an existing key), 'rotate' (replace a rejected value) or 'provide' (a
+   *  human enters a new value). */
+  secretRequestCard(id: string): { key: string; agent: string; mode: SecretRequestMode; reasoning?: string; status: string } | undefined {
     const row = this.db
       .prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'secret.request'`)
       .get<{ agent: string; args: string | null; status: string }>(id);
     if (!row) return undefined;
     let a: Record<string, unknown> = {};
     try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
-    return { key: String(a.key ?? ''), agent: row.agent, mode: a.mode === 'access' ? 'access' : 'provide', reasoning: a.reasoning ? String(a.reasoning) : undefined, status: row.status };
+    return { key: String(a.key ?? ''), agent: row.agent, mode: parseSecretRequestMode(a.mode), reasoning: a.reasoning ? String(a.reasoning) : undefined, status: row.status };
   }
 
   /** Mark a 'secret.request' card resolved once a human fulfilled (provided/granted) or dismissed it. */
@@ -5852,14 +6794,19 @@ export class TerminalManager {
   }
 
   /** Open (unresolved) secret.request cards — the Secrets settings page's agent-request review section. */
-  openSecretRequests(): { id: string; key: string; agent: string; mode: 'provide' | 'access'; reasoning?: string; createdAt: number }[] {
+  openSecretRequests(): { id: string; key: string; agent: string; mode: SecretRequestMode; locations?: string[]; reasoning?: string; createdAt: number }[] {
     return this.db
       .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'secret.request' AND status = 'open' ORDER BY created_at DESC`)
       .all<{ id: string; agent: string; args: string | null; created_at: number }>()
       .map((r) => {
         let a: Record<string, unknown> = {};
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
-        return { id: r.id, key: String(a.key ?? ''), agent: r.agent, mode: a.mode === 'access' ? 'access' : 'provide', reasoning: a.reasoning ? String(a.reasoning) : undefined, createdAt: r.created_at };
+        const key = String(a.key ?? '');
+        const mode = parseSecretRequestMode(a.mode);
+        // A rotation's blast radius (which principals get overwritten) is re-derived live, not read off
+        // the card — the vault can have changed since the agent asked.
+        const locations = mode === 'rotate' ? this.secretPrincipals(key) : undefined;
+        return { id: r.id, key, agent: r.agent, mode, locations, reasoning: a.reasoning ? String(a.reasoning) : undefined, createdAt: r.created_at };
       });
   }
 
@@ -6024,7 +6971,7 @@ export class TerminalManager {
     let runAs: string | undefined;
     if ((spec.runAs || '').trim()) {
       const raw = String(spec.runAs).trim();
-      const m = this.os.team.getMember(raw) ?? this.os.team.getMemberByEmail(raw);
+      const m = this.os.team.resolveMemberRef(raw);
       if (!m) return { ok: false, error: `unknown member "${raw}" for runAs — pass a member id or email (use directory_lookup), or omit runAs to run as the company identity` };
       runAs = m.id;
     }
@@ -6245,15 +7192,22 @@ export class TerminalManager {
   setAgentUpdateProposalStatus(id: string, status: 'approved' | 'rejected'): void {
     this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'agent.update.proposed'`).run(status, id);
   }
-  /** Open agent-edit proposals (all targets, or just one when `target` is given) — for the console review list. */
-  openAgentUpdateProposals(target?: string): { id: string; agent: string; target: string; fields: Record<string, unknown>; rationale?: string; preview?: string; createdAt: number }[] {
+  /**
+   * Open agent-edit proposals (all targets, or just one when `target` is given) — for the console review list.
+   *
+   * `baseHash` rides along so the caller can tell the reviewer, BEFORE they click Approve, that the target's
+   * CLAUDE.md moved since this card was written (several agents proposing on one target is normal — the cap
+   * is per-proposer — and each card carries a FULL replacement text, so approving two in a row makes the
+   * second silently revert the first).
+   */
+  openAgentUpdateProposals(target?: string): { id: string; agent: string; target: string; fields: Record<string, unknown>; rationale?: string; preview?: string; baseHash?: string; createdAt: number }[] {
     return this.db
       .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'agent.update.proposed' AND status = 'open' ORDER BY created_at DESC`)
       .all<{ id: string; agent: string; args: string | null; created_at: number }>()
       .map((r) => {
         let a: Record<string, unknown> = {};
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
-        return { id: r.id, agent: r.agent, target: String(a.target ?? ''), fields: (a.fields ?? {}) as Record<string, unknown>, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
+        return { id: r.id, agent: r.agent, target: String(a.target ?? ''), fields: (a.fields ?? {}) as Record<string, unknown>, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, baseHash: a.baseHash ? String(a.baseHash) : undefined, createdAt: r.created_at };
       })
       .filter((p) => p.target && (!target || p.target === target.trim().toLowerCase()));
   }
@@ -6436,27 +7390,6 @@ export class TerminalManager {
     return sb.startsWith('task:') ? sb.slice('task:'.length) : undefined;
   }
 
-  /**
-   * Agent deliberately notifies a specific teammate (the `notify` MCP tool) — the "this task needs
-   * someone else to know" escape hatch from the session-owner-scoped default. Resolves `to` (a member
-   * id, email, or display name), posts an inbox card ADDRESSED to that member (so it lands in their
-   * `mine` feed regardless of who owns the session), fires the out-of-band DM sink, and audits it.
-   * Never routes to the whole team — one named recipient, deliberately chosen by the agent.
-   */
-  notifyMember(sessionId: string, agent: string, to: string, message: string, important = false): { ok: boolean; to?: string; error?: string } {
-    const body = (message || '').trim();
-    if (!body) return { ok: false, error: 'message is required' };
-    const target = this.resolveMember(to);
-    if (!target) return { ok: false, error: `no teammate matches "${to}"` };
-    this.addMessage({
-      type: 'update', sessionId, agent, title: `Note from ${agent}`, body, status: 'open',
-      args: important ? { important: true } : undefined,
-      audienceKind: 'member', audienceId: target.id,
-    });
-    this.audit(sessionId, agent, 'member.notified', { to: target.id, important, message: body });
-    try { this.memberNotifier?.({ sessionId, agent, to: target.id, message: body, important }); } catch { /* advisory */ }
-    return { ok: true, to: target.email };
-  }
 
   /** Resolve a person the agent named — by member id, email (case-insensitive), or display name — to a
    *  member. Used by {@link notifyMember}; returns undefined when nothing matches unambiguously. */
@@ -7087,7 +8020,13 @@ export class TerminalManager {
   private writeEpisode(sessionId: string, agent: string, outcomeOverride?: string): void {
     if (this.episoded.has(sessionId)) return;
     if (this.db.prepare("SELECT 1 FROM audit_events WHERE run_id = ? AND type = 'episode.stored'").get(sessionId)) return;
-    const task = this.db.prepare('SELECT task FROM term_sessions WHERE id = ?').get<{ task: string }>(sessionId)?.task ?? '';
+    // A DELETED session has no row. Its audit events survive (the log is append-only), so composing from
+    // them would write an episode with no task line, attributed to an agent we can no longer name — junk
+    // addressed to nobody. Seen live on instawp: one janitor-reaped run whose row had been deleted
+    // mid-flight, whose activity list still carried `session.deleted`.
+    const row = this.db.prepare('SELECT task FROM term_sessions WHERE id = ?').get<{ task: string }>(sessionId);
+    if (!row) return;
+    const task = row.task ?? '';
     const report = this.db.prepare("SELECT outcome, body FROM messages WHERE session_id = ? AND type = 'completed' ORDER BY created_at DESC LIMIT 1").get<{ outcome: string | null; body: string }>(sessionId);
     const events = this.db.prepare('SELECT type, data FROM audit_events WHERE run_id = ? ORDER BY ts').all<{ type: string; data: string }>(sessionId);
     const ep = composeEpisode(task, report, events, outcomeOverride);
@@ -7345,14 +8284,18 @@ export class TerminalManager {
    *  real member; a no-op transfer (already owned by them) succeeds quietly. Audited `session.transferred`.
    *  The caller applies the ownership gate (owner/admin or current owner). */
   transferSession(sessionId: string, by: Member, toMemberId: string): { ok: boolean; error?: string; runAs?: string } {
-    const r = this.db.prepare('SELECT id, agent, run_as FROM term_sessions WHERE id = ?')
-      .get<{ id: string; agent: string; run_as: string | null }>(sessionId);
+    const r = this.db.prepare('SELECT id, agent, run_as, title FROM term_sessions WHERE id = ?')
+      .get<{ id: string; agent: string; run_as: string | null; title: string | null }>(sessionId);
     if (!r) return { ok: false, error: 'unknown session' };
     const target = this.os.team.getMember(toMemberId);
     if (!target) return { ok: false, error: 'unknown member' };
     if (r.run_as === target.id) return { ok: true, runAs: target.id };
     this.db.prepare('UPDATE term_sessions SET run_as = ?, updated_at = ? WHERE id = ?').run(target.id, Date.now(), sessionId);
     this.audit(sessionId, by.email, 'session.transferred', { from: r.run_as, to: target.id, agent: r.agent });
+    // Tell the new owner out-of-band (Slack/Discord DM) — they now own a run they didn't start, and the
+    // inbox alone doesn't reach someone who isn't looking at the console. Advisory: never fail the
+    // transfer on a notification.
+    try { this.transferNotifier?.({ sessionId, agent: r.agent, to: target.id, byName: by.name || by.email, title: r.title ?? undefined }); } catch { /* advisory */ }
     return { ok: true, runAs: target.id };
   }
 
@@ -7801,6 +8744,29 @@ export function isEpisodeRecord(r: { content?: string; tags?: string[] }): boole
   return /^\s*Task:/.test(r.content ?? '');
 }
 
+/**
+ * Is this record unfit to be SEEDED into a working agent's prompt?
+ *
+ * Two classes, both real memories that belong in the store and neither of which helps someone about to do
+ * a job:
+ *  - an **episode** — a transcript of a past assignment (see {@link isEpisodeRecord});
+ *  - a **dreaming summary** — the self-learning pass's own tenant-scoped digest, "Fleet self-learning
+ *    (pass 31, since 2026-07-01): 768 sessions, 43% success. Recurring topics: …". That is a statistic
+ *    ABOUT the fleet, not knowledge FOR the work, and one is written per pass, so they accumulate.
+ *
+ * Measured on live tenants: the tenant-shared pool was **51 of 72 memories on instapods and 48 of 85 on
+ * instawp** — two thirds of everything shared across the fleet — and because shared memories reach every
+ * agent, an agent thin on its own memories got a preamble that was **6 of 8 slots of fleet statistics**.
+ * Observed directly: a zero-memory agent's launch preamble carried six pass summaries and nothing about
+ * its task.
+ *
+ * They stay recallable (an oversight agent asking "how is the fleet doing" wants exactly this, and the
+ * Memory hub counts them) — they are simply not launch context.
+ */
+export function isPreambleNoise(r: { content?: string; tags?: string[] }): boolean {
+  return isEpisodeRecord(r) || !!r.tags?.includes('dreaming');
+}
+
 /** Collapse near-identical entries and cap at `limit`. Two memories that open the same ~80 characters say
  *  the same thing for a reader's purposes — several slots for one fact is the failure this prevents (one
  *  live agent's preamble spent 4 of 8 slots on replays of the same daily sweep). Order is preserved, so
@@ -7848,7 +8814,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, verbosity: r.verbosity ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined };
 }
 
 function toMessage(r: MessageRow): FeedMessage {

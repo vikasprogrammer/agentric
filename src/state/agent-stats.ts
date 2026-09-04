@@ -149,34 +149,67 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
   }
 
   // ── 4. governed-action tallies from the audit stream, joined to the agent via run_id ──
+  // AGGREGATED IN SQL, never row-by-row. The old pass SELECTed `run_id, type, data` for every matching
+  // event and JSON.parsed each one; on the live instawp tenant that is 386k rows carrying **238 MB** of
+  // `data` — 1.9 s per call, on the single event loop, every time the Agents page opened. Only two of the
+  // nine event types need to look inside `data` at all, and both are rare, so the hot types are counted
+  // by a covering-index GROUP BY (`idx_audit_type_run`) that never reads the column.
   const deniedRunSet = new Set<string>();
-  const audit = db.prepare(
-    `SELECT run_id, type, data FROM audit_events WHERE type IN
-      ('gate.attempt','approval.requested','approval.resolved','approval.auto_approved',
-       'gate.decision','gate.killswitch','session.error','budget.exceeded','question.asked')`
-  ).all() as unknown as Array<{ run_id: string; type: string; data: string }>;
-  for (const ev of audit) {
-    const agent = agentOf.get(ev.run_id);
+  const countsByRun = db.prepare(
+    `SELECT type, run_id, COUNT(*) AS n FROM audit_events WHERE type IN
+      ('gate.attempt','approval.requested','approval.auto_approved',
+       'gate.killswitch','session.error','budget.exceeded','question.asked')
+     GROUP BY type, run_id`
+  ).all() as unknown as Array<{ type: string; run_id: string; n: number }>;
+  for (const row of countsByRun) {
+    const agent = agentOf.get(row.run_id);
     if (!agent) continue; // an audit row whose session we can't resolve (e.g. '-' housekeeping) — skip
     const s = get(agent);
+    switch (row.type) {
+      case 'gate.attempt': s.actions.governed += row.n; break;
+      case 'approval.requested': s.actions.humanGated += row.n; break;
+      case 'approval.auto_approved': s.actions.autoApproved += row.n; break;
+      case 'session.error': s.actions.errors += row.n; break;
+      case 'question.asked': s.questions += row.n; break;
+      // A killswitch or a budget stop is a denial by its mere existence — no payload to read.
+      case 'gate.killswitch': s.actions.killswitch += row.n; deniedRunSet.add(row.run_id); break;
+      case 'budget.exceeded': s.actions.budgetStops += row.n; deniedRunSet.add(row.run_id); break;
+    }
+  }
+
+  // A human saying no. Every `approval.resolved` row is read (a few hundred fleet-wide, seeked by
+  // `idx_audit_type_ts`) because the verdict lives in the payload.
+  const resolved = db.prepare(
+    "SELECT run_id, data FROM audit_events WHERE type = 'approval.resolved'"
+  ).all() as unknown as Array<{ run_id: string; data: string }>;
+  for (const ev of resolved) {
+    const agent = agentOf.get(ev.run_id);
+    if (!agent) continue;
     let d: Record<string, unknown> = {};
     try { d = JSON.parse(ev.data) as Record<string, unknown>; } catch { /* keep {} */ }
-    switch (ev.type) {
-      case 'gate.attempt': s.actions.governed++; break;
-      case 'approval.requested': s.actions.humanGated++; break;
-      case 'approval.auto_approved': s.actions.autoApproved++; break;
-      case 'approval.resolved':
-        if (d.approved === false) { s.actions.rejected++; deniedRunSet.add(ev.run_id); }
-        break;
-      case 'gate.decision': {
-        const eff = (d.decision as { effect?: string } | undefined)?.effect;
-        if (eff === 'deny') { s.actions.denied++; deniedRunSet.add(ev.run_id); }
-        break;
-      }
-      case 'gate.killswitch': s.actions.killswitch++; deniedRunSet.add(ev.run_id); break;
-      case 'session.error': s.actions.errors++; break;
-      case 'budget.exceeded': s.actions.budgetStops++; deniedRunSet.add(ev.run_id); break;
-      case 'question.asked': s.questions++; break;
+    if (d.approved === false) { get(agent).actions.rejected++; deniedRunSet.add(ev.run_id); }
+  }
+
+  // A policy hard-deny. `gate.decision` is the single largest event type (192k rows here) and ~99.8% of
+  // them are allows, so the partial index `idx_audit_deny` is the only thing read — the LIKE pre-filter
+  // it was built on is then re-checked by a real parse below, so its looseness cannot skew a stat.
+  // INDEXED BY is deliberate: the planner has no cost model for a LIKE over a 64 MB column and otherwise
+  // picks the (type, …) index and scans all 192k payloads (measured 220 ms vs 0 ms).
+  const denyIndexed = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_audit_deny'")
+    .all().length > 0;
+  const denials = db.prepare(
+    `SELECT run_id, data FROM audit_events ${denyIndexed ? 'INDEXED BY idx_audit_deny ' : ''}
+      WHERE type = 'gate.decision' AND data LIKE '%"effect":"deny"%'`
+  ).all() as unknown as Array<{ run_id: string; data: string }>;
+  for (const ev of denials) {
+    const agent = agentOf.get(ev.run_id);
+    if (!agent) continue;
+    let d: Record<string, unknown> = {};
+    try { d = JSON.parse(ev.data) as Record<string, unknown>; } catch { /* keep {} */ }
+    if ((d.decision as { effect?: string } | undefined)?.effect === 'deny') {
+      get(agent).actions.denied++;
+      deniedRunSet.add(ev.run_id);
     }
   }
 

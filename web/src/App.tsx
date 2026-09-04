@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbosityAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -49,6 +49,45 @@ const canApprove = (role: Role, level: 'head' | 'owner'): boolean =>
  *  tmux (`alive` undefined) — when its stored status is still `running`. This is the source of truth
  *  for the green dot: an interactive session that reported `done` but keeps an attachable pane is live. */
 const isLive = (s: Session): boolean => Boolean(s.alive) || s.status === 'running'
+
+/** How long the Sessions/Chat views may hold a full `/api/sessions` payload before rebuilding it. Live
+ *  state does NOT wait on this — it refreshes every tick off `/api/sessions/summary` (see the feed poll),
+ *  and a row that DROPS OUT of the summary is re-read by id on the same tick (`reconcileEnded` below), so
+ *  a run that finishes is never left reading "running" while this timer runs down. This bounds only the
+ *  long tail: a row that appeared, was archived, was deleted, or was retitled/rated in ANOTHER tab.
+ *  A full rebuild costs ~180 ms of a single-threaded server and 1.3 MB gzipped on the live instawp
+ *  tenant (4,122 rows), so the cadence is the whole cost of holding it — 6 s of it was 10 rebuilds/min
+ *  PER OPEN TAB for a list that changes structurally a few times an hour. */
+const FULL_LIST_MS = 30_000
+
+/**
+ * Overlay fresh rows onto the full list, in place, preserving order.
+ *
+ * The summary poll returns the rows whose state actually moves (live + the viewer's recent-ended tail).
+ * Those replace their counterparts in the list we already hold; a row the summary doesn't mention keeps
+ * the values from the last full fetch, and a row the summary introduces (a run that STARTED since) is
+ * prepended so it appears immediately rather than waiting for the next full rebuild.
+ *
+ * Returns the previous array unchanged when nothing moved, so React can skip the re-render of a
+ * ~4,000-row list on an idle tick.
+ */
+function mergeSessionRows(prev: Session[], fresh: Session[]): Session[] {
+  if (!fresh.length) return prev
+  const byId = new Map(fresh.map((s) => [s.id, s]))
+  let changed = false
+  const merged = prev.map((s) => {
+    const next = byId.get(s.id)
+    if (!next) return s
+    byId.delete(s.id)
+    if (next === s) return s
+    changed = true
+    return next
+  })
+  // Whatever the summary carried that the list has never seen — newest first, ahead of the old rows.
+  const added = [...byId.values()].sort((a, b) => b.createdAt - a.createdAt)
+  if (!added.length) return changed ? merged : prev
+  return [...added, ...merged]
+}
 
 /** ── THE session status vocabulary ───────────────────────────────────────────────────────────────
  *  One state per session, resolved once and rendered identically everywhere (sidebar, terminal tab
@@ -760,6 +799,22 @@ function IconPicker({ value, onChange }: { value?: string; onChange: (v: string 
   )
 }
 
+/** The workspace's output styles (Claude Code's built-ins + this workspace's custom ones), fetched
+ *  ONCE per page load and shared. Several tuning cards can be mounted at the same time (the agent
+ *  editor, the create form), and the list is small, static and identical for all of them. */
+let outputStylesCache: OutputStylesResp | null = null
+const EMPTY_STYLES: OutputStylesResp = { builtin: [], custom: [], enabled: false }
+function useOutputStyles(): OutputStylesResp {
+  const [data, setData] = useState<OutputStylesResp | null>(outputStylesCache)
+  useEffect(() => {
+    if (outputStylesCache) return
+    api.outputStyles().then((r) => { if (!r.error) { outputStylesCache = r; setData(r) } }).catch(() => {})
+  }, [])
+  return data ?? EMPTY_STYLES
+}
+/** Drop the cache so the next mount refetches — after a style is created or deleted. */
+function invalidateOutputStyles() { outputStylesCache = null }
+
 /** The model / effort / permission-mode trio, reused by the create form, the agent editor, and the
  *  workspace defaults panel. Empty model/effort = "inherit" (the placeholder/option says so). Model +
  *  effort map 1:1 to `claude --model/--effort`; permissionMode maps to `--permission-mode` on the
@@ -782,6 +837,10 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
   runtime?: RuntimeInfo
 }) {
   const selCls = 'h-8 w-full rounded-md border bg-background px-2 text-xs'
+  const styles = useOutputStyles()
+  const selectedStyle = tuning.outputStyle
+    ? [...styles.builtin, ...styles.custom].find((x) => x.name === tuning.outputStyle)
+    : undefined
   const models = runtime?.suggestedModels ?? []
   // A model pinned for ANOTHER runtime is the one mistake worth flagging inline: agents carry a model,
   // so switching runtimes silently hands e.g. `claude-opus-4-8` to `codex --model`. The server rejects
@@ -821,18 +880,31 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
           <p className="text-[11px] text-muted-foreground">Interactive only — headless stays fully skipped. The gate hook governs regardless.</p>
         </div>
       )}
-      <div className="space-y-1">
-        <label className="text-xs font-medium">Output</label>
-        <select className={selCls} value={tuning.verbosity ?? ''} onChange={(e) => onChange({ ...tuning, verbosity: (e.target.value || undefined) as Verbosity | undefined })}>
-          <option value="">{inheritLabel}</option>
-          <option value="normal">normal</option>
-          <option value="terse">terse — compress narration</option>
-        </select>
-        <p className="text-[11px] text-muted-foreground">
-          Terse trims the agent's own commentary (output tokens are the priciest, and are re-billed as input each turn).
-          Code, errors, reports, KB pages and chat replies are never compressed.
-        </p>
-      </div>
+      {runtime && !runtime.capabilities.outputStyle ? (
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-muted-foreground">Output style</label>
+          <div className="flex h-8 items-center rounded-md border border-dashed bg-muted/30 px-2 text-xs text-muted-foreground">not applicable</div>
+          <p className="text-[11px] text-muted-foreground">{runtime.label} has no output styles — shape its voice in the agent prompt instead.</p>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Output style</label>
+          <select className={selCls} value={tuning.outputStyle ?? ''} onChange={(e) => onChange({ ...tuning, outputStyle: e.target.value || undefined })}>
+            <option value="">{inheritLabel}</option>
+            {styles.builtin.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+            {styles.custom.length > 0 && (
+              <optgroup label="Workspace styles">
+                {styles.custom.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+              </optgroup>
+            )}
+          </select>
+          <p className="text-[11px] text-muted-foreground">{selectedStyle?.description || 'Sets the system prompt\'s role, tone and default response shape. Manage custom styles in Settings → Runtime.'}</p>
+          {selectedStyle?.warning && <p className="text-[11px] text-amber-600 dark:text-amber-500">⚠ {selectedStyle.warning}</p>}
+          {selectedStyle && selectedStyle.keepCodingInstructions === false && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-500">⚠ This style drops Claude Code's built-in software-engineering instructions.</p>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1250,6 +1322,11 @@ const DEFAULT_PINNED_NAV: NavKey[] = ['feed', 'cockpit', 'goals', 'tasks', 'arti
 function Console({ me }: { me: Member }) {
   const [state, setState] = useState<StateResp | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
+  // What the poll below currently holds. The poll effect is keyed on `route` alone (re-running it per
+  // sessions-state change would restart the interval on every tick), so it reads the held rows through
+  // this ref rather than through a stale closure.
+  const sessionsRef = useRef<Session[]>([])
+  useEffect(() => { sessionsRef.current = sessions }, [sessions])
   // Done-since-server-midnight count from the Phase-2 summary poll — the one Overview KPI a live+recent
   // set can't derive (Overview is owner-only, so a global count is correct). Only refreshed on the routes
   // that poll the summary (not the full-list Sessions/Chat views), which is fine — Overview is one of them.
@@ -1348,6 +1425,9 @@ function Console({ me }: { me: Member }) {
     //    The ETag covers the fully-computed response, so any derived change (blocked/crashed/cost/new card)
     //    still flips it — the badge/bells never go stale.
     let sessEtag: string | null = null
+    // The summary poll carries its OWN validator: on a list route the two endpoints now interleave, and
+    // sharing one variable would hand each response the other's ETag and defeat both conditional fetches.
+    let summaryEtag: string | null = null
     let msgEtag: string | null = null
     // The sessions half switches SOURCE by route (Sessions-pagination Phase 2): the Sessions + Chat list
     // views need the FULL list, so they poll `/api/sessions`; every other route polls the cheap
@@ -1356,18 +1436,57 @@ function Console({ me }: { me: Member }) {
     // deps below, so navigating re-runs this effect with the right endpoint, a fresh ETag, and an immediate
     // poll (no stale-endpoint 304, no flash of the wrong data).
     const needFull = route === 'sessions' || route === 'chat'
+    // On the list routes the full payload is big and almost never 304s. `/api/sessions` returns EVERY
+    // unarchived row — 3,951 rows / 5.03 MB on the live instawp tenant — and its ETag covers the derived
+    // fields (`alive`/`working`/`blocked`/cost backfills), so on a tenant with live runs it changes every
+    // tick and the conditional fetch never saves anything. Polling that at 1.5s cost the server ~74
+    // full-list builds/min: 654 s of handler time in a 51-minute window, 21% of a single-threaded event
+    // loop, for what turned out to be two people with the Sessions tab open.
+    //
+    // So the two halves are decoupled: LIVE state still refreshes every tick off the cheap summary
+    // (live rows + the viewer's recent-ended tail — the only rows whose state actually moves), and the
+    // full list, which exists for the client-side search/filter/sort/chain-grouping over the whole
+    // history, is rebuilt on route entry and every FULL_LIST_MS after. Filters keep their exact meaning
+    // — they still run over the complete set, so "N of 3951" stays true — and the cost of the slower
+    // cadence is bounded: a session DELETED in another tab lingers in this one for up to FULL_LIST_MS.
+    // Every mutation path in this app already calls `reloadSessions()`, so that only affects other tabs.
+    let fullAt = 0
     const poll = async () => {
+      const wantFull = needFull && Date.now() - fullAt >= FULL_LIST_MS
       const [s, m] = await Promise.allSettled([
-        needFull ? api.sessionsFeed(sessEtag) : api.sessionsSummaryFeed(sessEtag),
+        wantFull ? api.sessionsFeed(sessEtag) : api.sessionsSummaryFeed(summaryEtag),
         api.messagesFeed(msgEtag),
       ])
       if (!alive) return
       if (s.status === 'fulfilled') {
-        sessEtag = s.value.etag
+        if (wantFull) fullAt = Date.now()
+        if (wantFull) sessEtag = s.value.etag
+        else summaryEtag = s.value.etag
         if ('data' in s.value) {
           const data = s.value.data
-          if (needFull) { if (Array.isArray(data)) setSessions(data) }
-          else if (!Array.isArray(data)) { setSessions(data.rows); setDoneToday(data.doneToday ?? 0) }
+          if (wantFull) { if (Array.isArray(data)) setSessions(data) }
+          else if (!Array.isArray(data)) {
+            setDoneToday(data.doneToday ?? 0)
+            // On a list route the summary is an OVERLAY, not the list: merge its rows over the ones we
+            // already hold (they carry the fresh live state) and keep everything else. Replacing the
+            // array here would collapse the Sessions view to the summary's handful of rows every tick.
+            if (needFull) {
+              setSessions((prev) => mergeSessionRows(prev, data.rows))
+              // A row we hold as LIVE that the summary no longer carries has ended (the summary is
+              // live + the viewer's recent-ended tail, so a run that finishes leaves it — and when it
+              // was someone ELSE's run, nothing brings it back until the next full rebuild). Re-read
+              // exactly those by id, the Phase-1 batch fetch: usually zero ids, a handful at worst, and
+              // it is what lets the full rebuild run on a lazy cadence without a row reading "running"
+              // long after it stopped.
+              const liveIds = new Set(data.rows.map((r) => r.id))
+              const endedIds = sessionsRef.current.filter((s) => isLive(s) && !liveIds.has(s.id)).map((s) => s.id)
+              if (endedIds.length) {
+                api.sessionsByIds(endedIds.slice(0, 60))
+                  .then((fresh) => { if (alive && fresh.length) setSessions((prev) => mergeSessionRows(prev, fresh)) })
+                  .catch(() => {})
+              }
+            } else setSessions(data.rows)
+          }
         }
       }
       if (m.status === 'fulfilled') {
@@ -4676,6 +4795,7 @@ const REVIEW_KINDS: Record<string, { page: Route; detail?: string; label: string
   'skill.request': { page: 'skills', label: 'Skills' },
   'host.proposed': { page: 'connectors', label: 'Connections' },
   'connection.request': { page: 'connectors', label: 'Connections' },
+  'connection.expired': { page: 'connectors', label: 'Connections' },
   'policy.proposal': { page: 'settings', detail: 'policy', label: 'Settings → Policy' },
   'secret.request': { page: 'settings', detail: 'secrets', label: 'Settings → Secrets' },
   'automation.proposed': { page: 'automations', label: 'Automations' },
@@ -6213,7 +6333,7 @@ function ApprovalBrief({ m }: { m: Msg }) {
 /** The glyph for each open review card in "Needs you" — one per {@link REVIEW_KINDS} entry. */
 const REVIEW_ICON: Record<string, LucideIcon> = {
   'skill.proposed': Sparkles, 'skill.request': Sparkles,
-  'host.proposed': Server, 'connection.request': Plug,
+  'host.proposed': Server, 'connection.request': Plug, 'connection.expired': Plug,
   'policy.proposal': Shield, 'secret.request': KeyRound,
   'automation.proposed': Zap, 'agent.update.proposed': Pencil,
   'goal.update.proposed': Target, 'app.proposed': Package,
@@ -6246,7 +6366,10 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
       const r = approve ? await api.approveAgentUpdateProposal(m.id) : await api.rejectAgentUpdateProposal(m.id)
       setBusy(false)
       if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
-      setHint(approve ? 'applied' : 'rejected')
+      // A stale approve replaced text that landed after this card was written. The server says so; passing
+      // that through is the only notice the reviewer gets that they just undid a newer edit.
+      const clobbered = (r as { warning?: string }).warning // only the approve response carries one
+      setHint(approve ? (clobbered ? '⚠ applied — ' + clobbered : 'applied') : 'rejected')
     }
     return (
       <div className="rounded-lg border border-violet-300 bg-violet-50/40 px-3 py-2.5">
@@ -6266,6 +6389,12 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
           <Button render={<a href={navHref(review.page, review.detail)} />} size="sm" variant={canDecide ? 'ghost' : 'default'} className="h-7 px-2.5 text-xs">
             {canDecide ? 'See the full diff' : `Review in ${review.label}`}
           </Button>
+          {/* An OS notice, not an agent's proposal: there is nothing to approve or reject, so without this
+              a human who has already fixed the problem has no way to clear the card. It also self-heals
+              server-side on the next connection refresh — this is the manual escape hatch. */}
+          {m.type === 'connection.expired' && (
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onDismiss(m.id)}>Dismiss</Button>
+          )}
           {isAgentEdit && !canDecide && <span className="text-[11px] text-muted-foreground">an owner has to approve this one</span>}
           {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
         </div>
@@ -6449,9 +6578,16 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     detail = m.body
     badge = <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">important</Badge>
   } else if (m.type === 'skill.proposed') {
-    Icon = Sparkles; iconCls = 'text-violet-600'; highlight = true
-    verb = 'proposed a skill'; detail = m.body
-    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
+    // Two lanes on one card type: a NEW draft (published/dismissed on the Skills page) and an EDIT to a
+    // live skill (applied/discarded there). Either way the card carries its own resolution, so a merged
+    // proposal stops asking to be reviewed.
+    const isEdit = (m.args as { edit?: boolean } | undefined)?.edit === true
+    const resolvedS = m.status === 'approved' ? (isEdit ? 'applied' : 'published') : m.status === 'rejected' ? 'dismissed' : ''
+    Icon = Sparkles; iconCls = resolvedS ? 'text-muted-foreground' : 'text-violet-600'; highlight = !resolvedS
+    verb = isEdit ? 'proposed a skill edit' : 'proposed a skill'; detail = m.body
+    badge = resolvedS
+      ? <ResolutionChip status={m.status} word={resolvedS} />
+      : <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
   } else if (m.type === 'host.proposed') {
     Icon = Server; iconCls = 'text-violet-600'; highlight = true
     verb = 'proposed a host'; detail = m.body
@@ -6496,12 +6632,14 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
       : <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
   } else if (m.type === 'secret.request') {
     Icon = KeyRound; iconCls = 'text-amber-600'; highlight = m.status === 'open'
-    const isAccess = (m.args as { mode?: string } | undefined)?.mode === 'access'
-    const resolved = m.status === 'fulfilled' ? (isAccess ? 'granted' : 'provided') : m.status === 'rejected' ? 'dismissed' : ''
-    verb = isAccess ? 'requested secret access' : 'requested a secret'; detail = m.body
+    const mode = (m.args as { mode?: string } | undefined)?.mode
+    const isAccess = mode === 'access'
+    const isRotate = mode === 'rotate'
+    const resolved = m.status === 'fulfilled' ? (isAccess ? 'granted' : isRotate ? 'rotated' : 'provided') : m.status === 'rejected' ? 'dismissed' : ''
+    verb = isAccess ? 'requested secret access' : isRotate ? 'requested a secret rotation' : 'requested a secret'; detail = m.body
     badge = resolved
       ? <ResolutionChip status={m.status} word={resolved} />
-      : <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{isAccess ? 'grant in Secrets' : 'provide in Secrets'}</Badge>
+      : <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{isAccess ? 'grant in Secrets' : isRotate ? 'replace in Secrets' : 'provide in Secrets'}</Badge>
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
@@ -7964,6 +8102,18 @@ const SLACK_MANIFEST_OBJ = {
   features: {
     bot_user: { display_name: 'Agentric', always_online: true },
     app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+    // Slack intercepts ANY leading `/` as a slash command, so `/support-ops fix this` typed in a DM never
+    // reaches the app at all. This one declared command gives that syntax somewhere to land for every
+    // agent (no per-agent manifest entry, no reinstall when the roster changes); it is delivered over the
+    // same Socket Mode connection, so it still needs no public request URL.
+    slash_commands: [
+      {
+        command: '/agentric',
+        description: 'Ask an Agentric agent',
+        usage_hint: '<agent> <your request>',
+        should_escape: false,
+      },
+    ],
   },
   oauth_config: {
     scopes: {
@@ -7975,6 +8125,8 @@ const SLACK_MANIFEST_OBJ = {
         'im:write', 'im:history',
         'mpim:history',
         'users:read', 'users:read.email',
+        'files:read',
+        'commands',
       ],
     },
   },
@@ -10657,7 +10809,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
                   )}
                   {sessPending
                     ? <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening session…</div>
-                    : <TerminalFrame key={sessTmux} session={sessRow} tmux={sessTmux} standalone />}
+                    // NOT `standalone` — the room is an embedded pane, not the chrome-less popout, so it keeps
+                    // its own "Pop out" (open just this session in a fresh tab, no room/console around it) and
+                    // "Focus" buttons. It used to pass `standalone` and silently lost both.
+                    : <TerminalFrame key={sessTmux} session={sessRow} tmux={sessTmux} />}
                 </div>
               )}
             </div>
@@ -13342,12 +13497,12 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
     // Same for every tuning knob: the server now PATCHES tuning (an absent key keeps its current value),
     // and `JSON.stringify` drops `undefined` — so spreading a tuning with cleared fields would transmit
     // no key and silently fail to clear. This card owns all four knobs, so it states all four.
-    const t0: RuntimeTuningPatch = { model: tuning.model ?? '', effort: tuning.effort ?? '', permissionMode: tuning.permissionMode ?? '', verbosity: tuning.verbosity ?? '' }
+    const t0: RuntimeTuningPatch = { model: tuning.model ?? '', effort: tuning.effort ?? '', permissionMode: tuning.permissionMode ?? '', outputStyle: tuning.outputStyle ?? '' }
     const r = await api.saveAgentConfig(agentId, { runtime, ...t0, description: description.trim(), examplePrompts, shellSecrets, skills, tools, usableSubagents: subagents, spawnableAsSubagent: spawnable, chatReachable, netMode, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     // Mirror back every knob the server echoes — a partial copy blanks the rest of the form until reload.
-    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, verbosity: r.verbosity }
+    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, outputStyle: r.outputStyle }
     const d = r.description ?? ''
     const p = (r.examplePrompts ?? []).join('\n')
     const c = r.category ?? ''
@@ -13702,19 +13857,31 @@ function AgentUpdateProposalsCard({ agentId, onApplied }: { agentId: string; onA
   const [expanded, setExpanded] = useState<string | null>(null)
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
+  const [warn, setWarn] = useState('')            // a clobber notice — sticky, unlike `hint`
   const load = () => api.agentUpdateProposals(agentId).then((r) => setProps(r.error ? [] : (r.proposals ?? []))).catch(() => setProps([]))
-  useEffect(() => { setProps(null); setHint(''); setExpanded(null); load(); api.agentClaude(agentId).then((r) => setCurrent(r.content ?? '')).catch(() => {}) }, [agentId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setProps(null); setHint(''); setWarn(''); setExpanded(null); load(); api.agentClaude(agentId).then((r) => setCurrent(r.content ?? '')).catch(() => {}) }, [agentId]) // eslint-disable-line react-hooks/exhaustive-deps
   const act = async (id: string, approve: boolean) => {
-    if (approve && !window.confirm(`Apply this edit to ${agentId}?\n\nIt rewrites the agent's listing/CLAUDE.md and records a revision (revertable below). The change applies on the agent's next session.`)) return
-    setBusy(id); setHint('')
+    const pr = (props ?? []).find((x) => x.id === id)
+    // A stale card's full replacement prompt would revert whatever landed after it was written — say so
+    // BEFORE the click, since the server applies it and only warns afterwards.
+    const confirmText = pr?.stale
+      ? `Apply this OUT-OF-DATE edit to ${agentId}?\n\n${agentId}'s CLAUDE.md has changed since this was proposed. This card carries a full replacement prompt, so applying it REPLACES that newer text.\n\nUsually you want Reject instead, and let ${pr.agent} redo the edit on the current prompt. The revision is revertable below either way.`
+      : `Apply this edit to ${agentId}?\n\nIt rewrites the agent's listing/CLAUDE.md and records a revision (revertable below). The change applies on the agent's next session.`
+    if (approve && !window.confirm(confirmText)) return
+    setBusy(id); setHint(''); setWarn('')
     const r = approve ? await api.approveAgentUpdateProposal(id) : await api.rejectAgentUpdateProposal(id)
     setBusy('')
     if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
     setHint(approve ? 'applied — see Revision history' : 'rejected')
+    const clobbered = (r as { warning?: string }).warning // only the approve response carries one
+    if (approve && clobbered) setWarn(clobbered)   // sticky: a silent clobber is the bug this card exists to prevent
     load(); if (approve) { onApplied(); api.agentClaude(agentId).then((x) => setCurrent(x.content ?? '')).catch(() => {}) }
     setTimeout(() => setHint(''), 3000)
   }
   if (!props || props.length === 0) return null // silent for non-owners and when nothing is pending
+  // Two+ cards rewriting the same prompt collide by construction: each holds a FULL replacement, so the
+  // second approval undoes the first. Name that up front rather than letting the reviewer discover it.
+  const promptCards = props.filter((pr) => 'claudeMd' in pr.fields).length
   const FIELD_LABEL: Record<string, string> = { description: 'description', claudeMd: 'CLAUDE.md (system prompt)', category: 'category', model: 'model', effort: 'effort', icon: 'icon', examplePrompts: 'starter prompts' }
   return (
     <Card className="border-violet-300 bg-violet-50/40">
@@ -13723,6 +13890,12 @@ function AgentUpdateProposalsCard({ agentId, onApplied }: { agentId: string; onA
           <div className="flex items-center gap-2 text-xs font-medium text-violet-800"><Pencil className="h-3.5 w-3.5" /> Proposed edits from other agents ({props.length})</div>
           {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
         </div>
+        {promptCards > 1 && (
+          <div className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+            {promptCards} of these rewrite the CLAUDE.md, and each carries the <em>whole</em> prompt as it stood when proposed. Approving more than one replaces the earlier one’s text. Approve the best, reject the rest, and let their authors redo them against the new prompt.
+          </div>
+        )}
+        {warn && <div className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">⚠ {warn}</div>}
         {props.map((pr) => {
           const keys = Object.keys(pr.fields)
           const isExp = expanded === pr.id
@@ -13731,7 +13904,9 @@ function AgentUpdateProposalsCard({ agentId, onApplied }: { agentId: string; onA
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Bot className="h-3 w-3 shrink-0" /><span className="font-medium text-foreground">{pr.agent}</span>
                 <span>· {new Date(pr.createdAt).toLocaleString()}</span>
+                {pr.stale && <Badge variant="outline" className="border-amber-400 px-1.5 py-0 text-[10px] font-normal text-amber-800">out of date</Badge>}
               </div>
+              {pr.stale && <div className="text-[11px] text-amber-800">The CLAUDE.md changed after this was written — applying it replaces that newer text with the “Proposed” side below.</div>}
               {pr.rationale && <div className="text-sm">{pr.rationale}</div>}
               <div className="flex flex-wrap gap-1">
                 {keys.map((k) => <Badge key={k} variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{FIELD_LABEL[k] ?? k}</Badge>)}
@@ -13753,8 +13928,9 @@ function AgentUpdateProposalsCard({ agentId, onApplied }: { agentId: string; onA
                 </div>
               )}
               <div className="flex items-center gap-2 pt-1">
-                <Button size="sm" disabled={!!busy} onClick={() => act(pr.id, true)}>Approve & apply</Button>
-                <Button size="sm" variant="outline" disabled={!!busy} onClick={() => act(pr.id, false)}>Reject</Button>
+                {/* On a stale card the safe move is Reject, so that is the one that carries the weight. */}
+                <Button size="sm" variant={pr.stale ? 'outline' : 'default'} disabled={!!busy} onClick={() => act(pr.id, true)}>Approve & apply</Button>
+                <Button size="sm" variant={pr.stale ? 'default' : 'outline'} disabled={!!busy} onClick={() => act(pr.id, false)}>Reject</Button>
               </div>
             </div>
           )
@@ -14383,11 +14559,14 @@ function AgentSkillRequestCard({ r, onChanged }: { r: SkillRequest; onChanged: (
   )
 }
 
-/** A single agent secret-request awaiting a human (via `secret_request`). Two modes:
+/** A single agent secret-request awaiting a human (via `secret_request`). Three modes:
  *  • provide — the key isn't in the vault: type the value into a password field; it is sealed straight
  *    into the vault (scoped to the requesting agent, or tenant-wide), optionally injected into its shell.
  *  • access — the key exists but the agent can't read it: GRANT access; the existing value is re-scoped
- *    to the agent server-side (no value typed or shown), optionally injected into its shell. */
+ *    to the agent server-side (no value typed or shown), optionally injected into its shell.
+ *  • rotate — the agent reads the key fine but the value is being rejected (expired/revoked): type a
+ *    REPLACEMENT, which overwrites every principal holding that key (`locations`) so no agent is left
+ *    resolving the stale copy. Destination is fixed, so there is no tenant-wide choice here. */
 function AgentSecretRequestCard({ r, agents, onChanged }: { r: SecretRequest; agents: AgentInfo[]; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
@@ -14397,12 +14576,16 @@ function AgentSecretRequestCard({ r, agents, onChanged }: { r: SecretRequest; ag
   const [grantRead, setGrantRead] = useState(true)
   const knownAgent = agents.some((a) => a.id === r.agent)
   const isAccess = r.mode === 'access'
+  const isRotate = r.mode === 'rotate'
+  const where = r.locations ?? []
   const submit = async () => {
     if (isAccess ? (!grantRead && !(inject && knownAgent)) : !value) return
     setBusy(true); setHint('')
     const res = isAccess
       ? await api.fulfillSecretRequest(r.id, { grantRead, inject: inject && knownAgent })
-      : await api.fulfillSecretRequest(r.id, { value, principal: tenantWide ? '*' : r.agent, inject: inject && knownAgent })
+      : isRotate
+        ? await api.fulfillSecretRequest(r.id, { value, inject: inject && knownAgent })
+        : await api.fulfillSecretRequest(r.id, { value, principal: tenantWide ? '*' : r.agent, inject: inject && knownAgent })
     setBusy(false)
     if (!res.ok || res.error) return setHint('⚠ ' + (res.error || 'failed'))
     setValue(''); onChanged()
@@ -14421,7 +14604,7 @@ function AgentSecretRequestCard({ r, agents, onChanged }: { r: SecretRequest; ag
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-mono text-sm font-medium">{r.key}</span>
-              <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{isAccess ? 'access requested' : 'requested'}</Badge>
+              <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{isAccess ? 'access requested' : isRotate ? 'rotation requested' : 'requested'}</Badge>
             </div>
             <div className="mt-1 text-[11px] text-muted-foreground">
               by <span className="font-mono">{r.agent}</span>{r.createdAt ? ` · ${timeAgo(r.createdAt)}` : ''}
@@ -14432,24 +14615,34 @@ function AgentSecretRequestCard({ r, agents, onChanged }: { r: SecretRequest; ag
         </div>
         {isAccess
           ? <p className="text-[11px] text-muted-foreground"><span className="font-mono">{r.key}</span> is already in the vault. Granting re-scopes its existing value to <span className="font-mono">{r.agent}</span> — the value is never re-typed or shown.</p>
-          : <Input type="password" value={value} disabled={busy} placeholder={`paste the value for ${r.key}`}
-              onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit() }} />}
+          : <>
+              {isRotate && (
+                <p className="text-[11px] text-muted-foreground">
+                  <span className="font-mono">{r.agent}</span> can read <span className="font-mono">{r.key}</span> but reports the value is being rejected. The replacement overwrites{' '}
+                  {where.length ? <>all {where.length === 1 ? 'its' : `${where.length}`} stored {where.length === 1 ? 'copy' : 'copies'} (<span className="font-mono">{where.join(', ')}</span>)</> : <>the stored value</>} — no agent is left on the stale one.
+                </p>
+              )}
+              <Input type="password" value={value} disabled={busy} placeholder={isRotate ? `paste the NEW value for ${r.key}` : `paste the value for ${r.key}`}
+                onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit() }} />
+            </>}
         <div className="flex flex-wrap items-center gap-3">
           {isAccess
             ? <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`let ${r.agent} secret_get ${r.key} (copies the current value under its principal)`}>
                 <input type="checkbox" checked={grantRead} disabled={busy} onChange={(e) => setGrantRead(e.target.checked)} />
                 allow secret_get
               </label>
-            : <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`store under the requesting agent (${r.agent}) only, or tenant-wide so any agent can secret_get it`}>
-                <input type="checkbox" checked={tenantWide} disabled={busy} onChange={(e) => setTenantWide(e.target.checked)} />
-                tenant-wide
-              </label>}
+            : isRotate
+              ? null
+              : <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`store under the requesting agent (${r.agent}) only, or tenant-wide so any agent can secret_get it`}>
+                  <input type="checkbox" checked={tenantWide} disabled={busy} onChange={(e) => setTenantWide(e.target.checked)} />
+                  tenant-wide
+                </label>}
           <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={knownAgent ? `also inject ${r.key} into ${r.agent}'s shell env at launch` : `${r.agent} is not a current agent — it can still secret_get the value`}>
             <input type="checkbox" checked={inject} disabled={busy || !knownAgent} onChange={(e) => setInject(e.target.checked)} />
             inject into {r.agent}'s shell
           </label>
           <Button size="sm" className="ml-auto" disabled={busy || (isAccess ? (!grantRead && !(inject && knownAgent)) : !value)} onClick={submit}>
-            <Check className="mr-1 h-3.5 w-3.5" />{isAccess ? 'Grant' : 'Provide'}
+            <Check className="mr-1 h-3.5 w-3.5" />{isAccess ? 'Grant' : isRotate ? 'Replace' : 'Provide'}
           </Button>
         </div>
         {hint && <div className="text-xs text-destructive">{hint}</div>}
@@ -15994,6 +16187,8 @@ function NativeDepsPanel({ me }: { me: Member }) {
               ))}
             </dl>
 
+            <RuntimeWatchControl me={me} watch={report.watch} reviewed={report.gateReviewedVersion} />
+
             {outdated.length > 0 && (
               <p className="text-[11px] text-muted-foreground">
                 Updating replaces the binary on disk. Sessions already running keep the version they launched with until they restart.
@@ -16250,6 +16445,25 @@ function EndpointTimingsPanel() {
                 ? ` — blocked over 1s ${snap.loop.overOneSecond}× . Every route below was queued behind it; look for a timer, not an endpoint.`
                 : ' — healthy, so the handler times below are the routes\' own cost.'}
             </div>
+            {/* WHAT blocked it. A lag number with no subject ends an investigation at "something blocked
+                the loop for 156 seconds"; each synchronous phase in the process names itself, so a stall
+                arrives with a suspect. `unattributed` is itself the finding: code with no marker. */}
+            {!!snap.loop.stalls?.length && (
+              <div className="rounded-md border p-2 text-xs">
+                <div className="mb-1 font-medium">Worst blocks, and what was running</div>
+                <table className="w-full">
+                  <tbody>
+                    {snap.loop.stalls.slice(0, 6).map((st) => (
+                      <tr key={`${st.at}-${st.phase}`} className="border-t first:border-t-0">
+                        <td className="py-1 pr-3 font-medium tabular-nums text-red-500">{ms(st.ms)}</td>
+                        <td className="py-1 pr-3 font-mono">{st.phase}{st.openMs != null && st.openMs > 2000 && <span className="ml-1 text-muted-foreground" title="the phase was already open this long when the block began — it was probably present, not guilty">(open {ms(st.openMs)} first)</span>}</td>
+                        <td className="py-1 text-right text-muted-foreground">{new Date(st.at).toLocaleTimeString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead className="text-muted-foreground">
@@ -16359,6 +16573,169 @@ function StopAllPanel() {
 }
 
 /**
+ * The agent-runtime CLI watcher (`src/edge/runtime-update-watch.ts`) — the sibling of the self-update
+ * watcher, over the `claude` binary every session launches.
+ *
+ * Kept a separate control from the software one on purpose: a box may reasonably want its own code
+ * current and its runtime pinned. A CLI upgrade can add TOOLS the gate hook has no routing row for,
+ * which run ungoverned — so there is no unattended tier here, and the panel shows which version the gate
+ * routing was last signed off against rather than a standing warning nobody reads.
+ */
+function RuntimeWatchControl({ me, watch, reviewed }: { me: Member; watch?: UpdateWatchConfig; reviewed?: string }) {
+  const [cfg, setCfg] = useState<UpdateWatchConfig | undefined>(watch)
+  const [busy, setBusy] = useState(false)
+  const [ran, setRan] = useState('')
+  useEffect(() => { setCfg(watch) }, [watch])
+  if (!cfg) return null
+  const isOwner = me.role === 'owner'
+
+  const set = async (mode: UpdateWatchMode) => {
+    setBusy(true); setRan('')
+    const r = await api.setRuntimeWatch({ mode })
+    setBusy(false)
+    if (r.watch) setCfg(r.watch)
+  }
+  const runNow = async () => {
+    setBusy(true); setRan('')
+    const r = await api.runRuntimeWatch()
+    setBusy(false)
+    setRan(r.error ? `⚠ ${r.error}` : RUNTIME_OUTCOME[r.action ?? ''] ?? r.action ?? '')
+  }
+
+  const OPTIONS: Array<{ mode: UpdateWatchMode; label: string; hint: string }> = [
+    { mode: 'off', label: 'Off', hint: 'Never mention it.' },
+    { mode: 'notify', label: 'Tell me', hint: 'Inbox card + DM when the runtime CLI falls behind. Upgrades nothing.' },
+    { mode: 'ask', label: 'Ask to upgrade', hint: 'Also raises an approval — approving upgrades the CLI and records that version as reviewed.' },
+  ]
+
+  return (
+    <div className="space-y-1.5 rounded-md border bg-muted/30 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium">When the agent runtime falls behind</span>
+        {isOwner && (
+          <Button size="sm" variant="ghost" className="h-6 gap-1.5 px-2 text-[11px]" disabled={busy} onClick={runNow}>
+            <RefreshCw className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} /> Check now
+          </Button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {OPTIONS.map((o) => (
+          <button
+            key={o.mode}
+            disabled={!isOwner || busy}
+            onClick={() => set(o.mode)}
+            title={o.hint}
+            className={`rounded-md px-2 py-1 text-[11px] ring-1 disabled:opacity-60 ${cfg.mode === o.mode ? 'bg-primary text-primary-foreground ring-primary' : 'bg-background text-muted-foreground ring-border hover:bg-muted'}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        {OPTIONS.find((o) => o.mode === cfg.mode)?.hint}{cfg.mode !== 'off' ? ` Checked every ${cfg.everyHours}h.` : ''}
+        {!isOwner && ' Only an owner can change this.'}
+      </p>
+      <p className="text-[11px] text-muted-foreground">
+        A new CLI can add tools the gate hook doesn't route, which then run ungoverned — so this never upgrades on its own.
+        {reviewed ? <> Gate routing last reviewed against <span className="font-mono">v{reviewed}</span>.</> : <> No version reviewed against this box's gate routing yet.</>}
+      </p>
+      {ran && <p className="text-[11px] text-muted-foreground">{ran}</p>}
+    </div>
+  )
+}
+
+/** What one runtime-watch pass did, in words — the "Check now" button's feedback. */
+const RUNTIME_OUTCOME: Record<string, string> = {
+  'up-to-date': 'The agent runtime is current.',
+  'not-installed': 'No claude CLI on this box — see the rows above.',
+  notified: 'The runtime is behind — posted a card and DM\'d the owner.',
+  duplicate: 'The runtime is behind — already carded this version.',
+  requested: 'The runtime is behind — raised an approval to upgrade it.',
+  denied: 'The runtime is behind — policy denies the upgrade, so it only notified.',
+  applying: 'An upgrade is already running.',
+  off: 'The watcher is off.',
+}
+
+/**
+ * The self-update WATCHER (`src/edge/update-watch.ts`) — whether this box says anything when it falls
+ * behind, and whether it may update itself once an owner approves.
+ *
+ * The panel above only tells you the box is behind while you are LOOKING at it, which on a headless
+ * remote is never — that is how boxes drifted 13+ versions with nothing anywhere saying so. This is the
+ * setting that makes the box speak up on its own.
+ */
+function UpdateWatchControl({ me, watch }: { me: Member; watch?: UpdateWatchConfig }) {
+  const [cfg, setCfg] = useState<UpdateWatchConfig | undefined>(watch)
+  const [busy, setBusy] = useState(false)
+  const [ran, setRan] = useState('')
+  useEffect(() => { setCfg(watch) }, [watch])
+  if (!cfg) return null
+  const isOwner = me.role === 'owner'
+
+  const set = async (mode: UpdateWatchMode) => {
+    setBusy(true); setRan('')
+    const r = await api.setUpdateWatch({ mode })
+    setBusy(false)
+    if (r.watch) setCfg(r.watch)
+  }
+  const runNow = async () => {
+    setBusy(true); setRan('')
+    const r = await api.runUpdateWatch()
+    setBusy(false)
+    setRan(r.error ? `⚠ ${r.error}` : OUTCOME[r.action ?? ''] ?? r.action ?? '')
+  }
+
+  const OPTIONS: Array<{ mode: UpdateWatchMode; label: string; hint: string }> = [
+    { mode: 'off', label: 'Off', hint: 'Never mention it.' },
+    { mode: 'notify', label: 'Tell me', hint: 'Inbox card + DM when this box falls behind. Applies nothing.' },
+    { mode: 'ask', label: 'Ask to update', hint: 'Also raises an approval — approving it updates and restarts this box.' },
+  ]
+
+  return (
+    <div className="space-y-1.5 rounded-md border bg-muted/30 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium">When this box falls behind</span>
+        {isOwner && (
+          <Button size="sm" variant="ghost" className="h-6 gap-1.5 px-2 text-[11px]" disabled={busy} onClick={runNow}>
+            <RefreshCw className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} /> Check now
+          </Button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {OPTIONS.map((o) => (
+          <button
+            key={o.mode}
+            disabled={!isOwner || busy}
+            onClick={() => set(o.mode)}
+            title={o.hint}
+            className={`rounded-md px-2 py-1 text-[11px] ring-1 disabled:opacity-60 ${cfg.mode === o.mode ? 'bg-primary text-primary-foreground ring-primary' : 'bg-background text-muted-foreground ring-border hover:bg-muted'}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        {OPTIONS.find((o) => o.mode === cfg.mode)?.hint}{cfg.mode !== 'off' ? ` Checked every ${cfg.everyHours}h.` : ''}
+        {!isOwner && ' Only an owner can change this.'}
+      </p>
+      {ran && <p className="text-[11px] text-muted-foreground">{ran}</p>}
+    </div>
+  )
+}
+
+/** What one watch pass did, in words — the "Check now" button's feedback. */
+const OUTCOME: Record<string, string> = {
+  'up-to-date': 'This box is up to date.',
+  notified: 'Behind origin — posted a card and DM\'d the owner.',
+  duplicate: 'Behind origin — already carded this update.',
+  blocked: 'Behind origin, but uncommitted changes block the update — carded.',
+  requested: 'Behind origin — raised an approval to update this box.',
+  denied: 'Behind origin — policy denies self-update, so it only notified.',
+  applying: 'An update is already running.',
+  off: 'The watcher is off.',
+}
+
+/**
  * Settings → System → Software — version + self-update + restart. Polls `/api/update` (a cached
  * `git fetch`): shows the running build, whether the checkout is behind origin, and — for the owner —
  * an "Update & restart" (pull + rebuild + bounce) or a plain "Restart" button. After either bounce it
@@ -16465,7 +16842,10 @@ function SoftwarePanel({ me }: { me: Member }) {
                 {status.dirty && !result && (
                   <div className="flex items-start gap-1.5 rounded-md bg-amber-50 p-2 text-[11px] text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
                     <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
-                    <span>The box has uncommitted changes — commit or stash them before updating (a fast-forward pull can't run otherwise).</span>
+                    <span>
+                      The box has uncommitted changes — commit or stash them before updating (a fast-forward pull can't run otherwise).
+                      {status.dirtyFiles?.length ? <> Modified: <span className="font-mono">{status.dirtyFiles.slice(0, 5).join(', ')}</span>{status.dirtyFiles.length > 5 ? ` +${status.dirtyFiles.length - 5} more` : ''}.</> : null}
+                    </span>
                   </div>
                 )}
 
@@ -16501,6 +16881,7 @@ function SoftwarePanel({ me }: { me: Member }) {
             {restarting && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Restarting the server… the console will reconnect automatically.</div>
             )}
+            <UpdateWatchControl me={me} watch={status.watch} />
             {err && <div className="text-[11px] text-red-600">{err}</div>}
           </>
         )}
@@ -16567,6 +16948,7 @@ function SecretsSettings({ me, agents }: { me: Member; agents: AgentInfo[] }) {
               An agent asked (via <span className="font-mono">secret_request</span>) for a credential. If the vault doesn't have it,
               <strong> provide</strong> the value here — sealed straight into the vault, never shown to the agent or pasted into its session.
               If it already exists but is scoped away from the agent, <strong>grant</strong> access — the existing value is re-scoped, never re-typed.
+              If the agent has the key but the value is being rejected (expired or revoked upstream), <strong>replace</strong> it — the new value overwrites every copy in the vault, so nobody is left on the dead one.
             </p>
             {requests.map((r) => <AgentSecretRequestCard key={r.id} r={r} agents={agents} onChanged={onRequestResolved} />)}
           </CardContent>
@@ -16927,57 +17309,164 @@ function KillSwitchCard({ me }: { me: Member }) {
   )
 }
 
-/** How far the terse flag has spread across this workspace — counts, not savings.
+/** Which output styles this workspace is actually running — counts, not savings.
  *
- *  This panel used to render cost-per-turn and USD-per-turn deltas in green and amber. Those were
- *  removed in v0.389.0 rather than caveated: `output_tokens` is ~85% tool-call arguments, so the
- *  number never contained the narration the brief acts on, and against real traffic it swung ±50-90%
- *  on tool-use volume alone — reading as a confident verdict either way. Whether terse WORKS is a
- *  question for `npm run bench:verbosity` / `bench:verbosity-turns` (paired, controlled, CI that
- *  refuses a verdict inside the noise), which measured its ceiling at ~1% of spend. What a console
- *  can honestly show is who is running it. */
-function VerbosityAdoptionPanel() {
-  const [data, setData] = useState<VerbosityAdoption | null>(null)
-  useEffect(() => { api.verbosityAdoption().then((r) => { if (!r.error) setData(r) }).catch(() => {}) }, [])
-  if (!data) return null
-  const { normal, terse } = data.sessions
-  if (!normal && !terse) return null // nothing has run under the flag yet
+ *  Two ancestors of this panel rendered cost deltas in green and amber: the verbosity-savings figures
+ *  (retired v0.389.0) and the terse adoption counts that replaced them. `output_tokens` is ~85%
+ *  tool-call arguments, so neither ever contained the narration a style acts on, and against real
+ *  traffic they swung ±50-90% on tool-use volume alone while reading as a confident verdict. Whether a
+ *  style WORKS is a question for `npm run bench:output-style` (paired, controlled, a CI that refuses a
+ *  verdict inside the noise). What a console can honestly show is who is running which. */
+function OutputStyleAdoptionPanel() {
+  const [data, setData] = useState<OutputStyleAdoption | null>(null)
+  useEffect(() => { api.outputStyleAdoption().then((r) => { if (!r.error) setData(r) }).catch(() => {}) }, [])
+  if (!data || !data.sessions.byStyle.length) return null // nothing has run under a style yet
 
   return (
     <div className="space-y-2 border-t pt-4">
-      <label className="text-sm font-medium">Terse output — where it is running, last {data.windowDays} days</label>
+      <label className="text-sm font-medium">Output styles — where they are running, last {data.windowDays} days</label>
       <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
-        <span>Terse runs: <span className="font-mono text-foreground">{terse.toLocaleString()}</span></span>
-        <span>Normal runs: <span className="font-mono text-foreground">{normal.toLocaleString()}</span></span>
+        {data.sessions.byStyle.map((s) => (
+          <span key={s.style}>{s.style}: <span className="font-mono text-foreground">{s.count.toLocaleString()}</span></span>
+        ))}
         {data.sessions.unstamped > 0 && (
           <span>Unstamped: <span className="font-mono">{data.sessions.unstamped.toLocaleString()}</span></span>
         )}
       </div>
       <p className="text-[11px] text-muted-foreground">
-        Counts only. Terse is an output-style preference, not a cost control — measured against a
-        controlled benchmark its effect on spend is around <strong>1%</strong>, because narration is a
-        small share of what an agent emits. Run <code className="font-mono">npm run bench:verbosity</code> to
-        re-measure it; a comparison of live terse and normal runs cannot answer it, which is why the
-        old savings figures were removed.
+        Counts only. An output style shapes the ANSWER, not the bill — measured against a controlled
+        benchmark, narration is roughly <strong>15%</strong> of what an agent emits, so the ceiling on any
+        style's effect on spend is about <strong>1%</strong>. Run{' '}
+        <code className="font-mono">npm run bench:output-style</code> to measure one; a comparison of live
+        runs cannot, which is why the old savings figures were removed.
       </p>
       {data.byAgent.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="text-muted-foreground">
-              <tr className="text-left"><th className="py-1 pr-4 font-medium">Agent</th><th className="py-1 pr-4 font-medium">Terse runs</th><th className="py-1 font-medium">Normal runs</th></tr>
+              <tr className="text-left"><th className="py-1 pr-4 font-medium">Agent</th><th className="py-1 font-medium">Runs by style</th></tr>
             </thead>
             <tbody>
               {data.byAgent.map((a) => (
                 <tr key={a.agent} className="border-t">
                   <td className="py-1 pr-4 font-mono">{a.agent}</td>
-                  <td className="py-1 pr-4 font-mono">{a.terse.toLocaleString()}</td>
-                  <td className="py-1 font-mono">{a.normal.toLocaleString()}</td>
+                  <td className="py-1 font-mono">{a.styles.map((x) => `${x.style} ${x.count}`).join('  ·  ')}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+    </div>
+  )
+}
+
+/** Settings → Runtime → the output-style library: Claude Code's built-ins (read-only) plus this
+ *  workspace's own styles, which are Markdown files materialised into every claude-code agent at
+ *  launch. A style is ROLE / TONE / RESPONSE SHAPE — project conventions belong in the agent prompt,
+ *  and a reusable procedure belongs in a skill. */
+function OutputStyleLibrary({ me }: { me: Member }) {
+  const [data, setData] = useState<OutputStylesResp | null>(null)
+  const [editing, setEditing] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [newName, setNewName] = useState('')
+  const [hint, setHint] = useState('')
+  const [busy, setBusy] = useState(false)
+  const canEdit = me.role === 'owner' || me.role === 'admin'
+
+  const reload = () => api.outputStyles().then((r) => { if (!r.error) setData(r) }).catch(() => {})
+  useEffect(() => { reload() }, [])
+
+  const open = async (name: string) => {
+    setHint(''); setEditing(name)
+    const r = await api.outputStyle(name)
+    setDraft(r.error ? '' : r.content)
+  }
+
+  const save = async (name: string, content?: string) => {
+    setBusy(true); setHint('')
+    const r = await api.saveOutputStyle(name, content === undefined ? {} : { content })
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    // The server warns when the frontmatter leaves out `keep-coding-instructions: true` — that silently
+    // strips Claude Code's software-engineering instructions from any agent using the style.
+    setHint(r.warning ? '⚠ saved — ' + r.warning : 'saved')
+    invalidateOutputStyles(); await reload()
+    if (content === undefined) open(name)
+    setTimeout(() => setHint(''), 6000)
+  }
+
+  const remove = async (name: string) => {
+    setBusy(true); setHint('')
+    const r = await api.deleteOutputStyle(name)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    // A deleted style leaves its name pinned on any agent that selected it, and an unknown style is
+    // silently ignored by the CLI — so those agents quietly fall back to Default. Name them.
+    setHint(r.orphaned.length ? `deleted — ${r.orphaned.join(', ')} now fall back to Default` : 'deleted')
+    if (editing === name) setEditing(null)
+    invalidateOutputStyles(); await reload()
+    setTimeout(() => setHint(''), 6000)
+  }
+
+  if (!data) return null
+
+  return (
+    <div className="space-y-3 border-t pt-4">
+      <div>
+        <label className="text-sm font-medium">Output styles</label>
+        <p className="text-sm text-muted-foreground">
+          A style sets an agent's <strong>role, tone and default response shape</strong> in the system prompt itself —
+          not project context (that's the agent's prompt) and not a procedure (that's a skill). Pick one per agent, or
+          set a fleet default above. <span className="font-mono text-xs">claude-code</span> only.
+        </p>
+      </div>
+
+      <div className="space-y-1">
+        {data.builtin.map((b) => (
+          <div key={b.name} className="rounded-md border px-3 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{b.name}</span>
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">built-in</span>
+            </div>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">{b.description}</p>
+            {b.warning && <p className="mt-0.5 text-[11px] text-amber-600 dark:text-amber-500">⚠ {b.warning}</p>}
+          </div>
+        ))}
+        {data.custom.map((c) => (
+          <div key={c.name} className="rounded-md border px-3 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{c.name}</span>
+              <span className="text-[10px] text-muted-foreground">{c.bytes} bytes</span>
+              {c.keepCodingInstructions === false && (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">no coding instructions</span>
+              )}
+              {canEdit && (
+                <span className="ml-auto flex gap-2">
+                  <button className="text-[11px] underline" onClick={() => (editing === c.name ? setEditing(null) : open(c.name))}>{editing === c.name ? 'close' : 'edit'}</button>
+                  <button className="text-[11px] text-destructive underline" onClick={() => remove(c.name)} disabled={busy}>delete</button>
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">{c.description || <span className="italic">no description</span>}</p>
+            {editing === c.name && (
+              <div className="mt-2 space-y-2">
+                <textarea className="h-64 w-full rounded-md border bg-background p-2 font-mono text-[11px]" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
+                <Button size="sm" onClick={() => save(c.name, draft)} disabled={busy}>Save style</Button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {canEdit && data.enabled && (
+        <div className="flex items-center gap-2">
+          <Input className="h-8 w-56 text-xs" placeholder="New style name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+          <Button size="sm" variant="outline" disabled={busy || !newName.trim()} onClick={() => { const n = newName.trim(); setNewName(''); save(n) }}>Create</Button>
+          {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+        </div>
+      )}
+      {!canEdit && hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
     </div>
   )
 }
@@ -16998,7 +17487,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
   useEffect(() => {
     api.runtimeDefaults().then((r) => {
       if (r.error) return
-      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, verbosity: r.verbosity }
+      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, outputStyle: r.outputStyle }
       setTuning(t); setSaved(t); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
     }).catch(() => {})
     api.subagentDefault().then((r) => { if (!r.error) setSubMode(r.mode) }).catch(() => {})
@@ -17019,7 +17508,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
     if (r.error) return setHint('⚠ ' + r.error)
     // Mirror back every field the server echoes — a partial copy here silently blanks the other knobs
     // in the form until the next reload, which reads as "my setting didn't save".
-    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, verbosity: r.verbosity }
+    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, outputStyle: r.outputStyle }
     setTuning(t); setSaved(t); setHint('saved — applies to every agent that doesn\'t override the field'); setTimeout(() => setHint(''), 3000)
   }
 
@@ -17038,7 +17527,8 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
         </div>
-        <VerbosityAdoptionPanel />
+        <OutputStyleLibrary me={me} />
+        <OutputStyleAdoptionPanel />
         <div className="space-y-1 border-t pt-4">
           <label className="text-sm font-medium">Sub-agents</label>
           <p className="text-sm text-muted-foreground">
@@ -17126,6 +17616,8 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const [maxRun, setMaxRun] = useState('')  // headless hard runtime ceiling, hours; '0' = off
   const [noProg, setNoProg] = useState('')  // headless no-progress reap, minutes; '0' = off
   const [blocked, setBlocked] = useState('') // interactive blocked-on-a-card ceiling, hours; '0' = off
+  const [claimed, setClaimed] = useState('') // take-over claim ceiling, hours; '0' = off
+  const [lifetime, setLifetime] = useState('') // hard AGE ceiling for a detached interactive session; '0' = off
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner' || me.role === 'admin'
@@ -17138,6 +17630,8 @@ function ConcurrencySettings({ me }: { me: Member }) {
     setMaxRun(String(r.unattendedMaxHours))
     setNoProg(String(r.unattendedNoProgressMinutes))
     setBlocked(String(r.blockedMaxHours))
+    setClaimed(String(r.claimedMaxHours))
+    setLifetime(String(r.interactiveMaxHours))
   }).catch(() => {})
   useEffect(() => { load() }, [])
 
@@ -17146,15 +17640,19 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const maxRunDirty = data != null && maxRun.trim() !== String(data.unattendedMaxHours)
   const noProgDirty = data != null && noProg.trim() !== String(data.unattendedNoProgressMinutes)
   const blockedDirty = data != null && blocked.trim() !== String(data.blockedMaxHours)
-  const dirty = capDirty || idleDirty || maxRunDirty || noProgDirty || blockedDirty
+  const claimedDirty = data != null && claimed.trim() !== String(data.claimedMaxHours)
+  const lifetimeDirty = data != null && lifetime.trim() !== String(data.interactiveMaxHours)
+  const dirty = capDirty || idleDirty || maxRunDirty || noProgDirty || blockedDirty || claimedDirty || lifetimeDirty
   const save = async () => {
     setBusy(true); setHint('')
-    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number } = {}
+    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number; claimedMaxHours?: number; interactiveMaxHours?: number } = {}
     if (capDirty) body.value = input.trim() === '' ? null : Number(input)
     if (idleDirty) body.idleHours = Number(idle)
     if (maxRunDirty) body.unattendedMaxHours = Number(maxRun)
     if (noProgDirty) body.unattendedNoProgressMinutes = Number(noProg)
     if (blockedDirty) body.blockedMaxHours = Number(blocked)
+    if (claimedDirty) body.claimedMaxHours = Number(claimed)
+    if (lifetimeDirty) body.interactiveMaxHours = Number(lifetime)
     const r = await api.saveConcurrency(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
@@ -17270,6 +17768,44 @@ function ConcurrencySettings({ me }: { me: Member }) {
             with no ceiling it waits for ever, holding a <span className="font-mono">claude</span> process and a cap slot. Past this age
             (measured from when the card was raised) the session is closed and the card cancelled, which is what makes it dismissable
             instead of hanging. Someone attached to the session is never cut — they can answer.
+          </p>
+        </div>
+        <div className="space-y-1.5 border-t pt-4">
+          <label className="text-xs font-medium text-muted-foreground">Expire an untouched take-over claim after (hours)</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number" min={0} step={1} value={claimed}
+              onChange={(e) => setClaimed(e.target.value)}
+              placeholder="72"
+              disabled={!canEdit}
+              className="h-8 w-40 font-mono text-xs"
+            />
+            <span className="text-[11px] text-muted-foreground">0 = claim never expires · nobody attached</span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Taking a run over hands its lifecycle to you — so the idle timeout above stops applying. Nothing ever expires a claim, so
+            someone who claims a session and closes the tab creates an immortal pane. Past this age the claim lapses and the janitor
+            reclaims it. Someone actually attached is never cut.
+          </p>
+        </div>
+        <div className="space-y-1.5 border-t pt-4">
+          <label className="text-xs font-medium text-muted-foreground">Close a detached session older than (hours)</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number" min={0} step={1} value={lifetime}
+              onChange={(e) => setLifetime(e.target.value)}
+              placeholder="168"
+              disabled={!canEdit}
+              className="h-8 w-40 font-mono text-xs"
+            />
+            <span className="text-[11px] text-muted-foreground">0 = no age limit · nobody attached</span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Every timeout above measures <em>idleness</em>, and idleness resets on each tool call — so a session whose agent keeps
+            working never looks idle, however old it gets, and none of them can reach it. Measured on a live tenant: fifteen sessions
+            open <span className="font-mono">120–1007 h</span>, every one reporting under a day idle, skipped on every tick. This one
+            asks the honest question instead — has it been open longer than any real piece of work — and overrides the claim and
+            blocked exemptions. Someone actually attached is still never cut.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -17889,6 +18425,67 @@ function MemorySettings({ me }: { me: Member }) {
         )}
       </div>
 
+      {/* Backend vitals. Everything here comes from the backend's own /health; a field it doesn't answer is
+          simply not rendered. Before this the whole body was collapsed into one badge tooltip, so an
+          indexing backlog, a dimension mismatch or a store/mirror gap were invisible until someone ssh'd in. */}
+      {view?.health?.diagnostics && (
+        <div className="rounded-md border p-3 text-xs">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="font-medium">Backend vitals</span>
+            {view.health.diagnostics.latencyMs != null && (
+              <span className="text-muted-foreground">{view.health.diagnostics.latencyMs} ms</span>
+            )}
+          </div>
+          <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
+            {view.health.diagnostics.memoryCount != null && (
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">In the backend</span>
+                <span className="font-mono">{view.health.diagnostics.memoryCount.toLocaleString()}</span>
+              </div>
+            )}
+            {view.localCount != null && (
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">In the local ledger</span>
+                <span className="font-mono">{view.localCount.toLocaleString()}</span>
+              </div>
+            )}
+            {/* vectors BEHIND memories means indexing is catching up: recall can miss the newest rows */}
+            {view.health.diagnostics.vectorCount != null && (
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Indexed vectors</span>
+                <span className={'font-mono' + (view.health.diagnostics.memoryCount != null && view.health.diagnostics.vectorCount < view.health.diagnostics.memoryCount ? ' text-amber-600' : '')}>
+                  {view.health.diagnostics.vectorCount.toLocaleString()}
+                </span>
+              </div>
+            )}
+            {view.health.diagnostics.syncStatus && (
+              <div className="flex justify-between gap-3">
+                <span className="text-muted-foreground">Sync</span>
+                <span className={'font-mono' + (view.health.diagnostics.syncStatus !== 'synced' ? ' text-amber-600' : '')}>{view.health.diagnostics.syncStatus}</span>
+              </div>
+            )}
+            {Object.entries(view.health.diagnostics.services ?? {}).map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-3">
+                <span className="text-muted-foreground">{k}</span>
+                <span className={'font-mono' + (v === 'connected' || v === 'healthy' ? '' : ' text-amber-600')}>{v}</span>
+              </div>
+            ))}
+          </div>
+          {/* a dimension mismatch silently degrades EVERY recall, so it gets a sentence, not a cell */}
+          {view.health.diagnostics.vectorDimensions?.mismatch && (
+            <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-700">
+              Embedding width mismatch — configured {view.health.diagnostics.vectorDimensions.configured}, in use{' '}
+              {view.health.diagnostics.vectorDimensions.effective}. Recall quality is degraded until the store is re-embedded.
+            </div>
+          )}
+          {view.health.diagnostics.enrichment && (
+            <div className="mt-2 text-muted-foreground">
+              Enrichment: {Object.entries(view.health.diagnostics.enrichment).map(([k, v]) => `${k} ${v}`).join(' · ')}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* drift banner — local ledger has rows the active external store doesn't (migrate or clear) */}
       {(view?.drift ?? 0) > 0 && (
         <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
@@ -18303,6 +18900,17 @@ function IntegrationsSettings({ me }: { me: Member }) {
               <strong> as the member who sent the message</strong> (matched by their Slack email → their connectors).
             </p>
             {slackState?.lastError && <p className="mt-1 font-mono text-[11px] text-destructive">last error: {slackState.lastError}</p>}
+            {slackState?.threadScopeError && (
+              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                <strong>Agents can't read threads in {slackState.threadScopeError.channel}.</strong>{' '}
+                Slack answered <code className="font-mono">{slackState.threadScopeError.error}</code> when an agent tagged
+                into an existing thread tried to read what was said before it. Add the{' '}
+                <code className="font-mono">{slackState.threadScopeError.scope}</code> scope in the Slack app
+                (OAuth &amp; Permissions → Bot Token Scopes) and <strong>reinstall</strong>. Until then those agents see
+                only the message that mentioned them, and say so in the thread.
+                <span className="ml-1 opacity-70">({new Date(slackState.threadScopeError.at).toLocaleString()})</span>
+              </div>
+            )}
           </div>
           <SlackSetupGuide />
           <Field label="App-level token" help="Basic Information → App-Level Tokens. Scope: connections:write.">
@@ -18314,7 +18922,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
               className="font-mono text-xs"
             />
           </Field>
-          <Field label="Bot token" help="OAuth & Permissions → Bot User OAuth Token. Scopes: app_mentions:read, chat:write, channels:read/join/history, groups:read/history, im:write/history, mpim:history, users:read, users:read.email.">
+          <Field label="Bot token" help="OAuth & Permissions → Bot User OAuth Token. Scopes: app_mentions:read, chat:write, commands, channels:read/join/history, groups:read/history, im:write/history, mpim:history, users:read, users:read.email, files:read (files:read is what lets an agent open a screenshot you paste).">
             <Input
               type="password"
               value={botTok}

@@ -164,8 +164,20 @@ export interface TelegramMessageEvent {
    *  the bot / is a `/command` / replies to the bot. A group message that did NOT is still surfaced (for
    *  thread-continuity) with `mentioned:false`, so the dispatcher only lets it CONTINUE a bound chat. */
   mentioned: boolean;
+  /** Files attached to the message (photo, document, video, audio, voice). Empty when there are none. */
+  files: TelegramFileRef[];
   /** The full inner message object (capped when injected into a task template). */
   raw: any;
+}
+
+/** A file attached to an inbound Telegram message. Telegram gives an opaque `fileId`, not a URL: the
+ *  path has to be resolved through `getFile` before anything can be downloaded. */
+export interface TelegramFileRef {
+  fileId: string;
+  name: string;
+  mimetype: string;
+  /** Bytes, as Telegram reports them (0 when unknown) — the cheap pre-check before we spend a download. */
+  size: number;
 }
 
 /**
@@ -180,7 +192,11 @@ export function parseTelegramUpdate(update: any, botId: string, botUsername: str
   const m = update?.message;
   if (!m || typeof m !== 'object') return null;
   const text = String(m.text ?? m.caption ?? '');
-  if (!text) return null; // non-text (stickers, joins, …) — nothing to route
+  const files = parseTelegramFiles(m);
+  // Non-text (stickers, joins, …) — nothing to route. A message with NO text but WITH a file is the
+  // exception: an uncaptioned screenshot is the most natural way a person reports a bug, and dropping it
+  // here read as the bot ignoring them outright.
+  if (!text && !files.length) return null;
   const from = m.from || {};
   const chat = m.chat || {};
   const chatType = String(chat.type || '');
@@ -204,6 +220,67 @@ export function parseTelegramUpdate(update: any, botId: string, botUsername: str
     username: String(from.username || [from.first_name, from.last_name].filter(Boolean).join(' ') || ''),
     text,
     fromBot,
+    files,
     raw: m,
   };
+}
+
+/**
+ * Normalize whatever file a Telegram message carries. Each media kind is its own top-level field, and
+ * `photo` is an ARRAY of the same image at ascending sizes — the last entry is the largest, which is the
+ * one worth reading. Telegram gives no filename for a photo, so one is synthesized from the file id.
+ */
+export function parseTelegramFiles(m: any): TelegramFileRef[] {
+  if (!m || typeof m !== 'object') return [];
+  const out: TelegramFileRef[] = [];
+  const push = (f: any, fallbackName: string, mime = '') => {
+    if (!f || typeof f !== 'object' || !f.file_id) return;
+    out.push({
+      fileId: String(f.file_id),
+      name: String(f.file_name || fallbackName),
+      mimetype: String(f.mime_type || mime),
+      size: Number(f.file_size) || 0,
+    });
+  };
+  if (Array.isArray(m.photo) && m.photo.length) {
+    const largest = m.photo[m.photo.length - 1];
+    push(largest, `photo-${String(largest?.file_unique_id || largest?.file_id || 'x').slice(0, 12)}.jpg`, 'image/jpeg');
+  }
+  push(m.document, 'document');
+  push(m.video, 'video.mp4', 'video/mp4');
+  push(m.audio, 'audio.mp3', 'audio/mpeg');
+  push(m.voice, 'voice.ogg', 'audio/ogg');
+  return out;
+}
+
+/**
+ * Resolve a Telegram `file_id` to a downloadable path, then fetch the bytes. Two calls by design —
+ * Telegram deliberately hands out no URL in the update, and the resolved path is valid for about an hour,
+ * so the bytes are taken at dispatch rather than handed to the agent as a link.
+ *
+ * ⚠ The download URL EMBEDS THE BOT TOKEN in its path (`/file/bot<token>/<path>`). It must never be
+ * logged, put in an audit row, or shown to an agent — only the resulting bytes leave this function.
+ */
+export async function downloadTelegramFile(
+  botToken: string,
+  fileId: string,
+  maxBytes: number,
+): Promise<{ data: Buffer; contentType: string } | { error: string }> {
+  if (!botToken || !fileId) return { error: 'missing token or file id' };
+  try {
+    const meta = await fetch(`${TELEGRAM_API}/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`);
+    const j: any = await meta.json().catch(() => ({}));
+    if (!j?.ok || !j.result?.file_path) return { error: String(j?.description || `getFile failed (${meta.status})`) };
+    const declaredMeta = Number(j.result.file_size) || 0;
+    if (declaredMeta > maxBytes) return { error: `file is ${declaredMeta} bytes, over the ${maxBytes}-byte limit` };
+    const res = await fetch(`${TELEGRAM_API}/file/bot${botToken}/${String(j.result.file_path)}`);
+    if (!res.ok) return { error: `download failed (${res.status})` };
+    const declared = Number(res.headers.get('content-length')) || 0;
+    if (declared > maxBytes) return { error: `file is ${declared} bytes, over the ${maxBytes}-byte limit` };
+    const data = Buffer.from(await res.arrayBuffer());
+    if (data.length > maxBytes) return { error: `file is ${data.length} bytes, over the ${maxBytes}-byte limit` };
+    return { data, contentType: String(res.headers.get('content-type') || '') };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'download failed' };
+  }
 }

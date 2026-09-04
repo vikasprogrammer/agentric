@@ -30,10 +30,35 @@ const BUCKETS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000
 /** How many distinct route templates to track before lumping the rest into `other`. */
 const MAX_ROUTES = 300;
 
-/** Tools whose duration is a WAIT for a human or a delegate, not work this process is doing. They are
- *  measured like everything else — hiding them would hide a wait that never ends — but flagged, so the
- *  table is never read as "`ask_human` is the slowest endpoint in the system". */
-const BLOCKING_TOOLS = new Set(['ask', 'ask_human', 'ask_agent', 'task_wait']);
+/** Lag at or above which a tick is recorded as a STALL (with its phase) rather than just binned.
+ *  Overridable ONLY so the suite can prove this machinery without sleeping through it: attribution
+ *  behaves identically at 100ms and at 1s, but a test that blocks the loop for 1.2s some thirty times
+ *  spent 39s of every deploy — 45% of the whole governance suite — doing nothing. Production never
+ *  sets it; `loopOverSecond` below stays pinned to a literal second, since that one is a REPORTED
+ *  metric whose meaning is its threshold. */
+const STALL_MS = Number(process.env.AOS_STALL_MS) > 0 ? Number(process.env.AOS_STALL_MS) : 1_000;
+/** How many stalls to keep. Small on purpose: this is a lead, not a log. */
+const STALL_RING = 20;
+/** Closed phases kept for attribution — a stall that ends just before the tick still has a suspect. */
+const RECENT_PHASES = 32;
+
+/** Tools whose duration is a WAIT on something outside this process — a human, a delegate, or a spawned
+ *  model — not work this process is doing. They are measured like everything else (hiding them would hide
+ *  a wait that never ends) but flagged, so the table is never read as "`ask_human` is the slowest endpoint
+ *  in the system".
+ *
+ *  `session_open:summary` is its own entry rather than the whole tool: with `summary` it spawns a
+ *  throwaway `claude -p` (17.9 s on a live tenant), without it it is one indexed row-test. Flagging the
+ *  tool outright would hide a real regression on the cheap path; the split label (see memory-mcp.ts)
+ *  keeps both honest. */
+const BLOCKING_TOOLS = new Set(['ask', 'ask_human', 'ask_agent', 'task_wait', 'session_open:summary']);
+
+/** Is this MCP tool one whose clock is a human/delegate rather than code? Also decides whether its
+ *  request may be BLAMED for an event-loop stall: a request that is parked on a wait is open across
+ *  every block that happens meanwhile, and being open is not being at fault. */
+export function isBlockingTool(tool: string): boolean {
+  return BLOCKING_TOOLS.has(tool);
+}
 
 export interface RouteStat {
   /** `GET /api/sessions/:id` — method + normalized path template. */
@@ -59,6 +84,29 @@ export interface ToolStat extends RouteStat {
   blocking: boolean;
 }
 
+/**
+ * One event-loop stall, with the WORK that was in flight when it happened.
+ *
+ * The lag number alone ends the investigation at "something blocked the loop for 156 seconds" — which is
+ * exactly where a real one left us: no route recorded a handler that long (so it wasn't a request), the
+ * audit stream had no burst, the WAL was small, the disk idle, and nothing was in the journal. A number
+ * with no subject is not a lead. So every long-running SYNCHRONOUS phase in the process now names itself
+ * ({@link RequestMetrics.phase}), and a stall is attributed to whichever phase was open across it.
+ */
+export interface StallRecord {
+  /** ms epoch when the blocked interval began (the tick that observed it, minus the lag). */
+  at: number;
+  /** How long the loop was blocked (ms). */
+  ms: number;
+  /** How long the blamed phase had ALREADY been open when the block started. A few ms means the phase
+   *  is almost certainly the cause; many seconds means it was merely open across it (a long-poll), and
+   *  the real blocker is unmarked code running inside that window. */
+  openMs?: number;
+  /** The phase open across the stall — `route:GET /api/sessions`, `upkeep:dreaming`, … or `unattributed`
+   *  when nothing declared itself (which is itself a finding: the blocker is code with no marker). */
+  phase: string;
+}
+
 export interface RequestMetricsSnapshot {
   /** When collection started (ms epoch) — every total is "since here". */
   since: number;
@@ -69,8 +117,9 @@ export interface RequestMetricsSnapshot {
    *  (`x-aos-tool`). One tool can span several routes and one route serves several tools, so this is a
    *  separate dimension, not a re-slice of `routes`. */
   tools: ToolStat[];
-  /** Event-loop lag sampled on a fixed interval, independent of any request. */
-  loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number };
+  /** Event-loop lag sampled on a fixed interval, independent of any request. `stalls` is the ring of the
+   *  most recent attributed blocks — the answer to "what blocked it", which `maxMs` alone never gave. */
+  loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number; stalls: StallRecord[] };
 }
 
 interface Bucketed {
@@ -145,6 +194,15 @@ export class RequestMetrics {
   private loopMax = 0;
   private loopOverSecond = 0;
   private loopHist = new Array(BUCKETS.length).fill(0);
+  /** Phases currently open, outermost first. A blocking phase is SYNCHRONOUS, so at most one is open
+   *  when the loop is blocked — the stack exists so a nested marker can't orphan its parent. */
+  private openPhases: Array<{ label: string; at: number; seq: number; attributable: boolean }> = [];
+  /** Monotonic begin counter — the tie-break for "innermost" when two phases share a millisecond. */
+  private phaseSeq = 0;
+  /** Recently CLOSED phases, newest last — a stall that ended microseconds before the tick that saw it. */
+  private closedPhases: Array<{ label: string; at: number; end: number; seq: number; attributable: boolean }> = [];
+  private stalls: StallRecord[] = [];
+  private stallSink?: (s: StallRecord) => void;
   /** Lag of the most recent loop sample — what a request arriving now was plausibly delayed by. */
   private lastLag = 0;
   private timer?: NodeJS.Timeout;
@@ -161,6 +219,7 @@ export class RequestMetrics {
       this.loopSamples++;
       if (lag > this.loopMax) this.loopMax = lag;
       if (lag >= 1_000) this.loopOverSecond++;
+      if (lag >= STALL_MS) this.recordStall(now - lag, lag);
       for (let i = 0; i < BUCKETS.length; i++) {
         if (lag <= BUCKETS[i]) { this.loopHist[i]++; break; }
       }
@@ -171,6 +230,67 @@ export class RequestMetrics {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+  }
+
+  /**
+   * Mark a synchronous phase so a stall inside it has a NAME. Returns the closer; call it in a `finally`
+   * (or use {@link phase}). Cheap by construction — two array writes, no timers, no allocation per tick —
+   * because it wraps things that run on every request.
+   */
+  beginPhase(label: string, opts: { attributable?: boolean } = {}): () => void {
+    const entry = { label, at: Date.now(), seq: ++this.phaseSeq, attributable: opts.attributable !== false };
+    this.openPhases.push(entry);
+    let closed = false;
+    return () => {
+      if (closed) return;
+      closed = true;
+      const i = this.openPhases.lastIndexOf(entry);
+      if (i >= 0) this.openPhases.splice(i, 1);
+      this.closedPhases.push({ label: entry.label, at: entry.at, end: Date.now(), seq: entry.seq, attributable: entry.attributable });
+      if (this.closedPhases.length > RECENT_PHASES) this.closedPhases.shift();
+    };
+  }
+
+  /** {@link beginPhase} around a synchronous call. */
+  phase<T>(label: string, fn: () => T): T {
+    const done = this.beginPhase(label);
+    try { return fn(); } finally { done(); }
+  }
+
+  /** Called for every recorded stall — the server wires this to an audit event so a block that happened
+   *  while nobody was looking is still on the record after a restart (the ring is memory-only). */
+  onStall(sink: (s: StallRecord) => void): void {
+    this.stallSink = sink;
+  }
+
+  /**
+   * Attribute a blocked interval to the phase that spanned it. The INNERMOST open phase wins, not the
+   * outermost: phases nest by containment (a request is open while it awaits, and a timer that fires
+   * during that await opens INSIDE it), so the newest one is the code actually holding the loop — and
+   * for genuinely nested synchronous work it is also the more specific answer. Failing an open phase,
+   * the most recent one that overlapped the interval (the common case: the blocking call returns, then
+   * the tick fires). Failing both, nothing declared itself — which narrows the hunt to unmarked code.
+   */
+  private recordStall(at: number, ms: number): void {
+    const end = at + ms;
+    // Candidates: every phase that was open at any point inside the blocked interval — still open, or
+    // closed during it (the common case, since the blocking call returns before the tick that sees it).
+    let best: { label: string; seq: number; at: number } | undefined;
+    const consider = (p: { label: string; at: number; end?: number; seq: number; attributable: boolean }) => {
+      if (!p.attributable) return;                   // a long-poll that is merely OPEN, not running
+      if (p.at > end) return;                        // began after the block ended
+      if (p.end !== undefined && p.end < at) return; // ended before it began
+      // Innermost = begun LAST. `seq` rather than `at`, because two nested phases routinely share a
+      // millisecond and a timestamp comparison would then pick by iteration order — i.e. at random.
+      if (!best || p.seq > best.seq) best = { label: p.label, seq: p.seq, at: p.at };
+    };
+    for (const p of this.openPhases) consider(p);
+    for (const p of this.closedPhases) consider(p);
+    const rec: StallRecord = { at, ms: Math.round(ms), phase: best?.label ?? 'unattributed' };
+    if (best) rec.openMs = Math.max(0, at - best.at);
+    this.stalls.push(rec);
+    if (this.stalls.length > STALL_RING) this.stalls.shift();
+    try { this.stallSink?.(rec); } catch { /* a sink must never break the sampler */ }
   }
 
   /** Lag observed by the most recent sampler tick — attach it to a request as CONTEXT, never as its cost. */
@@ -248,6 +368,7 @@ export class RequestMetrics {
         maxMs: Math.round(this.loopMax),
         p95Ms: quantile(this.loopHist, this.loopSamples, 0.95),
         overOneSecond: this.loopOverSecond,
+        stalls: [...this.stalls].sort((a, z) => z.ms - a.ms),
       },
     };
   }
@@ -262,6 +383,7 @@ export class RequestMetrics {
     this.loopMax = 0;
     this.loopOverSecond = 0;
     this.loopHist = new Array(BUCKETS.length).fill(0);
+    this.stalls = [];
     this.since = Date.now();
   }
 }

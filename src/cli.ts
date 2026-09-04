@@ -115,7 +115,7 @@ async function deps(install: boolean): Promise<void> {
   const pre = checkDeps();
   if (pre.ok && !pre.installable.length) { console.log('All required dependencies are already installed.'); return; }
   console.log('Installing missing dependencies…\n');
-  const result = installDeps();
+  const result = await installDeps();
   for (const s of result.steps) console.log(`${s.ok ? '✓' : '✗'} ${s.cmd}${s.out ? `\n${s.out}` : ''}`);
   console.log('');
   print(await annotate(result.report));

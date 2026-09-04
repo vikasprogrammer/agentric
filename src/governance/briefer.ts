@@ -128,7 +128,11 @@ function headlineFor(capability: string, args: Record<string, unknown>, input: R
   if (isShellish(capability) && desc) return truncate(desc, 120);
   if (capability === 'connector.call' || capability === 'connector.connect') {
     const tool = str(args.tool);
-    return truncate(tool ? `${VERB_WORD[verb]} ${prettyTool(tool)}` : `${VERB_WORD[verb]} a connector`, 120);
+    // A Composio batch carries several actions but is governed once, at the risk of its worst member
+    // (composio-envelope.ts). Name the rest, so an approver is never shown one action and given many.
+    const batch = num(args.composioBatch);
+    const more = batch !== undefined && batch > 1 ? ` (+${batch - 1} more in the same call)` : '';
+    return truncate((tool ? `${VERB_WORD[verb]} ${prettyTool(tool)}` : `${VERB_WORD[verb]} a connector`) + more, 120);
   }
   if (isShellish(capability)) {
     const cmd = commandText(args.command) || commandText(input.command);
@@ -147,6 +151,9 @@ function rationaleFor(decision: Decision, args: Record<string, unknown>, target:
     base = 'No policy rule flagged this action.';
   }
   const notes: string[] = [];
+  // Remote code on Composio's sandbox, not this box — a materially different blast radius, and the
+  // workbench's Python can call any Composio action from inside a string. Say so on the card.
+  if (args.composioRemote === true) notes.push(`runs ${args.composioRuntime === 'python' ? 'Python' : 'bash'} on Composio's remote sandbox`);
   if (args.destructive === true) notes.push('irreversible');
   if (target.outsideWorkdir === true) notes.push("writes outside the agent's own folder");
   if (target.amountUsd !== undefined) notes.push(`moves ${target.label}`);
@@ -158,7 +165,7 @@ function signatureFor(capability: string, verb: ActionVerb, target: BriefTarget,
   let key = '';
   if (target.host) key = target.host;
   else if (capability === 'file.write') key = pathFamily(str(input.file_path) || str(input.path) || '');
-  else if (capability === 'shell.exec') key = commandHead(commandText(args.command) || commandText(input.command));
+  else if (capability === 'shell.exec') key = `${args.composioRemote === true ? 'composio-remote:' : ''}${commandHead(commandText(args.command) || commandText(input.command))}`;
   else if (capability.startsWith('connector')) key = str(args.tool);
   return `${capability}|${verb}|${target.kind}|${key}`.toLowerCase();
 }

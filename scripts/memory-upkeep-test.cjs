@@ -110,6 +110,33 @@ const setAge = (id, days) => aos.db.prepare('UPDATE memories SET created_at = ? 
   assert(b3.rows.size === 1, 'the duplicate is deleted from the backend too — automem does NOT dedupe these itself');
   void dupA; void dupB;
 
+  // ── B2. an upkeep pass says it ran, even when it changed nothing ────────────────────────────────
+  console.log('\nupkeep is observable — a quiet pass is not a silent one\n');
+  {
+    // `runMemoryMaintenance` used to audit only `if (res.pruned || res.merged)`, which made "upkeep is
+    // running and finding nothing" indistinguishable from "upkeep is not running at all". A live instawp
+    // check read five days of silence as a broken scheduler; the store was simply clean.
+    aos.db.prepare('DELETE FROM memories').run();
+    aos.db.prepare("DELETE FROM audit_events WHERE type = 'memory.maintained'").run();
+    aos.settings.setMemoryConfig({ ...(aos.settings.memoryConfig() ?? { backend: 'sqlite' }), maintenance: { pruneAfterDays: 90, keepImportance: 0.6, dedupeThreshold: 0.95 } }, 'test');
+
+    await aos.runMemoryMaintenance('scheduler');
+    const quiet = aos.db.prepare("SELECT data FROM audit_events WHERE type = 'memory.maintained' ORDER BY ts DESC LIMIT 1").get();
+    assert(!!quiet, 'a pass that deleted nothing still records that it ran');
+    const qd = quiet ? JSON.parse(quiet.data) : {};
+    assert(qd.noop === true, '…and flags itself a no-op, so a quiet pass is legible at a glance', JSON.stringify(qd));
+    assert(qd.removed === undefined, 'the id list is left out of the audit row — it would bloat every pass');
+
+    // …and a pass that DID delete says so, with the counts.
+    // Inserted straight into the table: this section only exercises the AUDIT of a pass, and going through
+    // a provider here would drag in whichever embedder the config above happens to have wired.
+    aos.db.prepare("INSERT INTO memories (id, tenant, agent_id, content, tags, type, importance, created_at, recall_count) VALUES (?,?,?,?,'[]','Insight',0.2,?,0)")
+      .run('mem_prunable', aos.tenant, 'engineer', 'prunable note', Date.now() - 200 * 86_400_000);
+    await aos.runMemoryMaintenance('scheduler');
+    const busy = JSON.parse(aos.db.prepare("SELECT data FROM audit_events WHERE type = 'memory.maintained' ORDER BY ts DESC LIMIT 1").get().data);
+    assert(busy.noop === false && busy.pruned === 1, 'a pass that pruned reports the count and is not a no-op', JSON.stringify(busy));
+  }
+
   // ── C. recall serves the agent's OWN text, whatever the backend did to it ───────────────────────
   console.log('\nrecall fidelity — the backend ranks, the mirror is the record\n');
 

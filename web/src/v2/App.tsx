@@ -194,8 +194,8 @@ function Settings({ config, prompt, loading }: { config: (RuntimeTuning & { desc
         <Seg current={config.effort || 'inherit'} opts={['low', 'medium', 'high', 'xhigh', 'max']} />
       </div>
       <div className="field">
-        <div className="lbl">Verbosity<div className="h">Terse compresses narration only — never artifacts</div></div>
-        <Seg current={config.verbosity || 'normal'} opts={['normal', 'terse']} />
+        <div className="lbl">Output style<div className="h">Role, tone &amp; default response shape</div></div>
+        <Seg current={config.outputStyle || 'Default'} opts={['Default', 'Concise', 'Proactive', 'Explanatory', 'Learning', config.outputStyle || 'Default'].filter((v, i, a) => a.indexOf(v) === i)} />
       </div>
       <div className="field">
         <div className="lbl">System prompt<div className="h">CLAUDE.md · this agent’s identity</div></div>

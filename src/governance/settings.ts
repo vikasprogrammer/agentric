@@ -47,6 +47,9 @@ const AGENT_PROPOSAL_TRUST_KEY = 'agent_proposal_trust'; // cross-agent edit tie
 /** What the sessions list shows in its money column: dollar cost, token total, or both. */
 export type SessionMetrics = 'cost' | 'tokens' | 'both';
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
+const UPDATE_WATCH_KEY = 'update_watch'; // JSON {mode, everyHours} — the self-update watcher
+const RUNTIME_WATCH_KEY = 'runtime_watch'; // JSON {mode, everyHours} — the agent-runtime CLI watcher
+const GATE_REVIEWED_KEY = 'gate_reviewed_runtime_version'; // claude CLI version the gate table was last OK'd against
 const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every agent's prompt (default on)
 const GOALS_AUTOPLAN_KEY = 'goals_autoplan'; // whether the scheduler auto-plans stuck goals (default OFF — opt-in)
 const DIGEST_ENABLED_KEY = 'digest_enabled'; // whether the end-of-day fleet digest posts to Slack ('on'|'off')
@@ -68,6 +71,14 @@ const SETUP_KEY = 'setup_state'; // install-wizard state: dismissal + per-step "
 
 /** Numeric governance caps the policy's never-tier rules reference by name (e.g. `$moneyCapUsd`).
  *  Live-editable in Settings → Governance; resolved at classify time by the policy engine. */
+/** How the self-update watcher behaves on this box. See `Settings.updateWatch`. */
+export type UpdateWatchMode = 'off' | 'notify' | 'ask';
+export interface UpdateWatchConfig { mode: UpdateWatchMode; everyHours: number }
+/** Notify-only, every 6h: the half that cannot break anything, and silence was the actual failure. */
+export const UPDATE_WATCH_DEFAULT: UpdateWatchConfig = { mode: 'notify', everyHours: 6 };
+/** Same posture for the runtime CLI, on a slower beat — the npm registry moves less often than a repo. */
+export const RUNTIME_WATCH_DEFAULT: UpdateWatchConfig = { mode: 'notify', everyHours: 12 };
+
 export interface GovernanceThresholds {
   /** A single payment/refund at or below this (USD) may be approved; above it is refused outright. */
   moneyCapUsd: number;
@@ -87,6 +98,7 @@ const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency c
 const INTERACTIVE_IDLE_HOURS_KEY = 'interactive_idle_timeout_hours'; // auto-close a detached member session idle past this; unset → 48h, 0 → off
 const UNATTENDED_MAX_HOURS_KEY = 'unattended_max_runtime_hours'; // hard runtime ceiling for a headless/unattended run (stuck-mid-turn backstop); unset → 24h, 0 → off
 const BLOCKED_MAX_HOURS_KEY = 'blocked_max_hours'; // force-close an interactive session waiting this long on an unanswered card; unset → 72h, 0 → off
+const INTERACTIVE_MAX_HOURS_KEY = 'interactive_max_hours'; // hard AGE ceiling for a detached interactive session; unset → 168h, 0 → off
 const CLAIMED_MAX_HOURS_KEY = 'claimed_max_hours'; // force-close a CLAIMED interactive session idle this long; unset → 72h, 0 → off (permanent take-over exemption)
 const UNATTENDED_NO_PROGRESS_MIN_KEY = 'unattended_no_progress_minutes'; // reap a headless run that never made a tool call (never-started: rate-limit/trust-hang/lost-prompt); unset → 30m, 0 → off
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
@@ -661,6 +673,77 @@ export class SettingsStore {
     this.set(DREAMING_STATE_KEY, JSON.stringify(state), by);
   }
 
+  // ── self-update watcher ──────────────────────────────────────────────────────────
+  // Nothing ever asked "is this box behind?" on a timer — `checkForUpdate` only ran when a human had the
+  // console open, which on a headless remote is never. Boxes therefore drifted for weeks with no signal
+  // (the fleet has repeatedly been found 13+ versions behind). Two modes, because the safe half and the
+  // useful half are different asks:
+  //   notify — post an Inbox card + DM when the checkout falls behind. No apply. The drift alarm.
+  //   ask    — additionally raise an OWNER approval; approving it applies the update on the box itself.
+  //            One tap from a phone replaces an ssh session, and the approval IS the human's choice of
+  //            moment, which is why this tier needs no quiet-window logic.
+  // `off` disables it entirely. Default is `notify`: it is the half that cannot break anything, and
+  // silence was the actual failure.
+
+  /** The self-update watcher's mode + cadence. Defaults to `notify` every 6h. */
+  updateWatch(): UpdateWatchConfig {
+    return this.readWatch(UPDATE_WATCH_KEY, UPDATE_WATCH_DEFAULT);
+  }
+
+  setUpdateWatch(cfg: Partial<UpdateWatchConfig>, by?: string): UpdateWatchConfig {
+    return this.writeWatch(UPDATE_WATCH_KEY, this.updateWatch(), cfg, by);
+  }
+
+  /** Shared parse for a watcher config row — garbage or a missing row falls back to the default. */
+  private readWatch(key: string, fallback: UpdateWatchConfig): UpdateWatchConfig {
+    const raw = this.getRow(key)?.value;
+    if (!raw) return { ...fallback };
+    try {
+      const p = JSON.parse(raw) as Partial<UpdateWatchConfig>;
+      const mode = p.mode === 'off' || p.mode === 'ask' || p.mode === 'notify' ? p.mode : fallback.mode;
+      const h = Number(p.everyHours);
+      return { mode, everyHours: Number.isFinite(h) && h > 0 ? Math.floor(h) : fallback.everyHours };
+    } catch { return { ...fallback }; }
+  }
+
+  /** Shared write for a watcher config row — a partial patch over the current value. */
+  private writeWatch(key: string, cur: UpdateWatchConfig, cfg: Partial<UpdateWatchConfig>, by?: string): UpdateWatchConfig {
+    const mode = cfg.mode === 'off' || cfg.mode === 'ask' || cfg.mode === 'notify' ? cfg.mode : cur.mode;
+    const h = Number(cfg.everyHours);
+    const next: UpdateWatchConfig = { mode, everyHours: Number.isFinite(h) && h > 0 ? Math.floor(h) : cur.everyHours };
+    this.set(key, JSON.stringify(next), by);
+    return next;
+  }
+
+  // ── agent-runtime CLI watcher ────────────────────────────────────────────────────
+  // Same two modes as `updateWatch`, over a different subject: the `claude` CLI every session launches.
+  // Deliberately a SEPARATE setting, because the risk is not the same. Updating Agentric moves code we
+  // wrote and test; updating the runtime CLI can add TOOLS — new side-effect channels that the gate
+  // hook's tool→capability table has no row for and that therefore fall to its `*) exit 0` arm
+  // ungoverned (cross-session messaging in claude 2.1.224 was exactly this). So a box may reasonably
+  // want its own code current and its runtime pinned, and there is no unattended tier here at all.
+
+  /** The runtime-CLI watcher's mode + cadence. Defaults to `notify` every 12h. */
+  runtimeWatch(): UpdateWatchConfig {
+    return this.readWatch(RUNTIME_WATCH_KEY, RUNTIME_WATCH_DEFAULT);
+  }
+
+  setRuntimeWatch(cfg: Partial<UpdateWatchConfig>, by?: string): UpdateWatchConfig {
+    return this.writeWatch(RUNTIME_WATCH_KEY, this.runtimeWatch(), cfg, by);
+  }
+
+  /**
+   * The `claude` CLI version the gate hook's tool routing was last signed off against — stamped when an
+   * owner APPROVES a runtime upgrade, since approving IS the review. Lets the next card say "routing was
+   * last checked against X, you are moving to Y" instead of a standing, ignorable warning.
+   */
+  gateReviewedRuntimeVersion(): string {
+    return this.getRow(GATE_REVIEWED_KEY)?.value?.trim() || '';
+  }
+  setGateReviewedRuntimeVersion(version: string, by?: string): void {
+    this.set(GATE_REVIEWED_KEY, version.trim(), by);
+  }
+
   // ── install wizard ───────────────────────────────────────────────────────────────
   // The ONLY state the setup wizard owns. Whether a step is done is always re-derived from the store
   // that owns that setting (src/edge/setup.ts), so the checklist can never disagree with the Settings
@@ -1121,6 +1204,40 @@ export class SettingsStore {
     if (!Number.isFinite(n)) return 72; // unset → default
     if (n <= 0) return 0;               // explicit 0 → disabled (permanent take-over exemption)
     return Math.min(Math.max(Math.round(n), 1), 24 * 30);
+  }
+
+  /**
+   * Hard AGE ceiling for a detached interactive session, measured from `created_at` — the backstop the
+   * idle clock cannot be.
+   *
+   * Every other ceiling in this family measures IDLENESS, and idleness is stamped by `markTurnBusy` on
+   * **every tool call**. So a session whose agent is still working — or is woken periodically — never goes
+   * idle, however old it gets, and {@link interactiveIdleTimeoutHours} never sees it. Live instawp,
+   * measured after the wake-queue fix had already removed the largest source of that activity: 18 sessions
+   * still `running`, 15 of them interactive, ages **1007 h / 266 h / 263 h / 166 h / 120 h** — and every
+   * one reporting only 18–24 h idle, so the 72 h reaper skipped them on every tick. The oldest had been
+   * open **42 days**.
+   *
+   * Age is the honest question for those: not "has it been quiet long enough" but "has this been open
+   * longer than any real piece of work". Like the ceilings above it, this one **overrides** the claimed and
+   * blocked-on-a-human exemptions — past it the session is abandoned by definition — but it never cuts one
+   * with somebody **attached**, which remains the only unconditional exemption in the sweep.
+   *
+   * Default **168 h** (7 days): comfortably longer than the 72 h idle/claim/blocked ceilings, so it only
+   * ever catches what they structurally cannot. Clamped 1 h–90 d; `0` disables.
+   */
+  interactiveMaxHours(): number {
+    const n = Number(this.getRow(INTERACTIVE_MAX_HOURS_KEY)?.value);
+    if (!Number.isFinite(n)) return 168; // unset → default
+    if (n <= 0) return 0;                // explicit 0 → disabled
+    return Math.min(Math.max(Math.round(n), 1), 24 * 90);
+  }
+
+  setInteractiveMaxHours(hours: number, by?: string): number {
+    const n = Number(hours);
+    const clamped = !Number.isFinite(n) || n < 0 ? 168 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 90);
+    this.set(INTERACTIVE_MAX_HOURS_KEY, String(clamped), by);
+    return this.interactiveMaxHours();
   }
 
   setClaimedMaxHours(hours: number, by?: string): number {

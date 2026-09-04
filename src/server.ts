@@ -16,7 +16,8 @@ import { TenantRegistry, TenantRuntime, notifyLoginLink, notifyInsightAlert } fr
 import { ProcessJanitor } from './edge/process-janitor';
 import { hostMetrics, availableBytes } from './edge/host-metrics';
 import { pruneAuditMirror } from './governance/audit';
-import { requestMetrics } from './edge/request-metrics';
+import { readToolUsage, toolUsage } from './edge/tool-usage';
+import { requestMetrics, normalizePath, isBlockingTool } from './edge/request-metrics';
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { governedCapabilities } from './capabilities/normalize';
@@ -53,7 +54,7 @@ import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
 import { buildInsights } from './edge/insights';
-import { verbosityAdoption } from './edge/verbosity';
+import { BUILTIN_OUTPUT_STYLES, outputStyleAdoption, outputStyleWarning, starterOutputStyle, validOutputStyleName } from './edge/output-styles';
 import { buildImprovements } from './edge/improvements';
 import { Diagnosis, ANALYST_ID } from './edge/diagnosis';
 import { Improver, proposalSlug, IMPROVER_ID } from './edge/improver';
@@ -66,6 +67,8 @@ import { planSessionTidy, applySessionTidy } from './edge/session-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
+import { UpdateWatch } from './edge/update-watch';
+import { RuntimeUpdateWatch } from './edge/runtime-update-watch';
 import { checkDeps, checkDepUpdates, installDeps, updateNpmDep } from './edge/deps';
 import { CATALOG, redact } from './connectors/connectors';
 import { GithubIdentity } from './edge/github-identity';
@@ -73,12 +76,13 @@ import { PrCache, taskPrRefs, taskPrRefsBulk, prSummary, type PrToken } from './
 import { convertAppManifest, userInstallationStatus } from './connectors/github';
 import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
+import { supersededExpired } from './connectors/composio-identity';
 import { JsonPolicyEngine, PolicyDocument, applyProposal, validatePolicyDocument } from './governance/policy';
 import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -222,7 +226,7 @@ function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSna
   const next: AgentManifest = {
     ...ag,
     description: snap.description, category: snap.category, icon: snap.icon,
-    model: snap.model, effort: snap.effort, permissionMode: snap.permissionMode, verbosity: snap.verbosity,
+    model: snap.model, effort: snap.effort, permissionMode: snap.permissionMode, outputStyle: snap.outputStyle,
     examplePrompts: snap.examplePrompts.length ? snap.examplePrompts : undefined,
     shellSecrets: snap.shellSecrets.length ? snap.shellSecrets : undefined,
     // Empty ⇒ drop the key ⇒ "everything", which is exactly how a revision predating these fields
@@ -297,7 +301,23 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
     // behind a blocking timer isn't mistaken for a slow route. One counter update, no I/O, no DB write.
     const startedNs = process.hrtime.bigint();
     const arrivalStall = requestMetrics.currentStallMs();
+    // Name the request as a PHASE too, so a stall caused by a handler is attributed to that handler
+    // rather than reading `unattributed`. Safe to hold across the handler's awaits because attribution
+    // takes the INNERMOST open phase: a timer that blocks while this request is parked on an await
+    // opened later, so it — not this route — is named.
+    // A tool that BLOCKS by design (`task_wait`, `ask`, …) parks its request for as long as a human or a
+    // delegate takes, so it is open across everything — and being open is not being at fault. It is marked
+    // unattributable, or it would collect the blame for every stall on a busy tenant purely by being there.
+    // Live proof: the first named stall after this shipped was a 1,153 ms block pinned on
+    // `POST /api/tasks/wait`, whose own handler time never exceeds 20 ms.
+    const reqTool = String(req.headers['x-aos-tool'] || '').trim();
+    const endPhase = requestMetrics.beginPhase(
+      `route:${req.method || 'GET'} ${normalizePath((req.url || '/').split('?')[0])}`,
+      { attributable: !isBlockingTool(reqTool) },
+    );
+    res.once('close', endPhase);
     res.once('finish', () => {
+      endPhase();
       const ms = Number(process.hrtime.bigint() - startedNs) / 1e6;
       const pathname = (req.url || '/').split('?')[0];
       requestMetrics.observe(req.method || 'GET', pathname, res.statusCode, ms, arrivalStall);
@@ -308,6 +328,13 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
       // advisory (it buys no authority), and the tool map is capped like the route map.
       const tool = String(req.headers['x-aos-tool'] || '').trim();
       if (tool) requestMetrics.observeTool(tool, res.statusCode, ms, arrivalStall);
+      // …and the same header pair, counted per agent per day (src/edge/tool-usage.ts). This is the only
+      // place a READ tool is observable at all: the loopback tools sit before the member-auth gate, so
+      // the PreToolUse hook never sees them, and only the writing ones audit anything. A Map bump here,
+      // never a write — the flush timer in startServer does the I/O.
+      const usageAgent = String(req.headers['x-aos-agent'] || '').trim();
+      const usageTenant = String(req.headers['x-aos-tenant'] || '').trim() || registry.default()?.os.tenant || '';
+      if (tool && usageAgent) toolUsage.record(usageTenant, usageAgent, tool);
     });
     // Superadmin control plane — host-independent (bearer-gated), so it sits before tenant routing.
     if ((req.url || '').split('?')[0].startsWith('/api/admin/')) {
@@ -396,12 +423,26 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   // Event-loop lag sampler. Always on: it is two numbers per tick, and its whole value is being already
   // running when someone asks "why is everything slow" — the question that took an ssh session last time.
   requestMetrics.start();
+  // A stall that happened while nobody had the metrics page open is still worth knowing about, and the
+  // ring is memory-only — so anything past this bar is also written to the audit stream, with the phase
+  // that caused it. Deliberately not every stall over 1s (a busy box has those, and an audit row per
+  // second of lag is its own problem): only the multi-second blocks that make the console feel dead.
+  const STALL_AUDIT_MS = 5_000;
+  requestMetrics.onStall((stall) => {
+    if (stall.ms < STALL_AUDIT_MS) return;
+    const os = registry.default()?.os;
+    if (!os) return;
+    try {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'loop.stall', data: { ms: stall.ms, phase: stall.phase, at: stall.at } });
+      console.log(`  [loop] blocked ${(stall.ms / 1000).toFixed(1)}s during ${stall.phase}`);
+    } catch { /* never let the recorder break the sampler */ }
+  });
 
   // Shared, process-wide upkeep timers — each fans out across every tenant runtime.
   // Idle GC (A5): reclaim idle members' uids/ttyds. No-op under the local backend, so always-on is safe.
   const reaper = setInterval(() => registry.forEach((rt) => {
-    try { rt.tm.reapIdleSpaces(); } catch { /* never let the sweep crash */ }
-    try { rt.tm.reapIdleSessions(); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
+    try { requestMetrics.phase('reaper:idleSpaces', () => rt.tm.reapIdleSpaces()); } catch { /* never let the sweep crash */ }
+    try { requestMetrics.phase('reaper:idleSessions', () => rt.tm.reapIdleSessions()); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
   }), 60_000);
   reaper.unref?.();
   // Process janitor: reap ttyd/tmux left behind pointing at tmux sockets that no longer exist, plus agent
@@ -413,9 +454,19 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     registry.forEach((rt) => { if (rt.os.paths?.tmuxSocket) live.add(rt.os.paths.tmuxSocket); });
     return live;
   });
+  // Tool-usage flush. Counters accumulate in memory on the request path and land here — one write per
+  // tenant per interval instead of one per agent tool call. 60s bounds what a crash loses to a single
+  // interval of a usage histogram, which is not worth a synchronous write on the hot path.
+  const usageTimer = setInterval(() => {
+    registry.forEach((rt) => {
+      try { toolUsage.flush(rt.os.tenant, rt.os.db); } catch { /* a histogram must never crash the box */ }
+    });
+  }, 60_000);
+  usageTimer.unref?.();
+
   const janitorTimer = setInterval(() => {
     try {
-      const r = janitor.sweep();
+      const r = requestMetrics.phase('janitor:sweep', () => janitor.sweep());
       if (r.ttyd === 0 && r.tmux === 0 && r.shell === 0) return;
       const os = registry.default()?.os;
       console.log(`  [janitor] reaped ${r.ttyd} orphaned ttyd + ${r.tmux} orphaned tmux (unreachable sockets) + ${r.shell} orphaned agent shells (reparented to init)`);
@@ -423,6 +474,43 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     } catch { /* never let the janitor crash the process */ }
   }, 5 * 60_000);
   janitorTimer.unref?.();
+  // Self-update watcher (docs/self-update-watch.md). Deliberately BOX-scoped, not per-tenant: the git
+  // checkout is one thing shared by every runtime in this process, so N tenants would card N times for
+  // one fact. It runs against the SEED tenant — whose owner is the person with shell on the box and the
+  // only one who can act on it. Cadence is checked here but enforced by the watcher's own last-run
+  // stamp, matching the dreaming/maintenance pattern.
+  let lastUpdateWatch = 0;
+  const updateWatchTimer = setInterval(() => {
+    const rt = registry.default();
+    if (!rt) return;
+    try {
+      const cfg = rt.os.settings.updateWatch();
+      if (cfg.mode === 'off') return;
+      if (Date.now() - lastUpdateWatch < cfg.everyHours * 3_600_000) return;
+      lastUpdateWatch = Date.now();
+      void new UpdateWatch(rt.os, rt.tm).run().catch(() => { /* the watcher never throws; belt and braces */ });
+    } catch { /* never let the watcher crash the upkeep loop it shares */ }
+  }, 15 * 60_000);
+  updateWatchTimer.unref?.();
+
+  // Agent-runtime CLI watcher (the `claude` binary every session launches). Box-scoped for the same
+  // reason as the self-update watcher — one binary, one fact — and on the same seed-tenant runtime.
+  // Kept as a SEPARATE watcher and setting rather than folded into the one above, because the risk
+  // differs: a CLI upgrade can add tools the gate hook has no routing row for. See edge/runtime-update-watch.ts.
+  let lastRuntimeWatch = 0;
+  const runtimeWatchTimer = setInterval(() => {
+    const rt = registry.default();
+    if (!rt) return;
+    try {
+      const cfg = rt.os.settings.runtimeWatch();
+      if (cfg.mode === 'off') return;
+      if (Date.now() - lastRuntimeWatch < cfg.everyHours * 3_600_000) return;
+      lastRuntimeWatch = Date.now();
+      void new RuntimeUpdateWatch(rt.os, rt.tm).run().catch(() => { /* the watcher never throws; belt and braces */ });
+    } catch { /* never let the watcher crash the upkeep loop it shares */ }
+  }, 15 * 60_000);
+  runtimeWatchTimer.unref?.();
+
   // Memory upkeep + self-learning: hourly check per tenant; each is a no-op unless that tenant opted in.
   const lastMaint = new Map<string, number>();
   const lastDream = new Map<string, number>();
@@ -434,7 +522,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     // drains over the next few hours. Audited — a sweep that silently deletes rows is not auditable.
     try {
       const days = os.settings.auditRetentionDays();
-      const dropped = pruneAuditMirror(os.db, days);
+      const dropped = requestMetrics.phase('upkeep:auditRetention', () => pruneAuditMirror(os.db, days));
       if (dropped > 0) {
         os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'audit.mirror.pruned', data: { rows: dropped, keepDays: days } });
       }
@@ -477,7 +565,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     if (os.settings.insightsAlertsEnabled()) {
       try {
         const origin = registry.consoleOrigin(os.tenant);
-        for (const alert of pendingAlerts(os)) {
+        for (const alert of requestMetrics.phase('upkeep:alerts', () => pendingAlerts(os))) {
           rt.tm.postInsightAlert(alert);
           os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'insights.alert', data: { key: alert.key, severity: alert.severity } });
           void notifyInsightAlert(os, rt.slack, rt.discord, origin, alert).catch(() => { /* DM is best-effort */ });
@@ -894,8 +982,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   // agent ASKS a human to PROVIDE a credential it lacks (`secret_request`) — the inverse of secret/put:
   // it carries only the KEY + reason, never a value, so the raw secret is typed into a secure form
-  // instead of pasted into the transcript. Posts an owner/admin 'secret.request' card; a human fulfills
-  // it via POST /api/secrets/requests/:id/fulfill. Pre-auth loopback, session-secret gated.
+  // instead of pasted into the transcript. `rotate:true` covers the third case — the agent HAS the key
+  // but its value is dead (expired/revoked) — which the plain "you already have this" short-circuit
+  // otherwise answers uselessly. Posts an owner/admin 'secret.request' card; a human fulfills it via
+  // POST /api/secrets/requests/:id/fulfill. Pre-auth loopback, session-secret gated.
   if (method === 'POST' && p === '/api/agent/secret/request') {
     const b = await readBody(req);
     const session = String(b.session || '');
@@ -904,7 +994,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const key = String(b.key || '').trim();
     if (!ENV_NAME.test(key) || key.length > 64) return sendJson(res, 400, { error: 'key must be a letter/underscore then letters, digits or underscores, ≤64 chars (e.g. STRIPE_API_KEY)' });
-    const out = tm.requestSecret(session, agent, key, b.reasoning != null ? String(b.reasoning) : undefined);
+    // `rotate` = "I can read this key but the value is being rejected" — the only way past the `exists`
+    // short-circuit, so an expired credential has a route that isn't a human deleting and re-adding it.
+    const rotate = b.rotate === true || b.rotate === 'true';
+    const out = tm.requestSecret(session, agent, key, b.reasoning != null ? String(b.reasoning) : undefined, { rotate });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
 
@@ -1113,8 +1206,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const meta = { id: target.id, title: target.title, task: target.task, status: target.status, createdAt: target.createdAt, updatedAt: target.updatedAt, rating: target.rating };
     const convo = tm.sessionConversation(id);
     if (url.searchParams.get('summary') === '1') {
-      const out = await summarizeConversation(convo);
-      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'session.summarized', data: { target: id, via: out.via, found: out.found } });
+      // Pool credentials, not the box default — see TerminalManager.outOfBandCredentialEnv. `reason` is
+      // recorded so a fallback says WHY; a `usage_limit` here is a rotation problem, not a summarizer one.
+      const cred = tm.outOfBandCredentialEnv();
+      const out = await summarizeConversation(convo, { credentials: cred?.vars, account: cred?.account });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'session.summarized', data: { target: id, via: out.via, found: out.found, reason: out.reason, account: out.account } });
       return sendJson(res, 200, { meta, ...out });
     }
     // No structured transcript (a headless run tee'd only a raw pane log) → serve the tail of that.
@@ -1263,19 +1359,6 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   // agent deliberately notifies a specific teammate (the `notify` tool) — the escape hatch from the
   // session-owner-scoped default: an inbox card addressed to that member + an out-of-band DM.
-  if (method === 'POST' && p === '/api/notify') {
-    const b = await readBody(req);
-    const session = String(b.session || '');
-    const agent = tm.sessionAgent(session);
-    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
-    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
-    const to = String(b.to || '').trim();
-    const message = String(b.message || '').trim();
-    if (!to) return sendJson(res, 400, { error: 'to is required' });
-    if (!message) return sendJson(res, 400, { error: 'message is required' });
-    const out = tm.notifyMember(session, agent, to, message, b.important === true || b.important === 'true');
-    return sendJson(res, out.ok ? 200 : 400, out);
-  }
   // agent publishes a deliverable to the Artifacts gallery (→ snapshot + inbox card + audit). The
   // file path is resolved under the agent's own folder by the store; only that session may publish.
   if (method === 'POST' && p === '/api/publish') {
@@ -1576,6 +1659,22 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok });
   }
   // attach-wrapper signal that a stopped session was resurrected (→ mark running again).
+  // Resume pre-flight: the launcher asks, before exec'ing the runtime, whether this environment can
+  // authenticate at all. A resurrection (attach.sh → claude-launch.sh with RESUME=1) never passes through
+  // the server's launch path, so without this a locked-keychain box quietly resurrects panes that come up
+  // "Not logged in" and burn a turn each. Answering here — rather than re-implementing the probe in bash —
+  // keeps ONE implementation of what "usable credential" means. Fails OPEN by construction: only an
+  // explicit `blocked` verdict stops a launch, so a server blip can never wedge the fleet.
+  if (method === 'POST' && p === '/api/credential-check') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const runtime = String(b.runtime || 'claude-code') as RuntimeId;
+    if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `unknown runtime: ${runtime}` });
+    const blocked = tm.checkResumeCredentials(session, String(b.configDir || ''), runtime);
+    return sendJson(res, 200, blocked ? { ok: false, ...blocked } : { ok: true });
+  }
   if (method === 'POST' && p === '/api/resumed') {
     const b = await readBody(req);
     const session = String(b.session || '');
@@ -1860,7 +1959,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         error: 'Say what this is blocked on: call task_update again with blockedOn:"human" (only a person can decide or approve), "agent" (another agent owes you something) or "external" (a third party, build or vendor). It decides who gets woken — "human" alerts the task owner instead of resuming the agent that handed you this.',
       });
     }
-    const task = os.tasks.update(id, {
+    const task = requestMetrics.phase('task:update.store', () => os.tasks.update(id, {
       status: typeof b.status === 'string' ? (b.status as TaskStatus) : undefined,
       assignee: b.assignee === null ? null : (b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' ? b.assignee : undefined)),
       priority: typeof b.priority === 'number' ? b.priority : undefined,
@@ -1875,7 +1974,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       blockedOn: b.blockedOn === null ? null : (TASK_BLOCKED_ON as readonly string[]).includes(String(b.blockedOn)) ? (b.blockedOn as TaskBlockedOn) : undefined,
       note: typeof b.note === 'string' ? b.note : undefined,
       by: `agent:${agent}`,
-    });
+    }));
     if (!task) return sendJson(res, 200, { ok: false, error: 'task not found' });
     os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: task.status === 'done' ? 'task.completed' : 'task.updated', data: { id: task.id, status: task.status } });
     return sendJson(res, 200, { ok: true, task });
@@ -2067,7 +2166,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, {
       ok: true, id, self: id === agent,
       description: snap.description, category: snap.category, icon: snap.icon,
-      model: snap.model, effort: snap.effort, verbosity: snap.verbosity,
+      model: snap.model, effort: snap.effort, outputStyle: snap.outputStyle,
       examplePrompts: snap.examplePrompts,
       claudeMd: snap.claudeMd, chars: snap.claudeMd.length,
       baseHash: contentHash(snap.claudeMd),
@@ -2104,7 +2203,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!resolved.ok) return sendJson(res, 200, { ok: false, outcome: 'refused', error: resolved.error });
     const risk = resolved.text !== undefined ? assessClaudeMdEdit(before.claudeMd, resolved.text) : undefined;
     const fields: Record<string, unknown> = {};
-    for (const k of ['description', 'category', 'model', 'effort', 'icon', 'verbosity', 'examplePrompts', 'shellSecrets', 'skills', 'tools'] as const) {
+    for (const k of ['description', 'category', 'model', 'effort', 'icon', 'outputStyle', 'examplePrompts', 'shellSecrets', 'skills', 'tools'] as const) {
       if (k in b) fields[k] = b[k];
     }
     if (resolved.text !== undefined) fields.claudeMd = resolved.text;
@@ -2130,7 +2229,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = applyAgentEdit(os, ag, fields, { summary: 'agent self-edit', author: `agent:${agent}` });
     if (!out.ok) return sendJson(res, 200, { ok: false, outcome: 'refused', error: out.error });
     const now = os.agents.get(id) ?? ag; // applyAgentEdit re-registered the manifest — log what it IS now
-    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: now.model, effort: now.effort, verbosity: now.verbosity, category: now.category, claudeMd: resolved.text !== undefined, bytesBefore: risk?.bytesBefore, bytesAfter: risk?.bytesAfter, destructive: risk?.destructive ?? false, rev: out.rev, by: `agent:${agent}` } });
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: now.model, effort: now.effort, outputStyle: now.outputStyle, category: now.category, claudeMd: resolved.text !== undefined, bytesBefore: risk?.bytesBefore, bytesAfter: risk?.bytesAfter, destructive: risk?.destructive ?? false, rev: out.rev, by: `agent:${agent}` } });
     // The revert hint names the revision that holds the state we just replaced, so "undo this" is one call.
     const undo = out.rev && out.rev > 1 ? ` Saved as rev ${out.rev}; undo with agent_revert { rev: ${out.rev - 1} }.` : out.rev ? ` Saved as rev ${out.rev}.` : ' Nothing actually changed (identical to the current config).';
     return sendJson(res, 200, {
@@ -2307,9 +2406,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!goal) return sendJson(res, 400, { error: 'goal is required' });
     // Run-as: the human currently using the app (forwarded from the trusted X-Aos-Member the app got),
     // else the app's accountable owner. Validate it resolves to a real member; unknown → ownerless.
+    // BOTH FORMS on the way in, a member ID on the way out — the two halves of one bug (#559). The
+    // forwarded `X-Aos-Member` is an EMAIL while `manifest.owner` is a member id, so an email-only
+    // lookup left every ownerless-by-manifest dispatch with no accountable human at all; and storing
+    // `.email` put an address into `tasks.owner`, which every consumer reads as an id — the task
+    // notifier (`resolveRecipients` → `getMember`) delivered to nobody, `t.owner === me.id` never
+    // matched its own board, and the value rode through `dispatchTask` into the session's `run_as`.
     const wantRunAs = String(b.runAsMember || manifest.owner || '').trim();
-    const runAsMember = wantRunAs ? os.team.getMemberByEmail(wantRunAs) : undefined;
-    const owner = runAsMember?.email;
+    const runAsMember = wantRunAs ? os.team.resolveMemberRef(wantRunAs) : undefined;
+    const owner = runAsMember?.id;
     const mode = b.mode === 'interactive' ? 'interactive' : 'headless';
     const task = os.tasks.create({
       tenant: os.tenant, title: goal.slice(0, 80), body: goal, assignee: `agent:${agent}`,
@@ -2430,7 +2535,26 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/update') {
     const force = url.searchParams.get('force') === '1' && (me.role === 'owner' || me.role === 'admin');
     const status = await checkForUpdate(force);
-    return sendJson(res, 200, { ...status, canApply: me.role === 'owner' });
+    return sendJson(res, 200, { ...status, canApply: me.role === 'owner', watch: os.settings.updateWatch() });
+  }
+  // The self-update WATCHER's config — whether this box tells anyone it has fallen behind, and whether
+  // it may raise an owner approval that applies the update in place. Owner-only: it decides whether the
+  // box can change itself. See src/edge/update-watch.ts.
+  if (method === 'POST' && p === '/api/update/watch') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const b = await readBody(req);
+    if (b.mode != null && !['off', 'notify', 'ask'].includes(String(b.mode))) return sendJson(res, 400, { error: 'mode must be off, notify or ask' });
+    const watch = os.settings.setUpdateWatch({ mode: b.mode as never, everyHours: b.everyHours != null ? Number(b.everyHours) : undefined }, me.email);
+    os.audit.append({ ts: Date.now(), runId: 'update', tenant: os.tenant, principal: me.email, type: 'update.watch.configured', data: { ...watch } });
+    return sendJson(res, 200, { ok: true, watch });
+  }
+  // Run one watch pass NOW (owner/admin) — the "does this actually work on this box" button, and the
+  // way to get a card immediately instead of waiting out the cadence. `force` also runs it when the
+  // watcher is switched off, so the check itself can be tested without turning it on.
+  if (method === 'POST' && p === '/api/update/watch/run') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const out = await new UpdateWatch(os, tm).run({ force: true });
+    return sendJson(res, 200, out);
   }
   if (method === 'POST' && p === '/api/update/apply') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
@@ -2572,6 +2696,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Same rule for their shared Composio apps: the team borrowed those through THEIR entity, so the
     // grant dies with the account rather than leaving the fleet minting under a departed member.
     const sharesRemoved = os.composioShares.removeByOwner(teamMember[1]).length;
+    // …and any company connection claimed for them goes back to the company: an account nobody owns must
+    // not stay walled off from the whole fleet with no one able to explain why.
+    os.composioClaims.releaseByMember(teamMember[1]);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'member.removed', data: { member: teamMember[1], connectorsRemoved, hostsRemoved, sharesRemoved } });
     return sendJson(res, 200, { ...out, connectorsRemoved, hostsRemoved, sharesRemoved });
   }
@@ -2643,7 +2770,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const raw = String(ab.runAs || '').trim();
       if (!raw) runAs = undefined;
       else {
-        const m = os.team.getMember(raw) ?? os.team.getMemberByEmail(raw);
+        const m = os.team.resolveMemberRef(raw);
         if (!m) return sendJson(res, 400, { error: `unknown member "${raw}" for runAs` });
         runAs = m.id;
       }
@@ -2681,7 +2808,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/agents/proposals') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
     const target = url.searchParams.get('target') || undefined;
-    return sendJson(res, 200, { proposals: tm.openAgentUpdateProposals(target), canApprove: true });
+    // Stamp `stale` on every card whose pinned baseHash no longer matches the target's CLAUDE.md. Several
+    // agents proposing on ONE target is normal (the 10-card cap is per-proposer, and only an identical delta
+    // from the same proposer is deduped), and each card carries a FULL replacement prompt — so approving a
+    // second one silently reverts the first. The approve route already detects that and warns; surfacing it
+    // in the LIST is what lets a reviewer avoid the clobber instead of being told about it afterwards.
+    const claudeMdNow = new Map<string, string>();
+    const proposals = tm.openAgentUpdateProposals(target).map((pr) => {
+      if (!pr.baseHash || !('claudeMd' in pr.fields)) return { ...pr, stale: false };
+      if (!claudeMdNow.has(pr.target)) {
+        const ag = os.agents.get(pr.target);
+        claudeMdNow.set(pr.target, ag ? readAgentSnapshot(ag).claudeMd : '');
+      }
+      return { ...pr, stale: contentHash(claudeMdNow.get(pr.target) ?? '') !== pr.baseHash };
+    });
+    return sendJson(res, 200, { proposals, canApprove: true });
   }
   const agUpdApprove = p.match(/^\/api\/agents\/proposals\/([\w.-]+)\/approve$/);
   if (method === 'POST' && agUpdApprove) {
@@ -3293,8 +3434,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
     const convo = tm.sessionConversation(id);
-    const out = await summarizeConversation(convo);
-    os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.summarized', data: { via: out.via, found: out.found } });
+    const cred = tm.outOfBandCredentialEnv();
+    const out = await summarizeConversation(convo, { credentials: cred?.vars, account: cred?.account });
+    os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.summarized', data: { via: out.via, found: out.found, reason: out.reason, account: out.account } });
     return sendJson(res, 200, out);
   }
   // Stop a running session (kill its tmux, keep the row). Per-member: only the session's owner, or
@@ -3640,7 +3782,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // page load would burn the rate limit to render a number. `prCounts` is parsed BEFORE the body clip
     // above would matter — `tasks`, not `slim`, so a link past the clip point still counts.
     const prCounts = new PrCache(os.db, os.tenant).summaries(taskPrRefsBulk(os.db, tasks));
-    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), prCounts, agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me), workers: tm.taskWorkers() });
+    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), prCounts, agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me, slim.map((t) => t.id), LIST_CLIP), workers: tm.taskWorkers() });
   }
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);
@@ -4518,7 +4660,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         bin: r.bin, install: r.install.join(' '),
         installed: present.get(r.id)?.installed ?? false, version: present.get(r.id)?.version,
       }));
-      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, skills: ag.skills ?? [], tools: ag.tools ?? [], usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, outputStyle: ag.outputStyle, outputStyles: os.outputStyles.names(), examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, skills: ag.skills ?? [], tools: ag.tools ?? [], usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     // Runtime change (owner/admin). Validate BEFORE the tuning, so the tuning is checked against the
@@ -4536,7 +4678,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // (`''` = clear to inherit) replaces it. Sending one knob used to blank the others — see
     // runtimeTuningPatch. On a runtime switch a model the body doesn't re-state is dropped, since a
     // pinned model belongs to the family being left.
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(runtimeTuningPatch(b, ag, { dropModel: runtime !== ag.runtime }), runtime);
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(runtimeTuningPatch(b, ag, { dropModel: runtime !== ag.runtime, dropStyle: !runtimeSupports(runtime, 'outputStyle') }), runtime, { styles: os.outputStyles.names() });
     if (tErr) return sendJson(res, 400, { error: tErr });
     const before = readAgentSnapshot(ag);
     // Starter prompts + shell secrets + category + icon are only touched when the body carries the field
@@ -4568,13 +4710,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, skills, tools, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, outputStyle: tuning.outputStyle, examplePrompts: prompts, shellSecrets, skills, tools, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
     const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, before.claudeMd), 'edited config', me.email);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, category, shellSecrets: shellSecrets ?? [], skills: skills ?? [], tools: tools ?? [], netMode: netMode ?? 'open', rev } });
-    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, skills, tools, netMode: netMode ?? 'open', category, icon });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, outputStyle: tuning.outputStyle, category, shellSecrets: shellSecrets ?? [], skills: skills ?? [], tools: tools ?? [], netMode: netMode ?? 'open', rev } });
+    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, outputStyle: tuning.outputStyle, warning: tuning.outputStyle ? outputStyleWarning(tuning.outputStyle) : undefined, examplePrompts: prompts, shellSecrets, skills, tools, netMode: netMode ?? 'open', category, icon });
   }
 
   // ── agent config revision history + revert (owner/admin) — the human rollback for a self-editing agent ──
@@ -4609,23 +4751,75 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'PUT' && p === '/api/settings/runtime-defaults') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const b = await readBody(req);
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(b, undefined, { styles: os.outputStyles.names() });
     if (tErr) return sendJson(res, 400, { error: tErr });
     const saved = os.settings.setRuntimeDefaults(tuning, me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.runtimeDefaults.updated', data: { ...tuning } });
-    return sendJson(res, 200, { ok: true, ...saved });
+    // A style this box's `claude` is too old for still saves — boxes get upgraded and a fleet default
+    // must be settable ahead of a rollout — but it is never applied silently. See outputStyleWarning.
+    return sendJson(res, 200, { ok: true, ...saved, warning: tuning.outputStyle ? outputStyleWarning(tuning.outputStyle) : undefined });
   }
 
-  // ── how far has the terse flag actually spread? Counts only. The predecessor route
-  //    (/api/settings/verbosity-savings) reported cost-per-turn deltas and was retired in v0.389.0:
-  //    `output_tokens` is ~85% tool-call arguments, so it could not measure the narration the brief
-  //    acts on, and the console was rendering the result as a saving. The effect question belongs to
-  //    `npm run bench:verbosity` / `bench:verbosity-turns`, not to a query over live traffic.
-  //    Read-only, owner/admin. `days` widens the trailing window.
-  if (method === 'GET' && p === '/api/settings/verbosity-adoption') {
+  // ── which output styles is the fleet actually running? COUNTS ONLY, deliberately. Two ancestors of
+  //    this route reported cost: /api/settings/verbosity-savings (retired v0.389.0 — `output_tokens` is
+  //    ~85% tool-call arguments, so it could not measure the narration it claimed to) and the adoption
+  //    route that replaced it. The effect question belongs to a controlled experiment
+  //    (`npm run bench:output-style`), never to a query over live traffic. Read-only, owner/admin.
+  if (method === 'GET' && p === '/api/settings/output-style-adoption') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const days = Math.max(1, Math.min(Math.floor(Number(url.searchParams.get('days')) || 30), 365));
-    return sendJson(res, 200, verbosityAdoption(os.db, days));
+    return sendJson(res, 200, outputStyleAdoption(os.db, days));
+  }
+
+  // ── the output-style library: Claude Code's built-ins + this workspace's custom styles ──
+  //    A style is a system-prompt shape (role/tone/response format), NOT project context (that's the
+  //    agent prompt) and NOT a procedure (that's a skill). Owner/admin to write, any member to read —
+  //    the picker on an agent's runtime card needs the list.
+  if (method === 'GET' && p === '/api/output-styles') {
+    const custom = os.outputStyles.list();
+    return sendJson(res, 200, {
+      builtin: BUILTIN_OUTPUT_STYLES.map((b) => ({ ...b, warning: outputStyleWarning(b.name) })),
+      custom,
+      enabled: os.outputStyles.enabled,
+    });
+  }
+  if (method === 'GET' && p.startsWith('/api/output-styles/')) {
+    const name = decodeURIComponent(p.slice('/api/output-styles/'.length));
+    const style = os.outputStyles.get(name);
+    if (!style) return sendJson(res, 404, { error: `output style "${name}" not found` });
+    return sendJson(res, 200, style);
+  }
+  if (method === 'PUT' && p.startsWith('/api/output-styles/')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const name = decodeURIComponent(p.slice('/api/output-styles/'.length));
+    if (!validOutputStyleName(name)) return sendJson(res, 400, { error: `"${name}" is not a valid output-style name` });
+    const b = await readBody(req);
+    const content = typeof b.content === 'string' && b.content.trim()
+      ? b.content
+      : starterOutputStyle(name, typeof b.description === 'string' ? b.description : '');
+    try {
+      const saved = os.outputStyles.save(name, content);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'output-style.saved', data: { name, bytes: saved.bytes, keepCodingInstructions: saved.keepCodingInstructions } });
+      // `keep-coding-instructions: false` is the frontmatter DEFAULT, and it removes Claude Code's
+      // software-engineering instructions from every agent that selects this style. Silent in the CLI,
+      // so it is said out loud here.
+      const warning = saved.keepCodingInstructions
+        ? undefined
+        : 'this style omits `keep-coding-instructions: true`, so an agent using it loses Claude Code\'s built-in software-engineering instructions.';
+      return sendJson(res, 200, { ok: true, ...saved, warning });
+    } catch (e) {
+      return sendJson(res, 400, { error: String((e as Error).message || e) });
+    }
+  }
+  if (method === 'DELETE' && p.startsWith('/api/output-styles/')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const name = decodeURIComponent(p.slice('/api/output-styles/'.length));
+    if (!os.outputStyles.remove(name)) return sendJson(res, 404, { error: `output style "${name}" not found` });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'output-style.deleted', data: { name } });
+    // Agents pinned to it keep the name on disk and fall back to Default at launch (an unknown style is
+    // silently ignored). Naming them is what makes that recoverable instead of mysterious.
+    const orphaned = [...os.agents.values()].filter((a) => a.outputStyle === name).map((a) => a.id);
+    return sendJson(res, 200, { ok: true, orphaned });
   }
 
   // ── fleet-wide sub-agent posture ('all' | 'none') — owner/admin only ──
@@ -4675,6 +4869,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 40));
     return sendJson(res, 200, requestMetrics.snapshot(limit));
   }
+  // Per-agent tool usage, the DURABLE counterpart to the in-memory request metrics above. Answers "which
+  // tools does this agent actually use" — including the READ tools nothing else can see, since the
+  // loopback tools bypass the gate and only the writing ones audit. Flushed on a timer, so the newest
+  // minute may be missing; `?flush=1` forces the pending counts down first for an exact read.
+  if (method === 'GET' && p === '/api/metrics/tools') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (url.searchParams.get('flush') === '1') { try { toolUsage.flush(os.tenant, os.db); } catch { /* best-effort */ } }
+    const days = Math.min(365, Math.max(1, Number(url.searchParams.get('days')) || 30));
+    const rows = readToolUsage(os.db, os.tenant, days);
+    // Roll the day buckets up per (agent, tool) and per tool, so the caller gets the two questions it
+    // actually asks without re-summing client-side.
+    const byAgent: Record<string, Record<string, number>> = {};
+    const byTool: Record<string, number> = {};
+    for (const r of rows) {
+      (byAgent[r.agent] ??= {})[r.tool] = (byAgent[r.agent]?.[r.tool] ?? 0) + r.n;
+      byTool[r.tool] = (byTool[r.tool] ?? 0) + r.n;
+    }
+    return sendJson(res, 200, { days, agents: Object.keys(byAgent).length, tools: Object.keys(byTool).length, byTool, byAgent, pending: toolUsage.pendingCount() });
+  }
   if (method === 'POST' && p === '/api/metrics/requests/reset') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     requestMetrics.reset();
@@ -4704,11 +4917,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const value = os.settings.maxConcurrentSessions(); // operator override (null = unset)
     const resolved = autos.concurrencyCap();           // effective cap the scheduler enforces (0 = unlimited)
     const source = envLocked ? 'env' : value != null ? 'setting' : 'derived';
-    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), admitted: tm.admissionSessionCount(), parked: tm.parkedSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours(), claimedMaxHours: os.settings.claimedMaxHours() });
+    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), admitted: tm.admissionSessionCount(), parked: tm.parkedSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours(), claimedMaxHours: os.settings.claimedMaxHours(), interactiveMaxHours: os.settings.interactiveMaxHours() });
   }
   if (method === 'PUT' && p === '/api/settings/concurrency') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    const b = await readBody(req) as { value?: unknown; idleHours?: unknown; unattendedMaxHours?: unknown; unattendedNoProgressMinutes?: unknown; blockedMaxHours?: unknown; claimedMaxHours?: unknown };
+    const b = await readBody(req) as { value?: unknown; idleHours?: unknown; unattendedMaxHours?: unknown; unattendedNoProgressMinutes?: unknown; blockedMaxHours?: unknown; claimedMaxHours?: unknown; interactiveMaxHours?: unknown };
     // Cap: `null`/'' clears the override (→ derived default); 0 = unlimited; N>0 = cap. Only touched when the
     // key is present, so a PUT that only sets idleHours leaves the cap alone.
     if ('value' in b) {
@@ -4750,6 +4963,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.blockedMax.updated', data: { blockedMaxHours: savedH } });
     }
     // Claim ceiling (hours): how long a claimed-but-untouched session keeps its take-over exemption. 0 = off.
+    if ('interactiveMaxHours' in b) {
+      const h = Number(b.interactiveMaxHours);
+      if (!Number.isFinite(h) || h < 0) return sendJson(res, 400, { error: 'interactiveMaxHours must be a non-negative number (0 = off)' });
+      const savedH = os.settings.setInteractiveMaxHours(h, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.interactiveMax.updated', data: { interactiveMaxHours: savedH } });
+    }
     if ('claimedMaxHours' in b) {
       const h = Number(b.claimedMaxHours);
       if (!Number.isFinite(h) || h < 0) return sendJson(res, 400, { error: 'claimedMaxHours must be a non-negative number (0 = off)' });
@@ -5093,7 +5312,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/deps') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     // Presence is local + sync; freshness asks the npm registry, cached for an hour (`?force=1` re-asks).
-    return sendJson(res, 200, await checkDepUpdates(checkDeps(), url.searchParams.get('force') === '1'));
+    const report = await checkDepUpdates(checkDeps(), url.searchParams.get('force') === '1');
+    return sendJson(res, 200, { ...report, watch: os.settings.runtimeWatch(), gateReviewedVersion: os.settings.gateReviewedRuntimeVersion() });
   }
   // Upgrade one npm-installed dep in place (`npm install -g <pkg>@latest`). Owner-gated — it mutates the
   // box's global node prefix — same posture as the package-manager install above.
@@ -5103,14 +5323,34 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!bin) return sendJson(res, 400, { error: 'bin required' });
     const result = await updateNpmDep(bin);
     const after = result.report.deps.find((d) => d.bin === bin);
+    // An owner upgrading the runtime by hand is the same act of review as approving the watcher's card,
+    // so it stamps the same version. Otherwise the next watch card would tell someone who just upgraded
+    // that the gate was last signed off several versions ago.
+    if (result.ok && bin === 'claude' && after?.version) os.settings.setGateReviewedRuntimeVersion(after.version, me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'system.deps.updated', data: { bin, ok: result.ok, version: after?.version, latest: after?.latest } });
     return sendJson(res, 200, result);
+  }
+  // The agent-runtime CLI WATCHER's config — whether this box says anything when its `claude` falls
+  // behind the registry, and whether it may upgrade in place on an owner's approval. Owner-only: a CLI
+  // upgrade can widen what runs ungoverned (see edge/runtime-update-watch.ts).
+  if (method === 'POST' && p === '/api/runtime/watch') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const b = await readBody(req);
+    if (b.mode != null && !['off', 'notify', 'ask'].includes(String(b.mode))) return sendJson(res, 400, { error: 'mode must be off, notify or ask' });
+    const watch = os.settings.setRuntimeWatch({ mode: b.mode as never, everyHours: b.everyHours != null ? Number(b.everyHours) : undefined }, me.email);
+    os.audit.append({ ts: Date.now(), runId: 'runtime-update', tenant: os.tenant, principal: me.email, type: 'runtime.watch.configured', data: { ...watch } });
+    return sendJson(res, 200, { ok: true, watch });
+  }
+  // Run one runtime-watch pass NOW (owner/admin). `force` runs it even when the watcher is off.
+  if (method === 'POST' && p === '/api/runtime/watch/run') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, await new RuntimeUpdateWatch(os, tm).run({ force: true }));
   }
   // Install the still-missing, package-manager-installable deps (brew/apt/…). Owner-gated (it runs a
   // privileged system install), same posture as the self-update apply below.
   if (method === 'POST' && p === '/api/deps/install') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
-    const result = installDeps();
+    const result = await installDeps();
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'system.deps.installed', data: { ok: result.ok, steps: result.steps.map((s) => ({ cmd: s.cmd, ok: s.ok })) } });
     // Hand back a freshness-annotated report so the panel re-renders in one round-trip, same as GET.
     return sendJson(res, 200, { ...result, report: await checkDepUpdates(result.report) });
@@ -5433,14 +5673,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
-    const prevBackend = os.settings.memoryConfig()?.backend ?? 'sqlite';
+    const prev = os.settings.memoryConfig();
+    const prevBackend = prev?.backend ?? 'sqlite';
     os.settings.setMemoryConfig(cfg, me.email);
-    // A real backend TYPE switch resets the orphan horizon (existing local rows are from the OLD store, so
-    // they're the ones to migrate up). A same-backend re-save (token/endpoint/ranking edit) must NOT move it,
-    // or already-migrated rows would look like orphans again and re-migrate as duplicates.
-    if (cfg.backend !== prevBackend) {
+    // A change of STORE resets the orphan horizon (existing local rows are from the OLD store, so they're
+    // the ones to migrate up). "Store" is the backend type AND where it points: moving automem from one
+    // endpoint to another lands on an empty deployment exactly like switching backend type did — recall
+    // goes blind while the Memory hub keeps counting the local mirror (the failure this whole reconcile
+    // flow exists for). A same-STORE re-save (token, ranking, preload, maintenance) must NOT move it, or
+    // already-migrated rows would look like orphans again and re-migrate as duplicates.
+    if (memoryStoreIdentity(cfg) !== memoryStoreIdentity(prev)) {
       os.settings.stampMemorySwitch(Date.now(), me.email);
-      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.backend.changed', data: { backend: cfg.backend, from: prevBackend } });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.backend.changed', data: { backend: cfg.backend, from: prevBackend, store: memoryStoreIdentity(cfg), fromStore: memoryStoreIdentity(prev) } });
     } else {
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.config.updated', data: { backend: cfg.backend } });
     }
@@ -5555,7 +5799,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // interactive session, materialise the now-published skill into it + `/reload-skills` instead of
     // waiting for next launch. Bounded to the proposer — a broadcast to the whole fleet would be disruptive.
     const reloaded = proposer ? tm.refreshAgentSkills(proposer).reloaded : 0;
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name, reloaded } });
+    // Close the Inbox review card — the console acts on the skill, so nothing else would ever resolve it.
+    const closed = tm.resolveSkillProposals(name, 'new', 'approved');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name, reloaded, cards: closed } });
     return sendJson(res, 200, { ok: true, skill: os.skills.get(name), reloaded });
   }
   // Apply an agent-proposed EDIT to an existing skill (owner/admin): the parked text becomes the live
@@ -5568,7 +5814,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const applied = os.skills.applyEdit(name);
     if (!applied) return sendJson(res, 404, { error: 'no pending edit for this skill' });
     const reloaded = applied.agent ? tm.refreshAgentSkills(applied.agent).reloaded : 0;
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.applied', data: { skill: name, proposedBy: applied.agent, reloaded } });
+    const closed = tm.resolveSkillProposals(name, 'edit', 'approved');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.applied', data: { skill: name, proposedBy: applied.agent, reloaded, cards: closed } });
     return sendJson(res, 200, { ok: true, skill: os.skills.get(name), reloaded });
   }
   // Discard an agent-proposed edit (owner/admin) — drops the parked text, live skill untouched.
@@ -5578,7 +5825,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const name = skillEditDrop[1];
     const proposer = os.skills.pendingEdit(name)?.agent;
     if (!os.skills.discardEdit(name)) return sendJson(res, 404, { error: 'no pending edit for this skill' });
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.dismissed', data: { skill: name, proposedBy: proposer } });
+    const closed = tm.resolveSkillProposals(name, 'edit', 'rejected');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.dismissed', data: { skill: name, proposedBy: proposer, cards: closed } });
     return sendJson(res, 200, { ok: true });
   }
   // List open agent skill-requests for the Skills page review section (owner/admin).
@@ -5763,7 +6011,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // DELETE — also the "dismiss" action for a proposal (drops the draft folder). Audit the intent.
     const wasProposed = !!os.skills.get(name)?.proposed;
     const ok = os.skills.remove(name);
-    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: wasProposed ? 'skill.proposal.dismissed' : 'skill.deleted', data: { skill: name } });
+    // A deleted skill's review cards are dead either way: a dismissed draft is rejected, and a deleted
+    // published skill can't have its parked edit reviewed (remove() drops that edit with the folder).
+    const closed = ok ? tm.resolveSkillProposals(name, 'new', 'rejected') + tm.resolveSkillProposals(name, 'edit', 'rejected') : 0;
+    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: wasProposed ? 'skill.proposal.dismissed' : 'skill.deleted', data: { skill: name, cards: closed } });
     return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'skill not found' });
   }
 
@@ -6302,14 +6553,121 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     });
     // `mine` rows carry their own share state so the row can render Share / Unshare directly.
     const sharedIds = os.composioShares.sharedIdsFor(me.email);
+    // The account BEHIND each connection (composio-identity.ts). Composio's entity id is a shelf, not an
+    // identity: a company app can be an individual's personal login, which is how a sheet ended up owned
+    // by a teammate nobody had asked. Served from the cache so the page stays fast; the refresh below
+    // keeps that cache honest.
+    const identities = os.composioIdentities.byConnection([
+      serviceUserId(os.tenant), me.email, ...owners,
+    ]);
+    // Claims: a company row that is really one person's account. Carried on the row so the console can
+    // render whose it is (and offer to give it back) without a second call.
+    const claims = new Map(os.composioClaims.list().map((c) => [c.id, c]));
+    const memberName = (id: string): string => os.team.getMember(id)?.name || os.team.getMember(id)?.email || id;
+    const withAccount = <T extends { id: string }>(a: T): T & { account: string; claimedBy?: string; claimedByMember?: string } => {
+      const c = claims.get(a.id);
+      return {
+        ...a,
+        account: identities.get(a.id)?.account ?? '',
+        ...(c ? { claimedBy: memberName(c.memberId), claimedByMember: c.memberId } : {}),
+      };
+    };
     return sendJson(res, 200, {
       keySet: true,
-      company,
-      mine: mine.map((a) => ({ ...a, shared: sharedIds.has(a.id) })),
-      teamShared,
+      company: company.map(withAccount),
+      mine: mine.map((a) => withAccount({ ...a, shared: sharedIds.has(a.id) })),
+      teamShared: teamShared.map(withAccount),
       me: me.email,
       companyEntity: serviceUserId(os.tenant),
     });
+  }
+  // Re-resolve WHOSE account is behind each connection, and what has expired. A live probe (a mint plus
+  // two round trips per entity), so it is an explicit action rather than something every page load pays
+  // for: the Connections page offers it, and a launch fires it in the background at most every 6h.
+  // Any member may refresh their own shelf + the company one; nobody else's.
+  if (method === 'POST' && p === '/api/connections/refresh') {
+    if (!os.settings.composioApiKey()) return sendJson(res, 400, { error: 'no Composio API key' });
+    const out = await tm.refreshComposioConnections([
+      { userId: serviceUserId(os.tenant) },
+      { userId: me.email, ownerMemberId: me.id },
+    ]);
+    return sendJson(res, 200, { ok: true, ...out });
+  }
+  // Clear SUPERSEDED expired connections — an expired account for an (entity, toolkit) that also has a
+  // live one. Deliberately not "delete everything expired": an expired connection with no replacement is
+  // the only record that a capability is missing, and deleting it would erase the very thing that tells
+  // a human to reconnect. Owner/admin, and scoped to the company shelf + the caller's own.
+  if (method === 'POST' && p === '/api/connections/prune') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'only an owner or admin can prune connections' });
+    const key = os.settings.composioApiKey();
+    if (!key) return sendJson(res, 400, { error: 'no Composio API key' });
+    const MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000; // a just-superseded row stays visible for a week
+    const [company, mine] = await Promise.all([
+      listConnectedAccounts(key, serviceUserId(os.tenant)),
+      listConnectedAccounts(key, me.email),
+    ]);
+    const doomed = supersededExpired([...company, ...mine], MIN_AGE_MS);
+    const removed: string[] = [];
+    for (const a of doomed) {
+      const r = await deleteConnectedAccount(key, a.id);
+      if ('error' in r) continue;
+      os.composioShares.unshare(a.id);
+      removed.push(`${a.toolkit} (${a.userId})`);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.pruned', data: { id: a.id, toolkit: a.toolkit, entity: a.userId, reason: 'superseded-expired' } });
+    }
+    // Re-read so the cache reflects the deletions rather than keeping ids that no longer exist.
+    await tm.refreshComposioConnections([
+      { userId: serviceUserId(os.tenant) },
+      { userId: me.email, ownerMemberId: me.id },
+    ], { notify: false });
+    return sendJson(res, 200, { ok: true, removed, kept: doomed.length - removed.length });
+  }
+  // The inverse of sharing: a COMPANY connection that is really one person's account (someone completed
+  // the hosted OAuth while signed in to their own Google/Slack) is claimed back for them. Composio cannot
+  // move an account between entities, so this is a marker the launcher enforces — every OTHER run's
+  // company session is minted without it. Owner/admin only: a company connection is org property, and
+  // letting any member privatise one would silently take a capability away from the whole fleet.
+  if (method === 'POST' && p === '/api/connections/claim') {
+    const b = await readBody(req);
+    const id = String(b.id || '').trim();
+    const claimed = b.claimed !== false;
+    if (!id) return sendJson(res, 400, { error: 'id is required' });
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'only an owner or admin can change who a company connection belongs to' });
+    // Releasing talks to no remote, so it must ALWAYS be possible — a cleared or broken Composio key can
+    // never leave a toolkit walled off with no way to give it back.
+    if (!claimed) {
+      const existing = os.composioClaims.get(id);
+      if (!existing) return sendJson(res, 404, { error: 'that connection is not claimed' });
+      os.composioClaims.release(id);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.released', data: { id, toolkit: existing.toolkit, member: existing.memberId } });
+      return sendJson(res, 200, { ok: true, claimed: false });
+    }
+    const key = os.settings.composioApiKey();
+    if (!key) return sendJson(res, 400, { error: 'no Composio API key' });
+    const entity = serviceUserId(os.tenant);
+    // Verified against Composio, so a claim can only ever name a real company connection.
+    const company = await listConnectedAccounts(key, entity);
+    const app = company.find((a) => a.id === id);
+    if (!app) return sendJson(res, 404, { error: 'that connection is not on the company shelf' });
+    // Who it belongs to: an explicit member, else the one whose email matches the account we resolved
+    // for it. The second is the common case and the reason resolving accounts came first — without it
+    // there is nothing to match on and the caller has to know.
+    const resolved = os.composioIdentities.byConnection([entity]).get(id)?.account ?? '';
+    const target = String(b.memberId || '').trim()
+      ? os.team.getMember(String(b.memberId).trim())
+      : (resolved ? os.team.getMemberByEmail(resolved) : undefined);
+    if (!target) {
+      return sendJson(res, 400, {
+        error: resolved
+          ? `no team member has the address ${resolved} — say which member this connection belongs to`
+          : 'this connection has no resolved account yet — run Check accounts, or say which member it belongs to',
+        resolved,
+      });
+    }
+    os.composioClaims.pruneEntity(entity, new Set(company.map((a) => a.id)));
+    os.composioClaims.claim({ id, toolkit: app.toolkit, userId: entity, memberId: target.id, account: resolved, claimedBy: me.email });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.claimed', data: { id, toolkit: app.toolkit, member: target.id, account: resolved } });
+    return sendJson(res, 200, { ok: true, claimed: true, member: { id: target.id, name: target.name } });
   }
   // Mark one of MY Composio connections available to the whole team — or take it back to just me.
   // Composio can't move an account between entities (its `user_id` is immutable and a session may only
@@ -6667,7 +7025,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   // List open agent secret-requests for the Secrets settings review section (owner/admin). Each is an
   // agent that ran `secret_request`, tagged `mode`: 'provide' (the key isn't in the vault — a human must
-  // enter a value) or 'access' (the key exists but the agent can't read it — a human grants access).
+  // enter a value), 'access' (the key exists but the agent can't read it — a human grants access) or
+  // 'rotate' (the agent reads it fine but the value is rejected — a human types a replacement).
   if (method === 'GET' && p === '/api/secrets/requests') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, { requests: tm.openSecretRequests() });
@@ -6678,7 +7037,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   //  • access — the key already exists under a principal the agent can't read; NO value is typed. We
   //    re-scope the existing sealed value to the requesting agent server-side (read it via the vault,
   //    write a copy under the agent's principal) so it can secret_get — the value is never returned.
-  // Either path optionally injects it into the agent's shell at launch. The VALUE is never audited.
+  //  • rotate — the key exists and the agent CAN read it, but the value is being rejected. The human
+  //    types a replacement and it overwrites every principal holding that key (see below).
+  // Any path optionally injects it into the agent's shell at launch. The VALUE is never audited.
   const secretReqFulfill = p.match(/^\/api\/secrets\/requests\/([\w.-]+)\/fulfill$/);
   if (method === 'POST' && secretReqFulfill) {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -6702,6 +7063,27 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       tm.setSecretRequestStatus(secretReqFulfill[1], 'fulfilled');
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.request.granted', data: { key: card.key, from: src.principal, grantedTo: card.agent, read: grantRead, injected: inject } });
       return sendJson(res, 200, { ok: true, granted: true, injected: inject });
+    }
+    if (card.mode === 'rotate') {
+      // Replace a live-but-rejected credential. The human types the NEW value and it overwrites EVERY
+      // principal currently holding this key: a half-rotated secret is worse than a missing one, because
+      // the agents still resolving the stale copy fail against a credential that LOOKS present (the
+      // GH_TOKEN lesson). Holders are re-derived here — the card may be hours old.
+      const value = b.value != null ? String(b.value) : '';
+      if (!value) return sendJson(res, 400, { error: 'value is required' });
+      const holders = os.secrets.list(os.tenant).filter((s) => s.key === card.key).map((s) => s.principal);
+      if (!holders.length) return sendJson(res, 404, { error: `"${card.key}" is no longer in the vault to rotate` });
+      for (const holder of holders) os.secrets.set(os.tenant, card.key, value, { principal: holder, updatedBy: me.email });
+      if (inject) {
+        // Unlike provide/access (a first assignment), a rotated key may already be injected into OTHER
+        // agents — so ADD the requester rather than replacing the set, which would silently un-inject them.
+        const target = holders.includes(card.agent) ? card.agent : holders.includes('*') ? '*' : holders[0];
+        const already = os.secrets.assignedAgents(os.tenant, target, card.key);
+        if (!already.includes(card.agent)) os.secrets.setAssignedAgents(os.tenant, target, card.key, [...already, card.agent]);
+      }
+      tm.setSecretRequestStatus(secretReqFulfill[1], 'fulfilled');
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.request.rotated', data: { key: card.key, principals: holders, requestedBy: card.agent, injected: inject } });
+      return sendJson(res, 200, { ok: true, rotated: holders.length, principals: holders, injected: inject });
     }
     // provide mode: a human-entered value seals into the vault.
     const value = b.value != null ? String(b.value) : '';
@@ -7371,6 +7753,21 @@ function parseEmbeddings(eb: any, ep?: EmbeddingsConfig): EmbeddingsConfig | und
  * the migrate button copies up. Anchoring to the switch (not a per-run `Date.now()`) is what makes the
  * migration resume-safe. `null` → no switch on record → treat the ledger as already consistent.
  */
+/**
+ * Which STORE a memory config points at — the identity the orphan horizon keys on. Backend type plus the
+ * location of that backend's data, because those are the two ways a save can leave every existing memory
+ * behind: `automem` → `automem` at a different endpoint is a different store, while a token/ranking edit
+ * on the same endpoint is the same store. Credentials are deliberately NOT part of it: re-keying a store
+ * doesn't move its contents, and treating it as a switch would re-migrate everything as duplicates.
+ */
+function memoryStoreIdentity(cfg?: MemoryConfig | null): string {
+  const backend = cfg?.backend ?? 'sqlite';
+  const at = backend === 'automem' ? cfg?.automem?.endpoint ?? ''
+    : backend === 'libsql' ? cfg?.libsql?.url ?? ''
+    : '';
+  return `${backend}|${at.replace(/\/$/, '')}`;
+}
+
 function memoryOrphanHorizon(os: AgentOS): number | null {
   return os.settings.memorySwitchedAt() ?? null;
 }
@@ -7713,13 +8110,34 @@ const GZIP_CACHE_MAX = 64;
  */
 const GZIP_LEVEL_STATIC = 6;
 const GZIP_LEVEL_DYNAMIC = 4;
-function gzipFor(key: string, raw: Buffer, level: number): Buffer {
-  const hit = GZIP_CACHE.get(key);
-  if (hit) return hit;
-  const out = zlib.gzipSync(raw, { level });
-  if (GZIP_CACHE.size >= GZIP_CACHE_MAX) GZIP_CACHE.delete(GZIP_CACHE.keys().next().value as string);
-  GZIP_CACHE.set(key, out);
-  return out;
+/**
+ * Compress `raw`, reusing the cached bytes for an identical body.
+ *
+ * ASYNCHRONOUS on the miss path, and that is the whole point. `zlib.gzipSync` runs on the main thread:
+ * measured on the live globex tenant's 5.03 MB `/api/sessions` payload it blocks the event loop for
+ * **38 ms**, and because the ETag key changes whenever any run does, nearly every 1.5s poll is a miss.
+ * At the observed ~74 full-list polls/min that is ~2.8 s per minute of hard-stalled loop — which is
+ * exactly what `request-metrics` was built to attribute correctly: it showed up as a 1.66 s `maxStallMs`
+ * on `/health`, `/api/messages` and every other route, none of which had done anything wrong.
+ * `zlib.gzip` hands the same work to libuv's threadpool, so the loop keeps serving while it runs.
+ *
+ * The cache is still keyed by the body's content hash, so N tabs polling the same unchanged payload
+ * compress once. A concurrent miss on the same key may compress twice (both callers started before
+ * either finished); that races to the same bytes and is not worth a promise-keyed inflight map.
+ */
+function gzipFor(key: string, raw: Buffer, level: number, done: (out: Buffer) => void): void {
+  const hit = key ? GZIP_CACHE.get(key) : undefined;
+  if (hit) return done(hit);
+  zlib.gzip(raw, { level }, (err, out) => {
+    // A gzip failure is not a reason to fail the request — fall back to the identity bytes. The caller
+    // sets `content-encoding` from what we hand back, so it stays consistent either way.
+    if (err || !out) return done(raw);
+    if (key) {
+      if (GZIP_CACHE.size >= GZIP_CACHE_MAX) GZIP_CACHE.delete(GZIP_CACHE.keys().next().value as string);
+      GZIP_CACHE.set(key, out);
+    }
+    done(out);
+  });
 }
 /**
  * Write a complete in-memory body, negotiating `content-encoding` and (for a cacheable GET) an ETag.
@@ -7745,15 +8163,20 @@ function sendBody(res: http.ServerResponse, status: number, raw: Buffer, content
       return void res.end();
     }
   }
-  let body = raw;
+  const write = (body: Buffer, encoded: boolean): void => {
+    if (encoded) headers['content-encoding'] = 'gzip';
+    headers['content-length'] = String(body.length);
+    res.writeHead(status, headers);
+    res.end(req?.method === 'HEAD' ? undefined : body);
+  };
   if (raw.length >= COMPRESS_MIN && COMPRESSIBLE.test(contentType) && /\bgzip\b/.test(String(req?.headers['accept-encoding'] || ''))) {
     // Only cache keyed by a content hash; without an ETag (a POST reply, an error) compress one-off.
-    body = etag ? gzipFor(etag, raw, level) : zlib.gzipSync(raw, { level });
-    headers['content-encoding'] = 'gzip';
+    // `gzipFor` answers on the same tick for a cache hit and off the threadpool for a miss, so this is
+    // the one place the response completes asynchronously. Callers already `return sendBody(...)` into a
+    // void, and nothing downstream touches `res` after handing it here.
+    return gzipFor(etag, raw, level, (out) => write(out, out !== raw));
   }
-  headers['content-length'] = String(body.length);
-  res.writeHead(status, headers);
-  res.end(req?.method === 'HEAD' ? undefined : body);
+  write(raw, false);
 }
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
   sendBody(res, status, Buffer.from(JSON.stringify(body) ?? 'null', 'utf8'), 'application/json; charset=utf-8', 'no-cache, private');
