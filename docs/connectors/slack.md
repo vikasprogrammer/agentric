@@ -76,6 +76,35 @@ missing `files:read` scope instead of being saved as a "file"; and a non-`slack.
 outright (the URL arrives inside an untrusted event). Audit: `slack.file.received` / `.failed` /
 `.skipped`.
 
+### Thread history — what was said before you were tagged (v0.424.0)
+
+A mention delivers **one message**. Tag the bot on the fifth message of a live thread and, before this,
+it was handed that line alone — so it either asked the human to paste the conversation back or, worse,
+answered confidently about a thread it had never read. Reported from a live tenant on 2026-09-04, where
+the agent replied *"I only receive the text of the message that @-mentions me"* and then guessed at a
+cause.
+
+The bot is already in the channel and already receives the event, so the rest is one authenticated call
+away. `fetchThreadMessages` (`conversations.replies`) reads up to the **last 30** messages of the thread,
+each clipped to 800 chars, and `threadNote` folds them into the prompt oldest-first. Senders are labelled
+by the same resolution the run-as path uses, so a name in the transcript is a teammate the agent can look
+up; another app's posts are named by their bot profile (`Beszel: ALERT web-3 cpu 98%`). The triggering
+message is excluded — it is already in the prompt above.
+
+Deliberately narrow, because a read costs an API call per message:
+- **Only when there is history.** An un-threaded message's `thread_ts` falls back to its own `ts`; that
+  message *opens* the thread, so no call is made.
+- **Only past the continuity branch.** A resumed session already holds the transcript.
+- **Never fatal.** A failure audits `slack.thread.unreadable` `{ channel, thread, error }` and the run
+  proceeds, but the agent is *told* it is blind and why — an agent that knows a thread exists and cannot
+  read it will otherwise invent a reason and tell the human a wrong one.
+
+⚠ **Scopes are per conversation type.** `channels:history` covers **public** channels only — a private
+channel needs **`groups:history`**, a group DM `mpim:history`, a DM `im:history`. All four are in the
+bundled manifest, but an app created before them answers `missing_scope`, which is surfaced verbatim into
+both the audit line and the agent's prompt. The fix is always the same: add the scope in the Slack app
+config and **reinstall**.
+
 ### Replying in a thread the bot started (v0.416.0)
 
 `slack_threads` is keyed by **session id** — one reply target per run — so a thread the *bot* opened (a

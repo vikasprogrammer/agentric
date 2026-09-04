@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.424.0] - 2026-09-04
+### Added
+- **A Slack agent can read the thread it was tagged into.** A mention delivers one message, so an agent
+  pulled into the fifth reply of a live thread saw one line and nothing before it — and then either asked
+  the human to paste the conversation back or answered confidently about a thread it had never read. The
+  bot is already in the channel and already receives the event, so the rest was one authenticated call
+  away: the ingress now reads the thread (`conversations.replies`, last 30 messages, 800 chars each) and
+  hands it to the agent oldest-first, senders resolved to member names and other apps named by their bot
+  profile. Narrow on purpose — no call when the message *opens* its thread, none on the continuity path
+  (that session already holds the transcript), and never fatal. ⚠ History scopes are per conversation
+  type: `channels:history` is public channels only, a **private** channel needs **`groups:history`**
+  (`mpim:history` / `im:history` for group DMs / DMs). All four are in the bundled manifest, but an app
+  installed before them answers `missing_scope` — surfaced verbatim in the `slack.thread.unreadable`
+  audit line *and* in the agent's prompt, so it tells the human the real reason instead of inventing one.
+  Add the scope and reinstall. Pinned by `scripts/slack-ingress-test.cjs`.
+
 ## [0.423.0] - 2026-09-04
 ### Added
 - **A company Composio connection can be claimed back as one person's own** — the exact inverse of
