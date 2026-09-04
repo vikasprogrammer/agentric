@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.424.2] - 2026-09-04
+### Fixed
+- **Pasting a file into an open terminal no longer says "session is not live" on a live session.**
+  `attachFile` gated on the row's `status === 'running'` — the status-folding liveness rule
+  `reachable()` was introduced to replace. An agent that calls `report` is stamped `done` while its
+  claude keeps running, which is the normal shape of a long-lived interactive/resident run (3 of 8 live
+  panes on a live tenant at the time of the fix), and the console shows exactly those sessions green and
+  attachable. So a human pasting a screenshot into the pane in front of them was refused by the server
+  most of the time, with a message the visible, typeable terminal contradicted. Same defect class as the
+  poke-back bug `injectToSession` already fixed; deliberately ended runs (`stopped`/`crashed`) are still
+  refused. Pinned by `scripts/attach-file-liveness-test.cjs`.
+
 ## [0.424.1] - 2026-09-04
 ### Fixed
 - **Tool-usage counts one tool CALL, not one loopback request.** The first live read of the v0.414.6
