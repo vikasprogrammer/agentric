@@ -7903,7 +7903,13 @@ export class TerminalManager {
     const row = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?')
       .get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
-    if (row.status !== 'running') return { ok: false, error: 'session is not live — attachments need a running session' };
+    // Ask the PANE, not the row's `status` — the same rule `injectToSession` already follows. An agent
+    // that called `report` is stamped `done` while its claude keeps running (the normal shape of a
+    // long-lived interactive/resident run: 3 of 8 live panes on northwind at the time of this fix), and
+    // the console rightly shows it green + attachable (`isLive`). Gating this on `status === 'running'`
+    // therefore refused the paste on the exact sessions a human was sitting in front of, with a message
+    // ("session is not live") the visible pane flatly contradicts. See {@link reachable}.
+    if (!this.reachable(sessionId)) return { ok: false, error: 'session is not live — its terminal has ended' };
     const manifest = this.os.agents.get(row.agent);
     if (!manifest?.dir) return { ok: false, error: 'agent has no working folder' };
     const safeExt = (ext || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';
