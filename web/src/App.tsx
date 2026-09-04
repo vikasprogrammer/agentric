@@ -18900,6 +18900,17 @@ function IntegrationsSettings({ me }: { me: Member }) {
               <strong> as the member who sent the message</strong> (matched by their Slack email → their connectors).
             </p>
             {slackState?.lastError && <p className="mt-1 font-mono text-[11px] text-destructive">last error: {slackState.lastError}</p>}
+            {slackState?.threadScopeError && (
+              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                <strong>Agents can't read threads in {slackState.threadScopeError.channel}.</strong>{' '}
+                Slack answered <code className="font-mono">{slackState.threadScopeError.error}</code> when an agent tagged
+                into an existing thread tried to read what was said before it. Add the{' '}
+                <code className="font-mono">{slackState.threadScopeError.scope}</code> scope in the Slack app
+                (OAuth &amp; Permissions → Bot Token Scopes) and <strong>reinstall</strong>. Until then those agents see
+                only the message that mentioned them, and say so in the thread.
+                <span className="ml-1 opacity-70">({new Date(slackState.threadScopeError.at).toLocaleString()})</span>
+              </div>
+            )}
           </div>
           <SlackSetupGuide />
           <Field label="App-level token" help="Basic Information → App-Level Tokens. Scope: connections:write.">

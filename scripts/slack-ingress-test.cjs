@@ -217,6 +217,7 @@ console.log('\ndownload');
   const block = threaded.slice(threaded.indexOf('The thread this arrived in'), threaded.indexOf("When you're done"));
   assert(block.length > 0 && !/can you triage this\?/.test(block), 'the triggering message is not repeated inside the history block');
   assert(/ts=700\.0/.test(askedUrl) && new RegExp(`channel=${CH}`).test(askedUrl), 'the read is scoped to that channel + thread');
+  assert(!/⚠️/.test(posts[posts.length - 1].text), 'a thread that read fine gets a clean ack — no warning noise');
 
   // A first message in a channel opens its own thread: `thread_ts` falls back to `ts`, and there is no
   // history to read — spending an API call per message would be pure cost.
@@ -228,13 +229,35 @@ console.log('\ndownload');
   global.fetch = async () => ({ ok: true, json: async () => ({ ok: false, error: 'missing_scope' }) });
   before = routed.length;
   const auditBefore = aos.db.prepare("SELECT COUNT(*) c FROM audit_events WHERE type = 'slack.thread.unreadable'").get().c;
-  await sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'channel', user: 'U1', ts: '900.9', thread_ts: '700.0', text: '<@BOT> support-ops triage' }));
+  // A PRIVATE channel — the shape the report came from, and the one `channels:history` does not cover.
+  await sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'group', user: 'U1', ts: '900.9', thread_ts: '700.0', text: '<@BOT> support-ops triage' }));
   assert(routed.length === before + 1, 'an unreadable thread never blocks the run');
   const auditAfter = aos.db.prepare("SELECT COUNT(*) c FROM audit_events WHERE type = 'slack.thread.unreadable'").get().c;
   assert(auditAfter === auditBefore + 1, 'and the reason is audited, so the operator can see the missing scope');
   const blind = routed[routed.length - 1].task;
   assert(/missing_scope/.test(blind) && /groups:history/.test(blind), 'the agent is TOLD it is blind and why — it invented a reason for the human otherwise', blind.slice(0, 200));
   assert(/only see the message that mentioned you/.test(blind), 'and told to say so plainly instead of answering as if it had the thread');
+
+  // The prompt is a REQUEST — the model may relay it, paraphrase it wrong, or answer as if nothing were
+  // missing, and the run least able to notice it is blind is exactly this one. So the warning is written
+  // by the server and posted in the thread, deterministically, next to the ack.
+  const warned = posts[posts.length - 1];
+  assert(warned && warned.thread === '700.0', 'the warning lands in the thread the person is watching');
+  assert(/support-ops/.test(warned.text), 'alongside the ack, in one message (the ack is not replaced)');
+  assert(/groups:history/.test(warned.text), 'and names the scope for THIS conversation type — a private channel is `groups:history`, not `channels:history`', warned.text);
+  assert(/reinstall/i.test(warned.text), 'plus the step people forget: the scope does nothing until the app is reinstalled');
+
+  assert(slackApi.threadReadWarning('channel', 'missing_scope').includes('channels:history'), 'a public channel names channels:history');
+  assert(slackApi.threadReadWarning('mpim', 'missing_scope').includes('mpim:history'), 'a group DM names mpim:history');
+  assert(slackApi.threadReadWarning('im', 'missing_scope').includes('im:history'), 'a DM names im:history');
+  assert(/invite the bot/i.test(slackApi.threadReadWarning('group', 'not_in_channel')), 'not_in_channel is a different fix and says so, rather than sending an admin after a scope they already have');
+  assert(slackApi.threadReadWarning('group', 'ratelimited').includes('ratelimited'), 'an unknown error is still reported, verbatim');
+  assert(slackApi.threadReadWarning('group', '') === '' && slackApi.threadReadWarning('group') === '', 'and a thread that read fine adds nothing to the ack');
+
+  // The person who tagged the bot is not the person who can fix it, and the admin never sees the thread.
+  const st = sock.status();
+  assert(st.threadScopeError && st.threadScopeError.scope === 'groups:history' && st.threadScopeError.channel === CH,
+    'the failure is also held for the console, where the admin who can add the scope will see it');
   assert(/missing_scope/.test(String(aos.db.prepare("SELECT data FROM audit_events WHERE type = 'slack.thread.unreadable' ORDER BY ts DESC LIMIT 1").get().data)), 'verbatim — `missing_scope` is the one an operator must act on');
   global.fetch = realFetch;
 

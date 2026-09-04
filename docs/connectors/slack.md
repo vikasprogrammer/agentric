@@ -101,9 +101,26 @@ Deliberately narrow, because a read costs an API call per message:
 
 ⚠ **Scopes are per conversation type.** `channels:history` covers **public** channels only — a private
 channel needs **`groups:history`**, a group DM `mpim:history`, a DM `im:history`. All four are in the
-bundled manifest, but an app created before them answers `missing_scope`, which is surfaced verbatim into
-both the audit line and the agent's prompt. The fix is always the same: add the scope in the Slack app
-config and **reinstall**.
+bundled manifest, but an app created before them answers `missing_scope`. This is the trap the feature
+has: with `channels:history` alone it works in every public channel and fails in every private one, so it
+looks installed until the first private thread.
+
+So the missing scope is reported **deterministically, by the server, in three places** — the agent's own
+prompt is the weakest of them and never the only one:
+
+1. **In the thread**, appended to the ack (`threadReadWarning`): *"I can only see the message that tagged
+   me… the app is missing `groups:history`… an admin adds it and reinstalls."* The prompt is a *request*
+   — the model may relay it, paraphrase it into something wrong, or answer as though nothing were
+   missing, and the run least able to notice it is blind is exactly this one. The scope named is the one
+   for **that** conversation type, and `not_in_channel` gets the different fix it needs (invite the bot)
+   rather than sending an admin after a scope they already have.
+2. **In the console** — `SlackSocket.status().threadScopeError` `{ channel, scope, error, at }` drives an
+   amber banner on Settings → Integrations. The person who tagged the bot is rarely the person who can
+   add a scope, and that admin never sees the thread.
+3. **In the audit** — `slack.thread.unreadable` `{ channel, thread, error, scope }`.
+
+The fix is always the same: add the scope in the Slack app config (OAuth & Permissions → Bot Token
+Scopes) and **reinstall**.
 
 ### Replying in a thread the bot started (v0.416.0)
 

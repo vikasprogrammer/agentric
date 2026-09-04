@@ -312,6 +312,40 @@ export async function downloadSlackFile(
   }
 }
 
+/** The history scope a conversation type needs. Slack splits them by conversation kind, which is the
+ *  whole trap: an app with `channels:history` works in every public channel and fails in every private
+ *  one, so the feature looks installed until the first private thread. */
+export function historyScopeFor(channelType: string): string {
+  if (channelType === 'group') return 'groups:history';
+  if (channelType === 'mpim') return 'mpim:history';
+  if (channelType === 'im') return 'im:history';
+  return 'channels:history';
+}
+
+/**
+ * The line the bot posts IN the thread when it could not read that thread — deterministic, written by
+ * the server, never by the model.
+ *
+ * The agent is told the same thing in its prompt, but a prompt is a request: the model may relay it,
+ * paraphrase it into something wrong, or answer as though nothing were missing. The one case that
+ * matters is exactly the case where the agent has the least context to notice, so the warning cannot
+ * depend on the agent noticing. Returns '' when there is nothing to warn about.
+ */
+export function threadReadWarning(channelType: string, error?: string): string {
+  if (!error) return '';
+  const scope = historyScopeFor(channelType);
+  if (error === 'missing_scope' || error === 'not_allowed_token_type') {
+    return `⚠️ I can only see the message that tagged me — I can't read this thread's earlier messages. ` +
+      `The Agentric Slack app is missing the \`${scope}\` scope for this conversation. ` +
+      `An admin adds it in the Slack app config (OAuth & Permissions → Bot Token Scopes) and reinstalls the app.`;
+  }
+  if (error === 'not_in_channel' || error === 'channel_not_found') {
+    return `⚠️ I can only see the message that tagged me — I can't read this thread's earlier messages ` +
+      `(Slack: \`${error}\`). Invite the bot to this channel so it can read the conversation it is asked about.`;
+  }
+  return `⚠️ I can only see the message that tagged me — reading this thread failed (Slack: \`${error}\`).`;
+}
+
 /** One earlier message in the thread a mention landed in, normalized for the prompt block. */
 export interface SlackThreadMessage {
   /** Slack `ts` — also the message's identity, so the caller can drop the triggering message itself. */

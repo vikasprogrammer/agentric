@@ -21,8 +21,16 @@ new version heading in the same commit.
   type: `channels:history` is public channels only, a **private** channel needs **`groups:history`**
   (`mpim:history` / `im:history` for group DMs / DMs). All four are in the bundled manifest, but an app
   installed before them answers `missing_scope` — surfaced verbatim in the `slack.thread.unreadable`
-  audit line *and* in the agent's prompt, so it tells the human the real reason instead of inventing one.
-  Add the scope and reinstall. Pinned by `scripts/slack-ingress-test.cjs`.
+  audit line, in an amber banner on Settings → Integrations, and in the agent's prompt. Add the scope and
+  reinstall. Pinned by `scripts/slack-ingress-test.cjs`.
+- **The missing scope is warned about deterministically, in the thread.** Telling the agent it is blind
+  is a *request* — the model may relay it, paraphrase it into something wrong, or answer as though
+  nothing were missing, and the run least able to notice it is blind is exactly this one. So the server
+  appends the warning to its own ack: which scope, for this conversation type (`groups:history` in a
+  private channel, `mpim:history` in a group DM), and that the app must be **reinstalled** after adding
+  it. `not_in_channel` gets the different fix it actually needs (invite the bot). And because the person
+  who tagged the bot is rarely the person who can add a scope, the same failure drives a banner on
+  Settings → Integrations for the admin, who never sees the thread.
 
 ## [0.423.0] - 2026-09-04
 ### Added

@@ -16,7 +16,7 @@
  */
 import { AgentOS } from '../kernel';
 import { Automations, chatAck } from './automations';
-import { downloadSlackFile, explainSlackError, fetchThreadMessages, joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage, SlackFileRef } from '../connectors/slack';
+import { downloadSlackFile, explainSlackError, fetchThreadMessages, historyScopeFor, threadReadWarning, joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage, SlackFileRef } from '../connectors/slack';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -31,6 +31,11 @@ const MAX_THREAD_MESSAGES = 30;
 /** Per-message clip inside that block — a pasted stack trace is context, not the point. */
 const MAX_THREAD_CHARS = 800;
 
+/** Ack + the (usually empty) thread-read warning, as one message so the person sees both at once. */
+function withWarning(ack: string, warning: string): string {
+  return warning ? `${ack}\n\n${warning}` : ack;
+}
+
 export class SlackSocket {
   private ws?: WebSocket;
   private botUserId = '';
@@ -44,6 +49,10 @@ export class SlackSocket {
    *  Backs the identity-map auto-link so a notification never re-queries users.lookupByEmail per send. */
   private readonly userByEmailCache = new Map<string, string | null>();
   private lastError = '';
+  /** The most recent thread we were tagged into and could not read, kept for the console's Integrations
+   *  page. The in-thread warning tells the person who tagged us; this tells the admin who can fix it —
+   *  they are rarely the same person, and the admin never sees the thread. */
+  private lastThreadScopeError?: { channel: string; scope: string; error: string; at: number };
 
   constructor(
     private readonly os: AgentOS,
@@ -51,12 +60,16 @@ export class SlackSocket {
   ) {}
 
   /** Live status for the console (never returns the tokens). */
-  status(): { configured: boolean; connected: boolean; botUserId: string; lastError?: string } {
+  status(): {
+    configured: boolean; connected: boolean; botUserId: string; lastError?: string;
+    threadScopeError?: { channel: string; scope: string; error: string; at: number };
+  } {
     return {
       configured: this.os.settings.slackConfigured(),
       connected: this.ws?.readyState === WebSocket.OPEN,
       botUserId: this.botUserId,
       lastError: this.lastError || undefined,
+      threadScopeError: this.lastThreadScopeError,
     };
   }
 
@@ -199,7 +212,11 @@ export class SlackSocket {
     // continuation branch above, whose resumed session already holds the transcript. A failure here is
     // never fatal: the run proceeds without history and the reason is audited (`missing_scope` on a
     // private channel is the one an operator must act on — add `groups:history` and reinstall).
-    const { history, historyError } = await this.fetchThreadHistory(ev.channel, ev.threadTs, ev.raw?.ts);
+    const { history, historyError } = await this.fetchThreadHistory(ev.channel, ev.channelType, ev.threadTs, ev.raw?.ts);
+    // Deterministic, server-written, posted in the thread alongside the ack. The agent is told the same
+    // thing in its prompt, but a prompt is a request — and the run least able to notice it is blind is
+    // exactly this one. So the person who tagged us is told by the OS, not by the model.
+    const threadWarning = threadReadWarning(ev.channelType, historyError);
 
     // Not a thread continuation. A plain channel `message` (no @mention) normally reached us only because
     // the app subscribes to `message.channels` FOR that continuity — chatter in a channel the bot happens
@@ -237,7 +254,7 @@ export class SlackSocket {
           type: 'trigger.slack',
           data: { eventType: ev.eventType, channel: ev.channel, thread: true, ourThread: true, runAs: runAsMember ?? null, fired: r.fired, files: files.length || null },
         });
-        if (r.fired > 0) await postMessage(this.os.settings.slackBotToken(), ev.channel, chatAck(r.agents), ev.threadTs);
+        if (r.fired > 0) await postMessage(this.os.settings.slackBotToken(), ev.channel, withWarning(chatAck(r.agents), threadWarning), ev.threadTs);
         else if (r.reply) await postMessage(this.os.settings.slackBotToken(), ev.channel, r.reply, ev.threadTs);
         return;
       }
@@ -261,7 +278,7 @@ export class SlackSocket {
         });
       }
       if (watch.fired > 0) {
-        await postMessage(this.os.settings.slackBotToken(), ev.channel, chatAck(watch.agents), ev.threadTs);
+        await postMessage(this.os.settings.slackBotToken(), ev.channel, withWarning(chatAck(watch.agents), threadWarning), ev.threadTs);
       }
       return;
     }
@@ -348,7 +365,7 @@ export class SlackSocket {
     // answer via its own Slack egress tools. If nothing fired but the generic router returned a help
     // list (unknown/unaddressed `/agent`), post that so the sender learns how to reach the fleet.
     if (result.fired > 0) {
-      await postMessage(this.os.settings.slackBotToken(), ev.channel, chatAck(result.agents), ev.threadTs);
+      await postMessage(this.os.settings.slackBotToken(), ev.channel, withWarning(chatAck(result.agents), threadWarning), ev.threadTs);
     } else if (result.reply) {
       await postMessage(this.os.settings.slackBotToken(), ev.channel, result.reply, ev.threadTs);
     }
@@ -364,6 +381,7 @@ export class SlackSocket {
    */
   private async fetchThreadHistory(
     channel: string,
+    channelType: string,
     threadTs: string,
     ownTs?: unknown,
   ): Promise<{ history?: string; historyError?: string }> {
@@ -375,11 +393,13 @@ export class SlackSocket {
     const token = this.os.settings.slackBotToken();
     const got = await fetchThreadMessages(token, channel, threadTs, MAX_THREAD_MESSAGES);
     if ('error' in got) {
+      const scope = historyScopeFor(channelType);
       this.os.audit.append({
         ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'slack',
         type: 'slack.thread.unreadable',
-        data: { channel, thread: threadTs, error: got.error },
+        data: { channel, thread: threadTs, error: got.error, scope },
       });
+      this.lastThreadScopeError = { channel, scope, error: got.error, at: Date.now() };
       return { historyError: got.error };
     }
     const lines: string[] = [];
