@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.424.3] - 2026-09-04
+### Fixed
+- **Every send from a shared company mailbox was denied at the gate.** `emailIdentityDenial` refused any
+  member-scoped run that reached for `composio-company` email, on the reasoning that a member should send
+  from their own account. That conflates a Composio SHELF with a MAILBOX: a shared role mailbox
+  (`sales@`, `support@`) connected at the company level is an identity members are *meant* to send from,
+  with its own thread history and ownership. The guard denied it unconditionally — internal mail between
+  teammates included, an owner-run session refused identically — while its own message claimed a
+  precondition it never checked ("the run-as member has no Gmail connected"). It had been dormant since
+  it shipped, because Composio calls were governed as an anonymous `connector.call` that never reached
+  the `email.send` branch; v0.420.0 fixed that classification and woke an always-failing guard, breaking
+  every company-account send in a live tenant at once. ⚠ A `policy_check` could not predict it either —
+  the identity block sits in FRONT of the rule engine, so the preview said ALLOWED and the send died
+  anyway. It now denies on EVIDENCE instead of on a namespace: only when the company email connection
+  resolves to another TEAM MEMBER's own mailbox, which is the actual harm (mail leaving as a named person
+  who does not know) — and specifically the connection that would send THIS message: the toolkit is read
+  off the action slug (longest match, so `microsoft_outlook_…` is not read as `microsoft`), and a
+  connection already CLAIMED for someone else is skipped, since `composioSessionPlan` has walled it off
+  from this run and a claim is the sanctioned fix for this exact problem, not a reason to deny. An
+  `invited`-status member row is a shared alias somebody added to the console, not a person, so it does
+  not convict either. A role mailbox, or an account not yet resolved, falls through: the `email.send`
+  policy still routes every EXTERNAL recipient to a human approval. ⚠ That leaves a real residual —
+  internal mail is not separately gated, so while a company account is unresolved a member-scoped run can
+  mail a teammate from it unchallenged. Resolving the identity cache, or filing a claim, is what closes
+  that; this guard does not. Pinned by `scripts/email-identity-guard-test.cjs` (18 assertions).
+
 ## [0.424.2] - 2026-09-04
 ### Fixed
 - **Pasting a file into an open terminal no longer says "session is not live" on a live session.**
