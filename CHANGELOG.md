@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.425.2] - 2026-09-07
+### Fixed
+- **A magic link printed by the CLI pointed at the recipient's own loopback.** `agent-os invite`,
+  `login-link` and `tenant create` built the `/accept?token=…` URL from a hardcoded
+  `http://127.0.0.1:$PORT`, ignoring `AGENT_OS_PUBLIC_URL` / config `publicUrl` — so the one recovery
+  path that still works when no chat platform is connected handed the locked-out person a link to
+  *their* machine, which 404s or, worse, hits an unrelated local service. All three now resolve the
+  origin the way `TenantRegistry.consoleOrigin` does (env → config `publicUrl` → the loopback dev
+  fallback), so a link works as printed. Pinned by `scripts/cli-link-origin-test.cjs`.
+
+### Added
+- **Telegram is a DM delivery lane, not just an ingress.** It had its own socket, its own identity-map
+  provider, and inbound handlers that already accepted `'telegram'` for approvals, questions and
+  session continuation — but `deliverDM` sent only to Slack/Discord and `bindDmRecipients` bound only
+  those two. A member reachable *only* on Telegram therefore had every push silently dropped, and could
+  never resolve an approval by replying, because no `approval_dms` row was ever written for them. Both
+  halves now include Telegram, so every notifier that reaches Slack/Discord (sign-in links, approvals,
+  questions, tasks, goals, reviews, session events, hand-offs) reaches Telegram too. Outbound needs no
+  socket — `sendMessage` is a stateless POST — so the lane lights up in one place instead of being
+  threaded through twelve notifier signatures. Pinned by `scripts/telegram-dm-lane-test.cjs`.
+
 ## [0.425.1] - 2026-09-07
 ### Fixed
 - **Writing a shell script with a heredoc read as EXECUTING one, so the gate woke the owner for
