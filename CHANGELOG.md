@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.425.1] - 2026-09-07
+### Fixed
+- **Writing a shell script with a heredoc read as EXECUTING one, so the gate woke the owner for
+  `cat > drive.sh`.** Every approval instapods raised in 30 days was `shell.exec`, and every one
+  resolved *approved* — pure false positives. Two were bugs in `sanitizeForIntent`, the pass that
+  strips DATA payloads out of a command before intent-matching. (1) Its interpreter test was a
+  substring `/\b(bash|sh|…)\b/` over the heredoc opener, and `\bsh\b` matches the *filename*
+  `drive.sh` (`.` is a word boundary) — so `mkdir -p … && cat > probe/drive.sh <<'EOF'`, the
+  commonest reason anyone writes a heredoc, was classified as executed code and an `incus delete`
+  inside the script body read as a real delete. `isInterpreter()` now compares each token's
+  **basename** to the interpreter list (`/bin/sh` yes, `drive.sh` no) and never accepts a `>`/`>>`
+  redirect operand. (2) `git commit -q -F - <<'MSG'` has no `cat`/`tee` and no redirect, so it was
+  not a "sink" and the whole **commit message** was scanned as code — the word "prod" in a prose
+  paragraph tripped the gate. Heredocs consumed as a message by git/gh (`-F -`, `--file=-`,
+  `--body-file -`) are now recognised as data; the `-` operand and the git/gh/hub leading command
+  are both required, so `curl -F` and `git commit -F msg.txt` cannot widen it. Interpreter heredocs
+  (`bash <<`, `python <<`, `ssh host bash <<`) still classify in full — stripping only ever removes
+  text, so it can cost a missed match but can never hide an executed command. Pinned by
+  `scripts/heredoc-intent-test.cjs` (23 cases, both directions).
+
 ## [0.425.0] - 2026-09-07
 ### Added
 - **A session now says WHERE it is and whether it is moving — in the console, not buried in the

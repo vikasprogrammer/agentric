@@ -103,16 +103,54 @@ function scan(input: unknown): { text: string; entries: [string, unknown][] } {
   return { text: parts.join(' \n '), entries };
 }
 
+/** Interpreter command names whose heredoc body is EXECUTED, so it must keep classifying. */
+const INTERPRETERS = /^(bash|sh|zsh|ksh|dash|python[0-9.]*|node|ruby|perl|php|Rscript|psql|mysql)$/;
+
+/**
+ * Does this heredoc opener run an INTERPRETER (so the body is executed code, not data)?
+ *
+ * Compares each whitespace token's BASENAME to {@link INTERPRETERS} rather than substring-matching the
+ * whole opener. That distinction is the whole point: `/bin/sh <<EOF` is an interpreter, `cat >
+ * probe/drive.sh <<EOF` is a file write whose TARGET merely ends in `.sh`. A token that is the operand
+ * of a `>`/`>>` redirect is never the command, so it is skipped outright (`cat > sh <<EOF`).
+ *
+ * Deliberately does NOT require a command position: `ssh host bash <<EOF` and `incus exec c -- bash
+ * <<EOF` really do execute the body, and over-accepting here only ever fails CLOSED (the body keeps
+ * classifying, at worst costing an approval), while under-accepting would hide an executed command.
+ */
+export function isInterpreter(opener: string): boolean {
+  const tokens = opener.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (tok === '>' || tok === '>>') { i++; continue; }        // `> file` — the operand is not a command
+    if (/^>>?./.test(tok)) continue;                           // `>file` — glued redirect, same thing
+    const base = tok.slice(tok.lastIndexOf('/') + 1);
+    if (INTERPRETERS.test(base)) return true;
+  }
+  return false;
+}
+
 /**
  * Strip DATA payloads from a shell command before intent-matching, so text that is merely WRITTEN or
  * SENT (a PR body, a commit message, a heredoc'd file) can't be mistaken for an EXECUTED action. The
  * false positives this kills, seen in the wild: docs-bot's `gh pr create --body "…verified npm run build
  * against app.globex.io…"` tripping a prodBuild guard, and `grep -rn "delete from"` reading as a
  * destructive DELETE. We remove (a) the VALUES of message/body CLI flags (`-m`/`--body`/`--title`/…) and
- * (b) heredoc bodies fed to a FILE sink (`cat`/`tee`/`>` redirect). We deliberately KEEP interpreter
+ * (b) heredoc bodies fed to a FILE sink (`cat`/`tee`/`>` redirect) or consumed as a MESSAGE by
+ * git/gh (`git commit -F -`, `gh pr create --body-file -`). We deliberately KEEP interpreter
  * heredocs (`bash <<`, `python <<`) — those ARE executed, so a real destructive op inside one must still
  * be caught. Stripping only ever REMOVES text, so it can make the scan miss a DATA match but can NEVER
  * hide an executed command. Pure.
+ *
+ * ⚠ Two live false positives shaped (a)/(b), both on instapods, both waking the OWNER for nothing:
+ *   - `mkdir -p … && cat > probe/drive.sh <<'EOF'` — the old interpreter test was `/\b(bash|sh|…)\b/`
+ *     over the whole opener, and `\bsh\b` matches the FILENAME `drive.sh` (`.` is a word boundary).
+ *     Every heredoc that writes a shell SCRIPT — the single most common reason to write one — was
+ *     therefore classified as executed code, and an `incus delete` inside it read as a real delete.
+ *     `isInterpreter` now compares a token's BASENAME to the interpreter list (`/bin/sh` yes,
+ *     `drive.sh` no) and never accepts a `>`/`>>` redirect operand.
+ *   - `git commit -q -F - <<'MSG'` — no `cat`/`tee`, no redirect, so not a sink: the whole COMMIT
+ *     MESSAGE was scanned as code and the word "prod" in a prose paragraph tripped the gate.
  */
 export function sanitizeForIntent(command: string): string {
   let s = command;
@@ -122,8 +160,13 @@ export function sanitizeForIntent(command: string): string {
     /(^|\n)([ \t]*[^\n]*?)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\3([^\n]*)\n[\s\S]*?\n[ \t]*\4[ \t]*(?=\n|$)/g,
     (full, nl: string, opener: string, _q: string, tag: string, rest: string) => {
       const sink = /(^|[|&;])\s*(cat|tee)\b/.test(opener) || /[^<>]>>?[^>]/.test(` ${opener} `);
-      const interp = /\b(bash|sh|zsh|ksh|dash|python[0-9.]*|node|ruby|perl|php|Rscript|psql|mysql)\b/.test(opener);
-      return sink && !interp ? `${nl}${opener}<<${tag}${rest}\n${tag}` : full;
+      // The heredoc is a MESSAGE, not code: `git commit -F -`, `git tag -F -`, `gh pr create
+      // --body-file -`. The `-` operand is required (a real FILE argument means the heredoc isn't the
+      // message), and the leading command must be git/gh/hub so `curl -F` can't widen this.
+      const msg =
+        /(^|[|&;])\s*(git|gh|hub)\b/.test(opener) &&
+        /(?:^|\s)(?:-F|--file|--body-file|--message-file|--notes-file)(?:=|\s+)-(?=\s|$)/.test(opener);
+      return (sink || msg) && !isInterpreter(opener) ? `${nl}${opener}<<${tag}${rest}\n${tag}` : full;
     },
   );
   // (b) Message/body CLI arg VALUES — replace the quoted value after the flag with an empty string.
