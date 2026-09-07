@@ -23,6 +23,7 @@ import { SlackSocket } from './edge/slack-socket';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { TelegramSocket } from './edge/telegram-socket';
+import { sendMessage as telegramSend } from './connectors/telegram';
 import { Member, Task } from './types';
 import { TaskNotice } from './state/tasks';
 import { GoalNotice } from './state/goals';
@@ -337,11 +338,18 @@ export class TenantRegistry {
 }
 
 /**
- * Deliver one text to a resolved member set over each member's linked Slack/Discord account (identity
- * map), best-effort. The single copy of the identity-map DM loop the three notifiers used to inline;
- * returns the delivered-DM count for the caller's audit line. Recipient resolution is NOT done here —
- * callers pass an already-resolved set (see {@link resolveRecipients}) so WHO and HOW-to-reach stay
- * separate concerns.
+ * Deliver one text to a resolved member set over each member's linked Slack/Discord/Telegram account
+ * (identity map), best-effort. The single copy of the identity-map DM loop the three notifiers used to
+ * inline; returns the delivered-DM count for the caller's audit line. Recipient resolution is NOT done
+ * here — callers pass an already-resolved set (see {@link resolveRecipients}) so WHO and HOW-to-reach
+ * stay separate concerns.
+ *
+ * Telegram takes no socket parameter, unlike its two siblings: outbound is stateless (`sendMessage` is a
+ * bare POST to `api.telegram.org` with the bot token) so it reads the token off `os.settings` here. That
+ * keeps the lane out of all twelve notifier signatures — every push that already reaches Slack/Discord
+ * (sign-in links, approvals, questions, tasks, goals, reviews, session events) reaches Telegram too,
+ * with no per-notifier threading to forget. A member's Telegram DM only lands if they've started a chat
+ * with the bot, so a failure here is normal and silent, exactly like an unreachable Discord DM.
  */
 async function deliverDM(slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, os: AgentOS, recipients: Member[], text: string | ((platform: ChatPlatform) => string)): Promise<number> {
   // `text` may be a per-platform builder so a message can carry a masked deep-link, whose syntax differs
@@ -366,6 +374,10 @@ async function deliverDM(slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, 
     }
     if (slackId && (await slack.dmUser(slackId, render('slack'))).ok) dms++;
     if (discordId && (await discord.dmUser(discordId, render('discord'))).ok) dms++;
+    // A private chat's id IS the user id, so the identity-map handle doubles as the DM target. No-ops
+    // when Telegram isn't configured (`telegramBotToken()` empty → `sendMessage` returns an error).
+    const telegramId = ids.find((i) => i.provider === 'telegram')?.externalId;
+    if (telegramId && 'ok' in (await telegramSend(os.settings.telegramBotToken(), telegramId, render('telegram')))) dms++;
   }
   return dms;
 }
@@ -377,19 +389,25 @@ async function deliverDM(slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, 
  * auto-linked from their email, so binding beforehand skips exactly the people who were just reached for
  * the first time. Pure over the identity map; the caller decides what a binding means.
  */
-function bindDmRecipients(os: AgentOS, recipients: Member[], bind: (provider: 'slack' | 'discord', externalId: string, memberId: string) => void): void {
+function bindDmRecipients(os: AgentOS, recipients: Member[], bind: (provider: 'slack' | 'discord' | 'telegram', externalId: string, memberId: string) => void): void {
   for (const m of recipients) {
     for (const i of os.team.externalIdsFor(m.id)) {
-      if (i.provider === 'slack' || i.provider === 'discord') bind(i.provider, i.externalId, m.id);
+      // Telegram belongs here for the same reason it belongs in `deliverDM`: the inbound half already
+      // accepts it (`decideApprovalFromChat`/`answerQuestionFromChat`/`continueSessionDm` all take
+      // 'telegram', as do the three bind*Dm writers), so leaving it out bound nothing and a Telegram-only
+      // member's "approve" reply could never be matched back to the approval it answered.
+      if (i.provider === 'slack' || i.provider === 'discord' || i.provider === 'telegram') bind(i.provider, i.externalId, m.id);
     }
   }
 }
 
 /**
- * DM a member their own freshly-minted sign-in link, on their linked Slack/Discord account — the
- * delivery half of the self-service "email me a link" recovery path (server.ts `POST
+ * DM a member their own freshly-minted sign-in link, on their linked Slack/Discord/Telegram account —
+ * the delivery half of the self-service "email me a link" recovery path (server.ts `POST
  * /api/auth/request-link`). Best-effort; the caller ALSO logs the link to server.log so an owner with
- * box access can always recover even with no chat identity linked. Returns the delivered-DM count.
+ * box access can always recover even with no chat identity linked — and with NO chat platform connected
+ * at all, that log line (or `agent-os login-link <email>` on the box) is the whole recovery path.
+ * Returns the delivered-DM count.
  */
 export async function notifyLoginLink(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, member: Member, link: string): Promise<number> {
   const text =
