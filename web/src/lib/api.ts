@@ -451,6 +451,9 @@ export interface Session {
   /** Last time the session's status changed (report/end/stop/resume/crash); = createdAt until the
    *  first transition. Sortable "Updated" column on the sessions list. */
   updatedAt: number
+  /** Where a RUNNING run is and whether it is moving — the agent's declared position plus a
+   *  server-derived verdict. Only set on the by-id fetch (`api.session`), and only while running. */
+  progress?: SessionProgress | null
   /** Human verdict on the finished run — 👍 ('up') / 👎 ('down'); feeds the agent maturity score. */
   rating?: 'up' | 'down'
   ratedBy?: string
@@ -1778,6 +1781,22 @@ export interface SessionChain {
 export type FeedFilter = 'all' | 'needsYou' | 'running' | 'done'
 /** One line in the stream. A running/finished session, or a pending/resolved approval or question —
  *  all projected to this shape by the server's UNION view, with attribution joined onto every row. */
+/** The "where is this run, and is it moving?" line. `subject`/`step`/`total` are declared by the agent
+ *  (only it knows its work divides into N units); `delta`, `verdict` and `reason` are derived
+ *  server-side from the audit stream — an agent cannot assert that it is making progress. `blocked`
+ *  means a human is holding it up, and is deliberately NOT a failure state. */
+export interface SessionProgress {
+  subject: string | null
+  step: number | null
+  total: number | null
+  pct: number | null
+  delta: number | null
+  verdict: 'forward' | 'stuck' | 'circling' | 'blocked'
+  reason: string
+  note: string | null
+  ts: number | null
+  stale: boolean
+}
 export interface FeedItem {
   uid: string // "<source>:<id>" — stable id + pagination tiebreak
   ts: number
@@ -1803,6 +1822,8 @@ export interface FeedItem {
   target: { kind: 'session' | 'task' | 'goal' | 'artifact'; id: string } | null
   /** For a running session: the newest thing the agent just did (audit-derived), so you can watch progress. */
   lastActivity?: { primitive: string; summary: string; ts: number } | null
+  /** For a running session: where it is and whether it is moving. Position is the agent's; the verdict is not. */
+  progress?: SessionProgress | null
   /** Hand-off chain grouping — folds a conversation's runs and nests a delegated run under its caller. */
   threadId?: string
   parentThreadId?: string

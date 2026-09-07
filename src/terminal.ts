@@ -15,6 +15,7 @@ import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { clipText } from './state/session-activity';
+import { ProgressPosition } from './state/session-progress';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
@@ -7432,19 +7433,28 @@ export class TerminalManager {
    *  lifecycle cards, this is an agent-authored signal: a short note on what it just did or is about to
    *  do. Flagging it `important` highlights it in the feed — a milestone or heads-up worth the operator's
    *  eye. Each call is its own feed entry (a timeline), never deduped. Empty messages are dropped. */
-  progress(sessionId: string, agent: string, message: string, important = false): void {
+  progress(sessionId: string, agent: string, message: string, important = false, pos?: ProgressPosition): void {
     const body = (message || '').trim();
     if (!body) return;
+    // The agent-declared position rides in the message's `args` blob and is mirrored into the audit row,
+    // so no migration is needed and the claim HISTORY (which is what makes a delta derivable) is the
+    // existing timeline of `update` rows. See src/state/session-progress.ts.
+    const claim: Record<string, unknown> = {};
+    if (pos?.subject) claim.subject = pos.subject;
+    if (typeof pos?.step === 'number' && Number.isFinite(pos.step)) claim.step = pos.step;
+    if (typeof pos?.of === 'number' && Number.isFinite(pos.of)) claim.of = pos.of;
+    const hasClaim = Object.keys(claim).length > 0;
     // A task-dispatched run narrates INTO its task's Discussion, not the owner's Inbox (§3.2) — its
     // progress IS the conversation, and stays quiet (Discussion messages don't hit the Inbox feed).
     const taskId = this.taskForSession(sessionId);
     if (taskId) {
       this.postTaskMessage({ taskId, author: `agent:${agent}`, agent, body });
-      this.audit(sessionId, agent, 'session.progress', { important, message: body, taskId });
+      this.audit(sessionId, agent, 'session.progress', { important, message: body, taskId, ...claim });
       return;
     }
-    this.addMessage({ type: 'update', sessionId, agent, title: `Update — ${agent}`, body, status: 'open', args: important ? { important: true } : undefined, audienceKind: 'sessionOwner', audienceId: sessionId });
-    this.audit(sessionId, agent, 'session.progress', { important, message: body });
+    const args = important || hasClaim ? { ...(important ? { important: true } : {}), ...claim } : undefined;
+    this.addMessage({ type: 'update', sessionId, agent, title: `Update — ${agent}`, body, status: 'open', args, audienceKind: 'sessionOwner', audienceId: sessionId });
+    this.audit(sessionId, agent, 'session.progress', { important, message: body, ...claim });
   }
 
   /** The task id a session was dispatched for (`task:<id>` provenance), else undefined. Drives the §3.2

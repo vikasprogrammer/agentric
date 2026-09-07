@@ -24,6 +24,7 @@ import { governedCapabilities } from './capabilities/normalize';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
+import { deriveProgress, parseClaim, ProgressClaim, SessionProgress } from './state/session-progress';
 
 /**
  * How much long-form text a LIST endpoint ships per row. List views render a title, a badge row and at
@@ -1361,7 +1362,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const message = String(b.message || '').trim();
     if (!message) return sendJson(res, 400, { error: 'message is required' });
-    tm.progress(session, agent, message, b.important === true || b.important === 'true');
+    // Optional position: the agent's own denominator (see src/state/session-progress.ts). Only the
+    // agent knows its work divides into N units; the VERDICT on whether it is moving is derived
+    // server-side and is deliberately not something it can assert.
+    const pos = {
+      subject: typeof b.subject === 'string' && b.subject.trim() ? b.subject.trim().slice(0, 120) : undefined,
+      step: Number.isFinite(Number(b.step)) ? Number(b.step) : undefined,
+      of: Number.isFinite(Number(b.of)) ? Number(b.of) : undefined,
+    };
+    tm.progress(session, agent, message, b.important === true || b.important === 'true', pos);
     return sendJson(res, 200, { ok: true });
   }
   // agent deliberately notifies a specific teammate (the `notify` tool) — the escape hatch from the
@@ -3026,7 +3035,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Live progress: for the RUNNING lines, attach the newest thing the agent just did (classified from
     // the audit tail, with the un-audited `update` note as a fallback), so a viewer can watch a session
     // advance without opening its terminal. Bounded to the running items on the page (a handful).
-    for (const it of page.items) if (it.state === 'running') it.lastActivity = latestActivity(os, it.runId);
+    // …and WHERE it is: the agent's declared position (subject / step of total) plus a server-derived
+    // verdict on whether it is actually advancing. `lastActivity` says what it just did; this says
+    // whether that is getting anywhere.
+    const progressNow = Date.now();
+    for (const it of page.items) if (it.state === 'running') {
+      it.lastActivity = latestActivity(os, it.runId);
+      it.progress = sessionProgress(os, it.runId, progressNow);
+    }
     // Hand-off chain: stamp thread identity on session-backed items so the console can collapse a
     // delegation burst under its root (same threadId/parentThreadId the sessions list + chain rail use).
     const threads = tm.threadsFor(page.items.filter((it) => it.target?.kind === 'session').map((it) => it.target!.id));
@@ -3053,7 +3069,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && sessByIdMatch) {
     const [row] = tm.listSessions(me, LIST_CLIP, [sessByIdMatch[1]]);
     if (!row) return sendJson(res, 404, { error: 'unknown session' });
-    return sendJson(res, 200, row.task ? { ...row, task: clipText(row.task, LIST_CLIP) } : row);
+    // Detail view carries the progress line too (the feed row's twin), so opening a session answers
+    // "where is this" without reading the transcript. Only meaningful while it is running.
+    const progress = row.status === 'running' ? sessionProgress(os, sessByIdMatch[1], Date.now()) : null;
+    const view = row.task ? { ...row, task: clipText(row.task, LIST_CLIP) } : { ...row };
+    return sendJson(res, 200, { ...view, progress });
   }
   if (method === 'POST' && p === '/api/sessions') {
     const b = await readBody(req);
@@ -7245,6 +7265,50 @@ function latestActivity(os: AgentOS, runId: string): { primitive: string; summar
     .prepare("SELECT created_at AS ts, body FROM messages WHERE session_id = ? AND type = 'update' ORDER BY created_at DESC LIMIT 1")
     .get<{ ts: number; body: string }>(runId);
   return u ? { primitive: 'update', summary: clipText(u.body, 140), ts: u.ts } : null;
+}
+/** Build a run's progress line: the agent's declared position + a SERVER-derived verdict on whether it
+ *  is moving. The reads live here (the derivation in `src/state/session-progress.ts` is pure, like the
+ *  activity classifier). Claims come from the `session.progress` AUDIT rows rather than the `update`
+ *  inbox messages, because a task-dispatched run narrates into its task Discussion instead of the Inbox
+ *  — audit is the one stream both branches always write. Bounded LIMITs so it stays cheap per poll. */
+function sessionProgress(os: AgentOS, runId: string, now: number): SessionProgress | null {
+  const rows = os.db
+    .prepare("SELECT ts, type, data FROM audit_events WHERE tenant = ? AND run_id = ? ORDER BY ts DESC, id DESC LIMIT 120")
+    .all<{ ts: number; type: string; data: string }>(os.tenant, runId);
+  const claims: ProgressClaim[] = [];
+  let lastActivityTs: number | null = null;
+  let loopTs: number | null = null;
+  let loopCount: number | null = null;
+  for (const r of rows) {
+    const d = safeJson(r.data);
+    if (r.type === 'session.progress') {
+      claims.push(parseClaim(r.ts, clipText(d.message, 140), d));
+      continue;
+    }
+    if (r.type === 'reliability.loop' && loopTs == null) {
+      loopTs = r.ts;
+      loopCount = typeof d.count === 'number' ? d.count : null;
+      continue;
+    }
+    // The newest legible primitive — same classifier the trail and `latestActivity` use, so "activity"
+    // means the same thing everywhere and session plumbing never reads as progress.
+    if (lastActivityTs == null && classifyActivity(r.type, d)) lastActivityTs = r.ts;
+  }
+  if (!claims.length && lastActivityTs == null && loopTs == null) return null;
+  const pendingApproval = os.db
+    .prepare("SELECT 1 FROM approvals WHERE tenant = ? AND run_id = ? AND status = 'pending' LIMIT 1")
+    .get<{ 1: number }>(os.tenant, runId) != null;
+  const pendingQuestion = !pendingApproval && os.db
+    .prepare("SELECT 1 FROM questions WHERE run_id = ? AND status = 'pending' LIMIT 1")
+    .get<{ 1: number }>(runId) != null;
+  return deriveProgress({
+    now,
+    claims, // already newest-first (the query is DESC)
+    lastActivityTs,
+    loopTs,
+    loopCount,
+    awaiting: pendingApproval ? 'approval' : pendingQuestion ? 'question' : null,
+  });
 }
 /** Resolve the requested inbox scope from `?scope=`. Only owner/admin may see the `all` oversight view;
  *  a member is always pinned to `mine` (they can't see others' cards regardless, so this just keeps the

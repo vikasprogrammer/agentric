@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.425.0] - 2026-09-07
+### Added
+- **A session now says WHERE it is and whether it is moving — in the console, not buried in the
+  transcript.** A running session surfaced two things and neither answered the question: `lastActivity`
+  says what the agent *just did* (a point event, no position), and `update` posts agent-authored prose
+  (position-free, and self-graded). Watching a fleet agent, you could not tell a run that was advancing
+  from one re-reading the same file for the fortieth time. The new progress line splits the answer along
+  the only honest seam: the agent owns the **denominator** (`update` takes optional `subject` / `step` /
+  `of` — only it knows its work divides into 22 files), and the **verdict is derived server-side**
+  (`src/state/session-progress.ts`) from the audit stream, because an agent that believes it is
+  progressing is exactly the one going in circles. Renders on the feed row (folded into the existing
+  "currently…" line, so a row stays one line) and as a strip above the terminal on session detail.
+  - `circling` has two sources, and the first was **already built and shown to nobody**: the
+    `ReliabilityMonitor` loop detector has been auditing `reliability.loop` all along while only ever
+    nudging the agent. The second is a step that stops rising across three updates — busy is not the
+    same as advancing.
+  - `blocked` is deliberately **not** a failure state. A run parked on a human's approval queue is
+    behaving correctly, and reporting it as `stuck` would blame the agent for the human's backlog and
+    train people to ignore the one indicator that has to stay trustworthy.
+  - Every verdict carries its `reason` ("no activity for 12 min", "3 updates and step is still 6"). A
+    status word nobody can check is one people learn to ignore.
+  - A claim older than the stall window is flagged `stale` and dimmed — a frozen bar must not pretend to
+    be current. No migration: the claim rides in the existing `update` message args + `session.progress`
+    audit row, which is also what makes the delta derivable from the claim history.
+  - Pinned by `scripts/session-progress-test.cjs` (46 assertions), added to `npm run test:governance`.
+
 ## [0.424.3] - 2026-09-04
 ### Fixed
 - **Every send from a shared company mailbox was denied at the gate.** `emailIdentityDenial` refused any

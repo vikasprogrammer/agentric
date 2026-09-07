@@ -575,13 +575,21 @@ const TOOLS = [
       'a milestone reached, or a heads-up they should see. Use it sparingly for SIGNAL on a longer task ' +
       '(not a play-by-play): "Scraped 40 pages, analysing now", "Found the bug, drafting the fix". This ' +
       'does NOT block — keep working after calling it. Set `important: true` for a key milestone or a ' +
-      'heads-up worth highlighting. For finishing the task use `report`; to ask a blocking question use `ask_human`.',
+      'heads-up worth highlighting. For finishing the task use `report`; to ask a blocking question use `ask_human`.\n' +
+      'WHERE ARE YOU: when your work divides into countable units, also pass `subject` (what the whole ' +
+      'job is) plus `step`/`of` (how far in). That is the ONLY way the console can draw a position for ' +
+      'your run — without it a watching human sees prose and cannot tell a run that is advancing from ' +
+      'one that is looping. Declare `of` once you know the plan and keep `step` honest; the console ' +
+      'derives whether you are moving on its own, so a step that stops rising is visible either way.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         message: { type: 'string', description: 'One line: what just happened / what you are doing next.' },
         important: { type: 'boolean', description: 'Highlight this as a key milestone or heads-up. Default false.' },
+        subject: { type: 'string', description: 'Optional — a few words naming the WHOLE job, e.g. "css-free theme.json". Set it once; later updates inherit it.' },
+        step: { type: 'number', description: 'Optional — units of work finished so far (e.g. 6). Pair with `of`.' },
+        of: { type: 'number', description: 'Optional — the total number of units the job divides into (e.g. 22). Set it as soon as the plan is known.' },
       },
       required: ['message'],
     },
@@ -2129,7 +2137,14 @@ async function update(args: Record<string, unknown>): Promise<string> {
   const res = await fetch(AOS_URL + '/api/update', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, message, important: args.important === true }),
+    body: JSON.stringify({
+      session: SESSION,
+      message,
+      important: args.important === true,
+      subject: typeof args.subject === 'string' ? args.subject : undefined,
+      step: typeof args.step === 'number' ? args.step : undefined,
+      of: typeof args.of === 'number' ? args.of : undefined,
+    }),
   });
   const d = (await res.json()) as { ok?: boolean; error?: string };
   return d.ok ? 'Progress posted to the inbox.' : `Could not post update: ${d.error ?? 'unknown error'}`;
