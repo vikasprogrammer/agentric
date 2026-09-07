@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -4023,6 +4023,24 @@ function useSessionChain(sessionId?: string): { chain: SessionChain | null; relo
   return { chain, reload }
 }
 
+/** Poll the open session's progress line. The sessions LIST deliberately doesn't carry it (it would be
+ *  a per-row query on every poll of a long list); the by-id fetch does, so the detail view asks for its
+ *  own. Stops polling the moment the run isn't live — a finished run's position is history, not status. */
+function useSessionProgress(sessionId?: string, live = false): SessionProgress | null {
+  const [progress, setProgress] = useState<SessionProgress | null>(null)
+  useEffect(() => {
+    if (!sessionId || !live) { setProgress(null); return }
+    let alive = true
+    const load = () => api.session(sessionId)
+      .then((r) => { if (alive && r && !('error' in r)) setProgress(r.progress ?? null) })
+      .catch(() => {})
+    load()
+    const t = setInterval(load, 8000)
+    return () => { alive = false; clearInterval(t) }
+  }, [sessionId, live])
+  return progress
+}
+
 /** A chain is only a chain once something was handed off — one node is just a session. */
 const hasChain = (c: SessionChain | null): boolean => (c?.nodes.length ?? 0) > 1
 const chainPending = (c: SessionChain | null): number => (c?.nodes ?? []).reduce((n, x) => n + x.pending.length, 0)
@@ -4328,6 +4346,8 @@ function SessionsPage({
   // (and badge) even while the rail is hidden. Collapsed state persists per browser.
   const openSession = selected ? sessions.find((s) => s.tmux === selected.tmux) : undefined
   const { chain, reload: reloadChain } = useSessionChain(openSession?.id)
+  // Where the open run is + whether it's moving — the detail-view twin of the feed row's line.
+  const openProgress = useSessionProgress(openSession?.id, Boolean(openSession && isLive(openSession)))
   const [railOpen, setRailOpen] = useState(() => localStorage.getItem('aos_chain_rail') !== '0')
   const toggleRail = () => setRailOpen((v) => { localStorage.setItem('aos_chain_rail', v ? '0' : '1'); return !v })
 
@@ -4462,6 +4482,18 @@ function SessionsPage({
             </button>
           )}
         </div>
+        {/* WHERE this run is — a full-width strip between the tab bar and the pane, so the answer is on
+            screen before you start reading terminal output. Present only once it says something the tab
+            strip's status glyph doesn't already (see progressWorthShowing). The verdict's evidence is
+            spelled out here rather than hidden in a tooltip — there's room, and a status word you can't
+            check is one people learn to ignore. */}
+        {progressWorthShowing(openProgress) && (
+          <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-900 px-3 py-1.5">
+            <ProgressLine p={openProgress} />
+            <span className="min-w-0 flex-1 truncate text-xs text-neutral-500" title={openProgress.reason}>{openProgress.reason}</span>
+            {openProgress.note && <span className="min-w-0 max-w-[40%] shrink truncate text-xs italic text-neutral-400" title={openProgress.note}>{openProgress.note}</span>}
+          </div>
+        )}
         {/* Terminal + the hand-off chain, side by side: the pane keeps its height, the rail takes width
             only when this session actually delegated (it renders nothing for a solo run). */}
         <div className="flex min-h-0 flex-1">
@@ -4868,6 +4900,71 @@ function SessionFacts({ session: s, members = [] }: { session?: Session; members
         <Clock className="h-3.5 w-3.5 shrink-0 opacity-60" />
         <span>{timeAgo(s.createdAt)} ago</span>
       </span>
+    </div>
+  )
+}
+
+/** Tone per verdict, deliberately reusing the console's existing status vocabulary: `blocked` is amber
+ *  because it IS the "needs you" state (a human's queue is holding the run up, not a fault of the agent),
+ *  emerald means moving, and the two failure shades stay distinct from red (which means crashed). */
+const PROGRESS_META: Record<SessionProgress['verdict'], { label: string; bar: string; text: string; chip: string }> = {
+  forward: { label: 'forward', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', chip: 'border-emerald-300 bg-emerald-50/60 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400' },
+  blocked: { label: 'blocked', bar: 'bg-amber-400', text: 'text-amber-600 dark:text-amber-400', chip: 'border-amber-300 bg-amber-50/60 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400' },
+  stuck: { label: 'stuck', bar: 'bg-orange-500', text: 'text-orange-600 dark:text-orange-400', chip: 'border-orange-300 bg-orange-50/60 text-orange-700 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-400' },
+  circling: { label: 'circling', bar: 'bg-violet-500', text: 'text-violet-600 dark:text-violet-400', chip: 'border-violet-300 bg-violet-50/60 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-400' },
+}
+
+/** True when the line actually says something a viewer could not already see. A `forward` verdict with
+ *  no declared position is just "it is running", which the row's status glyph already says — rendering
+ *  it would add a chip to every live row and teach people to ignore the whole indicator. */
+function progressWorthShowing(p: SessionProgress | null | undefined): p is SessionProgress {
+  return Boolean(p && (p.pct != null || p.step != null || p.subject || p.verdict !== 'forward'))
+}
+
+/** The progress BAR. Rendered only with a real denominator — a bar with no total would be a made-up
+ *  number, and the whole point of this line is that its parts are each traceable to something. A stale
+ *  claim renders dimmed: the position may no longer be true and must not look current. */
+function ProgressBar({ p, className = 'w-24' }: { p: SessionProgress; className?: string }) {
+  if (p.pct == null) return null
+  const m = PROGRESS_META[p.verdict]
+  return (
+    <span className={`inline-block h-1.5 shrink-0 overflow-hidden rounded-full bg-muted ${className} ${p.stale ? 'opacity-40' : ''}`}>
+      <span className={`block h-full rounded-full ${m.bar} transition-[width] duration-500`} style={{ width: `${Math.round(p.pct * 100)}%` }} />
+    </span>
+  )
+}
+
+/**
+ * The one-line "where is this run, and is it moving?" — the answer you otherwise had to read a whole
+ * transcript for. Position (subject · step/total) is what the AGENT declared; the delta and the verdict
+ * are derived server-side, so nothing here is the agent grading its own homework.
+ *
+ * `activity` is the row's existing "currently…" text, folded in as the trailing clause so a running feed
+ * row stays ONE line instead of growing a second.
+ */
+function ProgressLine({ p, activity, compact = false }: { p: SessionProgress; activity?: string | null; compact?: boolean }) {
+  const m = PROGRESS_META[p.verdict]
+  const pos = p.step != null ? (p.total != null ? `${p.step}/${p.total}` : `step ${p.step}`) : null
+  // The delta is the half that makes a bar mean anything, so it is shown whenever it exists — including
+  // a flat 0, which is precisely the interesting case.
+  const delta = p.delta == null ? null : p.delta > 0 ? `+${p.delta}` : String(p.delta)
+  return (
+    <div className={`flex min-w-0 items-center gap-1.5 ${compact ? 'text-xs' : 'text-[13px]'} text-muted-foreground`}>
+      <ProgressBar p={p} className={compact ? 'w-16' : 'w-28'} />
+      {p.subject && <span className="shrink-0 font-medium text-foreground/80">{p.subject}</span>}
+      {pos && <span className={`shrink-0 tabular-nums ${p.stale ? 'opacity-50' : ''}`}>{pos}</span>}
+      {delta && <span className={`shrink-0 tabular-nums ${p.delta! > 0 ? m.text : 'opacity-60'}`}>{delta}</span>}
+      {/* The verdict carries its evidence in the tooltip — a status word nobody can check is one people
+          learn to ignore. */}
+      <span className={`shrink-0 rounded border px-1 py-px text-[10px] font-medium uppercase tracking-wide ${m.chip}`} title={p.reason}>
+        {m.label}
+      </span>
+      {p.stale && p.ts && (
+        <span className="shrink-0 text-[10px] opacity-60" title="the agent has not restated its position since — the number above may be out of date">
+          as of {timeAgo(p.ts)} ago
+        </span>
+      )}
+      {activity && <span className="min-w-0 truncate italic">{activity}</span>}
     </div>
   )
 }
@@ -5941,14 +6038,22 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
     ) : (
       <div>
         {snippet(it)}
-        {/* live progress: what the agent is doing right now, refreshed by the poll (no terminal needed).
-            Only render when there's an actual summary — otherwise the dot dangles with nothing after it. */}
-        {it.state === 'running' && it.lastActivity?.summary?.trim() && (
+        {/* live progress, refreshed by the poll (no terminal needed). Two shapes, never both — the row
+            stays ONE line either way:
+              · WHERE it is — the agent's declared position + a server-derived forward/stuck/circling
+                verdict, with what it's doing folded in as the trailing clause;
+              · failing that, just what it's doing (the pre-existing "currently…" line), for a run that
+                never declared a position and is moving normally. */}
+        {it.state === 'running' && (progressWorthShowing(it.progress) ? (
+          <div className="mt-1">
+            <ProgressLine p={it.progress} activity={it.lastActivity?.summary?.trim() || null} compact />
+          </div>
+        ) : it.lastActivity?.summary?.trim() ? (
           <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
             <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 motion-safe:animate-pulse" />
             <span className="min-w-0 truncate italic">{it.lastActivity.summary.trim()}</span>
           </div>
-        )}
+        ) : null)}
         {attribution(it, chain)}
       </div>
     )
