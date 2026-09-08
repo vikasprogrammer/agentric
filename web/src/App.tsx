@@ -5373,7 +5373,11 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
               )}
               {preview.kind === 'none' && (
                 <>
-                  <div className="text-sm text-muted-foreground">I couldn't confidently match an agent. Pick one to start:</div>
+                  <div className="text-sm text-muted-foreground">
+                    {preview.noFit
+                      ? "No agent here does this yet — I've flagged it for your admins. Pick one anyway, or start a new agent:"
+                      : 'I couldn\u2019t confidently match an agent. Pick one to start:'}
+                  </div>
                   <div className="max-h-[46vh] overflow-y-auto rounded-lg border">
                     <div className="flex flex-col divide-y">
                       {preview.candidates.length === 0 && <div className="p-3 text-sm text-muted-foreground">No agents you can run yet.</div>}

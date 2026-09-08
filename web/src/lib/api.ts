@@ -1663,6 +1663,9 @@ export interface RouterPreviewResp {
   /** work only: `route` → confident single pick in `suggested`; `disambiguate` → choose from
    *  `candidates`; `none` → nothing matched, `candidates` is the runnable fleet to pick from. */
   kind?: 'route' | 'disambiguate' | 'none'
+  /** `none` only: nothing on the fleet scored at all (as opposed to a match this member can't run), so
+   *  the request was logged as a capability gap for the admins. */
+  noFit?: boolean
   method?: 'keyword' | 'embedding' | 'llm'
   suggested?: RouterCard
   candidates: RouterCard[]

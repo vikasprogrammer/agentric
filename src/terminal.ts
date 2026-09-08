@@ -5776,6 +5776,9 @@ export class TerminalManager {
     level?: string;
     capability?: string;
     notify?: boolean;
+    /** Where the DM's link lands. Defaults to Settings → Updates (the self-update watcher, the first
+     *  caller); a card about something else must say so or the push points at the wrong page. */
+    link?: { page: string; detail?: string; label?: string };
   }): string {
     const id = this.addMessage({
       type: input.type, sessionId: `system:${input.topic}`, agent: 'system',
@@ -5790,7 +5793,7 @@ export class TerminalManager {
     // out-of-band DM is the point rather than a nicety — but it stays advisory: a chat outage must not
     // stop the card being recorded.
     if (input.notify !== false) {
-      try { this.reviewNotifier?.({ sessionId: `system:${input.topic}`, agent: 'system', kind: 'system.update', title: input.title, summary: input.body, audience: input.audience, link: { page: 'settings', detail: 'updates', label: 'Settings → Updates' } }); }
+      try { this.reviewNotifier?.({ sessionId: `system:${input.topic}`, agent: 'system', kind: 'system.update', title: input.title, summary: input.body, audience: input.audience, link: input.link ?? { page: 'settings', detail: 'updates', label: 'Settings → Updates' } }); }
       catch { /* out-of-band push is advisory */ }
     }
     return id;
