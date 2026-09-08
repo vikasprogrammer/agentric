@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.426.0] - 2026-09-08
+### Added
+- **A request no agent can take is now evidence, not a shrug.** The router already failed safe — a
+  confident win routes, a near-tie asks, and nothing-scored returns `none` — but at that point both
+  front doors (Cockpit's `/api/router/preview` and the Slack/Discord `/agent` router) handed back the
+  full roster and the miss evaporated. Those misses are the cheapest possible signal of which agent to
+  build next, so every one is now recorded as a `router.gap` audit event (queryable on the Audit page)
+  and summarised into ONE rolling admin inbox card listing the recent unmatched requests
+  (`src/edge/capability-gap.ts`). Rolling on purpose: an unmatched request is high-volume and
+  low-urgency, exactly the shape that turns the Inbox into noise, so repeat misses refresh the single
+  card in place and only the first gap in the window pushes a DM. Cockpit's `none` panel now says *"No
+  agent here does this yet — I've flagged it for your admins"* (`noFit`) instead of implying it simply
+  guessed badly. A routed-but-not-runnable agent is a permissions outcome, not a missing capability,
+  and is deliberately never recorded as a gap. `postSystemCard` grew an optional `link` so the DM lands
+  on Agents rather than the update page it defaults to. Pinned by
+  `scripts/capability-gap-test.cjs`.
+
 ## [0.425.2] - 2026-09-07
 ### Fixed
 - **A magic link printed by the CLI pointed at the recipient's own loopback.** `agent-os invite`,

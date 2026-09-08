@@ -19,6 +19,7 @@ import { Db } from '../state/db';
 import { inboxFileName, TerminalManager } from '../terminal';
 import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDispatchBlock, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
+import { recordCapabilityGap } from './capability-gap';
 import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
 import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './concierge';
@@ -1120,7 +1121,9 @@ export class Automations {
         this.putPending(opts.key, { candidates: decision.candidates.map((c) => c.agentId), text: opts.text, extra: opts.extra, runAs: opts.runAs });
         return { sessions, agents, reply: this.disambiguationPrompt(decision.candidates) };
       }
-      // decision.kind === 'none' → fall back to the classic help list.
+      // decision.kind === 'none' → nothing on the fleet matched: record the capability gap (the same
+      // signal Cockpit records), then fall back to the classic help list.
+      recordCapabilityGap(this.os, this.tm, { text: opts.text, requester: opts.runAs || 'unknown', source: 'chat' });
     }
     return { sessions, agents, reply: explicit.help };
   }

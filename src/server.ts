@@ -37,6 +37,7 @@ import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/co
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { chooseAgent } from './edge/router';
+import { recordCapabilityGap } from './edge/capability-gap';
 import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerAsk } from './edge/ask';
@@ -3135,7 +3136,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         if (list.length >= 2) return sendJson(res, 200, { ...base, kind: 'disambiguate', candidates: list.map((c) => card(c.agentId, c.score)) });
         if (list.length === 1) return sendJson(res, 200, { ...base, kind: 'route', method: 'keyword', suggested: card(list[0].agentId, list[0].score), candidates: [] });
       }
-      return sendJson(res, 200, { ...base, kind: 'none', candidates: fleet() });
+      // Nothing scored at all → a capability gap: no agent on this fleet matches the request. Recorded
+      // (audit + a rolling admin card) so misses accumulate into a list of agents worth building. A
+      // routed-but-not-runnable agent, or a disambiguation the member can't run, is a PERMISSIONS
+      // outcome, not a missing capability — it lands here too, and must not be recorded as a gap.
+      if (decision.kind === 'none' && !askFallback) recordCapabilityGap(os, tm, { text, requester: me.id, source: 'cockpit' });
+      return sendJson(res, 200, { ...base, kind: 'none', noFit: decision.kind === 'none' || undefined, candidates: fleet() });
     };
 
     const intent = b.force === 'work' ? { intent: 'work' as const } : classifyIntent(text);
