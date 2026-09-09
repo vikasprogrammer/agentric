@@ -7025,14 +7025,76 @@ export class TerminalManager {
    * time (by `add`), so a bad expression fails loudly for the human rather than being silently created.
    */
   proposeAutomation(sessionId: string, agent: string, spec: ProposedAutomation, rationale?: string): { ok: boolean; preview?: string; error?: string } {
+    return this.proposeWorkflow(sessionId, agent, [spec], rationale);
+  }
+
+  /**
+   * The multi-part form: ONE reviewable proposal carrying several automations — a standing *function*
+   * ("watch for tickets, and sweep every 30 minutes for anything missed") rather than a single job.
+   *
+   * A function is normally two or three triggers around agents that already exist; the judgment inside it
+   * (classify, answer, escalate) stays the agent's at runtime, which is the point of using agents at all.
+   * So this composes triggers, nothing more — there is no step graph and no new runtime.
+   *
+   * Reviewed and approved as a UNIT: one card, one Approve, and the approve route creates every part or
+   * none (see the route — a part that fails validation rolls the earlier ones back). Every part is
+   * validated HERE too, so a proposal that could not be approved is refused at the point it is made.
+   * `workflow` names the function on the card; omit it for a single automation and the card reads exactly
+   * as it always did.
+   */
+  proposeWorkflow(sessionId: string, agent: string, specs: ProposedAutomation[], rationale?: string, workflow?: string): { ok: boolean; preview?: string; error?: string } {
+    if (!specs.length) return { ok: false, error: 'a proposal needs at least one automation' };
+    if (specs.length > 6) return { ok: false, error: 'a workflow proposal carries at most 6 automations — split it, or lean on the agent\'s own judgment at runtime instead of another trigger' };
+    const cleaned: ProposedAutomation[] = [];
+    const previews: string[] = [];
+    for (let i = 0; i < specs.length; i++) {
+      const one = this.validateProposedAutomation(agent, specs[i]);
+      if ('error' in one) return { ok: false, error: specs.length > 1 ? `part ${i + 1}: ${one.error}` : one.error };
+      cleaned.push(one.clean);
+      previews.push(one.preview);
+    }
+    const preview = previews.join('\n');
+    // Cap the queue + dedupe an identical open proposal from this agent (mirrors proposePolicy).
+    const open = this.db.prepare(`SELECT id, args FROM messages WHERE type = 'automation.proposed' AND status = 'open' AND agent = ?`).all<{ id: string; args: string | null }>(agent);
+    if (open.length >= 10) return { ok: false, error: 'you already have 10 open automation proposals awaiting review — wait for a human to act on them first' };
+    const specKey = JSON.stringify(cleaned);
+    if (open.some((o) => {
+      try {
+        const a = JSON.parse(o.args || '{}') as { spec?: unknown; specs?: unknown };
+        return JSON.stringify(a.specs ?? (a.spec ? [a.spec] : [])) === specKey;
+      } catch { return false; }
+    })) {
+      return { ok: false, error: 'an identical proposal from you is already awaiting review' };
+    }
+    const name = (workflow || '').trim() || cleaned[0].name;
+    const multi = cleaned.length > 1;
+    this.postReviewCard({
+      type: 'automation.proposed', sessionId, agent,
+      title: multi ? `Workflow proposed — ${name} (${cleaned.length} automations)` : `Automation proposed — ${name}`,
+      body: (rationale?.trim() || (multi
+        ? `${agent} proposes the "${name}" workflow — ${cleaned.length} automations, approved together.`
+        : `${agent} proposes a ${cleaned[0].type} automation "${name}".`)) + `\n\n${preview}`,
+      // `spec` is kept alongside `specs` so a card written by this build still reads correctly on an older
+      // one (and vice versa — the readers below fall back to `spec` when `specs` is absent).
+      args: { specs: cleaned, spec: cleaned[0], preview, ...(multi ? { workflow: name } : {}), ...(rationale ? { rationale } : {}) },
+      summary: rationale?.trim() || (multi
+        ? `${agent} proposes the "${name}" workflow (${cleaned.length} automations).`
+        : `${agent} proposes a ${cleaned[0].type} automation "${name}".`),
+    });
+    this.audit(sessionId, agent, 'automation.proposed', { name, parts: cleaned.length, ...(multi ? { workflow: name } : {}), types: cleaned.map((c) => c.type), agents: cleaned.map((c) => c.agentId) });
+    return { ok: true, preview };
+  }
+
+  /** Validate + normalise ONE proposed automation, returning its stored shape and its preview line. */
+  private validateProposedAutomation(agent: string, spec: ProposedAutomation): { clean: ProposedAutomation; preview: string } | { error: string } {
     const agentId = (spec.agentId || agent).trim();
-    if (!this.os.agents.has(agentId)) return { ok: false, error: `unknown agent "${agentId}"` };
+    if (!this.os.agents.has(agentId)) return { error: `unknown agent "${agentId}"` };
     const name = (spec.name || '').trim();
     const task = (spec.task || '').trim();
-    if (!name) return { ok: false, error: 'a name is required' };
-    if (!task) return { ok: false, error: 'a task template is required' };
+    if (!name) return { error: 'a name is required' };
+    if (!task) return { error: 'a task template is required' };
     const type = (['cron', 'webhook', 'composio', 'slack', 'discord'] as const).includes(spec.type as never) ? spec.type : 'cron';
-    if (type === 'cron' && !(spec.schedule || '').trim()) return { ok: false, error: 'a cron automation needs a schedule (5-field cron expression)' };
+    if (type === 'cron' && !(spec.schedule || '').trim()) return { error: 'a cron automation needs a schedule (5-field cron expression)' };
     // Resolve the suggested run-as identity to a canonical member id. Agents name a member by id or email
     // (e.g. from `directory_lookup`); the automations store keys run_as by member id (fire → createSession
     // runAs → composioUserId(member).email). Reject an unresolvable value so a typo can't silently degrade
@@ -7041,55 +7103,50 @@ export class TerminalManager {
     if ((spec.runAs || '').trim()) {
       const raw = String(spec.runAs).trim();
       const m = this.os.team.resolveMemberRef(raw);
-      if (!m) return { ok: false, error: `unknown member "${raw}" for runAs — pass a member id or email (use directory_lookup), or omit runAs to run as the company identity` };
+      if (!m) return { error: `unknown member "${raw}" for runAs — pass a member id or email (use directory_lookup), or omit runAs to run as the company identity` };
       runAs = m.id;
     }
     const clean: ProposedAutomation = { agentId, name, type, task, ...(spec.schedule ? { schedule: String(spec.schedule).trim() } : {}), ...(spec.filter ? { filter: String(spec.filter).trim() } : {}), ...(spec.mode === 'headless' || spec.mode === 'interactive' ? { mode: spec.mode } : {}), ...(runAs ? { runAs } : {}) };
-    // Cap the queue + dedupe an identical open proposal from this agent (mirrors proposePolicy).
-    const open = this.db.prepare(`SELECT id, args FROM messages WHERE type = 'automation.proposed' AND status = 'open' AND agent = ?`).all<{ id: string; args: string | null }>(agent);
-    if (open.length >= 10) return { ok: false, error: 'you already have 10 open automation proposals awaiting review — wait for a human to act on them first' };
-    const specKey = JSON.stringify(clean);
-    if (open.some((o) => { try { return JSON.stringify((JSON.parse(o.args || '{}') as { spec?: unknown }).spec) === specKey; } catch { return false; } })) {
-      return { ok: false, error: 'an identical automation proposal from you is already awaiting review' };
-    }
     // Surface the run-as identity in the preview: it decides which connectors the fired session gets
     // (a member → their personal Composio Gmail/etc.; unset → company identity only), so the approver
     // consciously consents to whose credentials will be used.
     const asWho = runAs ? (this.os.team.getMember(runAs)?.name || this.os.team.getMember(runAs)?.email || runAs) : 'company identity';
-    const preview = `${type}${clean.schedule ? ` \`${clean.schedule}\`` : ''} → runs \`${agentId}\` as ${asWho}: ${task.slice(0, 80)}${task.length > 80 ? '…' : ''}`;
-    this.postReviewCard({
-      type: 'automation.proposed', sessionId, agent,
-      title: `Automation proposed — ${name}`,
-      body: (rationale?.trim() || `${agent} proposes a ${type} automation "${name}".`) + `\n\n${preview}`,
-      args: { spec: clean, preview, ...(rationale ? { rationale } : {}) },
-      summary: rationale?.trim() || `${agent} proposes a ${type} automation "${name}".`,
-    });
-    this.audit(sessionId, agent, 'automation.proposed', { name, type, agentId, schedule: clean.schedule });
-    return { ok: true, preview };
+    const preview = `${name}: ${type}${clean.schedule ? ` \`${clean.schedule}\`` : ''} → runs \`${agentId}\` as ${asWho}: ${task.slice(0, 80)}${task.length > 80 ? '…' : ''}`;
+    return { clean, preview };
   }
 
-  /** The proposed-automation review card by id (its spec + status) — for the approve/reject routes. */
-  automationProposalCard(id: string): { agent: string; spec: ProposedAutomation; rationale?: string; preview?: string; status: string } | undefined {
+  /** Every part of a proposal card's payload — `specs` when this build wrote it, the single legacy
+   *  `spec` when an older one did. Empty means the card is unreadable and must not be approved. */
+  private proposalSpecs(a: Record<string, unknown>): ProposedAutomation[] {
+    if (Array.isArray(a.specs)) return (a.specs as ProposedAutomation[]).filter((x) => x && typeof x === 'object');
+    return a.spec ? [a.spec as ProposedAutomation] : [];
+  }
+
+  /** The proposed-automation review card by id (its specs + status) — for the approve/reject routes.
+   *  `spec` stays on the return as the FIRST part, so single-automation callers read unchanged. */
+  automationProposalCard(id: string): { agent: string; spec: ProposedAutomation; specs: ProposedAutomation[]; workflow?: string; rationale?: string; preview?: string; status: string } | undefined {
     const row = this.db.prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'automation.proposed'`).get<{ agent: string; args: string | null; status: string }>(id);
     if (!row) return undefined;
     let a: Record<string, unknown> = {};
     try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
-    if (!a.spec) return undefined;
-    return { agent: row.agent, spec: a.spec as ProposedAutomation, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
+    const specs = this.proposalSpecs(a);
+    if (!specs.length) return undefined;
+    return { agent: row.agent, spec: specs[0], specs, workflow: a.workflow ? String(a.workflow) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
   }
   setAutomationProposalStatus(id: string, status: 'approved' | 'rejected'): void {
     this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'automation.proposed'`).run(status, id);
   }
-  openAutomationProposals(): { id: string; agent: string; spec: ProposedAutomation; rationale?: string; preview?: string; createdAt: number }[] {
+  openAutomationProposals(): { id: string; agent: string; spec: ProposedAutomation; specs: ProposedAutomation[]; workflow?: string; rationale?: string; preview?: string; createdAt: number }[] {
     return this.db
       .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'automation.proposed' AND status = 'open' ORDER BY created_at DESC`)
       .all<{ id: string; agent: string; args: string | null; created_at: number }>()
       .map((r) => {
         let a: Record<string, unknown> = {};
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
-        return { id: r.id, agent: r.agent, spec: a.spec as ProposedAutomation, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
+        const specs = this.proposalSpecs(a);
+        return { id: r.id, agent: r.agent, spec: specs[0], specs, workflow: a.workflow ? String(a.workflow) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
       })
-      .filter((p) => p.spec);
+      .filter((p) => !!p.spec);
   }
 
   /**

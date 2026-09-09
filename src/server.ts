@@ -939,6 +939,31 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, out.ok ? 200 : 400, out);
   }
 
+  // `workflow_propose` — the multi-part sibling: several automations reviewed and approved as ONE unit (a
+  // standing function, not a single job). Same gate as above; nothing is created until an owner/admin
+  // approves the single card, and approval is all-or-nothing. Pre-auth loopback, session-secret gated.
+  if (method === 'POST' && p === '/api/agent/workflow/propose') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const raw = Array.isArray(b.automations) ? (b.automations as Record<string, unknown>[]) : [];
+    if (!raw.length) return sendJson(res, 400, { error: 'automations must be a non-empty array' });
+    const specs: ProposedAutomation[] = raw.map((a) => ({
+      agentId: a.agentId != null ? String(a.agentId) : '',
+      name: String(a.name || ''),
+      type: (['cron', 'webhook', 'composio', 'slack', 'discord'].includes(String(a.type)) ? String(a.type) : 'cron') as ProposedAutomation['type'],
+      schedule: a.schedule != null ? String(a.schedule) : undefined,
+      filter: a.filter != null ? String(a.filter) : undefined,
+      task: String(a.task || ''),
+      mode: (a.mode === 'headless' || a.mode === 'interactive' ? a.mode : undefined) as ProposedAutomation['mode'],
+      runAs: a.runAs != null ? String(a.runAs) : undefined,
+    }));
+    const out = tm.proposeWorkflow(session, agent, specs, b.rationale != null ? String(b.rationale) : undefined, b.name != null ? String(b.name) : undefined);
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
+
   // Agent PROPOSES an edit to ANOTHER agent's listing / CLAUDE.md (`agent_propose_update`) — the gated,
   // cross-agent sibling of the self-only `agent_update`. Nothing is written here; a valid proposal posts an
   // owner-addressed 'agent.update.proposed' card and applies NOTHING until an OWNER who can run the target
@@ -2792,18 +2817,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         runAs = m.id;
       }
     }
+    // A workflow proposal carries several automations and is approved as a UNIT: a part that `add`
+    // rejects (a bad cron, an agent deleted since the proposal was made) rolls the earlier parts back, so
+    // the approver never ends up with half a function running and no record of which half. The proposal
+    // stays open for them to fix or reject.
+    const created: Automation[] = [];
     try {
-      const created = autos.add({
-        agentId: card.spec.agentId, name: card.spec.name, type: card.spec.type,
-        mode: card.spec.mode, schedule: card.spec.schedule, filter: card.spec.filter,
-        task: card.spec.task, createdBy: me.id, runAs,
-      });
+      for (const spec of card.specs) {
+        created.push(autos.add({
+          agentId: spec.agentId, name: spec.name, type: spec.type,
+          mode: spec.mode, schedule: spec.schedule, filter: spec.filter,
+          task: spec.task, createdBy: me.id, runAs,
+        }));
+      }
       tm.setAutomationProposalStatus(autoPropApprove[1], 'approved');
-      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.approved', data: { by: me.email, agent: card.agent, id: created.id, name: created.name, type: created.type, runAs: runAs ?? null } });
-      return sendJson(res, 200, { ok: true, automation: automationView(created, req, true) });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.approved', data: { by: me.email, agent: card.agent, ...(card.workflow ? { workflow: card.workflow } : {}), ids: created.map((c) => c.id), names: created.map((c) => c.name), runAs: runAs ?? null } });
+      return sendJson(res, 200, { ok: true, automation: automationView(created[0], req, true), automations: created.map((c) => automationView(c, req, true)) });
     } catch (e) {
+      for (const c of created) { try { autos.remove(c.id); } catch { /* best-effort rollback */ } }
+      const msg = e instanceof Error ? e.message : String(e);
+      if (created.length) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.rolled_back', data: { by: me.email, agent: card.agent, undone: created.length, error: msg } });
       // A bad cron / unknown agent surfaces to the human here (validated by `add`); the proposal stays open.
-      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      return sendJson(res, 400, { error: card.specs.length > 1 ? `part ${created.length + 1} of ${card.specs.length}: ${msg} — nothing was created` : msg });
     }
   }
   const autoPropReject = p.match(/^\/api\/automations\/proposals\/([\w.-]+)\/reject$/);

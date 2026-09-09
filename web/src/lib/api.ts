@@ -1056,10 +1056,16 @@ export interface Automation {
 }
 /** An agent-proposed automation awaiting owner/admin approval — the spec lives in the review card until
  *  approved (then it's created via Automations.add). Mirrors PolicyProposal. */
+export interface ProposedAutomationSpec { agentId: string; name: string; type: Automation['type']; schedule?: string; filter?: string; task: string; mode?: ExecMode; runAs?: string }
+/** An agent-proposed automation awaiting sign-off. A WORKFLOW proposal carries several parts in `specs`
+ *  and a `workflow` name — one card, one Approve, all-or-nothing. `spec` is always the first part, so a
+ *  single-automation proposal reads exactly as it always did. */
 export interface AutomationProposal {
   id: string
   agent: string
-  spec: { agentId: string; name: string; type: Automation['type']; schedule?: string; filter?: string; task: string; mode?: ExecMode; runAs?: string }
+  spec: ProposedAutomationSpec
+  specs?: ProposedAutomationSpec[]
+  workflow?: string
   rationale?: string
   preview?: string
   createdAt: number

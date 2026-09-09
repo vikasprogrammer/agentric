@@ -12223,6 +12223,8 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
   useEffect(load, [])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   const agentName = (id: string) => agents.find((a) => a.id === id)?.id || id
+  // A workflow proposal carries several parts; an older single-automation card carries only `spec`.
+  const partsOf = (pr: AutomationProposal) => pr.specs?.length ? pr.specs : [pr.spec]
   // The run-as identity decides which connectors the fired session gets (a member → their personal Composio
   // Gmail/etc.; company → shared account only), so let the approver confirm/override the agent's suggestion.
   const runAsFor = (pr: AutomationProposal) => runAsEdit[pr.id] ?? pr.spec.runAs ?? ''
@@ -12237,11 +12239,18 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
           <Card key={pr.id} className="border-amber-200">
             <CardContent className="space-y-2 p-3">
               <div className="flex flex-wrap items-center gap-1.5">
-                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{pr.spec.type}</Badge>
-                <span className="text-sm font-medium">{pr.spec.name}</span>
-                <span className="text-[11px] text-muted-foreground">runs <span className="font-mono">{agentName(pr.spec.agentId)}</span> · by <span className="font-mono">{pr.agent}</span>{pr.createdAt ? ` · ${timeAgo(pr.createdAt)}` : ''}</span>
+                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{partsOf(pr).length > 1 ? `workflow · ${partsOf(pr).length}` : pr.spec.type}</Badge>
+                <span className="text-sm font-medium">{pr.workflow || pr.spec.name}</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {partsOf(pr).length > 1
+                    ? <>runs <span className="font-mono">{[...new Set(partsOf(pr).map((sp) => agentName(sp.agentId)))].join(', ')}</span></>
+                    : <>runs <span className="font-mono">{agentName(pr.spec.agentId)}</span></>} · by <span className="font-mono">{pr.agent}</span>{pr.createdAt ? ` · ${timeAgo(pr.createdAt)}` : ''}
+                </span>
               </div>
-              {pr.preview && <div className="rounded bg-muted/50 px-2 py-1 font-mono text-[11px]">{pr.preview}</div>}
+              {/* Every part is listed: a workflow is approved as a unit, so the approver must see the whole
+                  set before pressing one button. */}
+              {pr.preview && <div className="whitespace-pre-wrap rounded bg-muted/50 px-2 py-1 font-mono text-[11px]">{pr.preview}</div>}
+              {partsOf(pr).length > 1 && <div className="text-[11px] text-muted-foreground">Approving creates all {partsOf(pr).length} — or none, if any part fails.</div>}
               {pr.rationale && <p className="text-[11px] italic text-muted-foreground">“{pr.rationale}”</p>}
               <div className="flex flex-wrap items-center gap-2">
                 <label className="text-[11px] text-muted-foreground" title="The fired session acts as this member, so their personal connectors (e.g. their own Composio Gmail) are injected. Company identity = shared company account only.">Run as</label>

@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.427.0] - 2026-09-09
+## [0.428.0] - 2026-09-09
 ### Added
 - **A tenant's ruleset now says where it has drifted from the shipped one — instead of nobody finding
   out for a year.** `<home>/policy/default.policy.json` is a full SNAPSHOT, so the moment a tenant has
@@ -39,6 +39,26 @@ new version heading in the same commit.
   retargeted the approver or narrowed the `when` is classified as tenant-authored and never offered
   for removal. Pinned by `scripts/policy-baseline-test.cjs` (32 cases over the real fleet document
   shapes; the load-bearing half asserts an edited or owner-authored rule is never retirable).
+
+## [0.427.0] - 2026-09-09
+### Added
+- **A whole workflow can be proposed in one sentence, and approved as one thing.** `automation_propose`
+  drafts a single job, so a standing *function* — "every time a support ticket comes in, classify it,
+  answer the easy ones and escalate bugs to the engineer, and sweep every 30 minutes for anything
+  missed" — arrived as unrelated cards or not at all. The new `workflow_propose` tool carries 1–6
+  automations on ONE `automation.proposed` card (`args.specs` + a `workflow` name) which an owner/admin
+  approves as a unit. Approval is **all-or-nothing**: a part `Automations.add` rejects (a bad cron, an
+  agent deleted between proposal and approval) rolls the earlier parts back and names the failing part,
+  because half a function running with no record of which half is worse than none. Every part is
+  validated at propose time too, so a proposal that could not be approved is refused where it is made.
+  The Cockpit **operator** composes one from a plain-English description, and `classifyIntent` now reads
+  "every time …", "whenever …" and "set up a workflow" as an `action` rather than a one-off job (a bare
+  "every" as a quantifier — "check every pod" — is still work). It proposes **triggers, not steps**: the
+  judgment inside a function belongs in each part's `task` prompt where the agent decides it at runtime,
+  so a branch never becomes its own automation and the cap is 6. `automation_propose` is now the
+  one-part sibling on the same validator, card type, queue cap, dedupe and approve/reject routes;
+  single-automation proposals — including cards written by an older build, which carry only `spec` —
+  behave exactly as before. Pinned by `scripts/workflow-proposal-test.cjs`.
 
 ## [0.426.0] - 2026-09-08
 ### Added
