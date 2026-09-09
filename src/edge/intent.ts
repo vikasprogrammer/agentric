@@ -29,7 +29,11 @@ export interface IntentResult {
 // NOT match the bare noun "automation(s)" — "what's an automation?" / "how do automations work?" are
 // questions (→ ask), not requests to build one (which need a verb: "schedule …", "automate …",
 // "set up an automation", or a recurrence like "every morning").
-const SCHEDULE_RE = /\b(schedul(e|ing)|automate|recurring|every\s+(morning|day|night|week|hour|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|daily|weekly|hourly|nightly|each\s+(day|morning|week)|remind\s+me)\b|\b(create|set\s*up|add|make|configure)\s+(a\s+|an\s+|the\s+)?(automation|cron(\s*job)?|schedule)\b/i;
+// `every time … / each time … / whenever …` is how a standing FUNCTION is described ("every time a
+// ticket comes in, …") — the workflow shape, which is an `action` on the automations surface, not a
+// one-off job for an agent. Kept to those three phrasings: a bare "every" is a quantifier ("check
+// every pod"), and only the explicit recurrence reading belongs here.
+const SCHEDULE_RE = /\b(schedul(e|ing)|automate|recurring|every\s+(time|morning|day|night|week|hour|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|each\s+time|whenever|daily|weekly|hourly|nightly|each\s+(day|morning|week)|remind\s+me)\b|\b(create|set\s*up|add|make|configure)\s+(a\s+|an\s+|the\s+)?(automation|cron(\s*job)?|schedule|workflow)\b/i;
 const TASK_RE = /\b(create|add|open|file|make|log)\s+(a\s+|an\s+|the\s+)?(task|to-?do|ticket|work\s*item)\b/i;
 
 // Meta-nouns that mean "about the agent-os / this workspace" rather than a domain topic an agent works on.
