@@ -234,6 +234,24 @@ export class TenantRegistry {
       try { fs.appendFileSync(paths.logFile, `[${new Date().toISOString()}] owner login link: ${link}\n`); } catch { /* best-effort */ }
     }
 
+    // Baseline drift, audited ONCE per boot. The whole point of the module is that nobody goes looking:
+    // the console surfaces it when someone opens the Policy page, and this makes it findable in the audit
+    // trail (and in a fleet sweep) even when nobody ever does. Report only — it never edits the ruleset.
+    const drift = os.policyDrift();
+    if (drift && !drift.clean) {
+      os.audit.append({
+        ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'policy.drift.detected',
+        data: {
+          retired: drift.retired.map((r) => ({ capability: r.rule.match.capability, action: r.rule.action, since: r.since })),
+          missing: drift.missing.map((r) => r.match.capability),
+          tenantRules: drift.tenant.length,
+        },
+      });
+      for (const r of drift.retired) {
+        console.log(`  ⚠ ${rec.slug}: policy still enforces a rule retired in v${r.since} — \`${r.rule.match.capability}\` → ${r.rule.action}. Settings → Policy to drop it.`);
+      }
+    }
+
     const ttydPort = isDefault ? (Number(process.env.TTYD_PORT) || this.basePort + 1) : this.nextTtydPort++;
     // The tenant's public console origin — resolved once here (no request Host in a background DM) and
     // closed over by every notifier so its deep-links point at the deployment's REAL external URL.

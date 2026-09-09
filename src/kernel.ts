@@ -50,7 +50,8 @@ import { FeedStore } from './state/feed';
 import { VideoJobStore } from './state/video-jobs';
 import { StubIdentity } from './governance/identity';
 import { InMemoryIdempotencyStore } from './gateway/idempotency';
-import { JsonPolicyEngine, PolicyDocument, policyContextMismatch } from './governance/policy';
+import { JsonPolicyEngine, PolicyDocument, PolicyRule, policyContextMismatch } from './governance/policy';
+import { PolicyDrift, baselineDrift, dropRetiredRules } from './governance/policy-baseline';
 import { EnvSecretsVault, SqliteSecretsVault } from './edge/secrets';
 import { resolveMasterKey } from './edge/secret-crypto';
 import { seedBuiltinAgents } from './edge/agent-catalog';
@@ -237,6 +238,53 @@ export class AgentOS {
     }
     this.policy.update(doc);
     return rev;
+  }
+
+  /**
+   * The PRODUCT's shipped ruleset, read fresh off disk. `null` when this instance has no paths (the demo
+   * / in-memory build) or the file is unreadable — callers treat that as "no baseline to compare against"
+   * and report no drift, never a false one.
+   */
+  bundledPolicyDocument(): PolicyDocument | null {
+    if (!this.paths) return null;
+    try {
+      return JSON.parse(fs.readFileSync(this.paths.bundledPolicy, 'utf8')) as PolicyDocument;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * How far this tenant's live ruleset has drifted from the shipped one — retired rules it still
+   * enforces, baseline rules it never received, and the owner's own rules (reported, never touched).
+   *
+   * Recomputed per call rather than cached at boot: the document is hot-reloaded by
+   * `applyPolicyDocument`, and a cached drift report would keep accusing the owner of a rule they just
+   * dropped. It is a couple of string compares over a handful of rules.
+   */
+  policyDrift(): PolicyDrift | null {
+    if (!(this.policy instanceof JsonPolicyEngine)) return null;
+    const baseline = this.bundledPolicyDocument();
+    if (!baseline) return null;
+    return baselineDrift(this.policy.document, baseline);
+  }
+
+  /**
+   * Drop retired rules by index — the owner-clicked half of drift. Routed through
+   * `applyPolicyDocument`, so it snapshots to `policyRevisions`, rewrites the override and hot-reloads
+   * exactly like a console edit; the owner can revert it in one click like any other revision. Returns
+   * what was actually dropped (an index that is stale or not retired is ignored, never trusted), or
+   * `null` when there is nothing to do — so the caller can report "no change" rather than a phantom
+   * revision.
+   */
+  dropRetiredPolicyRules(indices: number[], by: string): { rev: number | null; dropped: PolicyRule[] } | null {
+    if (!(this.policy instanceof JsonPolicyEngine)) return null;
+    const baseline = this.bundledPolicyDocument();
+    if (!baseline) return null;
+    const { doc, dropped } = dropRetiredRules(this.policy.document, indices, baseline);
+    if (!dropped.length) return { rev: null, dropped: [] };
+    const rev = this.applyPolicyDocument(doc, by, `dropped ${dropped.length} retired baseline rule(s)`);
+    return { rev, dropped };
   }
 
   /**

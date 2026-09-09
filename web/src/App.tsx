@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -19914,6 +19914,81 @@ function coerceValue(s: string): number | string | boolean {
   return s
 }
 
+/**
+ * Settings → Policy: rules this tenant still enforces that the PRODUCT retired.
+ *
+ * A tenant's `<home>/policy/default.policy.json` is a full snapshot, so it stops tracking the shipped
+ * default the moment it exists — a rule dropped from the product keeps firing here forever. That is not
+ * hypothetical: the blunt `shell.exec`+`risky` rule was retired in v0.17.0 and went on waking owners on
+ * three separate tenants for over a year, found each time only by hand-auditing the approvals table.
+ *
+ * Dropping one LOOSENS governance, so this never acts on its own — it shows the rule, the version that
+ * retired it and why, and waits for an owner. `missing` baseline rules are listed as diagnosis only:
+ * inserting a rule would change first-match order, and a new guardrail belongs in the engine anyway.
+ * Renders nothing when the ruleset is in step, which is the normal case.
+ */
+function PolicyDriftPanel({ drift, canEdit, dirty, onDropped }: {
+  drift: PolicyDrift | null
+  canEdit: boolean
+  dirty: boolean
+  onDropped: (r: { document?: PolicyDocument; drift?: PolicyDrift }) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  if (!drift || drift.clean) return null
+
+  const drop = async (indices: number[]) => {
+    setBusy(true); setErr('')
+    const r = await api.dropRetiredPolicyRules(indices)
+    setBusy(false)
+    if (r.error) return setErr(r.error)
+    onDropped(r)
+  }
+
+  return (
+    <Card className="mt-4 border-amber-500/40">
+      <CardContent className="space-y-3 p-4">
+        <div className="text-sm font-medium">This ruleset has drifted from the shipped default</div>
+
+        {drift.retired.map((hit) => (
+          <div key={hit.index} className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm">
+                  <code className="text-xs">{hit.rule.match.capability}</code>
+                  {hit.rule.match.when ? <span className="text-xs text-muted-foreground"> when {hit.rule.match.when.arg}</span> : null}
+                  {' → '}
+                  <strong>{hit.rule.action}{hit.rule.approver ? ` (${hit.rule.approver})` : ''}</strong>
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Retired from the product in <strong>v{hit.since}</strong>, but still enforced here. {hit.reason}
+                </div>
+              </div>
+              {canEdit ? (
+                <Button size="sm" variant="outline" disabled={busy || dirty} onClick={() => drop([hit.index])}>
+                  Drop rule
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ))}
+
+        {drift.missing.length ? (
+          <div className="text-xs text-muted-foreground">
+            {drift.missing.length} rule{drift.missing.length === 1 ? '' : 's'} in the shipped default {drift.missing.length === 1 ? 'is' : 'are'} not in
+            this ruleset ({drift.missing.map((r) => r.match.capability).join(', ')}). Listed for diagnosis only — adding
+            one changes first-match order, so edit it below if you want it.
+          </div>
+        ) : null}
+
+        {dirty ? <div className="text-xs text-muted-foreground">Save or discard your pending edits first.</div> : null}
+        {!canEdit ? <div className="text-xs text-muted-foreground">Only an owner can change the ruleset.</div> : null}
+        {err ? <div className="text-xs text-red-500">⚠ {err}</div> : null}
+      </CardContent>
+    </Card>
+  )
+}
+
 /** Settings → Governance: agent-proposed policy changes (tighten-only, owner-approved) + revision history
  *  with one-click revert. Sits atop the PolicyEditor so the review queue is the first thing an owner sees. */
 function PolicyProposalsPanel({ me, onApplied }: { me: Member; onApplied: () => void }) {
@@ -19987,10 +20062,13 @@ function PolicyEditor({ me }: { me: Member }) {
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner'
 
+  const [drift, setDrift] = useState<PolicyDrift | null>(null)
+
   useEffect(() => {
     api.policy().then((r) => {
       if (r.error) return setHint('⚠ ' + r.error)
       setEditable(r.editable)
+      setDrift(r.drift ?? null)
       if (r.document) { setDoc(r.document); setSaved(JSON.stringify(r.document)) }
     }).catch(() => {})
   }, [])
@@ -20053,6 +20131,16 @@ function PolicyEditor({ me }: { me: Member }) {
         <strong> Ask</strong> pauses for an admin or owner to approve in the Inbox, <strong>Never</strong> is refused outright.
         {canEdit ? ' Changes apply live to every running session.' : ' Only an owner can edit the policy.'}
       </p>
+
+      <PolicyDriftPanel
+        drift={drift}
+        canEdit={canEdit}
+        dirty={dirty}
+        onDropped={(r) => {
+          setDrift(r.drift ?? null)
+          if (r.document) { setDoc(r.document); setSaved(JSON.stringify(r.document)) }
+        }}
+      />
 
       <PolicyProposalsPanel me={me} onApplied={() => api.policy().then((r) => { if (r.document) { setDoc(r.document); setSaved(JSON.stringify(r.document)) } }).catch(() => {})} />
 

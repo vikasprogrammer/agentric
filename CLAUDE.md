@@ -235,7 +235,17 @@ Key modules:
   own `skills` allowlist ANDed with each skill's audience; see `docs/per-agent-context.md`, which also
   covers the sibling `tools` allowlist over the agentos MCP tool list. Both default to "everything" and
   shape CONTEXT only — neither grants or withholds a capability, the gateway still governs every
-  effect), budget, identity.
+  effect), budget, identity, `policy-baseline.ts` (**baseline drift** — a tenant's persisted
+  `<home>/policy/default.policy.json` is a SNAPSHOT and stops tracking the bundled default forever, so a
+  rule the product RETIRES keeps firing on live tenants; the blunt `shell.exec`+`risky` rule dropped in
+  v0.17.0 was still waking owners on three tenants a year later, found each time only by a human auditing
+  the approvals table. A **retirement ledger** + `baselineDrift()` classify each rule as retired /
+  missing / tenant-authored, audited at boot as `policy.drift.detected`. ⚠ Mind the asymmetry: ADDING a
+  guardrail still belongs in the ENGINE via `stricterDecision` — never as a JSON rule — while RETIRING
+  one is surfaced and left to an OWNER click (`POST /api/policy/drift/drop`), because it loosens
+  governance and the same rule is pure noise on one tenant and a guardrail somebody uses on another.
+  Matching is deep-equal on the shipped signature, so an EDITED rule is intent and is never offered for
+  removal).
   The Inbox surface itself — its data model, the notifier/chat-mirror sinks, per-member read/dismiss, and
   the gap roadmap — is documented in `docs/inbox-plan.md`.
 - `src/edge/automations.ts` — Automations: cron/webhook/composio/**slack**/**discord** triggers that spawn

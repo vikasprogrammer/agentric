@@ -8,6 +8,38 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.428.0] - 2026-09-09
+### Added
+- **A tenant's ruleset now says where it has drifted from the shipped one — instead of nobody finding
+  out for a year.** `<home>/policy/default.policy.json` is a full SNAPSHOT, so the moment a tenant has
+  one (every workspace whose owner ever hit Save in the Policy editor) it stops tracking
+  `config/policy/default.policy.json` forever, in both directions. The ADD direction was already
+  answered — a new guardrail belongs in the ENGINE, combined most-restrictive via `stricterDecision`
+  the way `hostGovernanceDecision`, `fileGovernanceDecision` and `injectionDecision` are. The RETIRE
+  direction had no answer at all, and it is the one that kept costing: the blunt `shell.exec`+`risky`
+  → ask-owner rule was dropped from the bundled default in **v0.17.0** and went on waking owners on
+  three separate tenants for over a year — instawp (~70 approvals/14d, cleared by hand 2026-07-27),
+  instapods (15 in 30d, **11/11 approved**, cleared by hand 2026-09-07) and expresstech, which still
+  carries it. Each was found only by a human auditing the approvals table months late. That
+  invisibility was the defect. `src/governance/policy-baseline.ts` adds a **retirement ledger** (each
+  entry the rule exactly as it shipped, the version that dropped it, and why) and `baselineDrift()`,
+  which classifies every rule in a tenant's document as *retired* (stale product text), *missing*
+  (baseline rules that never arrived — reported for diagnosis, never auto-applied, since inserting one
+  changes first-match order) or *tenant* (the owner's own — reported, never touched). Drift is audited
+  once per tenant at boot as `policy.drift.detected` and printed to the server log, so it is findable
+  in a fleet sweep even if nobody opens the console; `GET /api/policy` carries it, and Settings →
+  Policy shows each retired rule with its receipt.
+- **Dropping a retired rule is an owner's click, never automatic** (`POST /api/policy/drift/drop`,
+  owner-only, removal-by-index re-validated server-side). Deliberate: it LOOSENS governance, and the
+  fleet shows the same rule means opposite things on different boxes — pure noise on instapods (0
+  rejected) and a guardrail somebody is actively using on expresstech (5 rejected of 26). It routes
+  through `applyPolicyDocument`, so it snapshots to `policy_revisions`, rewrites the override,
+  hot-reloads every running session and is one-click revertable like any edit. The safety property:
+  a rule matches the ledger only when **deep-equal** to the shipped signature, so an owner who
+  retargeted the approver or narrowed the `when` is classified as tenant-authored and never offered
+  for removal. Pinned by `scripts/policy-baseline-test.cjs` (32 cases over the real fleet document
+  shapes; the load-bearing half asserts an edited or owner-authored rule is never retirable).
+
 ## [0.427.0] - 2026-09-09
 ### Added
 - **A whole workflow can be proposed in one sentence, and approved as one thing.** `automation_propose`
