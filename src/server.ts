@@ -6490,7 +6490,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/policy') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     if (!(os.policy instanceof JsonPolicyEngine)) return sendJson(res, 200, { editable: false, id: os.policy.id });
-    return sendJson(res, 200, { editable: true, document: os.policy.document, canEdit: me.role === 'owner' });
+    // `drift` rides along on the read the console already makes, so a tenant carrying a rule the product
+    // retired is visible the moment anyone opens the Policy page — the failure mode it fixes is that
+    // nobody ever went looking. See src/governance/policy-baseline.ts.
+    return sendJson(res, 200, { editable: true, document: os.policy.document, canEdit: me.role === 'owner', drift: os.policyDrift() ?? undefined });
   }
   if (method === 'PUT' && p === '/api/policy') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
@@ -6502,6 +6505,24 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.applyPolicyDocument(doc, me.email, 'edited in the console'); // snapshot + persist + hot reload
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.updated', data: { id: doc.id, rules: doc.rules.length } });
     return sendJson(res, 200, { ok: true, document: os.policy.document });
+  }
+  // Drop rules the product RETIRED that this tenant still enforces. OWNER only, like PUT /api/policy —
+  // it LOOSENS the ruleset, which is exactly why it is a click and not something boot does on its own
+  // (the same retired rule is pure noise on one tenant and a guardrail somebody uses on another).
+  // Removal only, by index, re-validated server-side against the live document.
+  if (method === 'POST' && p === '/api/policy/drift/drop') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    if (!(os.policy instanceof JsonPolicyEngine)) return sendJson(res, 400, { error: 'active policy engine is not editable' });
+    const b = await readBody(req);
+    const indices = Array.isArray(b.indices) ? b.indices.filter((i: unknown): i is number => Number.isInteger(i)) : [];
+    if (!indices.length) return sendJson(res, 400, { error: 'indices required' });
+    const out = os.dropRetiredPolicyRules(indices, me.email);
+    if (!out) return sendJson(res, 400, { error: 'no bundled baseline to compare against' });
+    if (out.dropped.length) {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.retired_dropped',
+        data: { rev: out.rev, dropped: out.dropped.map((r) => r.match.capability), count: out.dropped.length } });
+    }
+    return sendJson(res, 200, { ok: true, rev: out.rev, dropped: out.dropped.length, document: os.policy.document, drift: os.policyDrift() ?? undefined });
   }
   // Agent policy proposals — the owner-approved fine-tuning path (tighten-only). Review list is owner/admin;
   // approve/reject/revert are OWNER only (same guard as PUT /api/policy — an admin may see but not rewrite).

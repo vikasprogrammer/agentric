@@ -53,6 +53,9 @@ export interface Paths {
   policyFile: string;
   /** Where a console-edited policy override is written (the user's policy file in the home). */
   policyOverride: string;
+  /** The PRODUCT's shipped ruleset, always — the baseline a tenant's override is measured against for
+   *  drift (`src/governance/policy-baseline.ts`). Equals `policyFile` when there is no override. */
+  bundledPolicy: string;
 }
 
 export interface HomeConfig {
@@ -113,5 +116,6 @@ function pathsUnder(baseDir: string, cfg: HomeConfig, home: string): Paths {
     logFile: path.join(home, 'server.log'),
     policyFile: fs.existsSync(userPolicy) ? userPolicy : bundledPolicy,
     policyOverride: userPolicy,
+    bundledPolicy,
   };
 }

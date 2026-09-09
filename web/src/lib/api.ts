@@ -1594,7 +1594,22 @@ export interface PolicyResp {
   canEdit?: boolean
   document?: PolicyDocument
   id?: string
+  drift?: PolicyDrift
   error?: string
+}
+/** A rule the product retired that this tenant still enforces (see src/governance/policy-baseline.ts). */
+export interface RetiredHit {
+  index: number
+  rule: PolicyRule
+  since: string
+  reason: string
+}
+/** How far a tenant's persisted ruleset has drifted from the shipped default. */
+export interface PolicyDrift {
+  retired: RetiredHit[]
+  missing: PolicyRule[]
+  tenant: { index: number; rule: PolicyRule }[]
+  clean: boolean
 }
 /** A tighten-only change an agent proposed to the ruleset (awaiting owner approval). */
 export interface PolicyDelta {
@@ -2311,6 +2326,7 @@ export const api = {
   },
 
   policy: () => call<PolicyResp>('GET', '/api/policy'),
+  dropRetiredPolicyRules: (indices: number[]) => call<{ ok: boolean; rev?: number; dropped?: number; document?: PolicyDocument; drift?: PolicyDrift; error?: string }>('POST', '/api/policy/drift/drop', { indices }),
   savePolicy: (document: PolicyDocument) => call<{ ok: boolean; document?: PolicyDocument; error?: string }>('PUT', '/api/policy', { document }),
   policyProposals: () => call<PolicyProposalsResp>('GET', '/api/policy/proposals'),
   approvePolicyProposal: (id: string) => call<{ ok: boolean; rev?: number; document?: PolicyDocument; error?: string }>('POST', '/api/policy/proposals/' + encodeURIComponent(id) + '/approve'),
