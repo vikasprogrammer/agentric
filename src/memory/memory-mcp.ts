@@ -767,6 +767,51 @@ const TOOLS = [
     },
   },
   {
+    name: 'workflow_propose',
+    description:
+      'Propose a WORKFLOW — several automations that make up one ongoing FUNCTION ("support", "release ' +
+      'hygiene"), reviewed and approved by a human as a single unit. Use this instead of several ' +
+      '`automation_propose` calls when the member describes a standing responsibility rather than one job: ' +
+      '"every time a support ticket arrives, classify it, answer the easy ones and escalate bugs to the ' +
+      'engineer, and sweep every 30 minutes for anything missed" is ONE function with two triggers. ' +
+      'IMPORTANT — propose TRIGGERS, not steps: the judgment inside a function (classify, answer, escalate, ' +
+      'hand off via `task_create`) belongs in the agent\'s `task` prompt where it is decided at runtime. ' +
+      'There is no step graph here; an automation per branch is the wrong shape and multiplies spend. Two or ' +
+      'three parts is typical, six is the maximum. Every part names the agent that runs it — verify each one ' +
+      'exists (`directory_lookup` / `list_capabilities`); if the function needs an agent this workspace does ' +
+      'not have, say so in your reply instead of assigning the work to a poor fit. Same governance as ' +
+      '`automation_propose`: a DRAFT that creates nothing and fires nothing until an owner/admin approves ' +
+      'the one card, and approval is all-or-nothing — a part that fails validation rolls the others back.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'The FUNCTION\'s name — what the whole set is for (e.g. "Support triage"). Shown on the review card.' },
+        rationale: { type: 'string', description: 'Why this function is worth running — the approver reads this to decide.' },
+        automations: {
+          type: 'array',
+          description: 'The triggers that make up the function — 1 to 6. Each entry takes the same fields as `automation_propose`.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              name: { type: 'string', description: 'A short label for this part (e.g. "New ticket" / "30-minute sweep").' },
+              task: { type: 'string', description: 'The prompt the spawned session runs each time this part fires — put the judgment here.' },
+              type: { type: 'string', enum: ['cron', 'webhook', 'composio', 'slack', 'discord'], description: 'Trigger type. Default: cron.' },
+              schedule: { type: 'string', description: 'For type:"cron" — a 5-field cron expression, e.g. "*/30 * * * *".' },
+              filter: { type: 'string', description: 'For event triggers — composio trigger slug, or slack/discord event type or channel id ("" = any).' },
+              agentId: { type: 'string', description: 'Which agent runs this part. Defaults to you (the proposing agent).' },
+              mode: { type: 'string', enum: ['headless', 'interactive'], description: 'headless (unattended, the default) or interactive.' },
+              runAs: { type: 'string', description: 'Optional member (id or email) the fired session acts as, so THEIR personal connectors are injected. Omit for the company identity.' },
+            },
+            required: ['name', 'task'],
+          },
+        },
+      },
+      required: ['automations'],
+    },
+  },
+  {
     name: 'skill_find',
     description:
       'Discover installable SKILLS — the reusable playbooks packaged for this workspace. Returns your ' +
@@ -2034,6 +2079,34 @@ async function policyPropose(args: Record<string, unknown>): Promise<string> {
     : `Could not propose the policy change: ${d.error ?? 'unknown error'}`;
 }
 
+async function workflowPropose(args: Record<string, unknown>): Promise<string> {
+  const parts = Array.isArray(args.automations) ? (args.automations as Record<string, unknown>[]) : [];
+  if (!parts.length) return 'workflow_propose needs an `automations` array — one entry per trigger in the function.';
+  const res = await fetch(AOS_URL + '/api/agent/workflow/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({
+      session: SESSION, agent: AGENT,
+      name: args.name ? String(args.name) : undefined,
+      rationale: args.rationale ? String(args.rationale) : undefined,
+      automations: parts.map((a) => ({
+        name: a.name ? String(a.name) : '',
+        task: a.task ? String(a.task) : '',
+        type: a.type ? String(a.type) : undefined,
+        schedule: a.schedule ? String(a.schedule) : undefined,
+        filter: a.filter ? String(a.filter) : undefined,
+        agentId: a.agentId ? String(a.agentId) : undefined,
+        mode: a.mode ? String(a.mode) : undefined,
+        runAs: a.runAs ? String(a.runAs) : undefined,
+      })),
+    }),
+  });
+  const d = (await res.json()) as { ok?: boolean; preview?: string; error?: string };
+  return d.ok
+    ? `Workflow proposed — ${parts.length} automation(s), ONE card for a human to review:\n${d.preview ?? ''}\n\nNothing is created and nothing will fire until an owner/admin approves it, and approval is all-or-nothing (every part, or none).`
+    : `Could not propose the workflow: ${d.error ?? 'unknown error'}`;
+}
+
 async function automationPropose(args: Record<string, unknown>): Promise<string> {
   const name = String(args.name ?? '').trim();
   const task = String(args.task ?? '').trim();
@@ -3284,6 +3357,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'skill_get' ? await skillGet(args)
         : name === 'policy_propose' ? await policyPropose(args)
         : name === 'automation_propose' ? await automationPropose(args)
+        : name === 'workflow_propose' ? await workflowPropose(args)
         : name === 'host_propose' ? await hostPropose(args)
         : name === 'skill_find' ? await skillFind(args)
         : name === 'skill_request' ? await skillRequest(args)

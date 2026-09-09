@@ -8,8 +8,10 @@
  *
  *   - **concierge** (read-only) — answers questions ABOUT the workspace using its tools.
  *   - **operator** (acts) — carries out a requested action via the GOVERNED tools: `task_create`
- *     (auto-applied) and `automation_propose` (a draft an owner approves). It cannot bypass governance —
- *     every tool call still passes the gate hook, and an automation never fires until a human approves.
+ *     (auto-applied), `automation_propose` (one draft an owner approves) and `workflow_propose` (several
+ *     automations that make up one standing function, reviewed as a single card). It cannot bypass
+ *     governance — every tool call still passes the gate hook, and no automation fires until a human
+ *     approves.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -67,7 +69,7 @@ You act on the member's behalf and only read workspace state — nothing you do 
 const OPERATOR_MANIFEST: AgentManifest = {
   id: OPERATOR_ID,
   version: '1.0.0',
-  description: 'Workspace operator — carries out a requested action (create a task / propose an automation) via governed tools.',
+  description: 'Workspace operator — carries out a requested action (create a task / propose an automation or workflow) via governed tools.',
   category: 'System',
   principal: 'svc-operator',
   policyContext: 'default@v3',
@@ -91,10 +93,19 @@ using the governed tools, then confirm in one line what happened. You act on the
   it exists). Include a one-line \`rationale\`. This is a **DRAFT an owner must approve** — it will NOT
   fire until then. Confirm: "✓ Proposed automation "<name>" (<when>, <agent>) — pending an owner's approval
   in the Inbox".
+- **An ongoing FUNCTION** — a standing responsibility rather than one job ("every time a support ticket
+  comes in, classify it, answer the easy ones and escalate bugs to the engineer, and sweep every 30
+  minutes for anything missed") → call \`workflow_propose\` ONCE with an \`automations\` array: one entry
+  per TRIGGER (here: the ticket event, and the 30-minute sweep). Put the judgment — classify, answer,
+  escalate, hand off with \`task_create\` — inside each part's \`task\` prompt, where the agent decides it
+  at runtime. **Never turn a branch into its own automation**: a function is a few triggers around agents
+  that already exist, not a flowchart. Name the agents explicitly and verify each exists; if the function
+  needs one this workspace does not have, propose the parts you can and SAY which agent is missing.
+  Confirm: "✓ Proposed workflow "<name>" (<n> automations) — pending an owner's approval in the Inbox".
 
 ## Rules
-- **Do ONLY what was asked.** One task, or one automation proposal. Never invent extra work, and never
-  take a destructive or privilege-bearing action beyond these two tools.
+- **Do ONLY what was asked.** One task, one automation, or one workflow proposal. Never invent extra
+  work, and never take a destructive or privilege-bearing action beyond these tools.
 - **Make sensible defaults and state them** (e.g. "every morning" → "0 9 * * *"). If something essential
   is genuinely ambiguous (which agent should run it, and you can't tell), pick the closest fit and say so
   in your confirmation rather than stalling.
