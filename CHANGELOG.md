@@ -7,6 +7,13 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Docs
+- `docs/github-multi-org-plan.md` — plan for making the company-bot GitHub lane multi-org. Today
+  `ensureBotToken` stores one `github_installation_id` and resolves it as `installations[0]`, so an App
+  installed on two orgs silently acts on one of them and 404s the other with no error at launch.
+  Specs an installation registry + per-installation token cache, a per-repo git credential helper
+  (`useHttpPath` → a session-secret loopback route), the member-lane guard that keeps a linked human's
+  PR authorship, and the `gh`-doesn't-read-git-helpers gap. Docs only — no behaviour change.
 
 ## [0.428.0] - 2026-09-09
 ### Added
