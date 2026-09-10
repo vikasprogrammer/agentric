@@ -16,6 +16,9 @@
  *   5. Launch: the PRIMARY token is what gets injected, plus AOS_GH_ORG / AOS_GH_ORGS.
  *   6. Reinstall churn: a vanished primary is replaced; a surviving primary is left alone.
  *   7. Clearing the private key drops EVERY cached token, not just the primary's.
+ *   8. Phase 3 — the per-repo git credential helper: its shape, and REAL `git credential fill` runs
+ *      against the real loopback route (primary org costs no round trip; a second org gets its own
+ *      token; an uninstalled org and a member-identity run both fall back to $GH_TOKEN).
  *
  * Usage:  npm run build && node scripts/github-multi-org-test.cjs
  */
@@ -60,7 +63,9 @@ global.fetch = async (urlIn, opts = {}) => {
 };
 
 async function main() {
+  const { execFile } = require('child_process');
   const { GithubIdentity } = require(path.join(ROOT, 'dist/edge/github-identity.js'));
+  const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
   const { TenantRegistry } = require(path.join(ROOT, 'dist/tenant-registry.js'));
   const { TerminalManager } = require(path.join(ROOT, 'dist/terminal.js'));
   const { generateKeyPairSync } = require('crypto');
@@ -155,6 +160,74 @@ async function main() {
   assert(vault('github_bot_token:555') === undefined && vault('github_bot_token:777') === undefined, 'EVERY installation’s token is dropped, not just the primary’s');
   assert(gid.installations().length === 0 && osx.settings.githubInstallationId() === '', 'the registry and the primary are cleared too');
   assert(gid.loadBotToken() === undefined, 'nothing is readable afterwards');
+
+  // ─── 8) Phase 3 — the per-repo git credential helper ────────────────────────
+  console.log('\n\x1b[1m8) Per-repo git credentials (phase 3)\x1b[0m');
+  // Re-arm the bot (§7 cleared it) and boot the real HTTP server so `git` talks to the real route.
+  gid.setPrivateKey(pem, 'owner@test');
+  await gid.refreshInstallations('owner@test');
+  await gid.ensureBotToken(Date.now(), 'owner@test');                       // Northwind = primary
+  await gid.ensureBotToken(Date.now(), 'owner@test', 'Globex');
+  const primaryTok = gid.loadBotToken().token;
+  const globexTok = gid.loadBotToken('Globex').token;
+
+  const single = { GH_TOKEN: 'ghs_x' };
+  tm.configureGitCredentials(single);
+  assert(single.GIT_CONFIG_COUNT === '2' && single.GIT_CONFIG_KEY_2 === undefined, 'single-org tenants keep the plain two-entry helper');
+  assert(!/AOS_GH_ORG/.test(single.GIT_CONFIG_VALUE_1), 'and its helper never reaches for an org');
+  const multi = { GH_TOKEN: 'ghs_x' };
+  tm.configureGitCredentials(multi, { multiOrg: true });
+  assert(multi.GIT_CONFIG_COUNT === '3', 'multi-org adds a third config entry');
+  assert(multi.GIT_CONFIG_KEY_2 === 'credential.https://github.com.useHttpPath' && multi.GIT_CONFIG_VALUE_2 === 'true',
+    'useHttpPath is on — without it git never tells the helper which repo it is authenticating for');
+  assert(/AOS_GH_ORG/.test(multi.GIT_CONFIG_VALUE_1) && /github\/credential/.test(multi.GIT_CONFIG_VALUE_1), 'the helper resolves the org against the loopback route');
+
+  // The real thing: boot the server, register a session, and let git drive the helper. `execFile`
+  // (async) rather than execFileSync — a sync child would block this process's event loop and the
+  // in-process server could never accept the helper's request.
+  const registryServer = createHttpServer(registry);
+  await new Promise((r) => registryServer.listen(0, r));
+  const port = registryServer.address().port;
+  const now = Date.now();
+  osx.db.prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, secret, run_as, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run('sessGit', 'coder', 't', '', 'sessGit', 'running', 'sekret', null, now, now);
+  const helperEnv = {
+    ...process.env, ...multi, GH_TOKEN: primaryTok,
+    AOS_URL: `http://127.0.0.1:${port}`, AOS_SECRET: 'sekret', AOS_TENANT: 'testco', SESSION: 'sessGit', AOS_GH_ORG: 'Northwind',
+  };
+  const ask = (repoPath, env = helperEnv) => new Promise((resolve) => {
+    const child = execFile('git', ['credential', 'fill'], { env }, (err, stdout) => resolve(err ? '' : (String(stdout).match(/password=(.*)/) || [])[1] || ''));
+    child.stdin.end(`protocol=https\nhost=github.com\npath=${repoPath}\n\n`);
+  });
+  mints = [];
+  assert((await ask('Northwind/api.git')) === primaryTok, 'a repo in the PRIMARY org authenticates with the ambient token');
+  assert(mints.length === 0, 'and costs no round trip — the common case is untouched');
+  assert((await ask('Globex/site.git')) === globexTok, 'a repo in ANOTHER org gets that org’s own token — the whole point');
+  assert((await ask('Hooli/x.git')) === primaryTok, 'an org the App is not installed on falls back to $GH_TOKEN rather than breaking git');
+  const noRoute = { ...helperEnv, AOS_URL: 'http://127.0.0.1:1' };
+  assert((await ask('Globex/site.git', noRoute)) === primaryTok, 'an unreachable route degrades to the pre-multi-org behaviour, never a broken git');
+
+  // The member guard: a run whose run-as human has linked GitHub must NEVER be handed a bot token,
+  // or their commits get re-authored as the App bot the moment they touch a second org.
+  const teamMember = osx.team.acceptToken(osx.team.invite({ email: 'dev@test', role: 'admin' }).token).member.id;
+  gid.save(teamMember, { token: 'gho_member', login: 'octocat', connectedAt: Date.now() });
+  osx.db.prepare('UPDATE term_sessions SET run_as = ? WHERE id = ?').run(teamMember, 'sessGit');
+  const asMember = await (await fetch(`http://127.0.0.1:${port}/api/agent/github/credential`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-aos-secret': 'sekret', 'x-aos-tenant': 'testco' },
+    body: JSON.stringify({ session: 'sessGit', org: 'Globex' }),
+  })).json();
+  assert(asMember.status === 'member_identity' && !asMember.token, 'a run with a linked member identity is refused a bot token (authorship stays theirs)');
+  assert((await ask('Globex/site.git')) === primaryTok, 'and the helper falls back rather than substituting the bot');
+  osx.db.prepare('UPDATE term_sessions SET run_as = NULL WHERE id = ?').run('sessGit');
+
+  const post = (body, headers = { 'x-aos-secret': 'sekret' }) => fetch(`http://127.0.0.1:${port}/api/agent/github/credential`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-aos-tenant': 'testco', ...headers }, body: JSON.stringify(body),
+  });
+  assert((await post({ session: 'nope', org: 'Globex' })).status === 404, 'an unknown session is rejected');
+  assert((await post({ session: 'sessGit', org: 'Globex' }, { 'x-aos-secret': 'wrong' })).status === 403, 'a bad session secret is rejected');
+  assert((await (await post({ session: 'sessGit', org: '' })).json()).status === 'no_org', 'a missing org is a typed answer, not a token');
+  assert((await (await post({ session: 'sessGit', org: 'Hooli' })).json()).status === 'not_installed', 'an uninstalled org is named as such');
+  registryServer.close();
 
   try { registry.stopAll && registry.stopAll(); } catch { /* */ }
   try { tm.shutdown && tm.shutdown(); } catch { /* */ }

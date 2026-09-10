@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.434.0] - 2026-09-10
+## [0.435.0] - 2026-09-10
 ### Added
 - **The company GitHub bot no longer collapses a multi-org App down to one org.** `ensureBotToken`
   persisted a single `github_installation_id` and, when it was unset, resolved it as
@@ -37,6 +37,21 @@ new version heading in the same commit.
   reach and is deliberately untouched. Pinned by `scripts/github-multi-org-test.cjs`.
   **For admins:** If your App spans several orgs, agents are now told which one their git credential
   covers — so a push to another org reports the real reason instead of "repository not found".
+- **`git` now works across every org the App is installed on.** A bot token covers one installation, so
+  the ambient `GH_TOKEN` could only ever reach one org. On a multi-org bot run the session's credential
+  helper turns on `credential.useHttpPath`, which makes git hand it `path=<org>/<repo>` on every
+  request; the helper reads the org off that and fetches THAT installation's token from a new
+  session-secret loopback route (`POST /api/agent/github/credential`). A repo in the primary org costs
+  no round trip, and **any** failure — an unreachable route, an org the App isn't installed on, a
+  restarted server — falls back to `$GH_TOKEN`, so the worst case is exactly the old behaviour rather
+  than broken git. Deliberately NOT enabled for a run carrying a linked member's token, and the route
+  refuses one as well (`member_identity`): a per-repo bot token would silently re-author that human's
+  commits as the App bot the moment they touched a second org. `gh` still reads `GH_TOKEN` and ignores
+  git credential helpers, so it stays on the primary org — the agent's prompt now says exactly that.
+  Verified by driving real `git credential fill` against the real route in
+  `scripts/github-multi-org-test.cjs`.
+  **For admins:** Agents can clone, fetch and push in any org your GitHub App is installed on — no
+  per-org setup, and commits by a teammate who linked their GitHub are still authored as them.
 ## [0.433.0] - 2026-09-10
 ### Added
 - **What's new — a user-facing feed generated from this changelog.** The changelog is written for the

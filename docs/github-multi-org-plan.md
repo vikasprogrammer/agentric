@@ -123,7 +123,10 @@ resolution per-repo. Out of scope here.
    `github_bot_token:<id>` cache with a one-shot migration off the legacy key, `AOS_GH_ORG` +
    `AOS_GH_ORGS`, and the prompt block that says which org the injected token actually covers.
    No behaviour change for a one-org tenant. Pinned by `scripts/github-multi-org-test.cjs`.
-2. **Per-repo git credentials** (§3) — the helper, the loopback route, the member-lane guard.
+2. ✅ **Per-repo git credentials** (§3) — `credential.useHttpPath` + an org-resolving helper,
+   `POST /api/agent/github/credential` (session-secret gated), and the member-lane guard enforced on
+   both sides. `git` now reaches every installed org; `gh` still doesn't (below). Pinned by real
+   `git credential fill` runs in `scripts/github-multi-org-test.cjs`.
 3. **`github_token({ org })`** — the `gh` answer.
 4. **Console list + primary picker.**
 
@@ -138,6 +141,8 @@ cases below land with phase 2. Both stub `globalThis.fetch`, as `github-per-memb
 - ✅ an org the App isn't installed on mints nothing and never yields another org's token;
 - ✅ reinstall churn: a vanished primary is replaced, a surviving one is left alone;
 - ✅ clearing the private key drops every installation's token, not just the primary's;
-- the helper's org parse: `path=globex/site.git` ⇒ the `globex` token, `path=` absent ⇒ `$GH_TOKEN`;
-- **the guard**: a run with a linked member token gets `member_identity`, never a bot token;
-- an org the App isn't installed on ⇒ `not_installed`, and `$GH_TOKEN` is left alone.
+- ✅ the helper under REAL `git credential fill`: a primary-org repo costs no round trip, a second-org
+  repo gets that org's token, and an uninstalled org or an unreachable route falls back to `$GH_TOKEN`
+  rather than breaking git;
+- ✅ **the guard**: a run with a linked member token gets `member_identity`, never a bot token;
+- ✅ the route's edges: unknown session ⇒ 404, bad session secret ⇒ 403, missing org ⇒ `no_org`.
