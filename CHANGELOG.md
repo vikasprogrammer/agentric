@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.437.1] - 2026-09-10
+### Fixed
+- **An agent's `npm install` can no longer rewrite the Agentric software checkout.** npm installs into
+  the nearest ancestor that has a `package.json`, not the folder it runs in — so an agent working in a
+  scratch folder under a data home at `<checkout>/data` (the deploy convention) installed into the
+  checkout itself. Live on instawp: `infra-ops` ran `npm install playwright-core` in a scratch folder,
+  npm added it to the checkout's `package.json` + lockfile, and the next `make-live` refused the
+  "dirty" live checkout. Each tenant build now writes a minimal private `package.json` at the data home
+  root (`ensureNpmBoundary`, never overwriting one that exists), so such installs land in
+  `<home>/node_modules` — still resolvable from every agent folder — and the checkout is never touched.
+  Pinned by `scripts/npm-boundary-test.cjs`, which asserts through npm's own `npm prefix`.
+
 ## [0.437.0] - 2026-09-10
 ### Added
 - **Before you drop a retired rule, the console shows what actually changes — because a rule's effect
