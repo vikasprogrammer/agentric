@@ -1,0 +1,33 @@
+# Build artifacts and installs — all rebuilt inside the image. Shipping a stale local dist/ is the
+# classic "why isn't my change taking" bug.
+node_modules
+dist
+web/node_modules
+web/dist
+
+# The data home. NEVER ship a DB, secret.key, audit trail or tmux socket into an image.
+data
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# VCS + local identity
+.git
+.github
+.env
+.env.example
+config/tenants.json
+
+# Docs and history — nothing under src/ reads them at runtime.
+docs
+deploy
+CHANGELOG.md
+README.md
+TODO.md
+LICENSE
+
+# Test + dev scaffolding
+test
+scripts/*.cjs
+*.log
+.DS_Store

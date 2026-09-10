@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.434.0] - 2026-09-10
+### Added
+- **Container image — Agentric now deploys to a Dockerfile-based PaaS.** A multi-stage `Dockerfile`
+  (plus `.dockerignore`, `CHECKS` and `docker-entrypoint.sh`) builds both bundles and ships the full
+  session runtime — tmux, ttyd (pinned static release binary), `git`, `gh` and the `claude` CLI — on
+  `node:22-bookworm-slim`. Three things it deliberately gets right: it runs as **uid 1000, not root**
+  (the unattended lane's `--dangerously-skip-permissions` is refused under root); `$HOME` is a real
+  writable directory the deploy mounts as a volume (the `~/.claude.json` trust seed, the credential
+  dir the TUI lane actually authenticates with, and the transcripts the conversation view reads all
+  live there); and it generates `en_US.UTF-8`, the locale `session-backend.ts` hardcodes into every
+  tmux pane. `AOS_UID_ISOLATION` stays off, so the app's own `/terminal/` proxy means one published
+  port is enough. Carries no host, tenant or token — all deployment identity stays in runtime config.
+
 ## [0.433.0] - 2026-09-10
 ### Added
 - **What's new — a user-facing feed generated from this changelog.** The changelog is written for the
