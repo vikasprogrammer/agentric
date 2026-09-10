@@ -19,6 +19,8 @@
  *   8. Phase 3 — the per-repo git credential helper: its shape, and REAL `git credential fill` runs
  *      against the real loopback route (primary org costs no round trip; a second org gets its own
  *      token; an uninstalled org and a member-identity run both fall back to $GH_TOKEN).
+ *   9. Phase 4 — `github_token({ org })`: the `gh` escape hatch. Offered only on a multi-org bot run
+ *      (never single-org, never a member-identity run), and driven through the REAL MCP server.
  *
  * Usage:  npm run build && node scripts/github-multi-org-test.cjs
  */
@@ -63,7 +65,7 @@ global.fetch = async (urlIn, opts = {}) => {
 };
 
 async function main() {
-  const { execFile } = require('child_process');
+  const { execFile, spawn } = require('child_process');
   const { GithubIdentity } = require(path.join(ROOT, 'dist/edge/github-identity.js'));
   const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
   const { TenantRegistry } = require(path.join(ROOT, 'dist/tenant-registry.js'));
@@ -219,6 +221,60 @@ async function main() {
   assert(asMember.status === 'member_identity' && !asMember.token, 'a run with a linked member identity is refused a bot token (authorship stays theirs)');
   assert((await ask('Globex/site.git')) === primaryTok, 'and the helper falls back rather than substituting the bot');
   osx.db.prepare('UPDATE term_sessions SET run_as = NULL WHERE id = ?').run('sessGit');
+
+  // ─── 9) `github_token({ org })` — the `gh` escape hatch ─────────────────────
+  console.log('\n\x1b[1m9) github_token — the gh escape hatch\x1b[0m');
+  // The launch-side gate first: whether the tool is offered at all is decided here, and the member-lane
+  // exclusion has to hold in the same place the credential helper's does.
+  const botCfg = JSON.parse(await tm.buildMcpConfigJson('sessGit', 'coder', undefined, 'sekret'));
+  assert(botCfg.mcpServers.agentos.env.GH_ORG_TOKEN === '1', 'a multi-org bot run gets GH_ORG_TOKEN=1');
+  assert(botCfg.mcpServers.agentos.env.AOS_GH_ORGS === 'Northwind,Globex' && botCfg.mcpServers.agentos.env.AOS_GH_ORG === 'Northwind',
+    'along with the org names the tool describes itself with');
+  const memberCfg = JSON.parse(await tm.buildMcpConfigJson('sessGit', 'coder', teamMember, 'sekret'));
+  assert(memberCfg.mcpServers.agentos.env.GH_ORG_TOKEN === undefined,
+    'a run acting as a human who linked GitHub is NOT offered it (their token already spans their orgs)');
+
+  // Drive the REAL MCP server: a tool that is offered but unreachable, or reachable but never offered,
+  // is the failure this pins.
+  const mcp = (extraEnv, call) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(ROOT, 'dist/memory/memory-mcp.js')], {
+      env: { ...process.env, AOS_URL: `http://127.0.0.1:${port}`, AOS_TENANT: 'testco', SESSION: 'sessGit', AGENT: 'coder', AOS_SECRET: 'sekret', ...extraEnv },
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    let buf = '', tools = null;
+    const t = setTimeout(() => { child.kill(); reject(new Error('mcp timeout')); }, 8000);
+    child.stdout.on('data', (d) => {
+      buf += d.toString();
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let m; try { m = JSON.parse(line); } catch { continue; }
+        if (m.id === 2) { tools = m.result.tools; if (!call) { clearTimeout(t); child.kill(); resolve({ tools }); } }
+        if (m.id === 3) { clearTimeout(t); child.kill(); resolve({ tools, text: m.result.content[0].text }); }
+      }
+    });
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n');
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }) + '\n');
+    if (call) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'github_token', arguments: call } }) + '\n');
+  });
+  const multiEnv = { GH_ORG_TOKEN: '1', AOS_GH_ORGS: 'Northwind,Globex', AOS_GH_ORG: 'Northwind' };
+  const offered = (await mcp(multiEnv)).tools.map((t) => t.name);
+  assert(offered.includes('github_token'), 'github_token is offered on a multi-org bot run');
+  const plain = (await mcp({})).tools.map((t) => t.name);
+  assert(!plain.includes('github_token'), 'and NOT on a single-org tenant — no schema cost for a tool they can never use');
+  const desc = (await mcp(multiEnv)).tools.find((t) => t.name === 'github_token').description;
+  assert(/Northwind/.test(desc) && /Globex/.test(desc), 'the tool names the orgs it can actually reach');
+
+  mints = [];
+  const okOut = (await mcp(multiEnv, { org: 'Globex' })).text;
+  assert(okOut.includes(`export GH_TOKEN=${globexTok}`), 'calling it returns an export line carrying that org’s token');
+  assert(/REPLACES your ambient token/.test(okOut), 'and warns the export replaces the ambient token for the rest of the shell');
+  const missOut = (await mcp(multiEnv, { org: 'Hooli' })).text;
+  assert(/not installed on "Hooli"/.test(missOut) && !/export GH_TOKEN/.test(missOut), 'an uninstalled org is a typed refusal, not a token');
+  assert(/not retryable|not something you can retry/.test(missOut), 'and tells the agent to stop rather than retry');
+  const blankOut = (await mcp(multiEnv, { org: '  ' })).text;
+  assert(!/export GH_TOKEN/.test(blankOut), 'a blank org yields no token');
 
   const post = (body, headers = { 'x-aos-secret': 'sekret' }) => fetch(`http://127.0.0.1:${port}/api/agent/github/credential`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-aos-tenant': 'testco', ...headers }, body: JSON.stringify(body),

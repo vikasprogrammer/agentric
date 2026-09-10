@@ -185,6 +185,37 @@ const IMAGE_GEN = process.env.IMAGE_GEN === '1';
 const VIDEO_GEN = process.env.VIDEO_GEN === '1';
 // VIDEO_UNDERSTAND: '1' when Atlas is configured (its multimodal LLMs do video→text) — exposes video_understand.
 const VIDEO_UNDERSTAND = process.env.VIDEO_UNDERSTAND === '1';
+// GH_ORG_TOKEN: '1' when the company GitHub App spans SEVERAL orgs and this run is on the bot lane —
+// exposes `github_token`. A bot token covers ONE installation, and while plain `git` now resolves the
+// right one per repo (the session's credential helper), `gh` reads GH_TOKEN and ignores git credential
+// helpers, so it stays stuck on the primary org. This tool is the way out for `gh`. Never offered on a
+// run acting as a human who linked their own GitHub: their user token already spans every org they can
+// reach, and handing them a bot token would re-author their work as the bot. See
+// docs/github-multi-org-plan.md.
+const GH_ORG_TOKEN = process.env.GH_ORG_TOKEN === '1';
+const GH_ORGS = (process.env.AOS_GH_ORGS || '').split(',').map((o) => o.trim()).filter(Boolean);
+const GH_PRIMARY_ORG = process.env.AOS_GH_ORG || '';
+
+const GITHUB_TOKEN_TOOL = {
+  name: 'github_token',
+  description:
+    'Get a GitHub token for a specific ORG when `gh` fails there with "not found" / 404. Your workspace ' +
+    `App is installed on: ${GH_ORGS.join(', ')}${GH_PRIMARY_ORG ? ` — but the token in your environment covers **${GH_PRIMARY_ORG}** only` : ''}. ` +
+    'Plain `git` (clone/fetch/push) already resolves the right credential per repository, so use `git` ' +
+    'first and reach for this only for a `gh`-specific operation (`gh pr create`, `gh issue`, `gh api`) ' +
+    'in another org. On success it returns a shell line to run — copy it EXACTLY (`export GH_TOKEN=…`) ' +
+    'then retry your `gh` command; note this REPLACES your ambient token for the rest of the shell, so ' +
+    'run it in a subshell or re-export the original if you go back to the primary org. The token is the ' +
+    'workspace bot\'s, scoped to that one org; do not store or echo it anywhere.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      org: { type: 'string', description: 'The GitHub org/user login to get a token for — one of the orgs named above, spelled as GitHub spells it.' },
+    },
+    required: ['org'],
+  },
+};
 
 const SLACK_SEND_TOOL = {
   name: 'slack_send',
@@ -3083,6 +3114,44 @@ async function githubRefresh(): Promise<string> {
   }
 }
 
+// ── A GitHub token for ANOTHER org: the `gh` half of multi-org (docs/github-multi-org-plan.md) ──────
+// Plain git resolves per-repo through the session's credential helper; `gh` reads GH_TOKEN and ignores
+// credential helpers, so it can only ever reach one org. Same loopback route the helper uses — including
+// its refusal for a run carrying a linked human's identity.
+async function githubOrgToken(args: Record<string, unknown>): Promise<string> {
+  const org = String(args.org ?? '').trim();
+  if (!org) return 'Name the GitHub org you need a token for.';
+  const known = GH_ORGS.length ? ` The App is installed on: ${GH_ORGS.join(', ')}.` : '';
+  const res = await fetch(AOS_URL + '/api/agent/github/credential', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, org }),
+  });
+  const d = (await res.json()) as { status?: string; token?: string; org?: string; expiresAt?: number; error?: string };
+  if (d.error) return `Could not get a GitHub token for "${org}": ${d.error}`;
+  switch (d.status) {
+    case 'ok':
+      return (
+        `GitHub token for **${d.org ?? org}** is ready. Run this in your shell, then retry your \`gh\` command:\n\n` +
+        `export GH_TOKEN=${d.token} GITHUB_TOKEN=${d.token}\n\n` +
+        `It expires ${d.expiresAt ? `at ${new Date(d.expiresAt).toISOString()}` : 'within the hour'}, and it REPLACES your ambient token for the rest of this shell` +
+        `${GH_PRIMARY_ORG ? ` — re-export the original (or run the above in a subshell) when you go back to ${GH_PRIMARY_ORG}` : ''}. ` +
+        'Plain `git` needs none of this; it already picks the right credential per repository. ' +
+        '(Do not store or echo this token into a memory, report, task, or the knowledge base.)'
+      );
+    case 'not_installed':
+      return `The workspace GitHub App is not installed on "${org}", so there is no token to give you — this is not something you can retry your way past.${known} If the repo really is in "${org}", ask an owner to install the App there (Connections → Creds → GitHub → Install).`;
+    case 'member_identity':
+      return 'This run acts as a human who linked their own GitHub, so their token is already in use and it reaches every org they can. If `gh` is failing, the cause is their access to that repo, not the credential — do not swap in the bot.';
+    case 'not_configured':
+      return 'No company GitHub App is configured for this workspace, so there is no org token to mint. Ask an owner to set it up in Connections → Creds → GitHub.';
+    case 'no_org':
+      return `Name the GitHub org you need a token for.${known}`;
+    default:
+      return `Could not get a GitHub token for "${org}".${known}`;
+  }
+}
+
 async function taskList(args: Record<string, unknown>): Promise<string> {
   const u = new URL(AOS_URL + '/api/tasks/list');
   u.searchParams.set('session', SESSION);
@@ -3327,6 +3396,7 @@ async function handle(req: JsonRpc): Promise<void> {
       ...(IMAGE_GEN ? [IMAGE_GENERATE_TOOL, IMAGE_EDIT_TOOL] : []),
       ...(VIDEO_GEN ? [VIDEO_GENERATE_TOOL] : []),
       ...(VIDEO_UNDERSTAND ? [VIDEO_UNDERSTAND_TOOL] : []),
+      ...(GH_ORG_TOKEN ? [GITHUB_TOKEN_TOOL] : []),
     ] } });
     return;
   }
@@ -3422,6 +3492,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'secret_request' ? await secretRequest(args)
         : name === 'connection_request' ? await connectionRequest(args)
         : name === 'github_refresh' ? await githubRefresh()
+        : name === 'github_token' ? await githubOrgToken(args)
         : `unknown tool: ${name}`;
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
     } catch (e) {

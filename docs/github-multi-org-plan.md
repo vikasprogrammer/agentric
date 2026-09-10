@@ -92,9 +92,11 @@ the in-memory cache in `src/connectors/github.ts:388` means a hit is usually not
 `gh pr create` reads `GH_TOKEN` and ignores git's helper, so §3 fixes `git` for both orgs but leaves
 `gh` on the primary. Two answers, cheapest first:
 
-- **Now — an MCP tool.** `github_token({ org })`, sibling of `github_refresh`
-  (`src/memory/memory-mcp.ts:1683`), returning the export line for a named org. Same "hand the token
-  back for the agent to re-export" pattern, including the "do not store or echo this" warning.
+- ✅ **An MCP tool.** `github_token({ org })`, sibling of `github_refresh`, returning the export line
+  for a named org. Same "hand the token back for the agent to re-export" pattern, including the "do not
+  store or echo this" warning — plus a warning that it REPLACES the ambient token for the rest of the
+  shell. Conditional (`GH_ORG_TOKEN=1`) so a single-org tenant never pays for its schema, and withheld
+  on a member-identity run for the same reason the credential helper is.
 - **Later — a `gh` shim.** The ssh/scp shim (`terminal.ts`, `resolveBin`) is the precedent: a wrapper
   on PATH that reads the repo's `origin` remote, resolves the org, sets `GH_TOKEN` for that one
   invocation and execs the real binary. Fully transparent, but it has to guess the org for
@@ -127,7 +129,9 @@ resolution per-repo. Out of scope here.
    `POST /api/agent/github/credential` (session-secret gated), and the member-lane guard enforced on
    both sides. `git` now reaches every installed org; `gh` still doesn't (below). Pinned by real
    `git credential fill` runs in `scripts/github-multi-org-test.cjs`.
-3. **`github_token({ org })`** — the `gh` answer.
+3. ✅ **`github_token({ org })`** — the `gh` answer. A CONDITIONAL MCP tool (`GH_ORG_TOKEN=1`, set at
+   launch only when the App spans several orgs and the run is on the bot lane), sharing the phase-2
+   route and its member guard. Pinned by `scripts/github-multi-org-test.cjs`.
 4. **Console list + primary picker.**
 
 ## Tests

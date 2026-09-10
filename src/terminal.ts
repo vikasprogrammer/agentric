@@ -4897,6 +4897,13 @@ export class TerminalManager {
     // The OS-owned tool server: recall/remember (memory) + ask (ask-human) + report (completion)
     // + list_capabilities/policy_check (policy preview).
     const toolAllow = this.os.agents.get(agent)?.tools?.join(',') || undefined;
+    // Multi-org GitHub: the `gh` escape hatch, and the org names the tool needs to describe itself.
+    // Same guard as the git credential helper — a linked member's identity is never displaced by the bot.
+    const ghIdent = new GithubIdentity(this.os);
+    const ghOrgs = ghIdent.orgs();
+    const ghOrgToken: Record<string, string> = ghOrgs.length > 1 && !(actingMember && ghIdent.load(actingMember))
+      ? { GH_ORG_TOKEN: '1', AOS_GH_ORGS: ghOrgs.join(','), AOS_GH_ORG: ghIdent.primaryInstallation()?.account ?? '' }
+      : {};
     config.mcpServers.agentos = {
       command: 'node',
       args: [this.memoryMcp],
@@ -4933,6 +4940,13 @@ export class TerminalManager {
         ...(this.os.settings.videoGenConfigured() ? { VIDEO_GEN: '1' } : {}),
         // VIDEO_UNDERSTAND: '1' exposes `video_understand` (video→text) — needs Atlas (its multimodal LLMs).
         ...(this.os.settings.atlasKey() ? { VIDEO_UNDERSTAND: '1' } : {}),
+        // GH_ORG_TOKEN: '1' exposes `github_token` — ONLY when the App spans several orgs AND this run is
+        // on the bot lane. `git` already resolves per repo through the session's credential helper, but
+        // `gh` reads GH_TOKEN and ignores credential helpers, so it stays on the primary org; this tool is
+        // its way out. Withheld from a run acting as a human who linked their own GitHub (their token
+        // already spans their orgs, and a bot token would re-author their work) and from single-org
+        // tenants, who would only pay for a schema they can never use.
+        ...ghOrgToken,
       },
     };
     return JSON.stringify(config, null, 2);
