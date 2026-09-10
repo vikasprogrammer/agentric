@@ -51,7 +51,7 @@ import { VideoJobStore } from './state/video-jobs';
 import { StubIdentity } from './governance/identity';
 import { InMemoryIdempotencyStore } from './gateway/idempotency';
 import { JsonPolicyEngine, PolicyDocument, PolicyRule, policyContextMismatch } from './governance/policy';
-import { PolicyDrift, baselineDrift, dropRetiredRules } from './governance/policy-baseline';
+import { PolicyDrift, baselineDrift, dropRetiredRules, retiredRuleImpact } from './governance/policy-baseline';
 import { EnvSecretsVault, SqliteSecretsVault } from './edge/secrets';
 import { resolveMasterKey } from './edge/secret-crypto';
 import { seedBuiltinAgents } from './edge/agent-catalog';
@@ -266,7 +266,15 @@ export class AgentOS {
     if (!(this.policy instanceof JsonPolicyEngine)) return null;
     const baseline = this.bundledPolicyDocument();
     if (!baseline) return null;
-    return baselineDrift(this.policy.document, baseline);
+    const drift = baselineDrift(this.policy.document, baseline);
+    // Attach WHAT CHANGES if each retired rule is dropped. A rule's effect is not readable from the
+    // rule — on expresstech this one sat ahead of three `never` guardrails and shadowed all of them, so
+    // dropping it made that tenant stricter, not looser. An owner is asked to click; they get the diff.
+    // Costs a bounded sweep (~6ms on a real 8-rule document) and only for tenants that actually carry a
+    // retired rule — a clean tenant pays nothing because `retired` is empty.
+    const thresholds = this.settings.governanceThresholds() as unknown as Record<string, number>;
+    for (const hit of drift.retired) hit.impact = retiredRuleImpact(this.policy.document, hit.index, baseline, thresholds);
+    return drift;
   }
 
   /**

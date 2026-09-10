@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.437.0] - 2026-09-10
+### Added
+- **Before you drop a retired rule, the console shows what actually changes — because a rule's effect
+  is not readable from the rule.** v0.428.0 surfaced rules the product retired that a tenant still
+  enforces, and left the drop to an owner's click. The click was still half-blind: it showed the rule
+  text. On expresstech the retired `shell.exec`+`risky` rule sat at **index 0, ahead of all three
+  `never` guardrails**, and first-match meant it SHADOWED every one of them — a `destructive` command,
+  a spend over the money cap and a bulk delete over the count cap were each being offered for approval
+  instead of refused outright. Dropping it made that tenant **stricter**, the opposite of what the
+  rule text suggested. `classificationDiff()` (`src/governance/policy.ts`) reuses the monotonicity
+  sweep's own arg space (`sampleArgDomains` / `sampleCapabilities`) to collect every DISTINCT verdict
+  that moves between two rulesets — both directions, deduped by capability + verdict pair + reason,
+  each with a **minimal** example (greedily shrunk from a sweep point, so a row reads
+  `{risky:true, destructive:true}` and not every branch arg the ruleset can key on). `retiredRuleImpact()`
+  applies it to a single drop; `GET /api/policy` carries it on each retired hit and Settings → Policy
+  renders the moving verdicts with direction, before → after, and the rule that applies afterwards,
+  plus an explicit note when a rule is shadowing a stricter one below it. ~6ms per rule on a real
+  8-rule document, and only tenants that actually carry a retired rule pay it.
+### Fixed
+- **Corrected the justification comment in `policy-baseline.ts`, which stated something false about the
+  fleet.** It argued the human-in-the-loop click was needed because the same retired rule was "pure
+  noise on instapods but a guardrail somebody is actually USING on expresstech (5 rejected of 26)".
+  Checking those rejections showed the opposite: four were the heredoc false-positive class fixed in
+  v0.425.1, and the fifth was an `rm -rf` carrying `destructive: true` — a command the ruleset should
+  never have offered for approval at all. The click stays, for a stronger reason now recorded in its
+  place: only classifying the whole ORDERED document both ways reveals what a removal does, in either
+  direction. Pinned by `scripts/policy-baseline-test.cjs`, now 44 cases.
+
 ## [0.436.0] - 2026-09-10
 ### Added
 - **An agent's task no longer lands on the board until a person accepts it.** Agents file essentially

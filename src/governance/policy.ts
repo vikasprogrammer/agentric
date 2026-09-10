@@ -407,6 +407,119 @@ function firstLoosening(before: PolicyDocument, after: PolicyDocument, threshold
   return null;
 }
 
+/** One classification that changes between two documents, with a MINIMAL example that shows it. */
+export interface ClassificationChange {
+  capability: string;
+  /** The smallest arg set that still produces this before/after pair — see `minimize` below. */
+  args: Record<string, unknown>;
+  /** Rendered verdicts: `allow` | `deny` | `approve:owner` | `approve:admin`. */
+  before: string;
+  after: string;
+  /** Which way it moves. `stricter` = the change tightens this case, `looser` = it opens it up. */
+  direction: 'stricter' | 'looser';
+  beforeReason: string;
+  afterReason: string;
+}
+
+const renderDecision = (d: Decision): string => (d.effect === 'approve' ? `approve:${d.level}` : d.effect);
+
+/**
+ * Every DISTINCT way two rulesets classify the same attempt differently, most-consequential first.
+ *
+ * `firstLoosening` answers "is this change safe?" with one counter-example and stops. This answers a
+ * different question — "what does this change actually DO?" — so it collects both directions, dedupes
+ * by (capability, verdict pair, reason pair), and hands back a MINIMAL example for each.
+ *
+ * Why it has to exist: a rule's effect is not readable from the rule. On expresstech the retired
+ * `shell.exec`+`risky` rule sat at index 0, ahead of `* destructive → never`, and first-match meant it
+ * SHADOWED the hard deny — a destructive command was being offered for approval instead of refused.
+ * Nobody could see that by reading the rule; it took classifying the whole ordered document both ways.
+ * So anything that asks a human to approve a ruleset change owes them this diff, not the rule text.
+ *
+ * Reuses the same finite arg space as the monotonicity sweep (`sampleArgDomains` / `sampleCapabilities`),
+ * so it explores exactly what the ruleset can branch on. Bounded by `limit`; the sweep itself is capped
+ * by `MAX_SWEEP_COMBOS` and degrades to per-arg variation for a huge product, exactly like `firstLoosening`.
+ */
+export function classificationDiff(
+  before: PolicyDocument,
+  after: PolicyDocument,
+  thresholds: Record<string, number> = {},
+  limit = 12,
+): ClassificationChange[] {
+  const eB = new JsonPolicyEngine(before); eB.setThresholds(() => thresholds);
+  const eA = new JsonPolicyEngine(after); eA.setThresholds(() => thresholds);
+  const ctx = {} as RunContext;
+  const classify = (cap: string, args: Record<string, unknown>) => ({
+    b: eB.classify({ capabilityId: cap, args } as ActionAttempt, ctx),
+    a: eA.classify({ capabilityId: cap, args } as ActionAttempt, ctx),
+  });
+
+  /**
+   * Shrink an example to the args that actually MATTER. A raw sweep point sets every branch arg the
+   * ruleset can key on, which renders as unreadable noise ({risky:true, destructive:true, deleteCount:0,
+   * emailExternal:false, …}); dropping each arg that changes neither verdict leaves the pair that
+   * explains the row ({risky:true, destructive:true}). Greedy and order-dependent, which is fine — any
+   * minimal witness explains the change equally well.
+   */
+  const minimize = (cap: string, args: Record<string, unknown>, want: string): Record<string, unknown> => {
+    const out = { ...args };
+    for (const k of Object.keys(args)) {
+      const trial = { ...out };
+      delete trial[k];
+      const { b, a } = classify(cap, trial);
+      if (`${renderDecision(b)}→${renderDecision(a)}` === want) delete out[k];
+    }
+    return out;
+  };
+
+  const seen = new Set<string>();
+  const changes: ClassificationChange[] = [];
+  const consider = (cap: string, args: Record<string, unknown>): void => {
+    const { b, a } = classify(cap, args);
+    const rb = renderDecision(b);
+    const ra = renderDecision(a);
+    if (rb === ra) return;
+    const key = `${cap}|${rb}|${ra}|${b.reason}|${a.reason}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    changes.push({
+      capability: cap === WILDCARD_PROBE ? 'any capability' : cap,
+      args: minimize(cap, args, `${rb}→${ra}`),
+      before: rb,
+      after: ra,
+      direction: decisionRank(a) > decisionRank(b) ? 'stricter' : 'looser',
+      beforeReason: b.reason,
+      afterReason: a.reason,
+    });
+  };
+
+  const caps = sampleCapabilities(before, after);
+  const domains = [...sampleArgDomains(before, after, thresholds).entries()];
+  const combos = caps.length * domains.reduce((n, [, vals]) => n * vals.length, 1);
+  if (combos <= MAX_SWEEP_COMBOS) {
+    for (const cap of caps) {
+      const total = domains.reduce((n, [, vals]) => n * vals.length, 1);
+      for (let i = 0; i < total && changes.length < limit; i++) {
+        const args: Record<string, unknown> = {};
+        let idx = i;
+        for (const [arg, vals] of domains) { args[arg] = vals[idx % vals.length]; idx = Math.floor(idx / vals.length); }
+        consider(cap, args);
+      }
+      if (changes.length >= limit) break;
+    }
+  } else {
+    for (const cap of caps) {
+      const base: Record<string, unknown> = {};
+      for (const [arg] of domains) base[arg] = false;
+      consider(cap, base);
+      for (const [arg, vals] of domains) for (const v of vals) { if (changes.length >= limit) break; consider(cap, { ...base, [arg]: v }); }
+      if (changes.length >= limit) break;
+    }
+  }
+  // A tightening a human is about to lose is the point of the whole preview — surface those first.
+  return changes.sort((x, y) => (x.direction === y.direction ? 0 : x.direction === 'stricter' ? -1 : 1));
+}
+
 /**
  * Produce the candidate document for a proposed policy change, or an error. TIGHTEN-ONLY: refuses any
  * delta that loosens a guardrail, removes/weakens a hard-deny, or changes the default. Callers persist +
