@@ -22,6 +22,14 @@ const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-headless-resumable-test-
 process.env.AGENT_OS_HOME = HOME;
 process.env.AGENT_OS_TENANT = 'testco';
 process.env.AOS_NO_TTYD = '1';
+// Launch pre-flight reads the box's REAL claude login, and refuses a launch when it is dead (expired with
+// no refresh token). That is correct in production and makes this suite ambient: on a box whose login has
+// lapsed — exactly the box you most want to run the gate on before deploying — every launch here is
+// refused and nine assertions fail for a reason that has nothing to do with resumability. Point the probe
+// at an empty dir instead: no credential at all keeps its long-standing fail-open behaviour, and the
+// refusal itself is pinned by scripts/runtime-account-misattribution-test.cjs.
+process.env.CLAUDE_CONFIG_DIR = path.join(HOME, 'claude-config');
+fs.mkdirSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true });
 delete process.env.AGENT_OS_SECRET_KEY;
 
 let pass = 0, fail = 0;

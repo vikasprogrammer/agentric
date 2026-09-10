@@ -15,6 +15,13 @@ new version heading in the same commit.
   (`useHttpPath` → a session-secret loopback route), the member-lane guard that keeps a linked human's
   PR authorship, and the `gh`-doesn't-read-git-helpers gap. Docs only — no behaviour change.
 
+## [0.429.1] - 2026-09-10
+### Fixed
+- `scripts/headless-resumable-test.cjs` isolates its `CLAUDE_CONFIG_DIR`. The new launch pre-flight reads
+  the box's real claude login, so on a box whose login has lapsed — the box you most want to run the
+  deploy gate on — nine assertions failed for a reason unrelated to resumability. Caught running the gate
+  on the instawp box, whose expired default login was the outage in 0.429.0.
+
 ## [0.429.0] - 2026-09-10
 ### Fixed
 - **A pooled runtime account was disabled for another run's failure, and the whole tenant fell onto a
