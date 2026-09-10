@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -9286,6 +9286,176 @@ function GoalChat({ goalId, chat, onChanged, nav }: {
   )
 }
 
+/** Verdict → how it reads on screen. Deliberately worded as a judgement, not a status code: the whole
+ *  point of the metric is that someone looks at a goal and knows whether it is working. */
+const GOAL_VERDICT: Record<GoalMetricStatus['verdict'], { label: string; cls: string }> = {
+  achieved:   { label: 'Target reached', cls: 'text-emerald-600 dark:text-emerald-400' },
+  measuring:  { label: 'Moving',         cls: 'text-emerald-600 dark:text-emerald-400' },
+  flat:       { label: 'Not moving',     cls: 'text-amber-600 dark:text-amber-400' },
+  regressing: { label: 'Going backwards', cls: 'text-destructive' },
+  unmeasured: { label: 'Not measured',   cls: 'text-amber-600 dark:text-amber-400' },
+  new:        { label: 'Too early',      cls: 'text-muted-foreground' },
+}
+
+/** A goal's METRIC: what number it is judged on, where that number stands, and a way to record the next
+ *  reading. Shown in the goal drawer under Target — the caption and the number belong together.
+ *
+ *  A goal with no metric shows the one control that matters (name the number), because "this goal has no
+ *  metric" is itself the finding most goals here would report. */
+function GoalMetricPanel({ goal, status, readings, isAdmin, onChanged }: {
+  goal: Goal; status: GoalMetricStatus | null; readings: GoalReading[]; isAdmin: boolean; onChanged: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(goal.metric?.name ?? '')
+  const [unit, setUnit] = useState(goal.metric?.unit ?? '')
+  const [target, setTarget] = useState(goal.metric?.target != null ? String(goal.metric.target) : '')
+  const [baseline, setBaseline] = useState(goal.metric?.baseline != null ? String(goal.metric.baseline) : '')
+  const [direction, setDirection] = useState<'up' | 'down'>(goal.metric?.direction ?? 'up')
+  const [everyDays, setEveryDays] = useState(String(goal.metric?.everyDays ?? 14))
+  const [value, setValue] = useState('')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  useEffect(() => {
+    setEditing(false); setValue(''); setNote(''); setHint('')
+    setName(goal.metric?.name ?? ''); setUnit(goal.metric?.unit ?? '')
+    setTarget(goal.metric?.target != null ? String(goal.metric.target) : '')
+    setBaseline(goal.metric?.baseline != null ? String(goal.metric.baseline) : '')
+    setDirection(goal.metric?.direction ?? 'up'); setEveryDays(String(goal.metric?.everyDays ?? 14))
+  }, [goal.id, goal.metric?.name])
+
+  const num = (v: string) => (v.trim() === '' ? undefined : Number(v))
+  const save = async () => {
+    if (!name.trim()) return setHint('Name the number first.')
+    setBusy(true); setHint('')
+    const r = await api.patchGoal(goal.id, { metric: { name: name.trim(), unit: unit.trim() || undefined, target: num(target), baseline: num(baseline), direction, everyDays: num(everyDays) } })
+    setBusy(false)
+    if (!r.ok) return setHint(r.error || 'could not save the metric')
+    setEditing(false); onChanged()
+  }
+  const clear = async () => {
+    setBusy(true); const r = await api.patchGoal(goal.id, { metric: null }); setBusy(false)
+    if (!r.ok) return setHint(r.error || 'could not clear the metric')
+    setEditing(false); onChanged()
+  }
+  const record = async () => {
+    const v = Number(value)
+    if (!Number.isFinite(v)) return setHint('A reading has to be a number.')
+    setBusy(true); setHint('')
+    const r = await api.measureGoal(goal.id, v, note.trim() || undefined)
+    setBusy(false)
+    if (!r.ok) return setHint(r.error || 'could not record the reading')
+    setValue(''); setNote(''); onChanged()
+  }
+
+  const fmt = (v: number) => (Number.isInteger(v) ? v.toLocaleString() : v.toFixed(2))
+  const unitOf = goal.metric?.unit ? ` ${goal.metric.unit}` : ''
+
+  if (!goal.metric) {
+    return (
+      <div className="rounded-md border border-dashed p-3">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Metric</div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          No number yet — this goal can only be judged on whether work happened, not whether it worked.
+        </p>
+        {isAdmin && !editing && <Button size="sm" variant="outline" className="mt-2 h-7 text-xs" onClick={() => setEditing(true)}>Set the metric</Button>}
+        {editing && <MetricForm {...{ name, setName, unit, setUnit, target, setTarget, baseline, setBaseline, direction, setDirection, everyDays, setEveryDays, busy, save, clear, cancel: () => setEditing(false), hint, existing: false }} />}
+      </div>
+    )
+  }
+
+  // A sparkline over the readings, oldest → newest. Real values, no smoothing: 40×14 is enough to see a
+  // shape, and the numbers beneath carry the precision.
+  const series = [...readings].sort((a, b) => a.at - b.at).map((r) => r.value)
+  const lo = Math.min(...series, goal.metric.target ?? Infinity)
+  const hi = Math.max(...series, goal.metric.target ?? -Infinity)
+  const span = hi - lo || 1
+  const pts = series.map((v, i) => `${(i / Math.max(1, series.length - 1)) * 100},${14 - ((v - lo) / span) * 14}`).join(' ')
+  const v = GOAL_VERDICT[status?.verdict ?? 'new']
+
+  return (
+    <div className="rounded-md border p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Metric</div>
+        <div className={`text-[11px] font-medium ${v.cls}`}>{v.label}</div>
+      </div>
+      <div className="mt-1 text-sm font-medium">{goal.metric.name}</div>
+
+      <div className="mt-2 flex items-end justify-between gap-3">
+        <div>
+          <div className="text-2xl font-semibold tabular-nums leading-none">
+            {status?.latest ? fmt(status.latest.value) : '—'}<span className="text-sm font-normal text-muted-foreground">{unitOf}</span>
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            {goal.metric.target != null ? `target ${fmt(goal.metric.target)}${unitOf}` : 'no target'}
+            {status?.moved != null && ` · ${status.moved >= 0 ? '+' : ''}${fmt(status.moved)}${unitOf} so far`}
+          </div>
+        </div>
+        {series.length > 1 && (
+          <svg viewBox="0 0 100 14" preserveAspectRatio="none" className="h-8 w-24 shrink-0 overflow-visible" role="img" aria-label={`${goal.metric.name} over ${series.length} readings`}>
+            <polyline points={pts} fill="none" stroke="currentColor" strokeWidth="1" vectorEffect="non-scaling-stroke" className="text-foreground/60" />
+          </svg>
+        )}
+      </div>
+
+      {status?.latest && (
+        <div className="mt-2 text-[11px] text-muted-foreground">
+          Last measured {status.staleDays === 0 ? 'today' : `${status.staleDays}d ago`} by {status.latest.source.startsWith('agent:') ? status.latest.source : 'a person'} · {status.readings} reading{status.readings === 1 ? '' : 's'} · expected every {goal.metric.everyDays}d
+        </div>
+      )}
+
+      {isAdmin && !editing && (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="new reading" inputMode="decimal" className="h-7 w-24 text-xs" onKeyDown={(e) => { if (e.key === 'Enter') record() }} />
+          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="where from?" className="h-7 flex-1 min-w-[90px] text-xs" onKeyDown={(e) => { if (e.key === 'Enter') record() }} />
+          <Button size="sm" className="h-7 text-xs" disabled={busy || !value.trim()} onClick={record}>Record</Button>
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-muted-foreground" onClick={() => setEditing(true)}>Edit</Button>
+        </div>
+      )}
+      {editing && <MetricForm {...{ name, setName, unit, setUnit, target, setTarget, baseline, setBaseline, direction, setDirection, everyDays, setEveryDays, busy, save, clear, cancel: () => setEditing(false), hint, existing: true }} />}
+      {hint && !editing && <div className="mt-2 text-[11px] text-destructive">{hint}</div>}
+    </div>
+  )
+}
+
+/** The metric definition form — shared by the "no metric yet" and "edit the metric" states. */
+function MetricForm(p: {
+  name: string; setName: (v: string) => void
+  unit: string; setUnit: (v: string) => void
+  target: string; setTarget: (v: string) => void
+  baseline: string; setBaseline: (v: string) => void
+  direction: 'up' | 'down'; setDirection: (v: 'up' | 'down') => void
+  everyDays: string; setEveryDays: (v: string) => void
+  busy: boolean; save: () => void; clear: () => void; cancel: () => void; hint: string; existing: boolean
+}) {
+  return (
+    <div className="mt-2 flex flex-col gap-1.5">
+      <Input value={p.name} onChange={(e) => p.setName(e.target.value)} placeholder="what is measured, e.g. organic sessions / mo" className="h-7 text-xs" />
+      <div className="flex gap-1.5">
+        <Input value={p.baseline} onChange={(e) => p.setBaseline(e.target.value)} placeholder="baseline" inputMode="decimal" className="h-7 text-xs" />
+        <Input value={p.target} onChange={(e) => p.setTarget(e.target.value)} placeholder="target" inputMode="decimal" className="h-7 text-xs" />
+        <Input value={p.unit} onChange={(e) => p.setUnit(e.target.value)} placeholder="unit" className="h-7 w-16 text-xs" />
+      </div>
+      <div className="flex gap-1.5">
+        <Select value={p.direction} onValueChange={(v) => p.setDirection(v === 'down' ? 'down' : 'up')}>
+          <SelectTrigger className="h-7 flex-1 text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="up">Higher is better</SelectItem>
+            <SelectItem value="down">Lower is better</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input value={p.everyDays} onChange={(e) => p.setEveryDays(e.target.value)} placeholder="days" inputMode="numeric" className="h-7 w-20 text-xs" title="How often a reading is expected. Past twice this with no reading, the goal is reported unmeasured." />
+      </div>
+      <div className="flex items-center gap-1.5">
+        <Button size="sm" className="h-7 text-xs" disabled={p.busy} onClick={p.save}>Save metric</Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={p.cancel}>Cancel</Button>
+        {p.existing && <Button size="sm" variant="ghost" className="ml-auto h-7 text-xs text-muted-foreground" disabled={p.busy} onClick={p.clear}>Remove</Button>}
+      </div>
+      {p.hint && <div className="text-[11px] text-destructive">{p.hint}</div>}
+    </div>
+  )
+}
+
 function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; nav: (r: Route, detail?: string) => void; backTo: (fallback: Route) => BackTarget }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
@@ -9305,7 +9475,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   // Same rule as the task room: back to wherever you opened this goal from (the feed, an inbox card, the
   // goals list), not always the list.
   const closeGoal = () => { setEditing(false); backTo('goals').go() }
-  const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[]; tasks: Task[]; runs: Record<string, TaskRunState>; progress?: GoalProgress; chat?: GoalChatState | null } | null>(null)
+  const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[]; tasks: Task[]; runs: Record<string, TaskRunState>; progress?: GoalProgress; chat?: GoalChatState | null; metricStatus?: GoalMetricStatus | null; readings?: GoalReading[] } | null>(null)
   // Elapsed clocks on live runs tick locally — the detail poll below only moves server truth.
   const [now, setNow] = useState(Date.now())
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
@@ -9370,7 +9540,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], runs: r.runs ?? {}, progress: r.progress, chat: r.chat ?? null }) })
+    api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], runs: r.runs ?? {}, progress: r.progress, chat: r.chat ?? null, metricStatus: r.metricStatus ?? null, readings: r.readings ?? [] }) })
   }, [selId, goals, editing])
   useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession(''); setShowPlan(false); setPlanGuidance(''); setPlanMax(''); setPlanAuto(false); setSigningOff(false); setOutcome(''); setRunHint(''); setConfirmRunAll(false) }, [selId]) // fresh drawer per selection
 
@@ -9542,6 +9712,13 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
           ? <Input type="date" value={toDateInput(detail.goal.dueAt)} onChange={(e) => patch(detail.goal.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
           : <div className="h-8 text-sm text-muted-foreground">{detail.goal.dueAt ? new Date(detail.goal.dueAt).toLocaleDateString() : '—'}</div>}
       </Field>
+      <GoalMetricPanel
+        goal={detail.goal}
+        status={detail.metricStatus ?? null}
+        readings={detail.readings ?? []}
+        isAdmin={isAdmin}
+        onChanged={() => api.goal(detail.goal.id).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], runs: r.runs ?? {}, progress: r.progress, chat: r.chat ?? null, metricStatus: r.metricStatus ?? null, readings: r.readings ?? [] }) })}
+      />
       {detail.progress && detail.progress.total > 0 && (
         <div>
           <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-foreground">Progress</div>

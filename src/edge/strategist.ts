@@ -125,6 +125,9 @@ export class Strategist {
       `Progress: ${prog.percent}% (${prog.done}/${prog.counted} linked tasks done, ${prog.total} filed).`,
       'Tasks linked to this goal:',
       taskLines,
+      // The number, when there is one — the person in this room will ask "is it working?", and the task
+      // list cannot answer that.
+      ...metricBrief(this.os, goal),
       '',
       'How to work in this room:',
       `- **Ground every answer in state.** goal_get "${goal.id}" and task_get/task_list before you explain`,
@@ -166,6 +169,10 @@ export class Strategist {
       'Tasks already linked to this goal:',
       existingList,
     );
+    // The MEASURED state, when the goal has a metric. Task progress says work happened; this says whether
+    // it worked — and they routinely disagree. A plan built on the task list alone will happily file more
+    // of whatever has already failed to move the number.
+    lines.push(...metricBrief(this.os, goal));
     // Optional human steering — a pre-plan step where the requester shaped this run. Treat it as a
     // binding constraint on top of the standard method, not a suggestion.
     const maxTasks = steer?.maxTasks && steer.maxTasks > 0 ? Math.floor(steer.maxTasks) : undefined;
@@ -261,3 +268,38 @@ review and dispatch. You are the bridge from a strategic objective to actual wor
    across engineer + designer to close the gap on 'Grow signups'"). Note anything you could not plan.
 
 You act on the company's behalf. You never dispatch or run the work — you shape it and hand it back.`;
+
+
+/**
+ * The goal's measured state, as prompt lines. Empty when the goal has no metric — most goals don't, and
+ * a paragraph explaining that nothing is measured would just be noise in the prompt.
+ *
+ * The verdict is spelled out rather than left for the model to infer from a list of numbers, because the
+ * two verdicts that should change the PLAN — flat and regressing — are exactly the ones a reader skims
+ * past when they arrive as a column of similar-looking figures.
+ */
+export function metricBrief(os: AgentOS, goal: Goal): string[] {
+  if (!goal.metric) return [];
+  const st = os.goals.metricStatus(goal.id);
+  if (!st) return [];
+  const m = st.metric;
+  const unit = m.unit ? ` ${m.unit}` : '';
+  const out = ['', `METRIC — ${m.name} (${m.direction === 'down' ? 'lower is better' : 'higher is better'})`];
+  if (m.target !== undefined) out.push(`Target: ${m.target}${unit}${m.baseline !== undefined ? ` (baseline ${m.baseline}${unit})` : ''}`);
+  if (st.latest) {
+    out.push(`Latest reading: ${st.latest.value}${unit}, ${Math.max(0, st.staleDays ?? 0)} day(s) ago, measured by ${st.latest.source}.`);
+    if (st.moved !== undefined) out.push(`Movement since the first reading: ${st.moved >= 0 ? '+' : ''}${st.moved}${unit} over ${st.readings} reading(s).`);
+  } else {
+    out.push('No readings have ever been taken.');
+  }
+  const verdicts: Record<string, string> = {
+    flat: 'VERDICT: FLAT — the number is not responding to the work already done. Do NOT simply file more of the same: say in your report what you think is not working, and plan a DIFFERENT approach (or propose that the goal or its target be changed).',
+    regressing: 'VERDICT: REGRESSING — the number is moving the wrong way. Prioritise finding out why over filing new growth work.',
+    unmeasured: 'VERDICT: UNMEASURED — nobody is taking readings, so no claim about whether this is working can be honest. Your FIRST filed task should be to establish the measurement (who or what reads the number, and how often).',
+    achieved: 'VERDICT: TARGET REACHED — do not file more work to push it further unless a human has raised the target. Say so in your report.',
+    measuring: 'VERDICT: MOVING — the current approach is working; prefer extending it over replacing it.',
+    new: 'VERDICT: TOO EARLY — not enough readings yet to judge the approach.',
+  };
+  out.push(verdicts[st.verdict] ?? '');
+  return out.filter(Boolean);
+}

@@ -14,7 +14,7 @@
  */
 import { newId } from '../id';
 import { Db } from './db';
-import { Goal, GoalCreateInput, GoalEvent, GoalEventTask, GoalProgress, GoalQuery, GoalStatus, GoalUpdateInput, TaskStatus } from '../types';
+import { Goal, GoalCreateInput, GoalEvent, GoalEventTask, GoalMetric, GoalMetricStatus, GoalProgress, GoalQuery, GoalReading, GoalStatus, GoalUpdateInput, TaskStatus } from '../types';
 
 /** How close a task NOTE has to sit to a status transition to be read as that transition's reason.
  *  `TaskStore.update` writes both rows inside one call, so in practice they share a millisecond; the
@@ -27,11 +27,43 @@ import { Goal, GoalCreateInput, GoalEvent, GoalEventTask, GoalProgress, GoalQuer
  *  the transition" are the same row anyway. */
 const NOTE_WINDOW_MS = 2_000;
 
+/** How often a reading is expected when the metric doesn't say. */
+export const DEFAULT_EVERY_DAYS = 14;
+/** Readings needed before a movement verdict is allowed — a sample, not a single data point. */
+export const MIN_READINGS = 3;
+/** Movement smaller than this share of the distance to target reads as no movement. Real metrics wobble;
+ *  exact equality would never fire and a 1-unit threshold would fire on noise. */
+export const FLAT_BAND = 0.05;
+
+/** The six metric columns in schema order, for INSERT/UPDATE. Absent metric → all NULL. */
+function metricColumns(m?: Partial<GoalMetric> & { name?: string }): [string | null, string | null, number | null, number | null, string | null, number | null] {
+  const name = m?.name?.trim();
+  if (!name) return [null, null, null, null, null, null];
+  return [
+    name,
+    m?.unit?.trim() || null,
+    Number.isFinite(m?.target as number) ? (m!.target as number) : null,
+    Number.isFinite(m?.baseline as number) ? (m!.baseline as number) : null,
+    m?.direction === 'down' ? 'down' : 'up',
+    Number.isFinite(m?.everyDays as number) && (m!.everyDays as number) > 0 ? Math.round(m!.everyDays as number) : DEFAULT_EVERY_DAYS,
+  ];
+}
+
+/** Trim a reading for display: integers stay integers, fractions keep two places. */
+function formatValue(v: number): string {
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+}
+
 interface GoalRow {
   id: string; tenant: string; title: string; body: string; status: string;
   target: string | null; owner: string | null; parent_id: string | null; labels: string;
   due_at: number | null; created_by: string; created_at: number; updated_at: number; updated_by: string;
+  metric: string | null; metric_unit: string | null; metric_target: number | null;
+  metric_baseline: number | null; metric_direction: string | null; metric_every_days: number | null;
   rank?: number;
+}
+interface ReadingRow {
+  id: string; goal_id: string; value: number; at: number; source: string; note: string | null; created_at: number;
 }
 interface EventRow {
   id: string; goal_id: string; kind: string; body: string | null; author: string; created_at: number;
@@ -97,12 +129,14 @@ export class GoalStore {
     this.db
       .prepare(`INSERT INTO goals
         (id, tenant, title, body, status, target, owner, parent_id, labels, due_at,
-         created_by, created_at, updated_at, updated_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+         created_by, created_at, updated_at, updated_by,
+         metric, metric_unit, metric_target, metric_baseline, metric_direction, metric_every_days)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         id, input.tenant, input.title.trim() || 'Untitled goal', input.body ?? '', status,
         input.target ?? null, input.owner ?? null, input.parentId ?? null, JSON.stringify(labels),
         input.dueAt ?? null, input.createdBy, now, now, input.createdBy,
+        ...metricColumns(input.metric),
       );
     this.addEvent(id, 'status', `→${status}`, input.createdBy);
     if (input.parentId && this.get(input.parentId)) this.addEvent(input.parentId, 'link', `goal:${id}`, input.createdBy);
@@ -311,6 +345,11 @@ export class GoalStore {
     if (input.parentId !== undefined && (input.parentId ?? null) !== (g.parentId ?? null)) {
       sets.push('parent_id = ?'); vals.push(input.parentId ?? null); edited = true;
     }
+    if (input.metric !== undefined) {
+      const cols = metricColumns(input.metric ?? undefined);
+      sets.push('metric = ?', 'metric_unit = ?', 'metric_target = ?', 'metric_baseline = ?', 'metric_direction = ?', 'metric_every_days = ?');
+      vals.push(...cols); edited = true;
+    }
     if (input.labels !== undefined) { sets.push('labels = ?'); vals.push(JSON.stringify(input.labels)); edited = true; }
     if (input.dueAt !== undefined && (input.dueAt ?? null) !== (g.dueAt ?? null)) {
       sets.push('due_at = ?'); vals.push(input.dueAt ?? null); edited = true;
@@ -387,6 +426,99 @@ export class GoalStore {
     return { total, done, counted, percent, byStatus };
   }
 
+  // ── metric readings ─────────────────────────────────────────────────────────
+  //
+  // The outcome record. `goal_events` says work happened; these say whether the number moved. Kept
+  // apart on purpose: a goal can be busy and failing, or quiet and succeeding, and one log cannot say
+  // both. Readings are append-only — see the schema note.
+
+  /** Record one measured value. `at` defaults to now but may predate it (a Monday reading filed Tuesday).
+   *  Returns undefined for an unknown goal or a non-finite value — a NaN reading would poison every
+   *  verdict downstream, and silently storing it is worse than refusing it. */
+  addReading(goalId: string, value: number, source: string, opts: { at?: number; note?: string } = {}): GoalReading | undefined {
+    if (!Number.isFinite(value)) return undefined;
+    const g = this.get(goalId);
+    if (!g) return undefined;
+    const now = Date.now();
+    const id = newId('goalReading');
+    this.db
+      .prepare('INSERT INTO goal_readings (id, goal_id, value, at, source, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(id, goalId, value, opts.at ?? now, source, opts.note?.trim() || null, now);
+    // A reading IS goal activity — without this a goal whose number is being tracked diligently but whose
+    // task list is quiet would still be reported "stuck" by the activity sweep.
+    const unit = g.metric?.unit ? ` ${g.metric.unit}` : '';
+    this.addEvent(goalId, 'comment', `measured ${formatValue(value)}${unit}${opts.note?.trim() ? ` — ${opts.note.trim()}` : ''}`, source);
+    const row = this.db.prepare('SELECT * FROM goal_readings WHERE id = ?').get<ReadingRow>(id);
+    return row ? toReading(row) : undefined;
+  }
+
+  /** Readings for a goal, newest first. */
+  readings(goalId: string, limit = 60): GoalReading[] {
+    return this.db
+      .prepare('SELECT * FROM goal_readings WHERE goal_id = ? ORDER BY at DESC, created_at DESC LIMIT ?')
+      .all<ReadingRow>(goalId, limit)
+      .map(toReading);
+  }
+
+  /**
+   * The deterministic performance review of ONE goal's metric.
+   *
+   * Every verdict needs a denominator and a sample, so nothing is called failing on thin evidence:
+   * `flat`/`regressing` need at least {@link MIN_READINGS} readings spanning at least the metric's own
+   * expected interval, and "no movement" means movement smaller than {@link FLAT_BAND} of the distance
+   * to target (or of the baseline when there's no target) — never exact equality, which real numbers
+   * essentially never satisfy.
+   *
+   * `unmeasured` outranks the movement verdicts: if nobody has taken a reading lately, no claim about
+   * whether the work is working can be honest.
+   */
+  metricStatus(goalId: string, now = Date.now()): GoalMetricStatus | undefined {
+    const g = this.get(goalId);
+    if (!g?.metric) return undefined;
+    const metric = g.metric;
+    const rows = this.readings(goalId, 200);
+    const latest = rows[0];
+    const first = rows[rows.length - 1];
+    const base = { metric, latest, first, readings: rows.length };
+    if (!latest) {
+      // A metric defined but never measured is only a finding once a reading was actually due.
+      const dueAfter = g.createdAt + metric.everyDays * 86_400_000;
+      return { ...base, verdict: now > dueAfter ? 'unmeasured' : 'new' };
+    }
+    const staleDays = Math.floor((now - latest.at) / 86_400_000);
+    const from = first?.value ?? metric.baseline;
+    const moved = from !== undefined ? latest.value - from : undefined;
+    const better = (a: number, b: number) => (metric.direction === 'down' ? a < b : a > b);
+
+    let percent: number | undefined;
+    const anchor = metric.baseline ?? first?.value;
+    if (metric.target !== undefined && anchor !== undefined && anchor !== metric.target) {
+      percent = Math.max(0, Math.min(100, Math.round(((latest.value - anchor) / (metric.target - anchor)) * 100)));
+    }
+
+    // Target reached wins outright — a hit goal is not "flat" just because it stopped climbing.
+    if (metric.target !== undefined && !better(metric.target, latest.value)) return { ...base, moved, percent, staleDays, verdict: 'achieved' };
+    // Nobody is measuring: say that rather than guessing at movement from a stale number.
+    if (staleDays > metric.everyDays * 2) return { ...base, moved, percent, staleDays, verdict: 'unmeasured' };
+    if (rows.length < MIN_READINGS || moved === undefined) return { ...base, moved, percent, staleDays, verdict: 'new' };
+    // Enough readings, but do they span enough TIME? Three readings in one afternoon prove nothing.
+    const spanDays = (latest.at - (first?.at ?? latest.at)) / 86_400_000;
+    if (spanDays < metric.everyDays) return { ...base, moved, percent, staleDays, verdict: 'new' };
+
+    const scale = Math.abs((metric.target !== undefined && anchor !== undefined ? metric.target - anchor : anchor ?? latest.value)) || Math.abs(latest.value) || 1;
+    const band = scale * FLAT_BAND;
+    if (Math.abs(moved) < band) return { ...base, moved, percent, staleDays, verdict: 'flat' };
+    return { ...base, moved, percent, staleDays, verdict: better(latest.value, from!) ? 'measuring' : 'regressing' };
+  }
+
+  /** Active goals WITH a metric — the review sweep's input. */
+  measured(tenant: string): Goal[] {
+    return this.db
+      .prepare("SELECT * FROM goals WHERE tenant = ? AND status = 'active' AND metric IS NOT NULL ORDER BY created_at")
+      .all<GoalRow>(tenant)
+      .map(toGoal);
+  }
+
   /** Append one row to the append-only activity log. */
   private addEvent(goalId: string, kind: GoalEvent['kind'], body: string, author: string): void {
     this.db
@@ -406,10 +538,28 @@ function toFtsQuery(query?: string): string {
 function toGoal(r: GoalRow): Goal {
   return {
     id: r.id, tenant: r.tenant, title: r.title, body: r.body, status: r.status as GoalStatus,
-    target: r.target ?? undefined, owner: r.owner ?? undefined, parentId: r.parent_id ?? undefined,
+    target: r.target ?? undefined, metric: toMetric(r), owner: r.owner ?? undefined, parentId: r.parent_id ?? undefined,
     labels: JSON.parse(r.labels) as string[], dueAt: r.due_at ?? undefined,
     createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at, updatedBy: r.updated_by,
   };
+}
+
+/** The metric half of a goals row → {@link GoalMetric}. `metric` (the name) is the presence flag: no
+ *  name, no metric, whatever the other columns hold. */
+function toMetric(r: GoalRow): GoalMetric | undefined {
+  if (!r.metric) return undefined;
+  return {
+    name: r.metric,
+    unit: r.metric_unit ?? undefined,
+    target: r.metric_target ?? undefined,
+    baseline: r.metric_baseline ?? undefined,
+    direction: r.metric_direction === 'down' ? 'down' : 'up',
+    everyDays: r.metric_every_days ?? DEFAULT_EVERY_DAYS,
+  };
+}
+
+function toReading(r: ReadingRow): GoalReading {
+  return { id: r.id, goalId: r.goal_id, value: r.value, at: r.at, source: r.source, note: r.note ?? undefined, createdAt: r.created_at };
 }
 
 /** A stored `goal_events` row → the shared {@link GoalEvent} shape (no `task`; that's timeline-derived). */

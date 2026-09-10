@@ -19,6 +19,7 @@ import { Db } from '../state/db';
 import { inboxFileName, TerminalManager } from '../terminal';
 import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDispatchBlock, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
+import { reviewGoals } from './goal-review';
 import { recordCapabilityGap } from './capability-gap';
 import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
@@ -381,6 +382,8 @@ export const MAX_TASK_RESUMES = 2;
 // strategist — but only after it's sat idle past the grace window (so a just-created goal you're still
 // editing isn't grabbed), no more than a few per tick, and not again within the cooldown.
 const GOAL_AUTOPLAN_GRACE_MS = Number(process.env.AOS_GOAL_AUTOPLAN_GRACE_MS) || 5 * 60_000; // 5 min
+/** How often the metric review runs. A fortnightly metric cannot change verdict between ticks. */
+const GOAL_REVIEW_INTERVAL_MS = 60 * 60_000;
 const GOAL_REPLAN_COOLDOWN_MS = Number(process.env.AOS_GOAL_REPLAN_COOLDOWN_MS) || 6 * 3_600_000; // 6 h
 const GOAL_AUTOPLAN_MAX_PER_TICK = Number(process.env.AOS_GOAL_AUTOPLAN_MAX_PER_TICK) || 2;
 
@@ -2311,6 +2314,7 @@ export class Automations {
     this.sweepStranded(now, cap > 0 ? Math.max(0, cap - running) : Infinity);
     this.sweepStuckGoals(now);
     this.sweepCompletedGoals();
+    this.sweepGoalMetrics(now);
     this.sweepExpiredShares(now);
     // Re-nudge stale human-in-the-loop prompts (approvals/questions blocking an agent) so a missed ask
     // doesn't strand the run forever. Wrapped so a bad row can't take down the scheduler.
@@ -2375,6 +2379,22 @@ export class Automations {
    * Always on and cheap — unlike {@link sweepStuckGoals} this spawns nothing, it just tells a human their
    * goal is finished. Wrapped so a bad row never kills the scheduler.
    */
+  /**
+   * The OUTCOME half of the goal sweep: has each measured goal's number actually moved? Deterministic
+   * and spawn-free — see `src/edge/goal-review.ts`. Cheap enough to run every tick because it is
+   * arithmetic over readings, and it only writes when a goal's verdict CHANGES.
+   *
+   * Throttled to one pass an hour: a metric measured every fortnight cannot change verdict between
+   * two one-minute ticks, and re-running the query set 60 times an hour buys nothing.
+   */
+  private sweepGoalMetrics(now: Date): void {
+    if (now.getTime() - this.lastMetricReview < GOAL_REVIEW_INTERVAL_MS) return;
+    this.lastMetricReview = now.getTime();
+    try { reviewGoals(this.os, this.tm, now.getTime()); }
+    catch { /* never let the metric review take down the automation scheduler */ }
+  }
+  private lastMetricReview = 0;
+
   private sweepCompletedGoals(): void {
     try {
       for (const g of this.os.goals.readyToClose(this.os.tenant)) {

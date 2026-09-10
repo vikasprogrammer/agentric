@@ -872,6 +872,38 @@ export interface AddTaskReq {
 }
 
 export type GoalStatus = 'draft' | 'active' | 'achieved' | 'abandoned'
+/** The number a goal is judged on. `direction` matters: plenty of real goals go DOWN (incidents, p95,
+ *  churn), and a reader that assumes up-is-better reads every one of those backwards. */
+export interface GoalMetric {
+  name: string
+  unit?: string
+  target?: number
+  baseline?: number
+  direction: 'up' | 'down'
+  everyDays: number
+}
+/** One measured value. Append-only — a wrong reading is corrected by taking another. */
+export interface GoalReading {
+  id: string
+  goalId: string
+  value: number
+  at: number
+  source: string
+  note?: string
+  createdAt: number
+}
+/** The deterministic verdict on a goal's metric. `unmeasured` ("nobody is measuring this") is separate
+ *  from `flat` ("this isn't working") because they call for opposite responses. */
+export interface GoalMetricStatus {
+  metric: GoalMetric
+  latest?: GoalReading
+  first?: GoalReading
+  readings: number
+  moved?: number
+  percent?: number
+  verdict: 'new' | 'measuring' | 'flat' | 'regressing' | 'achieved' | 'unmeasured'
+  staleDays?: number
+}
 export interface Goal {
   id: string
   tenant: string
@@ -879,6 +911,7 @@ export interface Goal {
   body: string
   status: GoalStatus
   target?: string
+  metric?: GoalMetric
   owner?: string
   parentId?: string
   labels: string[]
@@ -2142,15 +2175,18 @@ export const api = {
   /** The step-by-step history behind one feed line, rebuilt from the append-only logs. */
   feedTrail: (runId: string) => call<{ steps: FeedTrailStep[] }>('GET', `/api/feed/${runId}/trail`),
 
-  goals: (q = '', status = '') => call<{ goals: Goal[]; counts: GoalCounts; progress: Record<string, GoalProgress>; autoPlan?: boolean }>('GET', `/api/goals?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
+  goals: (q = '', status = '') => call<{ goals: Goal[]; counts: GoalCounts; progress: Record<string, GoalProgress>; metrics?: Record<string, GoalMetricStatus>; autoPlan?: boolean }>('GET', `/api/goals?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
   setAutoPlanGoals: (on: boolean) => call<{ ok: boolean; autoPlan?: boolean; error?: string }>('POST', '/api/goals/autoplan', { on }),
-  goal: (id: string) => call<{ goal?: Goal; events?: GoalEvent[]; tasks?: Task[]; runs?: Record<string, TaskRunState>; progress?: GoalProgress; chat?: GoalChatState | null; error?: string }>('GET', `/api/goals/${id}`),
+  goal: (id: string) => call<{ goal?: Goal; events?: GoalEvent[]; tasks?: Task[]; runs?: Record<string, TaskRunState>; progress?: GoalProgress; chat?: GoalChatState | null; metricStatus?: GoalMetricStatus | null; readings?: GoalReading[]; error?: string }>('GET', `/api/goals/${id}`),
+  /** Record a measured reading of the goal's metric (owner/admin). Returns the recomputed verdict. */
+  measureGoal: (id: string, value: number, note?: string) =>
+    call<{ ok: boolean; reading?: GoalReading; status?: GoalMetricStatus | null; error?: string }>('POST', `/api/goals/${id}/readings`, { value, note }),
   /** Send a message into the goal's chat — starts the conversation on the first call, continues the same
    *  warm one after that. `fresh` abandons a wedged conversation and opens a new one. 409 = still working. */
   goalChat: (id: string, message: string, fresh = false) =>
     call<{ ok: boolean; sessionId?: string; started?: boolean; status?: 'busy'; error?: string }>('POST', `/api/goals/${id}/chat`, { message, fresh }),
   addGoal: (b: AddGoalReq) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', '/api/goals', b),
-  patchGoal: (id: string, b: { title?: string; body?: string; status?: GoalStatus; target?: string | null; owner?: string | null; parentId?: string | null; labels?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; goal?: Goal; error?: string }>('PATCH', `/api/goals/${id}`, b),
+  patchGoal: (id: string, b: { title?: string; body?: string; status?: GoalStatus; target?: string | null; metric?: Partial<GoalMetric> | null; owner?: string | null; parentId?: string | null; labels?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; goal?: Goal; error?: string }>('PATCH', `/api/goals/${id}`, b),
   commentGoal: (id: string, body: string) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', `/api/goals/${id}/comment`, { body }),
   deleteGoal: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/goals/${id}`),
   planGoal: (id: string, steer?: { guidance?: string; maxTasks?: number; autoDispatch?: boolean }) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/goals/${id}/plan`, steer ?? {}),

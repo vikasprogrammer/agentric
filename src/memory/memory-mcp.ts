@@ -1300,6 +1300,31 @@ const TOOLS = [
     },
   },
   {
+    name: 'goal_measure',
+    description:
+      "Record a measured READING of a company goal's metric — the actual number, from the actual source. " +
+      'This is how a goal gets judged on whether it WORKED rather than on whether work happened, so a run ' +
+      'whose job is measuring (a weekly analytics pull, a rankings check, an incident count) should end by ' +
+      'calling this. Pass the `goalId` (from `goal_list`) and the `value` as a plain number in the metric' +
+      "'s own units — no formatting, no percent signs. Add a short `note` saying WHERE the number came from " +
+      '(the query, the dashboard, the API) — a reading nobody can trace is a reading nobody can trust. ' +
+      'You may record the number; you may NOT move the goalposts — the metric, its target and the goal\'s ' +
+      'status stay human-owned. Every reading records that YOU took it, so a number reported by the same ' +
+      'agent that did the work is visibly self-reported: prefer measuring from the source of truth over ' +
+      'restating what your own run believes it achieved. If the goal has no metric set, say so in your ' +
+      'report rather than inventing one.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        goalId: { type: 'string', description: 'The goal whose metric you measured (from `goal_list`).' },
+        value: { type: 'number', description: "The measured value, in the metric's own units." },
+        note: { type: 'string', description: 'Where the number came from — the query, dashboard or API you read it off.' },
+      },
+      required: ['goalId', 'value'],
+    },
+  },
+  {
     name: 'goal_propose',
     description:
       'Propose a new company GOAL for a human to review and activate — a strategic objective the fleet ' +
@@ -2714,6 +2739,32 @@ async function goalGet(args: Record<string, unknown>): Promise<string> {
   return `${g.id} · [${g.status}]${g.target ? ` · target: ${g.target}` : ''}${progressLine}\n${consoleLink('goals', g.id)}\n# ${g.title}\n${g.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}${tasksSection}`;
 }
 
+async function goalMeasure(args: Record<string, unknown>): Promise<string> {
+  const goalId = String(args.goalId ?? '').trim();
+  const value = Number(args.value);
+  if (!goalId) return 'goal_measure needs a goalId (call goal_list to find it).';
+  if (!Number.isFinite(value)) return 'goal_measure needs `value` as a plain number in the metric\'s own units.';
+  const res = await fetch(AOS_URL + '/api/goals/measure', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, agent: AGENT, goalId, value, note: args.note ? String(args.note) : undefined }),
+  });
+  const d = (await res.json()) as { ok?: boolean; verdict?: string; metric?: string; target?: number | null; error?: string };
+  if (!d.ok) return `Could not record the reading: ${d.error ?? 'unknown error'}`;
+  const target = d.target != null ? `, target ${d.target}` : '';
+  const verdict = d.verdict
+    ? {
+        achieved: 'The goal has now reached its target — a human decides whether to close it or raise the bar.',
+        measuring: 'The number is moving the right way.',
+        flat: 'Enough readings now show the number is NOT moving — the humans on this goal have been told.',
+        regressing: 'The number is moving the WRONG way — the humans on this goal have been told.',
+        unmeasured: 'Readings had lapsed; this one restarts the record.',
+        new: 'Too few readings yet to say whether it is working.',
+      }[d.verdict] ?? ''
+    : '';
+  return `Recorded ${value} for ${d.metric ?? 'the metric'}${target}. ${verdict}`.trim();
+}
+
 async function goalPropose(args: Record<string, unknown>): Promise<string> {
   const title = String(args.title ?? '').trim();
   if (!title) return 'A goal needs a title.';
@@ -3472,6 +3523,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'task_dispatch' ? await taskDispatch(args)
         : name === 'goal_list' ? await goalList(args)
         : name === 'goal_get' ? await goalGet(args)
+        : name === 'goal_measure' ? await goalMeasure(args)
         : name === 'goal_propose' ? await goalPropose(args)
         : name === 'goal_update' ? await goalUpdate(args)
         : name === 'agent_create' ? await agentCreate(args)

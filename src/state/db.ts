@@ -803,6 +803,22 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_goal_events ON goal_events(goal_id, created_at);
 
+    -- Measured readings of a goal's metric over time — the OUTCOME record, as opposed to goal_events
+    -- (which records activity). A goal without readings can only be judged on whether work happened;
+    -- with them it can be judged on whether the number moved. Append-only: a wrong reading is corrected
+    -- by taking another one, never by editing history, because a metric someone can quietly rewrite is
+    -- worth less than no metric at all.
+    CREATE TABLE IF NOT EXISTS goal_readings (
+      id       TEXT PRIMARY KEY,
+      goal_id  TEXT NOT NULL,
+      value    REAL NOT NULL,
+      at       INTEGER NOT NULL,               -- when the value was TRUE (may predate the row)
+      source   TEXT NOT NULL,                  -- member id | 'agent:<id>' | 'automation:<id>'
+      note     TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_goal_readings ON goal_readings(goal_id, at DESC);
+
     -- FTS5 over title+body+labels for the Goals page search (mirrors tasks_fts exactly).
     CREATE VIRTUAL TABLE IF NOT EXISTS goals_fts USING fts5(
       title, body, labels, content='goals', content_rowid='rowid'
@@ -905,6 +921,15 @@ function migrate(db: Db): void {
   // it. Routes the wake-up: `human` cards the owner only, since waking the caller agent for a decision it
   // cannot make just spends a resumed run. NULL on older rows = unstated = wake the caller, as before.
   addColumn(db, 'tasks', 'blocked_on', 'TEXT');
+  // The goal's METRIC — the number the goal is actually judged on. `target` (free text) stays as the
+  // human caption; these give it a machine-readable counterpart so a goal can be reviewed on movement
+  // rather than on activity. All nullable: a goal with no metric behaves exactly as it did before.
+  addColumn(db, 'goals', 'metric', 'TEXT');            // what is measured, e.g. 'organic sessions / mo'
+  addColumn(db, 'goals', 'metric_unit', 'TEXT');       // display suffix, e.g. '%', 'ms', 'sessions'
+  addColumn(db, 'goals', 'metric_target', 'REAL');     // the number that means done
+  addColumn(db, 'goals', 'metric_baseline', 'REAL');   // where it stood when the goal was set
+  addColumn(db, 'goals', 'metric_direction', 'TEXT');  // 'up' (default) | 'down' — which way is better
+  addColumn(db, 'goals', 'metric_every_days', 'INTEGER'); // how often a reading is expected; NULL = 14
 
   // Idempotent column additions for the inbox feed (older DBs won't have these).
   addColumn(db, 'messages', 'source', 'TEXT');        // provenance: member id | automation:<id>
