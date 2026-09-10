@@ -126,6 +126,15 @@ async function main() {
   assert(migrated && migrated.token === 'ghs_legacy', 'a pre-multi-org token is still readable after the upgrade');
   assert(vault('github_bot_token:555') !== undefined && vault('github_bot_token') === undefined, 'it moves onto the primary’s suffixed key and the legacy slot is cleared');
   assert(gid.loadBotToken('Globex').token === globex.token, 'migration does not disturb another org’s cache');
+  // A legacy token with NO primary resolved yet must be LEFT ALONE, not thrown away: it is still a live
+  // credential, and the next ensureBotToken settles a primary to migrate it onto.
+  osx.secrets.set('testco', 'github_bot_token', legacy, { principal: '*' });
+  const savedPrimary = osx.settings.githubInstallationId();
+  osx.settings.setGithubInstallationId('', 'owner@test');
+  assert(gid.loadBotToken() === undefined, 'with no primary there is nothing to read...');
+  assert(vault('github_bot_token') === legacy, '...but the legacy token is preserved, not silently destroyed');
+  osx.settings.setGithubInstallationId(savedPrimary, 'owner@test');
+  assert(gid.loadBotToken().token === 'ghs_legacy', 'and it migrates as soon as a primary exists again');
 
   // ─── 5) Launch injection ────────────────────────────────────────────────────
   console.log('\n\x1b[1m5) Launch injection\x1b[0m');

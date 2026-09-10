@@ -5846,8 +5846,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!gh.configured()) return sendJson(res, 400, { error: 'GitHub is not set up — an owner/admin must add the App client id + secret in Connections → Creds' });
     // Remember where the member started (the profile page or Connections) so the callback returns there.
     const state = newGithubState(os.tenant, me.id, url.searchParams.get('return') || undefined);
-    const redirectUrl = gh.authorizeUrl(githubRedirectUri(req), state);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'github.connect.initiated', data: {} });
+    const redirectUri = githubRedirectUri(req);
+    const redirectUrl = gh.authorizeUrl(redirectUri, state);
+    // Record the redirect_uri we asked GitHub for. GitHub validates it against the App's registered
+    // callback AFTER login and renders a bare 404 when it doesn't match — indistinguishable, to the
+    // member, from "Agentric is broken". Without this the only way to see what we sent was to ssh to
+    // the box and re-derive it from the proxy headers.
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'github.connect.initiated', data: { redirectUri, clientId: gh.clientId() } });
     return sendJson(res, 200, { redirectUrl });
   }
   // GitHub redirects the browser here after the member authorizes. The aos_sid cookie rides along

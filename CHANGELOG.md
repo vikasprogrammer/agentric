@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.439.1] - 2026-09-10
+### Fixed
+- **The multi-org bot-token migration could throw away a live credential.** `migrateLegacyBotToken`
+  (v0.435.0) moves a pre-upgrade token from the bare `github_bot_token` vault slot onto the primary
+  installation's `github_bot_token:<id>` key — but it deleted the legacy slot *unconditionally*, so a
+  tenant that had a cached token and no resolved `github_installation_id` lost it with nothing written
+  in its place. The token stays valid for the hour, so the fix is simply to leave it alone until a
+  primary exists; the next `ensureBotToken` resolves one and the migration completes then. No live
+  tenant hit this (every one with a cached token also had a primary), but it was one settings row away.
+### Added
+- **`github.connect.initiated` now records the `redirect_uri` and client id it sent to GitHub.** GitHub
+  validates the redirect against the App's registered callback *after* the user logs in, and renders a
+  bare **404** when it doesn't match — which reads to the member as "Agentric is broken" and left no
+  trace anywhere in our audit trail. The only way to see what we actually sent was to ssh to the box and
+  re-derive it from the proxy headers. Now the first place you look answers it.
+  **For admins:** If a teammate gets a 404 from GitHub when connecting their account, the Audit page now
+  shows the exact callback URL we asked for — compare it with the Callback URL on your GitHub App.
+
 ## [0.439.0] - 2026-09-10
 ### Added
 - **A goal can now be judged on whether the number moved, not on whether work happened.** The Goals plane
