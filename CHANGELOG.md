@@ -7,7 +7,35 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.430.0] - 2026-09-10
+### Added
+- **Tasks: who filed it.** `createdBy` has always been stored on every task and was never shown or
+  filterable, so on a board where agents file most of the rows a person's own tasks were unfindable and an
+  agent-generated sub-task looked exactly like one somebody wrote. The board now carries a **Filed by**
+  lens (`Anyone · I filed · People · Agents`, each with a facet count), names the filer on the card and in
+  the list row whenever that isn't the assignee, lists **Group: Filed by** in the list view, and stamps
+  `filed by …` in the task room's meta line.
+- **Tasks: a top-level lens.** A one-click *Top level* filter hides every task with a parent — the
+  decomposition an agent split out of its own work — leaving the work somebody actually asked for. Shown
+  only when the board holds sub-tasks, with a count of what it would hide. Board cards now also show a
+  `↳ <parent>` chip linking to the task they were split from.
+- Creating a task **opens it**. The create form used to drop you back on the board with the new card
+  somewhere in it; you then had to find your own task to add detail or dispatch it. It now navigates to
+  `#/tasks/<id>` — the room, where the next action is. (Board is refreshed first, so closing the room
+  lands on a list that already holds the card.)
+
+### Fixed
+- **List view: `Group: Chain` could not be selected.** The mode was implemented and named in the group
+  selector's label map, but had no `SelectItem` — so the hand-off-chain grouping was unreachable from the
+  dropdown and only appeared if `aos_tasks_group` was already set to it.
+
 ### Docs
+- `docs/clickup-task-bridge-plan.md` — plan for `/agentric` in a ClickUp comment: find-or-create one
+  Agentric task per ticket (`#<ticketId> <heading>`), repeat comments landing in that task's discussion
+  rather than spawning duplicates. Specs the reserved command, a `tasks.external_key` idempotency key
+  (which FreeScout and Slack threads want too), title/body/attachment sourcing, and identity — the task's
+  `createdBy` is what the new Filed-by lens reads. Docs only — no behaviour change.
 - `docs/github-multi-org-plan.md` — plan for making the company-bot GitHub lane multi-org. Today
   `ensureBotToken` stores one `github_installation_id` and resolves it as `installations[0]`, so an App
   installed on two orgs silently acts on one of them and 404s the other with no error at launch.
