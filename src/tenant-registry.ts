@@ -30,6 +30,7 @@ import { GoalNotice } from './state/goals';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
+import { ensureNpmBoundary } from './edge/npm-boundary';
 import { TenantRecord, TenantStore } from './state/control';
 import { requestMetrics } from './edge/request-metrics';
 
@@ -221,6 +222,9 @@ export class TenantRegistry {
     fs.mkdirSync(paths.home, { recursive: true });
     fs.mkdirSync(paths.audit, { recursive: true });
     fs.mkdirSync(paths.skills, { recursive: true });
+    // Stop an agent's `npm install` from climbing out of the data home into the software checkout (the
+    // home is often `<checkout>/data`) — see src/edge/npm-boundary.ts.
+    if (ensureNpmBoundary(paths.home)) console.log(`  npm boundary written: ${paths.home}/package.json (tenant ${rec.slug})`);
 
     // Human label: AGENT_OS_TENANT_NAME (process-per-tenant) wins, else the control-plane display name.
     const tenantName = process.env.AGENT_OS_TENANT_NAME || rec.displayName;
