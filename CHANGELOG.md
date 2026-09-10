@@ -7,6 +7,8 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.433.0] - 2026-09-10
 ### Added
 - **Container image — Agentric now deploys to a Dockerfile-based PaaS.** A multi-stage `Dockerfile`
   (plus `.dockerignore`, `CHECKS` and `docker-entrypoint.sh`) builds both bundles and ships the full
