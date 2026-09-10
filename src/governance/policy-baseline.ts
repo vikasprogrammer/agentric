@@ -16,7 +16,7 @@
  *     (`578d047`) because it fires on any command merely MENTIONING deploy/prod/drop/delete — ordinary
  *     English in a commit message or a changelog. It kept firing on instawp (~70 approvals/14d, cleared
  *     by hand 2026-07-27), on instapods (15 in 30d, **11/11 approved** — zero signal, cleared by hand
- *     2026-09-07) and, at the time of writing, still fires on expresstech.
+ *     2026-09-07) and on expresstech until 2026-09-10.
  *
  * Nobody found any of those from the product: each took a human auditing the approvals table by hand,
  * months late. That invisibility — not the rule itself — is the defect this module fixes.
@@ -30,13 +30,26 @@
  * baseline rule is not reaching this tenant, and no engine-level guard covers it".
  *
  * The RETIRE direction cannot use `stricterDecision` at all — by construction that only ever tightens.
- * It is also the direction where an automatic rewrite would be genuinely dangerous, because it LOOSENS
- * governance on a live tenant with no human in the loop. The fleet says so plainly: the identical stale
- * rule is pure noise on instapods (11/11 approved, 0 rejected) and a guardrail somebody is actually
- * USING on expresstech (26 in 60d — 7 approved, **5 rejected**, 14 cancelled). Same rule, same text,
- * opposite verdicts. So a retired rule is surfaced with its evidence and dropped only when an OWNER
- * clicks, through the same `applyPolicyDocument` path as any edit — snapshotted to `policy_revisions`,
- * hot-reloaded, audited, one-click revertable.
+ * So a retired rule is surfaced with its evidence and dropped only when an OWNER clicks, through the
+ * same `applyPolicyDocument` path as any edit — snapshotted to `policy_revisions`, hot-reloaded,
+ * audited, one-click revertable.
+ *
+ * ⚠ **The original reason given here for keeping a human in the loop was wrong, and the real one is
+ * stronger.** This comment used to argue that the same stale rule was "pure noise on instapods but a
+ * guardrail somebody is actually USING on expresstech (5 rejected of 26)". Checking those rejections
+ * on 2026-09-10 showed the opposite: four were the heredoc false-positive class, and the fifth was an
+ * `rm -rf` carrying `destructive: true` — a command the ruleset should never have offered for approval
+ * at all. On expresstech the retired rule sat at **index 0, ahead of `* destructive → never`**, and
+ * first-match meant it SHADOWED the hard deny, downgrading a refusal to an approvable owner card.
+ * Dropping it made that tenant STRICTER:
+ *
+ *     destructive shell command, as expresstech was:  approve:owner  (shell.exec: risky)
+ *                             with the stale rule gone:  deny         (any action: destructive)
+ *
+ * The lesson is not "auto-dropping would have been fine" — it is that **a rule's effect is not readable
+ * from the rule**. Only classifying the whole ORDERED document both ways reveals what a removal does,
+ * in either direction. That is why the click stays, and why it is now shown with
+ * {@link retiredRuleImpact} rather than with rule text alone.
  *
  * ## The safety property
  *
@@ -45,7 +58,7 @@
  * it is classified as tenant-authored and never offered for removal. Inherited product text is
  * retirable; a human's intent is not, and the two are told apart by exact match rather than by guessing.
  */
-import { PolicyDocument, PolicyRule } from './policy';
+import { ClassificationChange, PolicyDocument, PolicyRule, classificationDiff } from './policy';
 
 /** A rule the product deliberately removed from the bundled default, with the receipt for WHY. */
 export interface RetiredRule {
@@ -93,6 +106,9 @@ export interface DriftRule {
 export interface RetiredHit extends DriftRule {
   since: string;
   reason: string;
+  /** What changes if it is dropped (see {@link retiredRuleImpact}). Filled in by the caller that has
+   *  the live thresholds; absent when nothing computed it. */
+  impact?: ClassificationChange[];
 }
 
 export interface PolicyDrift {
@@ -167,4 +183,30 @@ export function dropRetiredRules(
   const kill = new Set(indices.filter((i) => retirable.has(i)));
   const dropped = doc.rules.filter((_, i) => kill.has(i));
   return { doc: { ...doc, rules: doc.rules.filter((_, i) => !kill.has(i)) }, dropped };
+}
+
+/**
+ * What actually CHANGES if the rule at `index` is dropped — the before/after classification diff, not
+ * the rule text.
+ *
+ * This is the answer to the expresstech shadowing case in the header: the rule read as a guardrail and
+ * behaved as a hole, and no amount of staring at it would have said so. An owner deciding whether to
+ * drop a rule is shown the verdicts that move, with a minimal example for each and which direction it
+ * goes, so "this makes destructive commands DENY instead of asking you" is on screen before the click.
+ *
+ * Returns `[]` for an index that is out of range or not currently retired (nothing to preview), and for
+ * a drop that changes no classification at all — a rule that was fully shadowed by an earlier one, which
+ * is itself worth seeing as "removing this changes nothing".
+ */
+export function retiredRuleImpact(
+  doc: PolicyDocument,
+  index: number,
+  baseline: PolicyDocument,
+  thresholds: Record<string, number> = {},
+  ledger: RetiredRule[] = RETIRED_RULES,
+  limit = 8,
+): ClassificationChange[] {
+  const { doc: without, dropped } = dropRetiredRules(doc, [index], baseline, ledger);
+  if (!dropped.length) return [];
+  return classificationDiff(doc, without, thresholds, limit);
 }

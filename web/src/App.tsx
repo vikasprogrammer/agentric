@@ -20254,6 +20254,34 @@ function PolicyDriftPanel({ drift, canEdit, dirty, onDropped }: {
                 </Button>
               ) : null}
             </div>
+
+            {/* What actually changes if you drop it. A rule's effect is NOT readable from the rule: on
+                one live tenant this same rule sat ahead of three `never` guardrails and shadowed all
+                three, so dropping it made that tenant stricter. Show the verdicts that move. */}
+            {hit.impact?.length ? (
+              <div className="mt-2 space-y-1 border-t border-amber-500/20 pt-2">
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">If you drop it</div>
+                {hit.impact.map((c, i) => (
+                  <div key={i} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                    <span className={c.direction === 'stricter' ? 'font-medium text-emerald-600' : 'font-medium text-amber-600'}>
+                      {c.direction === 'stricter' ? 'stricter' : 'looser'}
+                    </span>
+                    <code className="text-[11px]">{c.capability} {JSON.stringify(c.args)}</code>
+                    <span className="text-muted-foreground">{c.before} → <strong>{c.after}</strong></span>
+                    <span className="text-muted-foreground">({c.afterReason})</span>
+                  </div>
+                ))}
+                {hit.impact.some((c) => c.direction === 'stricter') ? (
+                  <div className="text-xs text-muted-foreground">
+                    This rule currently matches FIRST and shadows a stricter rule below it — dropping it lets that one apply again.
+                  </div>
+                ) : null}
+              </div>
+            ) : hit.impact ? (
+              <div className="mt-2 border-t border-amber-500/20 pt-2 text-xs text-muted-foreground">
+                Dropping it changes no classification — an earlier rule already covers everything it matches.
+              </div>
+            ) : null}
           </div>
         ))}
 

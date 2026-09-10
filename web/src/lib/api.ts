@@ -1604,12 +1604,23 @@ export interface PolicyResp {
   drift?: PolicyDrift
   error?: string
 }
+/** One classification that moves when a rule is dropped — the preview behind the Drop button. */
+export interface ClassificationChange {
+  capability: string
+  args: Record<string, unknown>
+  before: string
+  after: string
+  direction: 'stricter' | 'looser'
+  beforeReason: string
+  afterReason: string
+}
 /** A rule the product retired that this tenant still enforces (see src/governance/policy-baseline.ts). */
 export interface RetiredHit {
   index: number
   rule: PolicyRule
   since: string
   reason: string
+  impact?: ClassificationChange[]
 }
 /** How far a tenant's persisted ruleset has drifted from the shipped default. */
 export interface PolicyDrift {

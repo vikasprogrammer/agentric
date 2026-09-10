@@ -17,7 +17,7 @@
  */
 const path = require('path');
 const fs = require('fs');
-const { baselineDrift, dropRetiredRules, RETIRED_RULES } =
+const { baselineDrift, dropRetiredRules, retiredRuleImpact, RETIRED_RULES } =
   require(path.resolve(__dirname, '..', 'dist/governance/policy-baseline'));
 
 let pass = 0;
@@ -125,6 +125,40 @@ check('the v0.17.0 shell.exec rule is declared', RETIRED_RULES.some((r) => JSON.
       out.doc.rules.every((r, i, arr) => arr.indexOf(r) === i) &&
       out.doc.rules.every((r) => doc.rules.includes(r)));
   }
+}
+
+// ── 9. Drop IMPACT — a rule's effect is not readable from the rule ────────────────────────────────
+//     The expresstech case, reproduced exactly: the retired rule at index 0 sits AHEAD of the three
+//     `never` guardrails, so first-match shadows all of them and a destructive command is offered for
+//     approval instead of refused. Dropping it makes the tenant STRICTER. Nobody could see that by
+//     reading the rule, which is the whole reason the preview exists — so it is pinned here.
+{
+  const T = { moneyCapUsd: 100, bulkDeleteCount: 25 };
+  const doc = { ...BUNDLED, rules: [STALE, ...BUNDLED.rules] };
+  const impact = retiredRuleImpact(doc, 0, BUNDLED, T);
+
+  check('impact: reports changes', impact.length >= 2);
+  const strict = impact.filter((c) => c.direction === 'stricter');
+  check('impact: finds the SHADOWED hard deny (destructive)',
+    strict.some((c) => c.args.destructive === true && c.before === 'approve:owner' && c.after === 'deny'));
+  check('impact: finds the shadowed money cap', strict.some((c) => typeof c.args.amountUsd === 'number' && c.after === 'deny'));
+  check('impact: finds the shadowed bulk-delete cap', strict.some((c) => typeof c.args.deleteCount === 'number' && c.after === 'deny'));
+  check('impact: also reports the genuine loosening (plain risky ⇒ allow)',
+    impact.some((c) => c.direction === 'looser' && c.before === 'approve:owner' && c.after === 'allow'));
+  check('impact: stricter rows sort first', impact[0].direction === 'stricter');
+  check('impact: examples are MINIMAL (no unrelated args carried along)',
+    strict.every((c) => Object.keys(c.args).length <= 2));
+  check('impact: each row names the rule that now applies', impact.every((c) => typeof c.afterReason === 'string' && c.afterReason.length > 0));
+
+  // A rule with nothing left to shadow: same stale rule, but placed BELOW the nevers.
+  const below = { ...BUNDLED, rules: [...BUNDLED.rules, STALE] };
+  const belowImpact = retiredRuleImpact(below, below.rules.length - 1, BUNDLED, T);
+  check('impact: below the guardrails, only the loosening remains',
+    belowImpact.length > 0 && belowImpact.every((c) => c.direction === 'looser'));
+
+  check('impact: an index that is not retired previews nothing', retiredRuleImpact(doc, 3, BUNDLED, T).length === 0);
+  check('impact: an out-of-range index previews nothing', retiredRuleImpact(doc, 99, BUNDLED, T).length === 0);
+  check('impact: a clean document previews nothing', retiredRuleImpact(BUNDLED, 0, BUNDLED, T).length === 0);
 }
 
 console.log(`policy-baseline-test: ${pass} passed, ${failures.length} failed`);
