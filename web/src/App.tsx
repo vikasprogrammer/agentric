@@ -10160,6 +10160,18 @@ function matchesQuickStatus(t: Task, s: QuickStatus): boolean {
   return true
 }
 
+// Who FILED the task. `createdBy` has always been stored (member id | `agent:<id>`) and was never shown
+// or filterable, so on a board where agents file most of the rows a person's own tasks were unfindable —
+// and an agent-filed sub-task looked exactly like one you'd written yourself. 'me' is the narrow case of
+// 'human'; both are answered from the row, so this is a lens, not a schema change.
+type TaskAuthor = '' | 'me' | 'human' | 'agent'
+function matchesAuthor(t: Task, a: TaskAuthor, meId: string): boolean {
+  if (a === 'me') return t.createdBy === meId
+  if (a === 'human') return !t.createdBy.startsWith('agent:')
+  if (a === 'agent') return t.createdBy.startsWith('agent:')
+  return true
+}
+
 function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void; backTo: (fallback: Route) => BackTarget }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
@@ -10233,9 +10245,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   useEffect(() => { localStorage.setItem('aos_task_room_side', roomSide ? '1' : '0') }, [roomSide])
   // Sticky like the view mode next to it — the grouping is a way of *reading* the board, and having it
   // snap back to Priority on every visit made Chain in particular feel like a toy rather than a lens.
-  const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'goal' | 'chain' | 'none'>(() => {
+  const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'author' | 'goal' | 'chain' | 'none'>(() => {
     const v = localStorage.getItem('aos_tasks_group')
-    return v === 'status' || v === 'assignee' || v === 'goal' || v === 'chain' || v === 'none' ? v : 'priority'
+    return v === 'status' || v === 'assignee' || v === 'author' || v === 'goal' || v === 'chain' || v === 'none' ? v : 'priority'
   })
   useEffect(() => { localStorage.setItem('aos_tasks_group', listGroup) }, [listGroup])
   const [mine, setMine] = useState(false)
@@ -10251,6 +10263,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   // opens exactly as it always has.
   const [fStatus, setFStatus] = useState<'' | 'open' | 'blocked' | 'done'>('')
   const [fUnassigned, setFUnassigned] = useState(false)
+  // Authorship lens (see `matchesAuthor`) + the sub-task brake next to it: `fRoot` hides anything with a
+  // parent, so the board shows the work somebody actually asked for rather than the decomposition an
+  // agent generated under it. Both default off — the view opens exactly as it always has.
+  const [fAuthor, setFAuthor] = useState<TaskAuthor>('')
+  const [fRoot, setFRoot] = useState(false)
   const [sort, setSort] = useState<'priority' | 'due' | 'updated'>('priority')
   // drag-and-drop
   const [dragId, setDragId] = useState<string | null>(null)
@@ -10329,6 +10346,35 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     )
   }
 
+  /** Who filed the task, on a card — shown only when that isn't the assignee (when it is, the assignee
+   *  badge already says it). This is the one place the board distinguishes a task a PERSON wrote from a
+   *  sub-task an AGENT split out of its own work, which used to render identically. */
+  const filedByChip = (t: Task) => {
+    if (!t.createdBy || t.createdBy === t.assignee) return null
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/80" title={`Filed by ${nameOf(t.createdBy)}`}>
+        <span className="shrink-0 opacity-70">by</span>{assigneeIcon(t.createdBy, 'h-3 w-3')}
+        <span className="max-w-[7rem] truncate">{nameOf(t.createdBy)}</span>
+      </span>
+    )
+  }
+  /** The parent this task was split out of — an agent decomposing its work is the usual author, so the
+   *  chip is what tells you a row is a sub-task rather than something anyone asked for directly. */
+  const parentChip = (t: Task) => {
+    if (!t.parentId) return null
+    const parent = taskById(t.parentId)
+    return (
+      <a
+        href={navHref('tasks', t.parentId)}
+        onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.parentId!))(e) }}
+        title={`Sub-task of: ${parent ? parent.title : t.parentId}`}
+        className="inline-flex min-w-0 items-center gap-0.5 rounded bg-muted px-1 text-[10px] text-muted-foreground no-underline hover:text-foreground hover:underline"
+      >
+        <span className="shrink-0">↳</span><span className="max-w-[8rem] truncate">{parent ? parent.title : t.parentId}</span>
+      </a>
+    )
+  }
+
   const load = async () => {
     const r = await api.tasks(q)
     setTasks(r.tasks ?? [])
@@ -10392,7 +10438,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   // One predicate for every lens, with `skip` naming a dimension to ignore. That's what lets each quick
   // filter show a count of what picking it would actually yield *given the other filters* — a facet count,
   // not a global tally, so "Blocked 7" doesn't promise 7 when you're already narrowed to one assignee.
-  const passes = (t: Task, skip?: 'status' | 'unassigned' | 'overdue'): boolean => {
+  const passes = (t: Task, skip?: 'status' | 'unassigned' | 'overdue' | 'author' | 'root'): boolean => {
     if (mine && t.assignee !== me.id) return false
     if (fAssignee && t.assignee !== fAssignee) return false
     if (fLabel && !t.labels.includes(fLabel)) return false
@@ -10402,6 +10448,8 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     if (fLive && !liveOf(t)) return false
     if (skip !== 'unassigned' && fUnassigned && t.assignee) return false
     if (skip !== 'status' && !matchesQuickStatus(t, fStatus)) return false
+    if (skip !== 'author' && !matchesAuthor(t, fAuthor, me.id)) return false
+    if (skip !== 'root' && fRoot && t.parentId) return false
     return true
   }
   const visible = (tasks ?? []).filter((t) => passes(t))
@@ -10409,10 +10457,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   const statusPool = (tasks ?? []).filter((t) => passes(t, 'status'))
   const statusCount = (s: '' | 'open' | 'blocked' | 'done') => statusPool.filter((t) => matchesQuickStatus(t, s)).length
   const unassignedCount = (tasks ?? []).filter((t) => passes(t, 'unassigned') && !t.assignee).length
+  const authorPool = (tasks ?? []).filter((t) => passes(t, 'author'))
+  const authorCount = (a: TaskAuthor) => authorPool.filter((t) => matchesAuthor(t, a, me.id)).length
+  const subCount = (tasks ?? []).filter((t) => passes(t, 'root') && t.parentId).length
   const overdueCount = (tasks ?? []).filter((t) => passes(t, 'overdue') && dueMeta(t.dueAt, t.status)?.overdue).length
   const goalsPresent = [...new Set((tasks ?? []).map((t) => t.goalId).filter(Boolean) as string[])]
-  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue || fLive || fStatus !== '' || fUnassigned
-  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false); setFLive(false); setFStatus(''); setFUnassigned(false) }
+  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue || fLive || fStatus !== '' || fUnassigned || fAuthor !== '' || fRoot
+  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false); setFLive(false); setFStatus(''); setFUnassigned(false); setFAuthor(''); setFRoot(false) }
 
   const liveTasks = visible.filter((t) => liveOf(t))
   const liveCount = liveTasks.length
@@ -10431,7 +10482,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     const r = await api.addTask(req)
     if (r.error) return setHint('⚠ ' + r.error)
     setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setDue(''); setGoalId(''); setCriteria(''); setNewDeps([]); setShowNew(false)
-    load()
+    await load()
+    // Land IN the task you just filed. Creating one used to drop you back on the board with the new card
+    // somewhere in it — on a busy board you then had to hunt for your own task to add detail or dispatch
+    // it. The room is where the next action lives, so go there. (Board first, so closing the room via
+    // `backTo` returns to a list that already holds the card.)
+    if (r.task?.id) openTask(r.task.id)
   }
   // Re-link or complete a task and the goal's derived progress moves with it, so refresh the goal
   // list too — otherwise the "part of goal" banner keeps showing the pre-edit bar.
@@ -10511,6 +10567,8 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
               <span className="text-[10px] text-muted-foreground">{workers[t.id].agents.length} ran</span>
             </span>
           )}
+          {filedByChip(t)}
+          {parentChip(t)}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
           {/* What a blocked task waits on, as its delegate declared it. The column header says "Needs you",
               which is only true for `human` — this says which of the three it actually is, and `human` is
@@ -10592,7 +10650,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     ) : (
       <div className="space-y-3.5">
         <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
-          <span>{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</span>
+          <span>{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}{detail.task.createdBy ? ` · filed by ${nameOf(detail.task.createdBy)}` : ''}</span>
           {draftNow && <Badge variant="outline" className="px-1.5 py-0 font-sans text-[10px]" title="never dispatched — no session has worked this yet, so it's still yours to edit or delete">draft</Badge>}
         </div>
 
@@ -10975,6 +11033,29 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
           <button onClick={() => setMine(false)} className={`px-2.5 py-1 ${!mine ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>All</button>
           <button onClick={() => setMine(true)} className={`border-l px-2.5 py-1 ${mine ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>My tasks</button>
         </div>
+        {/* Who FILED it. Sits next to "My tasks" (which is about the ASSIGNEE) because the two answer
+            different questions — what's on my plate vs. what I asked for. */}
+        <div className="inline-flex overflow-hidden rounded-md border" title="Filter by who filed the task">
+          {([['', 'Anyone'], ['me', 'I filed'], ['human', 'People'], ['agent', 'Agents']] as [TaskAuthor, string][]).map(([a, label], i) => {
+            const on = fAuthor === a
+            return (
+              <button
+                key={a || 'any'}
+                onClick={() => setFAuthor(a)}
+                title={a === 'me' ? 'Tasks you created yourself' : a === 'human' ? 'Tasks a person created' : a === 'agent' ? 'Tasks an agent created (its own work and the sub-tasks it split out)' : 'No author filter'}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 ${i ? 'border-l' : ''} ${on ? 'bg-muted font-medium' : 'text-muted-foreground'}`}
+              >
+                {a === 'agent' && <Bot className="h-3.5 w-3.5" />}{a === 'human' && <Users className="h-3.5 w-3.5" />}{label}
+                {a !== '' && <span className="font-mono text-[10px] tabular-nums opacity-70">{authorCount(a)}</span>}
+              </button>
+            )
+          })}
+        </div>
+        {subCount > 0 && (
+          <button onClick={() => setFRoot((v) => !v)} title="Hide sub-tasks — show only the work somebody asked for, not the decomposition under it" className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fRoot ? 'border-primary bg-primary/10 font-medium text-foreground' : 'text-muted-foreground'}`}>
+            <FolderTree className="h-3.5 w-3.5" />Top level<span className="font-mono text-[10px] tabular-nums opacity-70">{subCount} sub</span>
+          </button>
+        )}
         <button onClick={() => setFUnassigned((v) => !v)} title="Work nobody has picked up" className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fUnassigned ? 'border-amber-500 bg-amber-500/10 text-amber-600' : 'text-muted-foreground'}`}>
           <User className="h-3.5 w-3.5" />Unassigned{unassignedCount > 0 && <span className="font-mono text-[10px] tabular-nums">{unassignedCount}</span>}
         </button>
@@ -11002,9 +11083,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
         <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue{overdueCount > 0 && <span className="font-mono text-[10px] tabular-nums">{overdueCount}</span>}</button>
         {view === 'list' && (
           <>
-            <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', goal: 'Group: Goal', chain: 'Group: Chain', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>
+            {/* `chain` was in the trigger's label map but had no SelectItem, so the mode the list already
+                implemented could not actually be picked. Listed now, alongside the new author grouping. */}
+            <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', author: 'Group: Filed by', goal: 'Group: Goal', chain: 'Group: Chain', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>
               <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="priority">Group: Priority</SelectItem><SelectItem value="status">Group: Status</SelectItem><SelectItem value="assignee">Group: Assignee</SelectItem><SelectItem value="goal">Group: Goal</SelectItem><SelectItem value="none">Group: None</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="priority">Group: Priority</SelectItem><SelectItem value="status">Group: Status</SelectItem><SelectItem value="assignee">Group: Assignee</SelectItem><SelectItem value="author">Group: Filed by</SelectItem><SelectItem value="goal">Group: Goal</SelectItem><SelectItem value="chain">Group: Chain</SelectItem><SelectItem value="none">Group: None</SelectItem></SelectContent>
             </Select>
             <Select items={{ priority: 'Sort: Priority', due: 'Sort: Due date', updated: 'Sort: Updated' }} value={sort} onValueChange={(v) => v && setSort(v as typeof sort)}>
               <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
@@ -11168,6 +11251,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
               if (listGroup === 'priority') groups = [0, 1, 2, 3].map((p) => ({ key: String(p), label: <span className="flex items-center gap-2"><PriorityPips p={p} />{PRIORITY_LABEL[p]}</span>, items: within(visible.filter((t) => t.priority === p)) })).filter((g) => g.items.length)
               else if (listGroup === 'status') groups = (['doing', 'blocked', 'todo', 'done', 'cancelled'] as TaskStatus[]).map((s) => ({ key: s, label: <span className="flex items-center gap-2"><StatusDot status={s} /><span className="capitalize">{s}</span></span>, items: within(visible.filter((t) => t.status === s)) })).filter((g) => g.items.length)
               else if (listGroup === 'assignee') groups = [...new Set(visible.map((t) => t.assignee || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unassigned'}</span>, items: within(visible.filter((t) => (t.assignee || '') === k)) })).filter((g) => g.items.length)
+              else if (listGroup === 'author') groups = [...new Set(visible.map((t) => t.createdBy || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unknown'}</span>, items: within(visible.filter((t) => (t.createdBy || '') === k)) })).filter((g) => g.items.length)
               else if (listGroup === 'goal') groups = [...new Set(visible.map((t) => t.goalId || ''))].sort((a, b) => (a ? goalTitle(a) : 'zzz').localeCompare(b ? goalTitle(b) : 'zzz')).map((k) => ({ key: k || 'none', label: <span className="flex items-center gap-1.5">{k ? <><Target className="h-3.5 w-3.5 text-muted-foreground" /><a href={navHref('goals', k)} onClick={onNavClick(() => nav('goals', k))} className="text-muted-foreground no-underline hover:text-foreground hover:underline">{goalTitle(k)}</a></> : 'No goal'}</span>, items: within(visible.filter((t) => (t.goalId || '') === k)) })).filter((g) => g.items.length)
               else if (listGroup === 'chain') {
                 chain = chainOrder(visible, within)
@@ -11210,6 +11294,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
                         </div>
                         <div className="hidden w-32 shrink-0 items-center gap-1.5 truncate text-xs text-muted-foreground sm:flex">
                           <span className="min-w-0 truncate">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</span>
+                          {/* The filer, when it isn't the assignee — the same distinction the board card
+                              makes, kept in the list so switching view doesn't lose it. */}
+                          {t.createdBy && t.createdBy !== t.assignee && (
+                            <span className="shrink-0 opacity-60" title={`Filed by ${nameOf(t.createdBy)}`}>{assigneeIcon(t.createdBy, 'h-3 w-3')}</span>
+                          )}
                           {workers[t.id] && (
                             <span title={`worked by ${workers[t.id].agents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')}`}><AgentStack agents={workers[t.id].agents} /></span>
                           )}
