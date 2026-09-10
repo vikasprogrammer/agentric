@@ -163,6 +163,7 @@ export interface StoredCredential {
   claudeAiOauth?: { accessToken?: string; refreshToken?: string; expiresAt?: number; refreshTokenExpiresAt?: number };
   accessToken?: string;
   refreshToken?: string;
+  expiresAt?: number;
   refreshTokenExpiresAt?: number;
 }
 
@@ -261,17 +262,48 @@ export type CredentialReadiness =
   /** No login in this dir at all — the pre-existing "empty credential dir" case. */
   | { ok: false; reason: 'missing' }
   /** A login EXISTS in the Keychain but its value can't be read from this security session. */
-  | { ok: false; reason: 'keychain_locked'; service: string };
+  | { ok: false; reason: 'keychain_locked'; service: string }
+  /**
+   * A login is present and readable, and it is DEAD: the access token has expired and there is no
+   * refresh token left to trade for a new one, so every `claude` run through this dir gets
+   * `authentication_failed · Login expired · Please run /login` on its first API call.
+   *
+   * This is the box-default case that turned one mis-disabled pool account into a 14-hour outage
+   * (instawp, 2026-09-09 — see `findTranscript`). When rotation has nothing to hand out the launcher
+   * falls back to the box's own `~/.claude`, and nothing asked whether that login still worked: a dead
+   * one accepted every run and killed it at $0 and one turn, silently, all night.
+   *
+   * Certain and cheap to know beforehand, exactly like `keychain_locked` — hence a launch blocker rather
+   * than a badge. Only asserted when the record STATES an expiry that has passed AND carries no usable
+   * refresh token; a record with no stated expiry, or one that can refresh itself, stays usable.
+   */
+  | { ok: false; reason: 'expired'; expiredAt: number };
+
+/** Is this stored login dead — expired with nothing left to refresh with? Claude-shaped records only
+ *  (`expiresAt` / `refreshToken`); every other runtime returns false, since we can't read its expiry. */
+function isDeadCredential(runtime: CodingRuntimeId, dir: string, now = Date.now()): number | null {
+  if (runtime !== 'claude-code') return null;
+  const rec = readCredentialRecord(dir);
+  const o = rec?.claudeAiOauth ?? rec;
+  const exp = o?.expiresAt;
+  if (typeof exp !== 'number' || exp > now) return null;   // no stated expiry, or still valid
+  // `exp` is returned as-is and may be 0 — the live instawp box default literally carried `expiresAt: 0`
+  // — so every caller must test it against null, never for truthiness.
+  return configDirCanRefresh(dir, now) ? null : exp;       // a live refresh token heals it on next launch
+}
 
 export function credentialReadiness(runtime: CodingRuntimeId, dir: string): CredentialReadiness {
   try {
-    if (existsSync(join(dir, CODING_RUNTIMES[runtime].credentialEnv.configDirFile))) return { ok: true, via: 'file' };
+    if (existsSync(join(dir, CODING_RUNTIMES[runtime].credentialEnv.configDirFile))) {
+      const expiredAt = isDeadCredential(runtime, dir);
+      return expiredAt !== null ? { ok: false, reason: 'expired', expiredAt } : { ok: true, via: 'file' };
+    }
     // Only claude-code keeps its login in the macOS Keychain; every other runtime is file-only, so an
     // absent file there is simply missing.
     if (runtime !== 'claude-code' || !keychainHasLogin(dir)) return { ok: false, reason: 'missing' };
-    return readKeychainCredentials(dir)
-      ? { ok: true, via: 'keychain' }
-      : { ok: false, reason: 'keychain_locked', service: keychainServiceFor(dir) };
+    if (!readKeychainCredentials(dir)) return { ok: false, reason: 'keychain_locked', service: keychainServiceFor(dir) };
+    const expiredAt = isDeadCredential(runtime, dir);
+    return expiredAt !== null ? { ok: false, reason: 'expired', expiredAt } : { ok: true, via: 'keychain' };
   } catch { return { ok: false, reason: 'missing' }; }
 }
 
@@ -288,17 +320,21 @@ export function launchCredentialDir(runtime: CodingRuntimeId, env: Record<string
  * Launch pre-flight: can this environment authenticate at all? Returns the blocking condition, or null
  * when the launch may proceed.
  *
- * Deliberately narrow — it refuses ONLY on `keychain_locked`, the state that is both certain (we just
- * failed the same read the child will make) and undiagnosable from the outside (a $0 one-turn run).
- * A `missing` dir keeps its long-standing fail-open behaviour: rotation already declines to select such an
- * account, and a box with no login at all fails visibly at the CLI's own login picker.
+ * Deliberately narrow — it refuses on the two states that are both CERTAIN (we just made the same read
+ * the child will make, and it came back unusable) and undiagnosable from the outside (a $0 one-turn run):
+ * `keychain_locked` and `expired`. A `missing` dir keeps its long-standing fail-open behaviour: rotation
+ * already declines to select such an account, and a box with no login at all fails visibly at the CLI's
+ * own login picker.
  */
 export function preflightCredential(runtime: CodingRuntimeId, env: Record<string, string>):
-  { dir: string; service: string } | null {
+  { dir: string; reason: 'keychain_locked'; service: string } | { dir: string; reason: 'expired'; expiredAt: number } | null {
   const dir = launchCredentialDir(runtime, env);
   if (!dir) return null;
   const state = credentialReadiness(runtime, dir);
-  return state.ok || state.reason !== 'keychain_locked' ? null : { dir, service: state.service };
+  if (state.ok) return null;
+  if (state.reason === 'keychain_locked') return { dir, reason: 'keychain_locked', service: state.service };
+  if (state.reason === 'expired') return { dir, reason: 'expired', expiredAt: state.expiredAt };
+  return null;
 }
 
 /** Probe a Claude subscription OAuth token via a 1-token Messages call and read the usage headers. Never

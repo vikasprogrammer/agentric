@@ -127,7 +127,11 @@ import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
 import { guidanceStale } from './edge/dreaming';
 import { GithubIdentity } from './edge/github-identity';
-import { credentialDirHasLogin, preflightCredential } from './edge/runtime-account-check';
+import { credentialDirHasLogin, preflightCredential, readConfigDirToken, configDirCanRefresh, checkClaudeToken } from './edge/runtime-account-check';
+
+/** What a credential pre-flight refuses on — the two states in which a launch is certain to authenticate
+ *  as nobody. Mirrors `preflightCredential`'s return so the refusal path has one shape to switch on. */
+type CredentialBlock = NonNullable<ReturnType<typeof preflightCredential>>;
 import type { RuntimeAccount } from './state/runtime-accounts';
 import { RuntimeLoginManager } from './edge/runtime-login';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -3990,11 +3994,11 @@ export class TerminalManager {
    *  everywhere else) does not help either: on macOS the box default reads through the SAME locked
    *  keychain. */
   private assertCredentialsUsable(env: Record<string, string>, o: { id: string; agent: string }, runtime: CodingRuntimeId): boolean {
-    let blocked: { dir: string; service: string } | null = null;
+    let blocked: CredentialBlock | null = null;
     try { blocked = preflightCredential(runtime, env); }
     catch { return true; }                              // a probe that can't run must never block a launch
     if (!blocked) return true;
-    this.refuseForLockedCredential(o.id, o.agent, runtime, blocked.dir, blocked.service);
+    this.refuseForCredential(o.id, o.agent, runtime, blocked);
     return false;
   }
 
@@ -4012,48 +4016,67 @@ export class TerminalManager {
    * `configDir` is whatever the resumed environment carries (empty → the box default). Returns the
    * blocking condition, having already recorded it, or null to proceed.
    */
-  checkResumeCredentials(sessionId: string, configDir: string, runtime: CodingRuntimeId = 'claude-code'): { reason: 'keychain_locked'; dir: string; message: string } | null {
+  checkResumeCredentials(sessionId: string, configDir: string, runtime: CodingRuntimeId = 'claude-code'): { reason: CredentialBlock['reason']; dir: string; message: string } | null {
     const agent = this.sessionAgent(sessionId) ?? 'system';
-    let blocked: { dir: string; service: string } | null = null;
+    let blocked: CredentialBlock | null = null;
     try { blocked = preflightCredential(runtime, configDir ? { [CODING_RUNTIMES[runtime].credentialEnv.configDirVar]: configDir } : {}); }
     catch { return null; }
     if (!blocked) return null;
-    this.refuseForLockedCredential(sessionId, agent, runtime, blocked.dir, blocked.service);
-    return { reason: 'keychain_locked', dir: blocked.dir, message: TerminalManager.lockedCredentialWhy(runtime, blocked.dir) };
+    this.refuseForCredential(sessionId, agent, runtime, blocked);
+    return { reason: blocked.reason, dir: blocked.dir, message: TerminalManager.credentialBlockWhy(runtime, blocked) };
   }
 
-  private static lockedCredentialWhy(runtime: CodingRuntimeId, dir: string): string {
-    return `the macOS login keychain is locked, so ${CODING_RUNTIMES[runtime].label} cannot read the credential for ${dir} — this run would start, authenticate as nobody and end with no work done`;
+  /** Why this run cannot authenticate, in one clause — the same sentence for the session card, the resume
+   *  reply and the audit, so an operator never has to reconcile two accounts of the same refusal. */
+  private static credentialBlockWhy(runtime: CodingRuntimeId, b: CredentialBlock): string {
+    const label = CODING_RUNTIMES[runtime].label;
+    return b.reason === 'keychain_locked'
+      ? `the macOS login keychain is locked, so ${label} cannot read the credential for ${b.dir} — this run would start, authenticate as nobody and end with no work done`
+      : `the login in ${b.dir} expired on ${new Date(b.expiredAt).toISOString().slice(0, 16).replace('T', ' ')} UTC and has no refresh token left, so ${label} would start, get "Login expired · Please run /login" on its first call and end with no work done`;
   }
 
   /** Record a refused run: audit, crash the row, tell its owner, badge the pool account, alert admins.
    *  Shared by the launch and resume pre-flights so the two can never disagree about what a refusal is. */
-  private refuseForLockedCredential(sessionId: string, agent: string, runtime: CodingRuntimeId, dir: string, service: string): void {
-    const why = TerminalManager.lockedCredentialWhy(runtime, dir);
-    this.audit(sessionId, agent, 'session.launch.refused', { runtime, reason: 'credential unreadable: keychain locked', dir, service });
+  private refuseForCredential(sessionId: string, agent: string, runtime: CodingRuntimeId, b: CredentialBlock): void {
+    const dir = b.dir;
+    const why = TerminalManager.credentialBlockWhy(runtime, b);
+    this.audit(sessionId, agent, 'session.launch.refused', b.reason === 'keychain_locked'
+      ? { runtime, reason: 'credential unreadable: keychain locked', dir, service: b.service }
+      : { runtime, reason: 'credential expired: no refresh token left', dir, expiredAt: b.expiredAt });
     this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.addMessage({ type: 'completed', sessionId, agent, title: `Could not start — ${agent}`, body: `Did not launch: ${why}.`, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: sessionId });
     // Badge the pool row this dir belongs to, so Settings → Runtime shows the cause where an operator
     // would go looking for it rather than only in one session's card.
     try {
       const acct = this.os.runtimeAccounts.list().find((a) => a.runtime === runtime && a.configDir === dir);
-      if (acct) this.os.runtimeAccounts.recordCheck(runtime, acct.name, { ok: false, note: 'macOS login keychain is locked — the credential cannot be read from this security session' });
+      if (acct) this.os.runtimeAccounts.recordCheck(runtime, acct.name, { ok: false, note: b.reason === 'keychain_locked'
+        ? 'macOS login keychain is locked — the credential cannot be read from this security session'
+        : 'the stored login expired and has no refresh token — re-run `claude login` for this account' });
     } catch { /* badging is a nicety */ }
-    this.alertCredentialsLocked(dir);
+    this.alertCredentialsBlocked(runtime, b);
   }
 
   /** Tell a human, once per cooldown. This is the half the 2026-09-01 incident was missing: the refusal
-   *  above makes each run honest, but nothing about a crashed session reaches someone who is not looking. */
-  private alertCredentialsLocked(dir: string): void {
+   *  above makes each run honest, but nothing about a crashed session reaches someone who is not looking.
+   *  The 2026-09-09 instawp outage was the same gap with a different cause — 14 hours of $0 runs on a box
+   *  whose default login had simply expired — so both blocking reasons alert through here. */
+  private alertCredentialsBlocked(runtime: CodingRuntimeId, b: CredentialBlock): void {
     const now = Date.now();
     if (now - this.lastCredentialAlertAt < TerminalManager.CREDENTIAL_ALERT_COOLDOWN_MS) return;
     this.lastCredentialAlertAt = now;
+    const label = CODING_RUNTIMES[runtime].label;
     try {
-      this.postSystemCard({
+      this.postSystemCard(b.reason === 'keychain_locked' ? {
         topic: 'credentials-locked',
         type: 'notification',
         title: 'Agent runs are blocked — the macOS login keychain is locked',
-        body: `Claude Code stores this box's logins in the macOS Keychain, and its value cannot be read right now, so no session can authenticate (${dir}). Runs are being refused rather than started and left to fail silently. Unlock it on the box itself:\n\n    security unlock-keychain ~/Library/Keychains/login.keychain-db\n\nThen re-run the check from Settings → Runtime → Runtime accounts.`,
+        body: `Claude Code stores this box's logins in the macOS Keychain, and its value cannot be read right now, so no session can authenticate (${b.dir}). Runs are being refused rather than started and left to fail silently. Unlock it on the box itself:\n\n    security unlock-keychain ~/Library/Keychains/login.keychain-db\n\nThen re-run the check from Settings → Runtime → Runtime accounts.`,
+        audience: { kind: 'admins' },
+      } : {
+        topic: 'credentials-expired',
+        type: 'notification',
+        title: `Agent runs are blocked — the ${label} login has expired`,
+        body: `The login in ${b.dir} expired on ${new Date(b.expiredAt).toISOString().slice(0, 16).replace('T', ' ')} UTC and carries no refresh token, so every session started with it would get "Login expired · Please run /login" on its first call. Runs are being refused rather than started and left to fail silently.\n\nSign that credential in again on the box:\n\n    CLAUDE_CONFIG_DIR=${b.dir} claude /login\n\nOr add a working account under Settings → Runtime → Runtime accounts, which is what sessions rotate onto when the box default is unusable.`,
         audience: { kind: 'admins' },
       });
     } catch { /* the audit line above is the durable record */ }
@@ -4083,6 +4106,15 @@ export class TerminalManager {
         // box account, which is exactly the failure this audit line exists to make visible.
         if (this.os.runtimeAccounts.enabledCount(runtime, { anyKind: true }) > 0 && this.os.runtimeAccounts.enabledCount(runtime) === 0) {
           this.audit(sessionId, agent, 'runtime.account.unusable', { runtime, resident, kinds: CODING_RUNTIMES[runtime].liveCredentialKinds, reason: 'no enabled account of a kind this runtime can launch with — using the box default' });
+        } else {
+          // The other way a configured pool hands back nothing: every account in it is parked or disabled
+          // right now. Previously silent, which is how instawp spent 14 hours quietly launching onto a box
+          // default nobody had checked. The pre-flight refuses the run when that default is dead; this line
+          // says WHY rotation had nothing to offer, which is the question an operator asks next.
+          const all = this.os.runtimeAccounts.allLimited(runtime);
+          if (all.limited || this.os.runtimeAccounts.enabledCount(runtime) > 0) {
+            this.audit(sessionId, agent, 'runtime.account.unusable', { runtime, resident, reason: 'every enabled account is limited or disabled — using the box default', until: all.until });
+          }
         }
         return;
       }
@@ -4190,9 +4222,17 @@ export class TerminalManager {
    *  Best-effort — never throws, never blocks teardown. */
   private detectUsageLimit(sessionId: string, space: string, tmux: string): void {
     try {
-      const row = this.db.prepare('SELECT agent, runtime_account FROM term_sessions WHERE id = ?')
-        .get<{ agent: string; runtime_account: string | null }>(sessionId);
+      const row = this.db.prepare('SELECT agent, runtime_account, created_at FROM term_sessions WHERE id = ?')
+        .get<{ agent: string; runtime_account: string | null; created_at: number }>(sessionId);
       if (!row) return;
+      // The credential dir this run actually authenticated through. It disambiguates the transcript below:
+      // one claude conversation resumed across accounts leaves a copy under each, and the stale one is the
+      // wrong evidence to judge this run by (see `findTranscript`).
+      const manifest = this.os.agents.get(row.agent);
+      const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
+      const acctDir = row.runtime_account
+        ? this.os.runtimeAccounts.get(runtime, row.runtime_account)?.configDir
+        : undefined;
       // The pane is the fast path, but it is VOLATILE — a run killed on its first API call has usually
       // already lost its pane by teardown, and `capturePane` then returns nothing. Measured on the live
       // corpus: of 31 runs the derived outcome identifies as quota/auth deaths (from the
@@ -4205,8 +4245,11 @@ export class TerminalManager {
       if (!text || !(TerminalManager.USAGE_LIMIT_RE.test(text) || TerminalManager.AUTH_FAIL_RE.test(text))) {
         const claudeId = this.db.prepare('SELECT claude_session_id FROM term_sessions WHERE id = ?')
           .get<{ claude_session_id: string | null }>(sessionId)?.claude_session_id;
-        const end = claudeId ? readTranscriptEnd(claudeId) : undefined;
-        if (end?.died) {
+        const end = claudeId ? readTranscriptEnd(claudeId, (id) => findTranscript(id, { preferRoot: acctDir })) : undefined;
+        // Only evidence written DURING this run describes this run. A copy left in another credential dir
+        // by an earlier run of the same conversation is stale by definition, and acting on it is how a
+        // healthy account gets retired for someone else's failure (instawp, 2026-09-09).
+        if (end?.died && end.mtimeMs >= row.created_at) {
           // Hand the classifier the phrase it expects rather than re-deriving here, so the two sources
           // can never disagree about what counts as a limit vs a bad token.
           text = end.deathKind === 'auth' ? 'oauth token expired' : 'hit your weekly limit';
@@ -4219,15 +4262,9 @@ export class TerminalManager {
       // acted on when there's no usage-limit signature, so an exhausted-but-valid token is never disabled.
       const authFailed = !usageLimited && TerminalManager.AUTH_FAIL_RE.test(text);
       if (!usageLimited && !authFailed) return;
-      const manifest = this.os.agents.get(row.agent);
-      const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
       if (authFailed) {
-        if (row.runtime_account) {
-          this.os.runtimeAccounts.markInvalid(runtime, row.runtime_account, 'auto-disabled: a run authenticated with this token and was rejected (401)');
-          this.audit(sessionId, 'system', 'runtime.account.invalid', { runtime, account: row.runtime_account, via });
-        } else {
-          this.audit(sessionId, 'system', 'runtime.auth_failed', { runtime, via });
-        }
+        if (row.runtime_account) this.retireOrVerifyAccount(sessionId, runtime, row.runtime_account, via);
+        else this.audit(sessionId, 'system', 'runtime.auth_failed', { runtime, via });
         return;
       }
       const until = this.parseLimitReset(text) ?? Date.now() + 60 * 60_000; // 1h fallback keeps it parked but self-heals
@@ -4239,6 +4276,63 @@ export class TerminalManager {
         this.audit(sessionId, 'system', 'runtime.usage_limited', { runtime, until, via });
       }
     } catch { /* detection is best-effort — never block teardown */ }
+  }
+
+  /** How long an account sits parked while its auth failure is being verified. Short: the point is only
+   *  to keep the next launch off it until a live probe answers, and `recover()` un-parks it if the probe
+   *  never lands (a restart, a network hole) rather than leaving it stuck. */
+  private static readonly AUTH_SUSPECT_PARK_MS = 10 * 60_000;
+
+  /**
+   * A run under this pool account ended on an auth banner. Park it, then ASK the account itself before
+   * retiring it.
+   *
+   * Disabling straight off the transcript is what took instawp down on 2026-09-09: the signal was a stale
+   * copy of the conversation from an earlier run under a different credential dir, the account was
+   * perfectly valid (weekly 60% used), and disabling it emptied the pool onto a box default whose login
+   * really had expired — 14 hours of $0 runs. `findTranscript`'s preferRoot fixes the misread; this fixes
+   * the blast radius, which is the part that turned one wrong bit into an outage.
+   *
+   * A credential DIR is also the case where a 401 is routinely NOT fatal: an aged-out access token 401s
+   * exactly like a revoked one and `claude` trades its refresh token for a new one on the next launch. So
+   * only a probe that comes back definitively rejected retires the account; `ok` clears the park, and
+   * "couldn't verify" leaves it parked to lapse on its own.
+   */
+  private retireOrVerifyAccount(sessionId: string, runtime: CodingRuntimeId, name: string, via: string): void {
+    const acct = this.os.runtimeAccounts.get(runtime, name);
+    // A static key/token can't refresh and can't be probed through its dir — a 401 there is final, which
+    // is the behaviour this path has always had.
+    if (!acct || acct.kind !== 'oauth' || !acct.configDir || runtime !== 'claude-code') {
+      this.os.runtimeAccounts.markInvalid(runtime, name, 'auto-disabled: a run authenticated with this token and was rejected (401)');
+      this.audit(sessionId, 'system', 'runtime.account.invalid', { runtime, account: name, via });
+      return;
+    }
+    const dir = acct.configDir;
+    this.os.runtimeAccounts.markLimited(runtime, name, Date.now() + TerminalManager.AUTH_SUSPECT_PARK_MS);
+    this.audit(sessionId, 'system', 'runtime.account.auth_suspect', { runtime, account: name, via, dir });
+    void (async () => {
+      try {
+        const token = readConfigDirToken(dir);
+        const r = token
+          ? await checkClaudeToken(token, 12000, { configDir: dir })
+          : { ok: configDirCanRefresh(dir) ? null : false, note: 'no readable credential in the account dir', usage: undefined, limitedUntil: undefined } as Awaited<ReturnType<typeof checkClaudeToken>>;
+        this.os.runtimeAccounts.recordCheck(runtime, name, { ok: r.ok, note: r.note, usage: r.usage });
+        if (r.ok === false) {
+          this.os.runtimeAccounts.markInvalid(runtime, name, `auto-disabled: ${r.note}`);
+          this.audit(sessionId, 'system', 'runtime.account.invalid', { runtime, account: name, via, confirmed: 'probe' });
+          return;
+        }
+        if (r.ok === true && !r.limitedUntil) {
+          this.os.runtimeAccounts.clearLimit(runtime, name);
+          this.audit(sessionId, 'system', 'runtime.account.cleared', { runtime, account: name, note: r.note, was: 'auth_suspect' });
+          return;
+        }
+        if (r.limitedUntil) {
+          this.os.runtimeAccounts.markLimited(runtime, name, r.limitedUntil);
+          this.audit(sessionId, 'system', 'runtime.account.limited', { runtime, account: name, until: r.limitedUntil, via: 'probe' });
+        }
+      } catch { /* leave it parked — recover() un-parks it at AUTH_SUSPECT_PARK_MS */ }
+    })();
   }
 
   /** Best-effort parse of a reset time from a limit message ("resets Jul 30, 10am (UTC)" / "resets 3:10pm").
