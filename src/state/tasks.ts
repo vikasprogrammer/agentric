@@ -30,6 +30,7 @@ interface TaskRow {
   blocked_on: string | null;
   due_at: number | null; attempts: number; last_session_id: string | null;
   created_by: string; created_at: number; updated_at: number; updated_by: string;
+  external_key?: string | null;
   rank?: number;
 }
 interface EventRow {
@@ -103,14 +104,14 @@ export class TaskStore {
       .prepare(`INSERT INTO tasks
         (id, tenant, title, body, status, priority, labels, assignee, owner, parent_id, mode, model, effort, auto_dispatch,
          goal_id, criteria, caller_agent, caller_claude_id, poke_on_done, due_at, attempts, last_session_id,
-         created_by, created_at, updated_at, updated_by)
-        VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`)
+         created_by, created_at, updated_at, updated_by, external_key)
+        VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)`)
       .run(
         id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', priority,
         JSON.stringify(labels), input.assignee ?? null, input.owner ?? null, input.parentId ?? null,
         mode, model, effort, input.autoDispatch ? 1 : 0, goalId, oneLine(input.criteria),
         input.callerAgent ?? null, input.callerClaudeId ?? null, input.pokeOnDone ? 1 : 0,
-        input.dueAt ?? null, input.createdBy, now, now, input.createdBy,
+        input.dueAt ?? null, input.createdBy, now, now, input.createdBy, input.externalKey ?? null,
       );
     if (goalId && this.db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId)) {
       this.addEvent(id, 'link', `goal:${goalId}`, input.createdBy);
@@ -125,6 +126,12 @@ export class TaskStore {
 
   get(id: string): Task | undefined {
     const r = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get<TaskRow>(id);
+    return r ? this.withDeps(toTask(r)) : undefined;
+  }
+
+  /** The task mirroring an outside record (`clickup:<ticket id>`), if one was ever linked. */
+  byExternalKey(tenant: string, key: string): Task | undefined {
+    const r = this.db.prepare('SELECT * FROM tasks WHERE tenant = ? AND external_key = ?').get<TaskRow>(tenant, key);
     return r ? this.withDeps(toTask(r)) : undefined;
   }
 
@@ -619,6 +626,7 @@ function toTask(r: TaskRow): Task {
     pokeOnDone: r.poke_on_done === 1,
     dueAt: r.due_at ?? undefined, attempts: r.attempts, lastSessionId: r.last_session_id ?? undefined,
     createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at, updatedBy: r.updated_by,
+    externalKey: r.external_key ?? undefined,
   };
 }
 

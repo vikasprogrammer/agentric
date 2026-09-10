@@ -279,7 +279,7 @@ export class TenantRegistry {
     void telegram.start();
     // Native ClickUp ingress (webhook, not a socket — nothing to start/dial): the `/hooks/clickup` route
     // calls clickup.dispatch(); clickup.reply() posts an agent's answer back on the bound task.
-    const clickup = new ClickupIngress(os, autos);
+    const clickup = new ClickupIngress(os, autos, consoleOrigin);
     // Chat approval notifications (M5): when a risky action lands an approval card, DM whoever can
     // approve it — via their linked Slack/Discord account (identity map). Best-effort, off the hot path.
     tm.setApprovalNotifier((notice) => { void notifyApprovers(os, tm, slack, discord, consoleOrigin, notice); });

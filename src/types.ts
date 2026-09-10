@@ -870,6 +870,7 @@ export interface Task {
   createdAt: number;
   updatedAt: number;
   updatedBy: string;
+  externalKey?: string; // the outside record this task mirrors ('clickup:<ticket id>'); absent for most tasks
 }
 
 /**
@@ -1026,6 +1027,7 @@ export interface TaskCreateInput {
   pokeOnDone?: boolean; // resume the caller's transcript when this task reaches done/blocked
   dueAt?: number;
   createdBy: string; // member id | 'agent:<id>'
+  externalKey?: string; // the outside record this task mirrors, e.g. 'clickup:<ticket id>' — unique per tenant
 }
 
 /**

@@ -1,7 +1,21 @@
 # `/agentric` — one ClickUp ticket, one Agentric task
 
-**Status:** proposed (not built). Requested by an InstaWP operator, 2026-09-10, alongside the board
-filters that shipped in v0.430.0.
+**Status:** built in v0.431.0 (`Automations.linkClickupTicket`, `ClickupIngress.bridge`, pinned by
+`scripts/clickup-task-bridge-test.cjs`). Requested by an InstaWP operator, 2026-09-10, alongside the
+board filters that shipped in v0.430.0.
+
+**Deviations from the plan below, decided while building:**
+- No reserved-agent-id guard. The ClickUp intercept runs before routing, so an agent named `agentric`
+  can't shadow the bridge there; everywhere else `/agentric` is a namespace prefix and is stripped.
+- `/agentric <agent> …` on a task that agent already owns **continues its run** (`continueTaskThread`)
+  rather than dispatching a second one; a done/cancelled task is **reopened** first — the "rework it" case
+  the requester asked for.
+- The request is recorded with no discussion fan-out on the agent form, so it can't be typed into a
+  DIFFERENT agent's live pane; the plain form goes through `postTaskDiscussion` and so does reach the
+  run working the task.
+- Also fixed alongside: `/agentric <agent>` is now a recognised namespace on Discord / Telegram / ClickUp
+  (`CHAT_NAMESPACE_RE`) — it was only ever stripped by Slack, so the roster reply that recommends it was
+  recommending a form that failed everywhere else.
 
 ## What exists today
 
