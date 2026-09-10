@@ -1053,7 +1053,8 @@ const TOOLS = [
       '`task_wait` after filing) — one synchronous call that blocks until the delegate finishes and returns ' +
       'its outcome. Distinct from `remember` (your private note) and `kb_write` (shared reference knowledge): ' +
       'a Task is WORK someone must do. Use sub-tasks (`parentId`) to break big work down. Give time-sensitive ' +
-      'work a `due` date (ISO) — the owner is DMed once if it slips past the deadline.',
+      'work a `due` date (ISO) — the owner is DMed once if it slips past the deadline. A task you file WITHOUT ' +
+      'autoDispatch is a PROPOSAL: it waits in a human\'s Inbox to be accepted onto the board, and nobody works it until then.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1091,7 +1092,7 @@ const TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        status: { type: 'string', enum: ['todo', 'doing', 'blocked', 'done', 'cancelled'], description: 'Only tasks in this status.' },
+        status: { type: 'string', enum: ['proposed', 'todo', 'doing', 'blocked', 'done', 'cancelled'], description: 'Only tasks in this status ("proposed" = filed by an agent, awaiting a human\'s accept).' },
         assignee: { type: 'string', description: '"me" for your own tasks, or "agent:<id>" / a member id.' },
         label: { type: 'string', description: 'Only tasks carrying this label.' },
         query: { type: 'string', description: 'Full-text search over title/body/labels.' },
@@ -2583,8 +2584,14 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       dueAt: parseDue(args.due),
     }),
   });
-  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
+  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string; proposed?: boolean };
   if (!d.ok) return `Could not create the task: ${d.error ?? 'unknown error'}`;
+  // Not on the board yet: an agent-filed task that doesn't dispatch waits for a human to accept it. Say so
+  // plainly, or the agent reads its own proposal as committed work and waits on it (or files it again).
+  if (d.proposed) {
+    return `Proposed task ${d.id}: "${title}". It is in a human's Inbox for review — NOT on the board and not ` +
+      'being worked until they accept it. Do not re-file it or wait on it; carry on with your own work.';
+  }
   const who = args.assignee ? ` (assigned to ${String(args.assignee)})` : ' (open — anyone can claim it)';
   // wait:true → delegate synchronously: file it, then block until the delegate closes the loop.
   if (waiting) {

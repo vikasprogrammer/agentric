@@ -93,6 +93,7 @@ export const DEFAULT_GOVERNANCE_THRESHOLDS: GovernanceThresholds = { moneyCapUsd
 
 const EMAIL_ORG_DOMAINS_KEY = 'email_org_domains'; // internal email domains (JSON string[]); email.send to these is green
 const CHAT_ROUTER_KEY = 'chat_router_enabled'; // generic Slack/Discord `/agent` router fallback ('off' disables)
+const TASK_PROPOSALS_KEY = 'task_proposals'; // agent-filed board items wait for a human accept ('off' = straight to todo)
 const ROUTER_CONFIG_KEY = 'router_config'; // auto-router tuning (JSON RouterConfig): enabled/minScore/margin/llm
 const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat session idle-kill, minutes
 const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency cap override; unset → RAM-derived default, 0 → unlimited
@@ -1073,6 +1074,21 @@ export class SettingsStore {
   setChatRouterEnabled(on: boolean, by?: string): boolean {
     this.set(CHAT_ROUTER_KEY, on ? 'on' : 'off', by);
     return this.chatRouterEnabled();
+  }
+
+  // ── task proposals ────────────────────────────────────────────────────────────────
+  // When ON (default), a task an AGENT files without auto-dispatch lands as `proposed` — an Inbox card a
+  // human accepts or dismisses — instead of going straight onto the board. Agent→agent hand-offs that
+  // dispatch are unaffected either way (a caller may be blocked on them via task_wait).
+
+  /** Whether agent-filed, non-dispatching tasks need a human's accept before they join the board. */
+  taskProposalsEnabled(): boolean {
+    return this.getRow(TASK_PROPOSALS_KEY)?.value !== 'off';
+  }
+
+  setTaskProposalsEnabled(on: boolean, by?: string): boolean {
+    this.set(TASK_PROPOSALS_KEY, on ? 'on' : 'off', by);
+    return this.taskProposalsEnabled();
   }
 
   /** Auto-router config: when an unaddressed chat/ticket message matches no automation and no explicit

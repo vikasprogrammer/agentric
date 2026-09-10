@@ -838,7 +838,14 @@ export interface KbSearchQuery {
 // governed session that works it and closes its own loop. See docs/tasks-plan.md.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled';
+/**
+ * `proposed` sits BEFORE the lifecycle proper: an agent filed it, but no human has agreed it is work yet.
+ * It never dispatches, can't be claimed, and doesn't count toward a goal — accepting it is the transition
+ * `proposed → todo`, dismissing it is `proposed → cancelled`. Only agent-filed, non-dispatching tasks land
+ * here (see the create route in server.ts); a human's own task, or an agent's auto-dispatch hand-off, is
+ * `todo` from birth. See docs/tasks-plan.md §Proposed tasks.
+ */
+export type TaskStatus = 'proposed' | 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled';
 
 export interface Task {
   id: string;
@@ -892,7 +899,7 @@ export function isDraftTask(task: Pick<Task, 'attempts' | 'lastSessionId'>, runC
  * `deps` is a wait not a fault, and `closed` means don't offer a run control at all.
  */
 export type TaskDispatchBlock =
-  | 'missing' | 'closed' | 'blocked' | 'unassigned' | 'unknown-agent' | 'live' | 'pool' | 'attempts' | 'deps';
+  | 'missing' | 'closed' | 'proposed' | 'blocked' | 'unassigned' | 'unknown-agent' | 'live' | 'pool' | 'attempts' | 'deps';
 
 /** Per-task run state for a surface that offers dispatch (the goal room's task list). `live` is a run whose
  *  pane is still up — the case where the right control is "attach", not "run again". */
@@ -1028,6 +1035,8 @@ export interface TaskCreateInput {
   dueAt?: number;
   createdBy: string; // member id | 'agent:<id>'
   externalKey?: string; // the outside record this task mirrors, e.g. 'clickup:<ticket id>' — unique per tenant
+  /** Opening status: `proposed` for an agent-filed task awaiting a human's accept, else `todo` (default). */
+  status?: 'todo' | 'proposed';
 }
 
 /**

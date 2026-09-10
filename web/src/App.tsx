@@ -4914,6 +4914,7 @@ function reviewTarget(m: Msg): { page: Route; detail?: string; label: string } |
 const isActionRequired = (m: Msg): boolean =>
   ((m.type === 'approval' || m.type === 'question') && m.status === 'pending') ||
   (m.type === 'notification' && m.status === 'open') ||
+  (m.type === 'task.proposed' && m.status === 'open') ||
   (m.status === 'open' && !!REVIEW_KINDS[m.type])
 
 /** An agent flagged a progress update as a key milestone / heads-up (carried in `args.important`). */
@@ -6499,6 +6500,12 @@ function ApprovalBrief({ m }: { m: Msg }) {
   )
 }
 
+/** One task on a `task.proposed` Inbox card — its live status is stamped server-side at read time. */
+type ProposedTaskRow = { id: string; title: string; assignee?: string; status: TaskStatus | 'deleted' }
+/** How a decided proposal ended, in the card's words. */
+const proposalOutcome = (s: ProposedTaskRow['status']): string =>
+  s === 'proposed' ? 'awaiting review' : s === 'cancelled' ? 'dismissed' : s === 'deleted' ? 'deleted' : 'accepted'
+
 /** The glyph for each open review card in "Needs you" — one per {@link REVIEW_KINDS} entry. */
 const REVIEW_ICON: Record<string, LucideIcon> = {
   'skill.proposed': Sparkles, 'skill.request': Sparkles,
@@ -6522,6 +6529,56 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
   //    to the page that resolves it; an agent-edit proposal — the one whose review UI is buried inside the
   //    TARGET agent's settings — is decidable right here, so an owner never has to go looking for it.
   //    Resolving flips the card's status server-side, so the next poll drops it out of "Needs you". ──
+  // ── An agent's proposed tasks — ONE card per run, decided right here, per task or all at once. Each row's
+  //    status is hydrated live server-side, so a task decided on the board shows decided here too. ──
+  if (m.type === 'task.proposed') {
+    const tasks = (m.args as { tasks?: ProposedTaskRow[] } | undefined)?.tasks ?? []
+    const open = tasks.filter((t) => t.status === 'proposed')
+    const decide = async (action: 'accept' | 'dismiss', ids?: string[]) => {
+      setBusy(true); setHint('')
+      const r = await api.decideTaskProposals(ids ? { ids, action } : { messageId: m.id, action })
+      setBusy(false)
+      if (r.error) setHint('⚠ ' + r.error)
+    }
+    return (
+      <div className="rounded-lg border border-violet-300 bg-violet-50/40 px-3 py-2.5">
+        <div className="flex items-start gap-2.5">
+          <ListChecks className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
+          <div className="min-w-0 flex-1">
+            <MsgHeading m={m}>
+              <Badge variant="outline" className="shrink-0 border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{tasks.length === 1 ? 'proposed a task' : `proposed ${tasks.length} tasks`}</Badge>
+            </MsgHeading>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">Not on the board until you accept — nobody works them in the meantime.</p>
+            <ul className="mt-1.5 space-y-1">
+              {tasks.map((t) => (
+                <li key={t.id} className="flex min-w-0 items-center gap-2 text-xs">
+                  <a href={navHref('tasks', t.id)} className={`min-w-0 flex-1 truncate no-underline hover:underline ${t.status === 'proposed' ? 'text-foreground' : 'text-muted-foreground'}`}>{t.title}</a>
+                  {t.assignee && <span className="shrink-0 text-[11px] text-muted-foreground">→ {t.assignee.replace(/^agent:/, '')}</span>}
+                  {t.status === 'proposed' ? (
+                    <>
+                      <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy} onClick={() => decide('accept', [t.id])}><Check className="mr-1 h-3 w-3" />Accept</Button>
+                      <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={busy} onClick={() => decide('dismiss', [t.id])}>Dismiss</Button>
+                    </>
+                  ) : (
+                    <span className="shrink-0 text-[11px] text-muted-foreground">{proposalOutcome(t.status)}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+          {time}
+        </div>
+        {(open.length > 1 || hint) && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-6">
+            {open.length > 1 && <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => decide('accept')}>Accept all {open.length}</Button>}
+            {open.length > 1 && <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => decide('dismiss')}>Dismiss all</Button>}
+            {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const review = reviewTarget(m)
   if (review) {
     const Icon = REVIEW_ICON[m.type] ?? Pencil
@@ -6812,6 +6869,14 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
+  } else if (m.type === 'task.proposed') {
+    // A decided proposal card — how many of the run's proposed tasks made it onto the board.
+    const tasks = (m.args as { tasks?: ProposedTaskRow[] } | undefined)?.tasks ?? []
+    const accepted = tasks.filter((t) => proposalOutcome(t.status) === 'accepted').length
+    Icon = ListChecks; iconCls = 'text-muted-foreground'
+    verb = tasks.length === 1 ? 'proposed a task' : `proposed ${tasks.length} tasks`
+    detail = tasks.length === 1 ? tasks[0].title : `${accepted} accepted · ${tasks.length - accepted} dismissed`
+    badge = <ResolutionChip status={m.status} word={accepted ? 'accepted' : 'dismissed'} />
   } else if (m.type === 'task' && meta.taskId) {
     // A Tasks lifecycle card (assigned to you / blocked / done). Headline = event title (via sessionName);
     // the muted line carries the task title (m.body). Blocked is highlighted — it needs a human.
@@ -9014,6 +9079,7 @@ function shortRunBlock(run: TaskRunState): string {
     case 'pool': return 'accounts limited'
     case 'live': return 'running'
     case 'blocked': return 'blocked'
+    case 'proposed': return 'proposal'
     default: return 'not yours to run' // no code = the member isn't assigned to that agent
   }
 }
@@ -9881,10 +9947,10 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
  *  and won't restart on its own. It was previously rose here, amber on the goal page and red in the
  *  drawer, for the identical value. */
 const TASK_ROLE: Record<TaskStatus, StatusRole> = {
-  todo: 'queued', doing: 'active', blocked: 'needsHuman', done: 'ok', cancelled: 'inactive',
+  proposed: 'queued', todo: 'queued', doing: 'active', blocked: 'needsHuman', done: 'ok', cancelled: 'inactive',
 }
 const TASK_TIP: Record<TaskStatus, string> = {
-  todo: 'filed, not started', doing: 'someone or something is on it', blocked: 'stopped — it needs a person',
+  proposed: 'an agent suggested it — not on the board until a person accepts it', todo: 'filed, not started', doing: 'someone or something is on it', blocked: 'stopped — it needs a person',
   done: 'finished', cancelled: 'dropped on purpose',
 }
 const TASK_COLUMNS: { status: TaskStatus; label: string; rail: string; head: string }[] = [
@@ -10267,7 +10333,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
    *  present only for MULTI-agent tasks (a support agent files it, an engineer takes it — the assignee
    *  badge names one of them and the card used to imply that was the whole story). */
   const [workers, setWorkers] = useState<Record<string, TaskWorkers>>({})
-  const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
+  const [counts, setCounts] = useState<Record<TaskStatus, number>>({ proposed: 0, todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
   // Live sessions, cross-referenced against a task's lastSessionId to know which cards are running right now.
   const [sessions, setSessions] = useState<Session[]>([])
   // Ticking clock driving the live-session elapsed labels; 1s cadence, negligible cost.
@@ -10513,6 +10579,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     return true
   }
   const visible = (tasks ?? []).filter((t) => passes(t))
+  const proposals = visible.filter((t) => t.status === 'proposed')
   // Facet counts for the quick-filter row (each ignores its own dimension, as above).
   const statusPool = (tasks ?? []).filter((t) => passes(t, 'status'))
   const statusCount = (s: '' | 'open' | 'blocked' | 'done') => statusPool.filter((t) => matchesQuickStatus(t, s)).length
@@ -10551,6 +10618,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   }
   // Re-link or complete a task and the goal's derived progress moves with it, so refresh the goal
   // list too — otherwise the "part of goal" banner keeps showing the pre-edit bar.
+  const decideProposal = async (id: string, action: 'accept' | 'dismiss') => {
+    setBusy(true)
+    const r = await api.decideTaskProposals({ ids: [id], action })
+    if (r.error) alert(r.error)
+    await load(); setBusy(false)
+  }
   const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); await api.patchTask(id, b); await load(); if (b.goalId !== undefined || b.status) await loadGoals(); setBusy(false) }
   // Dispatch a task. A HEADLESS run is background work — it drives itself to completion and exits — so
   // opening the terminal on it yanks you out of the board you were working to watch a pane you can't
@@ -10754,7 +10827,8 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
           <Field label="Status">
             <Select value={detail.task.status} onValueChange={(v) => v && patch(detail.task.id, { status: v as TaskStatus })}>
               <SelectTrigger className="h-8 w-full min-w-0"><SelectValue /></SelectTrigger>
-              <SelectContent>{(['todo', 'doing', 'blocked', 'done', 'cancelled'] as TaskStatus[]).map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+              {/* `proposed` is offered only while the task IS one — moving it to todo/cancelled accepts/dismisses it; nothing moves back in. */}
+              <SelectContent>{([...(detail.task.status === 'proposed' ? ['proposed'] : []), 'todo', 'doing', 'blocked', 'done', 'cancelled'] as TaskStatus[]).map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
           <Field label="Priority">
@@ -11244,12 +11318,39 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
         </Card>
       )}
 
+      {/* Agent proposals — tasks an agent filed that no person has accepted yet. They sit in no column (the
+          board is agreed work) and are decided here or from the Inbox card; the server gates who may. */}
+      {proposals.length > 0 && (
+        <div className="rounded-md border border-violet-300 bg-violet-50/40 px-3 py-2.5">
+          <div className="mb-1.5 flex items-center gap-2 text-[11px] uppercase tracking-wider text-violet-700">
+            <span className="font-medium">Proposed by agents</span>
+            <span className="font-mono">{proposals.length}</span>
+            <span className="ml-auto normal-case tracking-normal text-muted-foreground">not on the board until accepted</span>
+          </div>
+          <ul className="space-y-1">
+            {proposals.map((t) => (
+              <li key={t.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <a href={navHref('tasks', t.id)} onClick={onNavClick(() => openTask(t.id))} className="min-w-0 flex-1 truncate text-foreground no-underline hover:underline">{t.title}</a>
+                <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">{assigneeChip(t.createdBy)}{t.assignee && <>→ {assigneeChip(t.assignee)}</>}</span>
+                {isAdmin || t.owner === me.id ? (
+                  <span className="flex shrink-0 gap-1">
+                    <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy} onClick={() => decideProposal(t.id, 'accept')}><Check className="mr-1 h-3 w-3" />Accept</Button>
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={busy} onClick={() => decideProposal(t.id, 'dismiss')}>Dismiss</Button>
+                  </span>
+                ) : <span className="shrink-0 text-[11px] text-muted-foreground">awaiting its owner</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="flex gap-4">
         {view === 'board' ? (
           <div className="min-w-0 flex-1 space-y-3">
             {/* Fleet strip — the board header as an operations readout: how many agents are working, what's stuck. */}
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md border bg-muted/20 px-4 py-2.5">
               {metric(liveCount, 'live now', 'text-emerald-600', true)}
+              {counts.proposed > 0 && metric(counts.proposed, 'proposed', 'text-violet-600')}
               {metric(counts.todo, 'queued')}
               {metric(counts.blocked, 'needs you', counts.blocked ? 'text-amber-600' : '')}
               {metric(counts.done, 'done', 'text-emerald-600')}
@@ -11309,7 +11410,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
               // has to reach the row render below; the other modes leave it null and indent nothing.
               let chain: ReturnType<typeof chainOrder> | null = null
               if (listGroup === 'priority') groups = [0, 1, 2, 3].map((p) => ({ key: String(p), label: <span className="flex items-center gap-2"><PriorityPips p={p} />{PRIORITY_LABEL[p]}</span>, items: within(visible.filter((t) => t.priority === p)) })).filter((g) => g.items.length)
-              else if (listGroup === 'status') groups = (['doing', 'blocked', 'todo', 'done', 'cancelled'] as TaskStatus[]).map((s) => ({ key: s, label: <span className="flex items-center gap-2"><StatusDot status={s} /><span className="capitalize">{s}</span></span>, items: within(visible.filter((t) => t.status === s)) })).filter((g) => g.items.length)
+              else if (listGroup === 'status') groups = (['proposed', 'doing', 'blocked', 'todo', 'done', 'cancelled'] as TaskStatus[]).map((s) => ({ key: s, label: <span className="flex items-center gap-2"><StatusDot status={s} /><span className="capitalize">{s}</span></span>, items: within(visible.filter((t) => t.status === s)) })).filter((g) => g.items.length)
               else if (listGroup === 'assignee') groups = [...new Set(visible.map((t) => t.assignee || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unassigned'}</span>, items: within(visible.filter((t) => (t.assignee || '') === k)) })).filter((g) => g.items.length)
               else if (listGroup === 'author') groups = [...new Set(visible.map((t) => t.createdBy || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unknown'}</span>, items: within(visible.filter((t) => (t.createdBy || '') === k)) })).filter((g) => g.items.length)
               else if (listGroup === 'goal') groups = [...new Set(visible.map((t) => t.goalId || ''))].sort((a, b) => (a ? goalTitle(a) : 'zzz').localeCompare(b ? goalTitle(b) : 'zzz')).map((k) => ({ key: k || 'none', label: <span className="flex items-center gap-1.5">{k ? <><Target className="h-3.5 w-3.5 text-muted-foreground" /><a href={navHref('goals', k)} onClick={onNavClick(() => nav('goals', k))} className="text-muted-foreground no-underline hover:text-foreground hover:underline">{goalTitle(k)}</a></> : 'No goal'}</span>, items: within(visible.filter((t) => (t.goalId || '') === k)) })).filter((g) => g.items.length)
@@ -17813,6 +17914,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
           </div>
         </div>
         <AgentProposalTrustSettings canEdit={canEdit} />
+        <TaskProposalsSettings canEdit={canEdit} />
       </CardContent>
     </Card>
   )
@@ -17869,6 +17971,36 @@ function AgentProposalTrustSettings({ canEdit }: { canEdit: boolean }) {
           ? <>Above the bar, one agent rewrites another <strong>with no human in the loop</strong> — you're notified after the fact and every edit is a revertable revision. Maturity is hard to reach by design (it's damped by run volume, so it takes ~30+ clean, autonomous runs). Turn the checkbox off to keep every proposal owner-approved.</>
           : <>Every proposal between the floor and 100 waits for an owner who can run the target agent. Nothing is written until they approve.</>}
       </p>
+    </div>
+  )
+}
+
+/** Settings → Runtime → whether a task an agent files without dispatching it waits for a person's accept
+ *  (`proposed`) before it joins the board. Hand-offs that dispatch are never held — the copy says why. */
+function TaskProposalsSettings({ canEdit }: { canEdit: boolean }) {
+  const [on, setOn] = useState<boolean | null>(null)
+  const [hint, setHint] = useState('')
+  useEffect(() => { api.taskProposalsSetting().then((r) => { if (!r.error) setOn(r.enabled) }).catch(() => {}) }, [])
+  const save = async (v: boolean) => {
+    setOn(v); setHint('')
+    const r = await api.saveTaskProposalsSetting(v)
+    if (r.error) { setOn(!v); return setHint('⚠ ' + r.error) }
+    setHint('saved'); setTimeout(() => setHint(''), 2000)
+  }
+  if (on === null) return null
+  return (
+    <div className="space-y-1 border-t pt-4">
+      <label className="text-sm font-medium">Agent-filed tasks</label>
+      <p className="text-sm text-muted-foreground">
+        When an agent files a task it isn't handing straight to another agent, the task waits as a <span className="font-medium">proposal</span>:
+        one Inbox card per run, for the person the run acted for (or an admin) to accept onto the board or dismiss. A hand-off that dispatches
+        immediately is never held — the agent that filed it may be waiting on the result.
+      </p>
+      <label className="flex items-center gap-2 pt-1 text-sm">
+        <input type="checkbox" checked={on} disabled={!canEdit} onChange={(e) => save(e.target.checked)} />
+        Ask a person before an agent's task joins the board
+        {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+      </label>
     </div>
   )
 }

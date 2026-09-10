@@ -817,6 +817,9 @@ export class Automations {
     const t = this.os.tasks.get(id);
     if (!t) return no('missing', 'task not found');
     if (t.status === 'done' || t.status === 'cancelled') return no('closed', `task is ${t.status}`);
+    // Refused on EVERY path, a human's console dispatch included: accepting the proposal is the human act,
+    // and a run button that silently skipped it would leave the card open over work already under way.
+    if (t.status === 'proposed') return no('proposed', 'task is an agent proposal — accept it onto the board first');
     // `blocked` means someone parked this deliberately. The tick never selects it (dispatchable() is
     // todo-only), but every DIRECT path — task_dispatch, task_wait's polling kick, an app dispatch —
     // used to sail past, re-spawning work a human or a caller had just stopped. A human forcing it from

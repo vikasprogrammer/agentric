@@ -730,7 +730,8 @@ export interface AgentProposalTrust {
   autoApply: boolean
 }
 
-export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled'
+/** `proposed` = an agent filed it and no person has accepted it onto the board yet (see TaskStatus in src/types.ts). */
+export type TaskStatus = 'proposed' | 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled'
 /** What a blocked task waits on, declared by the delegate that blocked it. `human` also routes the
  *  wake-up to the owner alone instead of resuming the agent that handed the work over. */
 export type TaskBlockedOn = 'human' | 'agent' | 'external'
@@ -908,7 +909,7 @@ export interface GoalEventTask {
 }
 /** Why a task can't be dispatched right now — mirrors `TaskDispatchBlock` in src/types.ts. */
 export type TaskDispatchBlock =
-  | 'missing' | 'closed' | 'blocked' | 'unassigned' | 'unknown-agent' | 'live' | 'pool' | 'attempts' | 'deps'
+  | 'missing' | 'closed' | 'proposed' | 'blocked' | 'unassigned' | 'unknown-agent' | 'live' | 'pool' | 'attempts' | 'deps'
 /** Per-task run state for the goal room's task list: can I run it, why not, and is a run live now. */
 export interface TaskRunState {
   can: boolean
@@ -971,7 +972,7 @@ export interface AutoApproval {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request' | 'connection.expired'
+  type: 'task' | 'task.proposed' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request' | 'connection.expired'
   sessionId: string
   agent: string
   title: string
@@ -2102,6 +2103,10 @@ export const api = {
   patchTask: (id: string, b: { title?: string; body?: string; status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; goalId?: string | null; criteria?: string | null; dependsOn?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
   commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
   dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/tasks/${id}/dispatch`),
+  /** Accept (→ todo) or dismiss (→ cancelled) agent-proposed tasks: by `ids`, or every task on one Inbox card (`messageId`). */
+  decideTaskProposals: (b: { ids?: string[]; messageId?: string; action: 'accept' | 'dismiss' }) => call<{ ok: boolean; decided?: string[]; denied?: number; error?: string }>('POST', '/api/tasks/proposals/decide', b),
+  taskProposalsSetting: () => call<{ enabled: boolean; error?: string }>('GET', '/api/settings/task-proposals'),
+  saveTaskProposalsSetting: (enabled: boolean) => call<{ ok: boolean; enabled?: boolean; error?: string }>('PUT', '/api/settings/task-proposals', { enabled }),
   deleteTask: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/tasks/${id}`),
   /** Upload a file onto a task (raw bytes). */
   uploadTaskAttachment: async (id: string, file: File): Promise<{ ok: boolean; attachment?: TaskAttachment; error?: string }> => {

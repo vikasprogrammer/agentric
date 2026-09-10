@@ -85,7 +85,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, Task, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -1925,6 +1925,26 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       });
     }
 
+    // ── Proposed, not filed ────────────────────────────────────────────────────────────────
+    // A task an agent files WITHOUT dispatching it is a claim that something is work — and on the live
+    // fleet agents filed ~100% of all tasks (instapods, 14 days: 140 of 140), half of them board items
+    // nobody had agreed to. So it lands `proposed`: never dispatched, never claimable, on ONE grouped
+    // Inbox card per run for the accountable human to accept or dismiss. The agent is NOT blocked — it
+    // gets the id back and carries on. Deliberately untouched: an auto-dispatch hand-off (a caller may be
+    // waiting on it in task_wait — gating it would hang the caller on a click) and a goal-room/plan run
+    // (`goal:` provenance — a human asked for that plan and reviews it under the goal).
+    const proposed = !wantsAutoDispatch
+      && !(tm.sessionProvenance(session) ?? '').startsWith('goal:')
+      && os.settings.taskProposalsEnabled();
+    if (proposed && os.tasks.openProposals(os.tenant, `agent:${agent}`) >= MAX_OPEN_TASK_PROPOSALS) {
+      return sendJson(res, 200, {
+        ok: false,
+        error: `you already have ${MAX_OPEN_TASK_PROPOSALS} task proposals waiting for a human to review — ` +
+          'do not file more until they are decided. Fold this into one of them (task_update with a note), ' +
+          'or mention it in your report instead.',
+      });
+    }
+
     // Poke-back: an agent delegating to ANOTHER agent is woken when the delegate finishes (the MCP layer
     // defaults this ON for agent→agent hand-offs so the delegation loop closes itself). We stamp the
     // caller's agent id + pinned claude transcript so the task notifier can wake this session on
@@ -1960,8 +1980,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         pokeOnDone: pokeOnDone || undefined,
         dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
         createdBy: `agent:${agent}`,
+        status: proposed ? 'proposed' : undefined,
       });
-      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'task.created', data: { id: task.id, title: task.title, assignee: task.assignee ?? null } });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: proposed ? 'task.proposed' : 'task.created', data: { id: task.id, title: task.title, assignee: task.assignee ?? null } });
+      if (proposed) {
+        tm.recordTaskProposal(session, agent, task);
+        return sendJson(res, 200, { ok: true, id: task.id, proposed: true });
+      }
       // Immediate dispatch (parity with the console route above): an agent-assigned auto-dispatch hand-off
       // starts NOW rather than waiting for the next ~20s scheduler tick, so a delegated task begins the
       // moment it's filed — and a waiting caller (task_wait / wait:true) makes progress at once.
@@ -2030,6 +2055,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const id = String(b.id || '');
+    // A proposal is a human's to accept. The agent may withdraw its own (→ cancelled) or refine the text,
+    // but moving it onto the board — or parking a real task back in `proposed` — is refused.
+    const curStatus = typeof b.status === 'string' ? os.tasks.get(id)?.status : undefined;
+    if (b.status === 'proposed' && curStatus !== 'proposed') {
+      return sendJson(res, 200, { ok: false, error: '"proposed" is only for tasks you file — it is not a status you can move a task back into.' });
+    }
+    if (curStatus === 'proposed' && b.status !== 'proposed' && b.status !== 'cancelled') {
+      return sendJson(res, 200, { ok: false, error: 'this task is a proposal awaiting a human — only they can accept it onto the board. You can withdraw it (status:"cancelled") or edit its details; otherwise leave it.' });
+    }
     // Blocking without saying WHAT you are blocked on is refused rather than guessed. The wake-up routing
     // hangs off this (a human blocker cards the owner instead of resuming the delegating agent), and the
     // fleet's first day with the field shipped four human blockers and zero declarations — an optional
@@ -4024,6 +4058,31 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.attachment.removed', data: { id: taskAttachment[1] } });
     return sendJson(res, ok ? 200 : 404, { ok });
   }
+  // Accept or dismiss agent-proposed tasks — the Inbox card's buttons and the board's proposals strip.
+  // `ids` names tasks; `messageId` means "every task on that card" (accept all / dismiss all). Each task is
+  // gated on its own (mayDecideProposal); a task someone already decided is skipped, not an error, since
+  // two reviewers clicking the same card is the normal race here.
+  if (method === 'POST' && p === '/api/tasks/proposals/decide') {
+    const b = await readBody(req);
+    const action = String(b.action || '');
+    if (action !== 'accept' && action !== 'dismiss') return sendJson(res, 400, { error: 'action must be accept or dismiss' });
+    const ids: string[] = typeof b.messageId === 'string' && b.messageId
+      ? (tm.taskProposalCardTasks(b.messageId) ?? [])
+      : Array.isArray(b.ids) ? b.ids.map(String) : [];
+    if (!ids.length) return sendJson(res, 400, { error: 'no tasks named' });
+    const decided: string[] = [];
+    let denied = 0;
+    for (const id of ids) {
+      const t = os.tasks.get(id);
+      if (!t || t.status !== 'proposed') continue;
+      if (!mayDecideProposal(me, t)) { denied++; continue; }
+      if (!os.tasks.decideProposal(id, action === 'accept', me.id)) continue;
+      decided.push(id);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: action === 'accept' ? 'task.proposal.accepted' : 'task.proposal.dismissed', data: { id, title: t.title, by: t.createdBy } });
+    }
+    if (!decided.length && denied) return sendJson(res, 403, { error: 'only the person this run acted for, or an owner/admin, can decide these proposals' });
+    return sendJson(res, 200, { ok: true, decided, denied });
+  }
   if (method === 'POST' && p === '/api/tasks') {
     const b = await readBody(req);
     const title = String(b.title || '').trim();
@@ -4058,6 +4117,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   if (taskId && method === 'PATCH') {
     const b = await readBody(req);
+    // Moving a task OUT of `proposed` is accepting/dismissing it — the same gate as the Inbox buttons.
+    // And nothing is ever moved INTO it: `proposed` means an agent filed it, which a human edit can't make true.
+    const cur = typeof b.status === 'string' ? os.tasks.get(taskId[1]) : undefined;
+    if (cur && b.status === 'proposed' && cur.status !== 'proposed') return sendJson(res, 400, { error: 'a task can only be proposed by the agent that files it' });
+    if (cur && cur.status === 'proposed' && b.status !== 'proposed' && !mayDecideProposal(me, cur)) {
+      return sendJson(res, 403, { error: 'only the person this run acted for, or an owner/admin, can accept or dismiss this proposal' });
+    }
     const task = os.tasks.update(taskId[1], {
       title: typeof b.title === 'string' ? b.title : undefined,
       body: typeof b.body === 'string' ? b.body : undefined,
@@ -4109,6 +4175,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
     const ok = os.tasks.remove(taskId[1]);
     if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.deleted', data: { id: taskId[1], draft, byAuthor: mine } });
+    if (ok && doomed.status === 'proposed') tm.syncTaskProposalCards(doomed.id); // a deleted proposal is a decided one
     return sendJson(res, ok ? 200 : 404, { ok });
   }
 
@@ -4970,6 +5037,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const trust = os.settings.setAgentProposalTrust(sanitizeAgentProposalTrust({ ...os.settings.agentProposalTrust(), ...b }), me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.agentProposalTrust.updated', data: { ...trust } });
     return sendJson(res, 200, { ok: true, trust });
+  }
+
+  // ── task proposals: do agent-filed board items wait for a human's accept (default on) ──
+  if (method === 'GET' && p === '/api/settings/task-proposals') {
+    return sendJson(res, 200, { enabled: os.settings.taskProposalsEnabled() });
+  }
+  if (method === 'PUT' && p === '/api/settings/task-proposals') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as { enabled?: unknown };
+    if (typeof b.enabled !== 'boolean') return sendJson(res, 400, { error: 'enabled must be a boolean' });
+    const enabled = os.settings.setTaskProposalsEnabled(b.enabled, me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.taskProposals.updated', data: { enabled } });
+    return sendJson(res, 200, { ok: true, enabled });
   }
 
   // ── sessions-list money column (cost / tokens / both) — a workspace-wide viewing preference ──
@@ -8141,6 +8221,16 @@ function readRawBuffer(req: http.IncomingMessage): Promise<Buffer> {
     req.on('end', () => resolve(Buffer.concat(chunks)));
   });
 }
+/** Per-agent cap on proposals awaiting review — past it, task_create refuses rather than growing a card
+ *  nobody is reading. Sized well above a legitimate run's follow-ups (live engineer: ~2/day). */
+const MAX_OPEN_TASK_PROPOSALS = 25;
+
+/** Who may accept/dismiss an agent's proposed task: the run's accountable human (the task `owner` — the
+ *  same person a dispatched run of it would act as), or owner/admin oversight. */
+function mayDecideProposal(me: Member, task: Pick<Task, 'owner'>): boolean {
+  return isAdmin(me) || (!!task.owner && task.owner === me.id);
+}
+
 function isAdmin(m: Member): boolean {
   return m.role === 'owner' || m.role === 'admin';
 }
