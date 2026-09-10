@@ -182,6 +182,11 @@ export interface TranscriptEnd {
   deathKind?: DeathKind;
   interrupted: boolean;
   closingChars: number;
+  /** When this transcript file was last written. A run is only described by evidence written DURING it —
+   *  a copy of the same conversation left behind in another credential dir by an earlier run is stale, and
+   *  acting on it retires the wrong account (see `findTranscript`). Callers that attribute blame compare
+   *  this against the run's own start. */
+  mtimeMs: number;
 }
 
 /** Read the tail of a conversation's transcript. Never throws: a missing or unreadable transcript is a
@@ -190,10 +195,13 @@ export function readTranscriptEnd(convoId: string, find = findTranscript): Trans
   const p = find(convoId);
   if (!p) return undefined;
   let tail: string;
+  let mtimeMs = 0;
   try {
     const fd = fs.openSync(p, 'r');
     try {
-      const size = fs.fstatSync(fd).size;
+      const st = fs.fstatSync(fd);
+      const size = st.size;
+      mtimeMs = st.mtimeMs;
       const len = Math.min(size, TAIL_BYTES);
       const buf = Buffer.alloc(len);
       fs.readSync(fd, buf, 0, len, size - len);
@@ -225,6 +233,7 @@ export function readTranscriptEnd(convoId: string, find = findTranscript): Trans
     ...(deathKind ? { deathKind } : {}),
     interrupted: INTERRUPTED.test(tail),
     closingChars: closing.length,
+    mtimeMs,
   };
 }
 

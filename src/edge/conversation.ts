@@ -98,10 +98,31 @@ export function registerTranscriptRoot(dir: string | undefined | null): void {
   if (dir) extraRoots.add(dir);
 }
 
-/** Locate `<claudeSessionId>.jsonl` under any project dir. Filename is unique, so cwd escaping is irrelevant. */
-export function findTranscript(claudeSessionId: string): string | undefined {
+/**
+ * Locate `<claudeSessionId>.jsonl`. The filename is unique per root, so cwd escaping is irrelevant — but
+ * the SAME id can exist in SEVERAL roots, and that is the whole subtlety here.
+ *
+ * A conversation is resumed across runs (`--resume` keeps one claude session id over many agent-os
+ * sessions), and rotation can put two of those runs under different credential dirs. Claude writes its
+ * transcript under whichever `CLAUDE_CONFIG_DIR` the run had, so a resumed run leaves a SECOND file with
+ * the same name under the new account's root while the old copy — frozen at the moment that earlier run
+ * ended — stays behind in the old one.
+ *
+ * This used to return the first root that had a copy, always starting with the server's own `~/.claude`.
+ * Live consequence (instawp, 2026-09-09): a run that did $14.93 of real work under the pooled `tools`
+ * account was judged by a stale 19-line copy in the box-default root whose last line was
+ * `authentication_failed · Login expired`. Teardown read that as "this account's token is bad" and
+ * DISABLED `tools` — the last usable account in the pool — after which every session fell back to the
+ * box default, whose login really was dead, and 14 hours of runs died at $0 with no alert.
+ *
+ * So: gather every copy and answer with the one that actually describes the run being asked about —
+ * `preferRoot` (the credential dir the run used) when it has a copy, else the most recently modified.
+ */
+export function findTranscript(claudeSessionId: string, opts: { preferRoot?: string } = {}): string | undefined {
   const wanted = `${claudeSessionId}.jsonl`;
-  // The server's own dir first — the common case, and the only one before rotation is configured.
+  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  const prefer = opts.preferRoot ? real(opts.preferRoot) : undefined;
+  const hits: { file: string; mtimeMs: number; preferred: boolean }[] = [];
   for (const root of [claudeConfigDir(), ...extraRoots]) {
     const projects = path.join(root, 'projects');
     let dirs: string[];
@@ -110,12 +131,18 @@ export function findTranscript(claudeSessionId: string): string | undefined {
     } catch {
       continue;
     }
+    const preferred = prefer !== undefined && real(root) === prefer;
     for (const d of dirs) {
       const candidate = path.join(projects, d, wanted);
-      if (fs.existsSync(candidate)) return candidate;
+      let st: fs.Stats;
+      try { st = fs.statSync(candidate); } catch { continue; }
+      hits.push({ file: candidate, mtimeMs: st.mtimeMs, preferred });
+      break; // one copy per root — the id is unique within it
     }
   }
-  return undefined;
+  if (!hits.length) return undefined;
+  const pool = hits.some((h) => h.preferred) ? hits.filter((h) => h.preferred) : hits;
+  return pool.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a)).file;
 }
 
 /** "slack_send" / "getFileContent" → "Slack send" / "Get file content" — last-resort humanizer. */

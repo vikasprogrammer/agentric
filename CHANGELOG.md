@@ -15,6 +15,31 @@ new version heading in the same commit.
   (`useHttpPath` → a session-secret loopback route), the member-lane guard that keeps a linked human's
   PR authorship, and the `gh`-doesn't-read-git-helpers gap. Docs only — no behaviour change.
 
+## [0.429.0] - 2026-09-10
+### Fixed
+- **A pooled runtime account was disabled for another run's failure, and the whole tenant fell onto a
+  dead box login** (instawp, 2026-09-09 → 09-10; 14 hours, ~14 runs, every one $0 and one turn, no
+  alert). One claude conversation resumed across two credential dirs leaves the same `<id>.jsonl` under
+  each; `findTranscript` searched the server's own `~/.claude` FIRST and returned a stale 19-line copy
+  ending in `authentication_failed · Login expired`, from an earlier run. Teardown read that as "this
+  account's token is bad" and disabled `tools` — which was fine (weekly 60% used) and was the pool's last
+  usable account. Rotation then had nothing to hand out, so every session fell back to the box default,
+  whose login really had expired with no refresh token, and died on its first API call. Four guards:
+  - `findTranscript(id, { preferRoot })` answers with the copy that describes the run being asked about —
+    the credential dir the run used, else the most recently written — instead of the first root listed.
+  - `readTranscriptEnd` reports the transcript's `mtimeMs`, and teardown ignores death evidence written
+    before the run began. Evidence older than the run is not evidence about the run.
+  - an auth banner now PARKS a credential-dir account for 10 minutes and asks the account itself before
+    retiring it; only a probe that comes back definitively rejected disables it, `ok` un-parks it, and
+    "couldn't verify" lets the park lapse. (An aged-out access token 401s exactly like a revoked one and
+    heals itself on the next launch — the case that must never cost an account.)
+  - a login that is present but DEAD (expired, no refresh token left) is a launch blocker, not a
+    fail-open fallback — the same treatment a locked macOS keychain already got. The run is refused,
+    explained on its own card, badged on the pool row and alerted to admins, instead of starting,
+    authenticating as nobody and burning a turn.
+- Rotation returning nothing because every enabled account is limited is now audited
+  (`runtime.account.unusable`), not silent — that was the state the box spent the outage in.
+
 ## [0.428.0] - 2026-09-09
 ### Added
 - **A tenant's ruleset now says where it has drifted from the shipped one — instead of nobody finding
