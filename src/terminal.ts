@@ -508,7 +508,7 @@ function markDuplicateDispatches(nodes: ChainNode[]): void {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request' | 'connection.expired';
+  type: 'task' | 'task.proposed' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request' | 'connection.expired';
   sessionId: string;
   agent: string;
   title: string;
@@ -2523,7 +2523,7 @@ export class TerminalManager {
     // aren't flooded by every session's cards; `all` is the explicit oversight view (owner/admin only —
     // a member's `all` and `mine` are identical since they only ever see their own).
     if (viewer && scope === 'mine') visible = visible.filter((r) => this.isAddressedTo(r, viewer));
-    return visible.map(toMessage);
+    return visible.map(toMessage).map((m) => (m.type === 'task.proposed' ? this.hydrateTaskProposalCard(m) : m));
   }
 
   /** Mark one message read for a member (per-member; idempotent upsert). Visibility-guarded like the
@@ -4424,6 +4424,11 @@ export class TerminalManager {
   isPlanAutoDispatch(id: string): boolean { return this.planAutoDispatchSessions.has(id); }
   clearPlanAutoDispatch(id: string): void { this.planAutoDispatchSessions.delete(id); }
 
+  /** A session's provenance (`spawned_by`): the member id, `automation:<id>`, `goal:<id>`, `task:<id>`, … */
+  sessionProvenance(id: string): string | undefined {
+    return this.db.prepare('SELECT spawned_by FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null }>(id)?.spawned_by ?? undefined;
+  }
+
   /** The member id a session acts as (run-as), if any — so a deferred task it schedules runs as the
    *  same identity. NULL for company-identity runs. */
   sessionRunAs(id: string): string | undefined {
@@ -5876,6 +5881,66 @@ export class TerminalManager {
       body: input.body, status: 'open', args: { taskId: input.taskId, event: input.event },
       audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
     });
+  }
+
+  /**
+   * Record an agent's PROPOSED task on its session's review card — ONE `task.proposed` card per session,
+   * grown as the run files more, never one card per task. The grouping is the point: a busy agent files
+   * 5–30 follow-ups in one run, and a card each would rebuild exactly the inbox flood this lane exists to
+   * drain (instawp, 2026-08: ~31 cards a day on one human). A later filing re-marks the card unread so the
+   * growth is noticed. Addressed to the run's accountable human (run-as), else the admin tier — the same
+   * person a dispatched run of the task would act as. Quiet: no DM, because nothing is blocked on it.
+   */
+  recordTaskProposal(sessionId: string, agent: string, task: { id: string; title: string; assignee?: string }): string {
+    const entry: ProposedTaskRef = { id: task.id, title: task.title, ...(task.assignee ? { assignee: task.assignee } : {}) };
+    const open = this.db
+      .prepare(`SELECT id, args FROM messages WHERE type = 'task.proposed' AND status = 'open' AND session_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .get<{ id: string; args: string | null }>(sessionId);
+    if (open) {
+      const tasks = [...proposedTaskRefs(open.args).filter((t) => t.id !== task.id), entry];
+      this.db.prepare('UPDATE messages SET title = ?, body = ?, args = ? WHERE id = ?')
+        .run(taskProposalTitle(tasks.length), taskProposalBody(tasks), JSON.stringify({ tasks }), open.id);
+      this.db.prepare('UPDATE message_state SET read_at = NULL WHERE message_id = ?').run(open.id);
+      return open.id;
+    }
+    const runAs = this.sessionRunAs(sessionId);
+    const audience: Audience = runAs ? { kind: 'member', id: runAs } : { kind: 'admins' };
+    return this.addMessage({
+      type: 'task.proposed', sessionId, agent, title: taskProposalTitle(1), body: taskProposalBody([entry]),
+      status: 'open', args: { tasks: [entry] }, audienceKind: audience.kind, audienceId: audienceIdOf(audience),
+    });
+  }
+
+  /**
+   * Close every open proposal card whose tasks have ALL been decided — accepted, dismissed, or deleted —
+   * however that happened (the card's own buttons, the board, a drag, an agent withdrawing its own).
+   * Called from the task notifier on any `proposed→` transition and after a delete, so the card can never
+   * sit open over a question already answered. `approved` when at least one task made it onto the board.
+   */
+  syncTaskProposalCards(taskId: string): void {
+    const rows = this.db
+      .prepare(`SELECT id, args FROM messages WHERE type = 'task.proposed' AND status = 'open' AND args LIKE ?`)
+      .all<{ id: string; args: string | null }>(`%"${taskId}"%`);
+    for (const r of rows) {
+      const statuses = proposedTaskRefs(r.args).map((t) => this.os.tasks.get(t.id)?.status);
+      if (statuses.some((st) => st === 'proposed')) continue;
+      const accepted = statuses.some((st) => st !== undefined && st !== 'cancelled');
+      this.db.prepare(`UPDATE messages SET status = ? WHERE id = ?`).run(accepted ? 'approved' : 'rejected', r.id);
+    }
+  }
+
+  /** The task ids on one proposal card (for the card's "accept all" / "dismiss all"). Undefined = no such card. */
+  taskProposalCardTasks(messageId: string): string[] | undefined {
+    const r = this.db.prepare(`SELECT args FROM messages WHERE id = ? AND type = 'task.proposed'`).get<{ args: string | null }>(messageId);
+    return r ? proposedTaskRefs(r.args).map((t) => t.id) : undefined;
+  }
+
+  /** Stamp each proposed task's CURRENT status onto its card at read time (like approvals' JOIN), so a
+   *  task decided on the board shows decided in the Inbox without the card having to be rewritten. */
+  private hydrateTaskProposalCard(m: FeedMessage): FeedMessage {
+    const tasks = proposedTaskRefs(m.args !== undefined ? JSON.stringify(m.args) : null)
+      .map((t) => ({ ...t, status: this.os.tasks.get(t.id)?.status ?? 'deleted' }));
+    return { ...m, args: { tasks } };
   }
 
   /**
@@ -9128,6 +9193,20 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 function toSession(r: SessionRow): Session {
   return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined };
 }
+
+/** One task on a `task.proposed` card. Title/assignee are snapshots from filing; status is hydrated live. */
+interface ProposedTaskRef { id: string; title: string; assignee?: string }
+
+function proposedTaskRefs(args: string | null): ProposedTaskRef[] {
+  try {
+    const a = args ? (JSON.parse(args) as { tasks?: unknown }) : {};
+    return Array.isArray(a.tasks) ? (a.tasks as ProposedTaskRef[]).filter((t) => t && typeof t.id === 'string') : [];
+  } catch { return []; }
+}
+
+const taskProposalTitle = (n: number): string => (n === 1 ? 'Proposed a task' : `Proposed ${n} tasks`);
+const taskProposalBody = (tasks: ProposedTaskRef[]): string =>
+  tasks.map((t) => `• ${t.title}${t.assignee ? ` → ${t.assignee.replace(/^agent:/, '')}` : ''}`).join('\n');
 
 function toMessage(r: MessageRow): FeedMessage {
   // Approval/question rows reflect their live status from the joined table; others keep their own.

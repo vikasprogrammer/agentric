@@ -750,6 +750,29 @@ Pinned by `scripts/task-pr-links-test.cjs`.
 
 ---
 
+### Proposed tasks — an agent's board item waits for a person
+
+A task an **agent** files without dispatching it lands `proposed`, not `todo` (the create route in
+`src/server.ts`). Agents file ~all tasks on the live fleet, half as board items nobody agreed to; the
+status puts a human's accept between "an agent thought this is work" and "it is on the board".
+
+- **Not work yet.** `dispatchable()` is todo-only, `canDispatch` refuses with code `proposed` on every
+  path (a console Run included), `claim` refuses, goal progress leaves it out of `counted`, and the
+  assignee's "assigned to you" card is held until accept (`taskCard` in `tenant-registry.ts`).
+- **One card per run.** `TerminalManager.recordTaskProposal` grows a single `task.proposed` card per
+  session (re-marked unread on growth), addressed to the run-as member, else `admins`. No DM. Each task's
+  status is hydrated live at read time; `syncTaskProposalCards` closes the card once every task on it is
+  decided — wired to any `proposed→` transition and to delete, so the board and the card never disagree.
+- **Deciding.** `POST /api/tasks/proposals/decide {ids | messageId, action: accept|dismiss}` →
+  `TaskStore.decideProposal` (accept → `todo`, dismiss → `cancelled`). The run-as human (`task.owner`) or
+  owner/admin; the board PATCH out of `proposed` is gated identically, and nothing can move INTO it. An
+  agent may withdraw its own (→ `cancelled`) or refine the text, never accept it. Audited
+  `task.proposed` / `task.proposal.accepted` / `task.proposal.dismissed`.
+- **Not held:** an auto-dispatch hand-off (a `task_wait` caller would hang on a click — bound those with
+  a delegation budget instead), a `goal:`-provenance run (a human asked for that plan), a human's task.
+- **Bounds:** 25 open proposals per agent (`MAX_OPEN_TASK_PROPOSALS`), then `task_create` refuses. The
+  workspace switch (`task_proposals` setting, Settings → Runtime) turns the lane off.
+
 ## 8. Build order & validation
 
 1. `db.ts` migration (`tasks`, `task_events`, `tasks_fts` + triggers) → `src/types.ts` types.

@@ -670,7 +670,7 @@ function migrate(db: Db): void {
       tenant        TEXT NOT NULL,
       title         TEXT NOT NULL,
       body          TEXT NOT NULL DEFAULT '',       -- markdown description / acceptance criteria
-      status        TEXT NOT NULL DEFAULT 'todo',   -- todo | doing | blocked | done | cancelled
+      status        TEXT NOT NULL DEFAULT 'todo',   -- proposed | todo | doing | blocked | done | cancelled
       priority      INTEGER NOT NULL DEFAULT 2,     -- 0 urgent … 3 low (sort key)
       labels        TEXT NOT NULL DEFAULT '[]',     -- JSON string[]
       assignee      TEXT,                           -- NULL (unassigned) | member id | 'agent:<id>'

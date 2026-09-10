@@ -54,7 +54,8 @@ function milestoneVerb(kind: string, body: string | null): GoalEventTask['verb']
   if (kind === 'dispatch') return 'started';
   const to = /→(\w+)$/.exec(body ?? '')?.[1];
   switch (to) {
-    case 'todo': return body?.startsWith('→') ? 'filed' : 'reopened'; // '→todo' = created; 'done→todo' = reopened
+    // '→todo' = created; 'proposed→todo' = a proposal accepted (filed, as far as the goal cares); 'done→todo' = reopened
+    case 'todo': return body?.startsWith('→') || body?.startsWith('proposed→') ? 'filed' : 'reopened';
     case 'doing': return 'started';
     case 'blocked': return 'blocked';
     case 'done': return 'done';
@@ -369,7 +370,7 @@ export class GoalStore {
    * so it can't rot. `percent` = done ÷ (non-cancelled linked tasks); 0 when nothing is linked yet.
    */
   progress(goalId: string): GoalProgress {
-    const byStatus = { todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 } as Record<TaskStatus, number>;
+    const byStatus = { proposed: 0, todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 } as Record<TaskStatus, number>;
     // Count LEAF linked tasks only — a task that has sub-tasks is a grouping/umbrella (its children carry
     // the real work), so counting both it and its children would double-count and lag the bar.
     for (const r of this.db
@@ -379,7 +380,8 @@ export class GoalStore {
       if (r.status in byStatus) byStatus[r.status] = r.n;
     }
     const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
-    const counted = total - byStatus.cancelled; // cancelled work doesn't count against the goal
+    // Cancelled work doesn't count against the goal, and neither does a proposal nobody has accepted yet.
+    const counted = total - byStatus.cancelled - byStatus.proposed;
     const done = byStatus.done;
     const percent = counted > 0 ? Math.round((done / counted) * 100) : 0;
     return { total, done, counted, percent, byStatus };

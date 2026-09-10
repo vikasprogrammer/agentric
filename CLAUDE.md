@@ -518,7 +518,10 @@ Key modules:
   (`Automations.dispatchTask` + `buildTaskPrompt`): an agent-assigned `auto_dispatch` task is spawned by the
   scheduler `tick()` as a governed session (provenance `task:<id>`, `run_as = owner`, `headless = mode !==
   'interactive'`), guarded by `isAlive` (pile-up) + a `TASK_MAX_ATTEMPTS` ceiling (park `blocked`), and the
-  agent **closes its own loop** with `task_update(done)`. This is the **A2A delegation path** (support→coding
+  agent **closes its own loop** with `task_update(done)`. A task an agent files WITHOUT dispatching it lands
+  **`proposed`** (never dispatched/claimed) on ONE `task.proposed` Inbox card per run until the run-as human or
+  an admin accepts it (→ `todo`) or dismisses it (→ `cancelled`); auto-dispatch hand-offs and `goal:` plan runs
+  are never held (docs/tasks-plan.md §Proposed tasks). This is the **A2A delegation path** (support→coding
   = a task assigned to `agent:<id>`; run-as passthrough keeps the accountable human). Agent tools
   `task_create`/`task_list`/`task_get`/`task_claim`/`task_update` (author/assignee server-derived); console
   **Tasks** Kanban board (primary nav, under Agents). A `TaskStore` notifier (`setNotifier`, wired in

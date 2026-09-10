@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.436.0] - 2026-09-10
+### Added
+- **An agent's task no longer lands on the board until a person accepts it.** Agents file essentially
+  every task on the live fleet (instapods, 14 days: 140 of 140, none by a human), and half of them are
+  board items no one agreed to — `engineer` alone left 31 unassigned `todo`s. They are usually real
+  findings, but they skipped triage and read as committed work. A task an agent files WITHOUT
+  dispatching it now lands in a new `proposed` status: it never dispatches (every path, a console Run
+  included — `canDispatch` code `proposed`), can't be claimed, doesn't count toward a goal, and is
+  grouped onto ONE `task.proposed` Inbox card per run — never a card per task, which would rebuild the
+  inbox flood — addressed to the run's accountable human (run-as), else the admin tier, with no DM.
+  Accept (→ `todo`, and only now does a human assignee get "assigned to you") or dismiss (→ `cancelled`)
+  per task or all at once, from the card or a "Proposed by agents" strip above the board; the card
+  closes itself however the tasks get decided (card, board, drag, delete). Gated to the run-as human or
+  owner/admin on both the new `POST /api/tasks/proposals/decide` and the board PATCH. The agent is never
+  blocked — `task_create` returns at once and says the task is awaiting review. Deliberately NOT held:
+  an auto-dispatch hand-off (a caller may be waiting on it in `task_wait`) and a goal-plan/goal-room run
+  (a human asked for that plan). Capped at 25 open proposals per agent. Off switch: Settings → Runtime →
+  Agent-filed tasks (`PUT /api/settings/task-proposals`). Pinned by `scripts/task-proposals-test.cjs`.
+  **For users:** Tasks your agents file for later now wait in your Inbox as proposals — accept the ones
+  worth doing and dismiss the rest, so the board only holds work someone agreed to. [Open Inbox](#/inbox)
+
 ## [0.435.0] - 2026-09-10
 ### Added
 - **The company GitHub bot no longer collapses a multi-org App down to one org.** `ensureBotToken`

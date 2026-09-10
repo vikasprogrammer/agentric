@@ -525,7 +525,13 @@ function isHumanMember(who: string | undefined): who is string {
 function taskCard(n: TaskNotice): { audience: Audience; title: string; event: string } | null {
   const t = n.task;
   if ((n.kind === 'created' || n.kind === 'assigned') && isHumanMember(t.assignee)) {
+    // A proposal isn't work yet: its Inbox review card speaks for it, and the assignee hears on ACCEPT.
+    if (t.status === 'proposed') return null;
     return { audience: { kind: 'member', id: t.assignee }, event: n.kind, title: n.kind === 'created' ? 'New task assigned to you' : 'Task assigned to you' };
+  }
+  // Accepting a proposal is the moment it becomes someone's work — the "assigned to you" it held back.
+  if (n.kind === 'status' && n.detail === 'proposed→todo' && isHumanMember(t.assignee)) {
+    return { audience: { kind: 'member', id: t.assignee }, event: 'assigned', title: 'New task assigned to you' };
   }
   if (n.kind === 'status' && isHumanMember(t.owner)) {
     if (t.status === 'blocked') return { audience: { kind: 'member', id: t.owner }, event: 'blocked', title: 'Task blocked — needs you' };
@@ -552,6 +558,8 @@ export function wireTaskNotices(
 ): void {
   os.tasks.setNotifier((notice) => {
     void notifyTaskEvent(os, tm, slack, discord, consoleOrigin, notice);
+    // A proposal decided ANYWHERE (card, board, drag, the agent withdrawing it) closes its Inbox card.
+    if (notice.kind === 'status' && notice.detail?.startsWith('proposed→')) tm.syncTaskProposalCards(notice.task.id);
     // Async poke-back: a delegate that closed a `poke_on_done` hand-off wakes the CALLER agent with the
     // outcome, so a fire-and-forget delegation never has to poll.
     maybePokeCaller(autos, os, notice);

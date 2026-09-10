@@ -45,7 +45,7 @@ interface AttachmentRow {
 export type AttachResult = { ok: true; attachment: TaskAttachment } | { ok: false; error: string };
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>(['done', 'cancelled']);
-const STATUSES: readonly TaskStatus[] = ['todo', 'doing', 'blocked', 'done', 'cancelled'];
+const STATUSES: readonly TaskStatus[] = ['proposed', 'todo', 'doing', 'blocked', 'done', 'cancelled'];
 /** Sentinel body for the one-time "went overdue" event that dedupes the overdue notification. */
 const OVERDUE_MARK = '⏰ went overdue';
 /** Sentinel body for the one-time "its run ended without closing this" event, per stranding SESSION — so a
@@ -93,6 +93,7 @@ export class TaskStore {
     const mode = input.mode === 'interactive' ? 'interactive' : 'headless';
     const model = input.model?.trim() || null;
     const effort = input.effort?.trim() || null;
+    const status: TaskStatus = input.status === 'proposed' ? 'proposed' : 'todo';
     // A sub-task inherits its parent's goal when it doesn't name one — so a strategist's umbrella + its
     // sub-tasks all roll up to the same goal without the agent stamping goalId on every child.
     let goalId = input.goalId ?? null;
@@ -105,9 +106,9 @@ export class TaskStore {
         (id, tenant, title, body, status, priority, labels, assignee, owner, parent_id, mode, model, effort, auto_dispatch,
          goal_id, criteria, caller_agent, caller_claude_id, poke_on_done, due_at, attempts, last_session_id,
          created_by, created_at, updated_at, updated_by, external_key)
-        VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)`)
       .run(
-        id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', priority,
+        id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', status, priority,
         JSON.stringify(labels), input.assignee ?? null, input.owner ?? null, input.parentId ?? null,
         mode, model, effort, input.autoDispatch ? 1 : 0, goalId, oneLine(input.criteria),
         input.callerAgent ?? null, input.callerClaudeId ?? null, input.pokeOnDone ? 1 : 0,
@@ -116,7 +117,7 @@ export class TaskStore {
     if (goalId && this.db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId)) {
       this.addEvent(id, 'link', `goal:${goalId}`, input.createdBy);
     }
-    this.addEvent(id, 'status', '→todo', input.createdBy);
+    this.addEvent(id, 'status', `→${status}`, input.createdBy);
     if (input.parentId && this.get(input.parentId)) this.addEvent(input.parentId, 'link', `task:${id}`, input.createdBy);
     if (input.dependsOn && input.dependsOn.length) this.setDeps(id, input.dependsOn, input.createdBy);
     const task = this.get(id)!;
@@ -194,11 +195,11 @@ export class TaskStore {
                    WHERE tasks_fts MATCH ? AND t.tenant = ?${extra} ORDER BY rank LIMIT ?`)
         .all<TaskRow>(match, q.tenant, ...args, fetchN);
     } else {
-      // status collation: todo < doing < blocked < done < cancelled (the natural board order).
+      // status collation: proposed < todo < doing < blocked < done < cancelled (the natural board order).
       const extra = where.map((w) => ` AND ${w}`).join('');
       rows = this.db
         .prepare(`SELECT * FROM tasks WHERE tenant = ?${extra}
-                   ORDER BY (CASE status WHEN 'todo' THEN 0 WHEN 'doing' THEN 1 WHEN 'blocked' THEN 2
+                   ORDER BY (CASE status WHEN 'proposed' THEN -1 WHEN 'todo' THEN 0 WHEN 'doing' THEN 1 WHEN 'blocked' THEN 2
                              WHEN 'done' THEN 3 ELSE 4 END), priority, updated_at DESC LIMIT ?`)
         .all<TaskRow>(q.tenant, ...args, fetchN);
     }
@@ -287,15 +288,30 @@ export class TaskStore {
     if (!t) return null;
     const me = `agent:${agentId}`;
     if (TERMINAL.has(t.status)) return null;
+    // A proposal isn't work yet — nobody may pick it up until a human accepts it onto the board.
+    if (t.status === 'proposed') return null;
     if (t.assignee && t.assignee !== me) return null; // someone else holds it
     // Guarded UPDATE (the race resolver): only succeeds if still unclaimed-or-mine and non-terminal.
     const res = this.db
       .prepare(`UPDATE tasks SET assignee = ?, status = 'doing', last_session_id = ?, updated_at = ?, updated_by = ?
-                 WHERE id = ? AND (assignee IS NULL OR assignee = ?) AND status NOT IN ('done','cancelled')`)
+                 WHERE id = ? AND (assignee IS NULL OR assignee = ?) AND status NOT IN ('done','cancelled','proposed')`)
       .run(me, sessionId, Date.now(), me, id, me);
     if (res.changes === 0) return null;
     this.addEvent(id, 'claim', `${me} claimed`, me, sessionId);
     return this.get(id)!;
+  }
+
+  /**
+   * A human's verdict on an agent's PROPOSED task: accept moves it onto the board (`todo`), dismiss drops it
+   * (`cancelled`, so the record and its author survive — a dismissal is data about what an agent thought
+   * was work). A plain status transition through {@link update}, so the notifier fires exactly as for any
+   * other move: the Inbox proposal card closes and a human assignee gets their "assigned to you" only now.
+   * Returns undefined when the task is gone or is no longer a proposal (someone already decided).
+   */
+  decideProposal(id: string, accept: boolean, by: string): Task | undefined {
+    const t = this.get(id);
+    if (!t || t.status !== 'proposed') return undefined;
+    return this.update(id, { status: accept ? 'todo' : 'cancelled', note: accept ? 'accepted onto the board' : 'proposal dismissed', by }) ?? undefined;
   }
 
   /** Dispatcher-only: mark a task as spawned (status=doing, attempts++, last_session_id) + log it. */
@@ -318,9 +334,15 @@ export class TaskStore {
     return true;
   }
 
+  /** How many of one author's proposals are still awaiting a human — the per-agent queue cap. */
+  openProposals(tenant: string, createdBy: string): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE tenant = ? AND status = 'proposed' AND created_by = ?`)
+      .get<{ n: number }>(tenant, createdBy)?.n ?? 0;
+  }
+
   /** Per-status counts for the board column headers. */
   counts(tenant: string): Record<TaskStatus, number> {
-    const out = { todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 } as Record<TaskStatus, number>;
+    const out = { proposed: 0, todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 } as Record<TaskStatus, number>;
     for (const r of this.db
       .prepare('SELECT status, COUNT(*) AS n FROM tasks WHERE tenant = ? GROUP BY status')
       .all<{ status: TaskStatus; n: number }>(tenant)) {
