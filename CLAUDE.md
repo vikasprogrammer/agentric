@@ -224,7 +224,19 @@ Key modules:
   account (per-member OAuth — `src/edge/github-identity.ts`, `docs/per-member-github-plan.md`), THEIR
   vault-stored user token OVERRIDES the agent bot's `GH_TOKEN`/`GITHUB_TOKEN`, so git/PRs are authored as
   the actual human (bot = fallback). Token stored under the member principal (never shared `*`), refreshed
-  on demand; audited `github.token.injected`.
+  on demand; audited `github.token.injected`. ⚠ The **bot** half is org-SCOPED: one App can be installed
+  on several orgs and each install mints its OWN token, so a push to an org the injected token doesn't
+  cover 404s with a perfectly valid credential and reads as "the repo doesn't exist". `github_installation_id`
+  is the PRIMARY (what launch injects, exported as `AOS_GH_ORG`); `github_installations` is the whole
+  registry (`AOS_GH_ORGS`, and a prompt block naming the gap); each installation caches under
+  `github_bot_token:<id>`. `ensureBotToken(nowMs?, by?, org?)` / `loadBotToken(org?)` take an org login —
+  never assume the ambient `GH_TOKEN` reaches every org. **Plain `git` is covered**: on a multi-org bot run
+  `configureGitCredentials` turns on `credential.useHttpPath` so git hands the helper `path=<org>/<repo>`,
+  and the helper fetches that installation's token from `POST /api/agent/github/credential` (session-secret
+  loopback, any failure falls back to `$GH_TOKEN`). **`gh` is NOT** — it ignores git credential helpers, so
+  it stays on the primary org (phase 3 of `docs/github-multi-org-plan.md`). The helper is deliberately off
+  for a run carrying a linked member's token, and the route refuses one too: a per-repo bot token would
+  re-author that human's commits as the bot. The member OAuth lane already spans orgs.
 - `src/governance/` — `policy.ts` (JSON rule engine; first-match, glob capability + `when` arg predicates.
   `withAlwaysAllow`/`hasHardDeny` back the Inbox **"Always approve"** — an owner appending a durable `allow`
   rule from an approval card, inserted AFTER every `never` so deny guardrails survive; `POST

@@ -1095,6 +1095,46 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, out);
   }
 
+  // ── Per-repo GitHub credential, agent-facing (loopback, session-scoped) ──────────────────────────
+  // Phase 3 of docs/github-multi-org-plan.md. A bot token is scoped to ONE installation, so on a tenant
+  // whose App spans several orgs the ambient GH_TOKEN covers only the primary and a push anywhere else
+  // 404s from a valid credential. The session's git credential helper reads the org off git's own
+  // `path=` request and asks here for THAT installation's token; any failure falls back to $GH_TOKEN,
+  // so this route being unavailable degrades to the pre-multi-org behaviour rather than breaking git.
+  //
+  // The token handed back is the company bot's, org-scoped, for an org this tenant's own App is
+  // installed on — the same class of credential the session already holds, never a wider one.
+  if (method === 'POST' && p === '/api/agent/github/credential') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const org = String(b.org || '').trim();
+    if (!org) return sendJson(res, 200, { status: 'no_org' });
+    const gh = new GithubIdentity(os);
+    // The member lane wins absolutely: if this run acts as a human who linked their own GitHub, their
+    // token is what git must use. Handing back a bot token here would silently re-author their commits
+    // as the App bot the moment they touched a second org — the exact attribution confusion
+    // docs/per-member-github-plan.md exists to prevent. Their user token already spans every org they
+    // can reach, so there is nothing to fix for them.
+    const member = tm.sessionRunAs(session);
+    if (member && gh.load(member)) return sendJson(res, 200, { status: 'member_identity' });
+    if (!gh.botConfigured()) return sendJson(res, 200, { status: 'not_configured' });
+    // Audit the MINT, not the lookup: git calls its helper on every fetch/push and the token is cached
+    // for the hour, so auditing each call would bury the trail in duplicates.
+    const before = gh.loadBotToken(org);
+    const tok = await gh.ensureBotToken(Date.now(), `agent:${agent}`, org).catch(() => undefined);
+    if (!tok) {
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'github.bot_token.org_missing', data: { org } });
+      return sendJson(res, 200, { status: 'not_installed', org });
+    }
+    if (!before || before.token !== tok.token) {
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'github.bot_token.minted', data: { org, expiresAt: tok.expiresAt, via: 'credential-helper' } });
+    }
+    return sendJson(res, 200, { status: 'ok', token: tok.token, org, expiresAt: tok.expiresAt });
+  }
+
   if (method === 'GET' && p === '/api/memory/recall') {
     const session = url.searchParams.get('session') || '';
     const agent = tm.sessionAgent(session);
@@ -5588,10 +5628,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (typeof b.githubAppId === 'string' || typeof b.githubPrivateKey === 'string') {
       const ghb = new GithubIdentity(os);
       if (ghb.botConfigured()) {
+        // Resolve the whole installation set first — the App may be installed on several orgs, and the
+        // registry is what makes the non-primary ones visible instead of silently unreachable. It also
+        // settles the primary, so the mint below has an id to work with.
+        const installs = await ghb.refreshInstallations(me.email).catch(() => []);
         const bot = await ghb.ensureBotToken(Date.now(), me.email).catch(() => undefined);
         // Also resolve the App slug now → the "Install the App" link/button (a hand-set App has no slug yet).
         if (!ghb.appSlug()) await ghb.ensureAppSlug(me.email).catch(() => { /* best-effort */ });
-        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: bot ? 'github.bot_token.minted' : 'github.bot_token.failed', data: { installationId: os.settings.githubInstallationId() || null } });
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: bot ? 'github.bot_token.minted' : 'github.bot_token.failed', data: { installationId: os.settings.githubInstallationId() || null, orgs: installs.map((i) => i.account) } });
       }
     }
     // Image generation backend keys (OpenRouter default / Atlas alt) + optional default model.
@@ -7835,7 +7879,7 @@ function integrationsView(os: AgentOS): {
   discord: { botToken: boolean; configured: boolean };
   telegram: { botToken: boolean; configured: boolean };
   clickup: { token: boolean; hint: string; webhookSecret: boolean; configured: boolean; hookPath: string };
-  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean };
+  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean; installations: { id: number; account: string; repositorySelection?: string }[]; primaryInstallationId: string };
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean };
   video: { fal: boolean; atlas: boolean; backend: 'fal' | 'atlas' | null; defaultModel: string; configured: boolean };
   anthropic: { set: boolean; source: 'settings' | 'env' | null; model: string };
@@ -7859,7 +7903,7 @@ function integrationsView(os: AgentOS): {
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
     telegram: { botToken: telegram.botToken, configured: os.settings.telegramConfigured() },
     clickup: { token: clickup.token, hint: redactSecret(os.settings.clickupToken()), webhookSecret: clickup.webhookSecret, configured: os.settings.clickupConfigured(), hookPath: os.settings.clickupWebhookSecret() ? `/hooks/clickup?key=${os.settings.clickupWebhookSecret()}` : '' },
-    github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '', appId: !!gh.appId(), privateKey: !!gh.privateKey(), botReady: !!gh.loadBotToken() },
+    github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '', appId: !!gh.appId(), privateKey: !!gh.privateKey(), botReady: !!gh.loadBotToken(), installations: gh.installations(), primaryInstallationId: os.settings.githubInstallationId() || '' },
     image: { openRouter: image.openRouter, atlas: image.atlas, backend: image.backend, defaultModel: image.defaultModel, configured: os.settings.imageGenConfigured() },
     video: { fal: video.fal, atlas: video.atlas, backend: video.backend, defaultModel: video.defaultModel, configured: os.settings.videoGenConfigured() },
     anthropic: (() => { const a = os.settings.anthropicMeta(); return { set: a.set, source: a.source, model: a.model }; })(),

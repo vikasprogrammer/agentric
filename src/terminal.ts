@@ -2948,11 +2948,13 @@ export class TerminalManager {
     this.injectGithubBaseline(env, o.agent, o.id);
     // Per-member git: if THIS run's run-as human has linked their own GitHub account, their token
     // OVERRIDES the bot/agent GH_TOKEN — so git push / gh pr are authored as the actual person.
-    this.injectMemberGithub(env, o.agent, o.actingMember, o.id);
+    const asMember = this.injectMemberGithub(env, o.agent, o.actingMember, o.id);
     // Whatever set GH_TOKEN above (member token or agent bot), teach plain `git` to use it too — `gh`
     // reads GH_TOKEN natively but `git push` over HTTPS does not, so without this only half the toolchain
-    // authenticates. A github.com-scoped credential helper closes that gap.
-    this.configureGitCredentials(env);
+    // authenticates. A github.com-scoped credential helper closes that gap. On a bot run whose App spans
+    // several orgs the helper also resolves per REPO, since one bot token only covers one org — but never
+    // on a member run, where doing so would re-author that human's commits as the bot.
+    this.configureGitCredentials(env, { multiOrg: !asMember && !!env.AOS_GH_ORGS });
     // Phase 2c: granted Host connections' SSH keys → a session ssh_config + ssh/scp PATH shim, so the
     // agent's plain `ssh` authenticates to a host without ever handling the key. (Local-lane only.)
     this.injectHostCredentials(env, o.agent, o.actingMember, o.id);
@@ -4720,8 +4722,9 @@ export class TerminalManager {
     // committing as a shared bot (or failing auth). Only when acting as a real member, and only the
     // actionable case (not connected) — a connected member's token is injected and just works.
     let github = '';
+    const ghIdent = new GithubIdentity(this.os);
     if (actingMember) {
-      const gh = new GithubIdentity(this.os);
+      const gh = ghIdent;
       if (!gh.load(actingMember)) {
         const who = this.os.team.getMember(actingMember)?.name || 'the person you run as';
         github = gh.configured()
@@ -4736,6 +4739,30 @@ export class TerminalManager {
             'code or open a PR, use `ask` to have an owner or admin set up the GitHub App in one click ' +
             `(**Connections → Creds → GitHub → Create GitHub App**), then ask **${who}** to connect their account.`;
       }
+    }
+    // Multi-org git reach. The company App may be installed on SEVERAL orgs, but the token injected at
+    // launch is scoped to ONE of them (the primary) — a push to any other org 404s with a perfectly
+    // valid credential, which reads as "the repo doesn't exist" and has cost real debugging time. Say
+    // so up front, and only when it can actually bite (more than one installation). Appended rather
+    // than merged into the block above because it applies to unattended runs too, which have no
+    // acting member. See docs/github-multi-org-plan.md.
+    const ghOrgs = ghIdent.orgs();
+    if (ghOrgs.length > 1) {
+      const primary = ghIdent.primaryInstallation()?.account;
+      const others = ghOrgs.filter((o) => o !== primary);
+      github +=
+        (github ? '\n\n' : '') +
+        '# Git reach — this workspace spans several GitHub orgs\n\n' +
+        `The company GitHub App is installed on: ${ghOrgs.map((o) => `**${o}**`).join(', ')}. ` +
+        (primary
+          ? 'Plain `git` (clone, fetch, push over HTTPS) resolves the right credential per repository, so ' +
+            `all of them work. **\`gh\` does not**: it reads the token in your environment, which is scoped to ` +
+            `**${primary}** only, so \`gh\` against ${others.map((o) => `**${o}**`).join(' or ')} fails as though the ` +
+            'repository did not exist — the token is valid, it just does not cover that org. Use `git` for ' +
+            'those repos, and `ask` a human if you need a `gh`-only operation there rather than assuming the ' +
+            'repo is missing.'
+          : 'No primary org is set, so git may not authenticate at all — `ask` an owner to pick one in ' +
+            '**Connections → Creds → GitHub**.');
     }
     // Launch-time recall preamble (Settings → Memory, off by default): seed the prompt with this
     // agent's most salient memories so a cold session isn't blind, instead of relying on it to call
@@ -8714,9 +8741,17 @@ export class TerminalManager {
     }
     env.GH_TOKEN = blob.token;
     env.GITHUB_TOKEN = blob.token;
-    this.audit(sessionId, agent, 'github.bot_token.injected', { expiresAt: blob.expiresAt });
+    // Which org this token actually covers, and the full set the App is installed on. The token is
+    // scoped to ONE installation, so a session that touches another org gets a 404 from a valid
+    // credential — naming both here (and in the prompt) makes that legible to a human reading the env
+    // or the audit trail. Only exported when the registry knows more than the injected org.
+    const orgs = gh.orgs();
+    const primary = gh.primaryInstallation()?.account;
+    if (primary) env.AOS_GH_ORG = primary;
+    if (orgs.length > 1) env.AOS_GH_ORGS = orgs.join(',');
+    this.audit(sessionId, agent, 'github.bot_token.injected', { expiresAt: blob.expiresAt, org: primary, orgs: orgs.length });
     if (gh.botNeedsRefresh(blob)) {
-      this.audit(sessionId, agent, 'github.bot_token.stale', { expiresAt: blob.expiresAt });
+      this.audit(sessionId, agent, 'github.bot_token.stale', { expiresAt: blob.expiresAt, org: primary });
       void gh.ensureBotToken().catch(() => { /* best-effort; next launch retries */ });
     }
   }
@@ -8739,15 +8774,15 @@ export class TerminalManager {
    * is real: the member token lives ~8 h with no proactive refresher, so any run launched after a long
    * quiet gap used to get a corpse.
    */
-  private injectMemberGithub(env: Record<string, string>, agent: string, actingMember: string | undefined, sessionId: string): void {
-    if (!actingMember) return;
+  private injectMemberGithub(env: Record<string, string>, agent: string, actingMember: string | undefined, sessionId: string): boolean {
+    if (!actingMember) return false;
     const gh = new GithubIdentity(this.os);
     const blob = gh.load(actingMember);
-    if (!blob) return;
+    if (!blob) return false;
     if (gh.isExpired(blob)) {
       this.audit(sessionId, agent, 'github.token.expired', { login: blob.login, principal: actingMember, expiresAt: blob.expiresAt });
       if (blob.refreshToken) void gh.ensureFresh(actingMember).catch(() => { /* next launch retries */ });
-      return; // whatever the bot/agent set stays; if nothing did, `gh` falls back to the box credential
+      return false; // whatever the bot/agent set stays; if nothing did, `gh` falls back to the box credential
     }
     env.GH_TOKEN = blob.token;
     env.GITHUB_TOKEN = blob.token;
@@ -8756,6 +8791,7 @@ export class TerminalManager {
       this.audit(sessionId, agent, 'github.token.stale', { login: blob.login, principal: actingMember });
       void gh.ensureFresh(actingMember).catch(() => { /* best-effort; next launch retries */ });
     }
+    return true;
   }
 
   /**
@@ -8767,14 +8803,52 @@ export class TerminalManager {
    * RESETS any inherited system/global helper for that host so ours is the only one consulted; the
    * username `x-access-token` is what GitHub expects for App/user tokens. No-op when no token was set
    * (nothing to authenticate with) or for non-github.com remotes (SSH hosts keep their own keys).
+   *
+   * **Multi-org (`multiOrg`, phase 3 of docs/github-multi-org-plan.md).** A bot token is scoped to ONE
+   * installation, so on a tenant whose App spans several orgs the ambient `$GH_TOKEN` covers only the
+   * primary and a push anywhere else 404s from a perfectly valid credential. Turning on
+   * `credential.useHttpPath` makes git hand the helper `path=<org>/<repo>.git`, so the helper can read
+   * the org off the request and fetch THAT installation's token from the loopback route (the same
+   * `AOS_SECRET` channel the gate hook uses). It only does so for a non-primary org — the common case
+   * still costs nothing — and **any** failure falls through to `$GH_TOKEN`, so a restarted server or a
+   * refusing route degrades to exactly today's behaviour instead of breaking git.
+   *
+   * Deliberately NOT enabled when the run carries a linked member's token: a per-repo bot token would
+   * silently re-author that human's commits as the App bot the moment they touched a second org. The
+   * route enforces the same rule server-side; this is the cheap half of the guard.
+   *
+   * Written for bash 3.2 + BSD userland (macOS) — no GNU-isms, no arrays.
    */
-  private configureGitCredentials(env: Record<string, string>): void {
+  private configureGitCredentials(env: Record<string, string>, opts: { multiOrg?: boolean } = {}): void {
     if (!env.GH_TOKEN) return;
-    env.GIT_CONFIG_COUNT = '2';
+    const plain = '!f() { test "$1" = get && printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; }; f';
+    if (!opts.multiOrg) {
+      env.GIT_CONFIG_COUNT = '2';
+      env.GIT_CONFIG_KEY_0 = 'credential.https://github.com.helper';
+      env.GIT_CONFIG_VALUE_0 = '';
+      env.GIT_CONFIG_KEY_1 = 'credential.https://github.com.helper';
+      env.GIT_CONFIG_VALUE_1 = plain;
+      return;
+    }
+    // The helper reads git's key=value request off stdin (terminated by a blank line or EOF), takes the
+    // first path segment as the org, and only calls out when that org isn't the one $GH_TOKEN covers.
+    const orgAware =
+      '!f() { test "$1" = get || return 0; o=; while IFS= read -r l; do case "$l" in path=*) o=${l#path=}; ' +
+      'o=${o%%/*};; esac; test -z "$l" && break; done; t=$GH_TOKEN; ' +
+      'if [ -n "$o" ] && [ "$o" != "$AOS_GH_ORG" ] && [ -n "$AOS_URL" ] && [ -n "$AOS_SECRET" ]; ' +
+      'then b=$(printf \'{"session":"%s","org":"%s"}\' "$SESSION" "$o"); ' +
+      'r=$(curl -s --max-time 5 -X POST "$AOS_URL/api/agent/github/credential" -H "content-type: application/json" -H "x-aos-secret: $AOS_SECRET" -H "x-aos-tenant: $AOS_TENANT" -d "$b" 2>/dev/null); ' +
+      'case "$r" in *\'"token"\'*) t=$(printf \'%s\' "$r" | sed -n \'s/.*"token":"\\([^"]*\\)".*/\\1/p\');; esac; fi; ' +
+      'test -n "$t" && printf \'username=x-access-token\\npassword=%s\\n\' "$t"; }; f';
+    env.GIT_CONFIG_COUNT = '3';
     env.GIT_CONFIG_KEY_0 = 'credential.https://github.com.helper';
     env.GIT_CONFIG_VALUE_0 = '';
     env.GIT_CONFIG_KEY_1 = 'credential.https://github.com.helper';
-    env.GIT_CONFIG_VALUE_1 = '!f() { test "$1" = get && printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; }; f';
+    env.GIT_CONFIG_VALUE_1 = orgAware;
+    // Without this git never tells the helper WHICH repo it is authenticating for, and the whole
+    // per-org resolution above is dead code.
+    env.GIT_CONFIG_KEY_2 = 'credential.https://github.com.useHttpPath';
+    env.GIT_CONFIG_VALUE_2 = 'true';
   }
 
   /** Find the real `ssh`/`scp` on the PARENT PATH (which never includes a session shim dir), so the
