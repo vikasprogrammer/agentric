@@ -135,10 +135,23 @@ async function depsUpdate(bin: string): Promise<void> {
   process.exitCode = result.ok ? 0 : 1;
 }
 
+/**
+ * The origin a CLI-printed link should carry. Box commands have no request `Host` to derive from, so
+ * without this every invite/login link came out as `http://127.0.0.1:<PORT>` — un-openable from the
+ * laptop you actually want to sign in on, and silently WRONG on a box where the deployment's real
+ * origin is pinned (a Tailscale name, a reverse-proxied FQDN, a non-default external port). Resolve it
+ * the same way `TenantRegistry.consoleOrigin` does — `AGENT_OS_PUBLIC_URL` env → config `publicUrl` →
+ * the loopback fallback — so a link you paste into a browser works as printed.
+ */
+function consoleBase(): string {
+  const pinned = (process.env.AGENT_OS_PUBLIC_URL || readRootConfig('config/agent-os.config.json', path.resolve(__dirname, '..')).publicUrl || '').trim().replace(/\/+$/, '');
+  return pinned || `http://127.0.0.1:${Number(process.env.PORT) || 3010}`;
+}
+
 /** Team management from the box (box access ≈ owner) — the secure recovery path for login. */
 function team(cmd: string, rest: string[]): void {
   const os = bootstrap();
-  const base = `http://127.0.0.1:${Number(process.env.PORT) || 3010}`;
+  const base = consoleBase();
   const link = (token: string) => `${base}/accept?token=${token}`;
 
   if (cmd === 'members') {
@@ -195,7 +208,7 @@ function tenants(rest: string[]): void {
   const defaultTenant = process.env.AGENT_OS_TENANT || cfg.tenant;
   const loginUrl = (slug: string, token: string): string =>
     slug === defaultTenant
-      ? `http://localhost:${port}/accept?token=${token}`
+      ? `${consoleBase()}/accept?token=${token}`
       : cfg.baseDomain
         ? `https://${slug}.${cfg.baseDomain}/accept?token=${token}`
         : `http://${slug}.localhost:${port}/accept?token=${token}`;

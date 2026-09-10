@@ -51,8 +51,8 @@ const CONNECTOR_CALL = 'connector.call';
 /** Split a namespaced MCP tool name into its server prefix and the bare tool name.
  *  `mcp__composio-company__COMPOSIO_MULTI_EXECUTE_TOOL` → `['mcp__composio-company', 'COMPOSIO_MULTI_EXECUTE_TOOL']`.
  *  The prefix is preserved on every synthetic tool we build, because it is what identifies WHICH
- *  Composio identity the action runs under — `emailIdentityDenial` reads it to refuse a member-scoped
- *  run reaching for the company email account. */
+ *  Composio identity the action runs under — `emailIdentityDenial` reads it (with the bare action name,
+ *  which is where the toolkit comes from) to work out whose mailbox a send would actually leave. */
 function splitTool(tool: string): { prefix: string; name: string } {
   const at = tool.lastIndexOf('__');
   return at > 0 ? { prefix: tool.slice(0, at), name: tool.slice(at + 2) } : { prefix: '', name: tool };

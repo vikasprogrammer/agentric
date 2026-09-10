@@ -21,8 +21,9 @@
  */
 import type { AgentOS } from '../kernel';
 import type { Automations } from './automations';
-import { chatAck } from './automations';
-import { ClickupFileRef, addComment, addReaction, downloadClickupFile, fetchLatestComment, taskUrl } from '../connectors/clickup';
+import { CHAT_NAMESPACE_RE, chatAck } from './automations';
+import { ClickupFileRef, addComment, addReaction, downloadClickupFile, fetchLatestComment, fetchTask, taskUrl } from '../connectors/clickup';
+import { consolePage } from '../governance/chat-links';
 
 /** Attachments per comment we'll fetch. A pasted screenshot is one file; a dumped folder is not a comment. */
 const MAX_FILES = 5;
@@ -42,6 +43,8 @@ export class ClickupIngress {
   constructor(
     private readonly os: AgentOS,
     private readonly autos: Automations,
+    /** Console origin, for the Agentric task link the `/agentric` bridge posts back. Absent → the bare id. */
+    private readonly consoleOrigin?: string,
   ) {}
 
   /** Token present — the minimum to read comments + reply. */
@@ -97,6 +100,11 @@ export class ClickupIngress {
     const runAs = member?.id;
     const actorLabel = member?.name || comment.userEmail || 'a ClickUp user';
 
+    // 0) `/agentric …` — the task bridge (one ticket ↔ one Agentric task). Intercepted BEFORE continuity and
+    // routing: `agentric` is the namespace, not an agent, and must never fall through to the roster reply.
+    const bridge = text.match(/^\s*\/agentric(?=\s|$)\s*([\s\S]*)$/i);
+    if (bridge) return this.bridge(token, taskId, comment.id, bridge[1], member?.id, actorLabel, files);
+
     // 1) Continuity: a follow-up `/command` on a task already bound to a live/resumable session resumes it.
     const cont = this.autos.continueClickupThread({ taskId, actorLabel, text, raw, files }, runAs);
     if (cont.status !== 'none') {
@@ -124,9 +132,45 @@ export class ClickupIngress {
     return { ok: true, status: r.sessions.length ? 'dispatched' : 'ignored', sessions: r.sessions };
   }
 
+  /**
+   * `/agentric [<agent>] <text>` → find-or-create the Agentric task mirroring this ticket (see
+   * `Automations.linkClickupTicket`). Posts ONE comment the first time (the task link — the way back from
+   * ClickUp into Agentric) or when a named agent couldn't be started; a repeat is acknowledged by the 👀
+   * reaction alone, since a comment per comment doubles the noise on a shared ticket. Never throws.
+   */
+  private async bridge(token: string, ticketId: string, commentId: string, text: string, member: string | undefined, actorLabel: string, files: { name: string; data: Buffer }[]): Promise<{ ok: boolean; status: string; sessions?: string[] }> {
+    // `/agentric status|done|reopen|help` — a helper command about THIS ticket's task, answered as one
+    // comment. Anything else (including a sentence that merely starts with "done") is text for the task.
+    const reply = this.autos.agentricCommand(text, 'clickup', member, {
+      bodyOnly: true, ticketTask: this.os.tasks.byExternalKey(this.os.tenant, `clickup:${ticketId}`),
+    });
+    if (reply !== null) {
+      const a = await addComment(token, ticketId, reply);
+      if ('ok' in a) this.remember(a.id);
+      return { ok: true, status: 'agentric:command' };
+    }
+    const ticket = await fetchTask(token, ticketId);
+    let r: ReturnType<Automations['linkClickupTicket']>;
+    try {
+      r = this.autos.linkClickupTicket({ ticketId, commentId, text, ticket, member, actorLabel, files });
+    } catch (e) {
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'clickup', type: 'clickup.task.failed', data: { ticket: ticketId, error: e instanceof Error ? e.message : String(e) } });
+      return { ok: false, status: 'agentric: could not link' };
+    }
+    const link = this.consoleOrigin ? consolePage(this.consoleOrigin, 'tasks', r.task.id) : r.task.id;
+    let msg = '';
+    if (r.created) msg = `Tracking this in Agentric: ${r.task.title}\n${link}` + (r.agent && r.status !== 'refused' ? `\n${r.agent} is on it.` : '');
+    if (r.status === 'refused') msg = `${msg || `Agentric task: ${link}`}\nCould not start ${r.agent}: ${r.reason}`;
+    if (msg) {
+      const a = await addComment(token, ticketId, msg);
+      if ('ok' in a) this.remember(a.id);
+    }
+    return { ok: true, status: `agentric:${r.status}`, sessions: r.sessionId ? [r.sessionId] : [] };
+  }
+
   /** Did the comment itself name every agent that ran? `/support-ops …` did; an auto-route did not. */
   private commenterNamed(text: string, agents: string[]): boolean {
-    const head = (text || '').trim().replace(/^\/agent-?os\s+\/?/i, '/').match(/^\/([A-Za-z0-9][\w-]*)/);
+    const head = (text || '').trim().replace(CHAT_NAMESPACE_RE, '$1/').match(/^\/([A-Za-z0-9][\w-]*)/);
     return !!head && agents.every((a) => a === head[1]);
   }
 

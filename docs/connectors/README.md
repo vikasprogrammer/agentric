@@ -99,3 +99,23 @@ session's `.mcp.json`:
 
 Credentials for stored connectors live in the gitignored data home, not the repo. A multi-tenant
 deployment should move those values into the vault.
+
+## `/agentric` helper commands (v0.432.0)
+
+One closed verb set, answered by the server with no agent run, on every chat ingress plus ClickUp
+(`src/edge/agentric-commands.ts`, `Automations.agentricCommand`). Intercepted at the top of
+`fireSlack` / `fireDiscord` / `fireTelegram` (ahead of automations and the router) and in
+`ClickupIngress.bridge`.
+
+| Verb | Chat (Slack · Discord · Telegram) | ClickUp comment |
+|---|---|---|
+| `help` | ✅ | ✅ |
+| `tasks [open\|done\|all]` | ✅ assigned to / filed by / run as you | pointer only |
+| `task new <title> [@agent]` | ✅ naming an agent assigns + starts it | pointer only |
+| `task <id> <text>` | ✅ into the discussion | pointer only (`/agentric <text>` does this) |
+| `status` · `done` · `reopen` | ✅ with `<id>` | ✅ id optional — defaults to the ticket's task |
+
+Strict grammar: a status verb only counts as the whole message; anything that doesn't parse routes exactly
+as before (`/agentric <agent> …` → that agent). Every verb but `help` needs the sender resolved to a
+member. Verbs win over agent ids — an agent named `help`/`task`/`tasks`/`done`/`reopen`/`status` is
+reachable as `/<name> …`, not `/agentric <name> …`. Audited `chat.command`.

@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -4023,6 +4023,24 @@ function useSessionChain(sessionId?: string): { chain: SessionChain | null; relo
   return { chain, reload }
 }
 
+/** Poll the open session's progress line. The sessions LIST deliberately doesn't carry it (it would be
+ *  a per-row query on every poll of a long list); the by-id fetch does, so the detail view asks for its
+ *  own. Stops polling the moment the run isn't live — a finished run's position is history, not status. */
+function useSessionProgress(sessionId?: string, live = false): SessionProgress | null {
+  const [progress, setProgress] = useState<SessionProgress | null>(null)
+  useEffect(() => {
+    if (!sessionId || !live) { setProgress(null); return }
+    let alive = true
+    const load = () => api.session(sessionId)
+      .then((r) => { if (alive && r && !('error' in r)) setProgress(r.progress ?? null) })
+      .catch(() => {})
+    load()
+    const t = setInterval(load, 8000)
+    return () => { alive = false; clearInterval(t) }
+  }, [sessionId, live])
+  return progress
+}
+
 /** A chain is only a chain once something was handed off — one node is just a session. */
 const hasChain = (c: SessionChain | null): boolean => (c?.nodes.length ?? 0) > 1
 const chainPending = (c: SessionChain | null): number => (c?.nodes ?? []).reduce((n, x) => n + x.pending.length, 0)
@@ -4328,6 +4346,8 @@ function SessionsPage({
   // (and badge) even while the rail is hidden. Collapsed state persists per browser.
   const openSession = selected ? sessions.find((s) => s.tmux === selected.tmux) : undefined
   const { chain, reload: reloadChain } = useSessionChain(openSession?.id)
+  // Where the open run is + whether it's moving — the detail-view twin of the feed row's line.
+  const openProgress = useSessionProgress(openSession?.id, Boolean(openSession && isLive(openSession)))
   const [railOpen, setRailOpen] = useState(() => localStorage.getItem('aos_chain_rail') !== '0')
   const toggleRail = () => setRailOpen((v) => { localStorage.setItem('aos_chain_rail', v ? '0' : '1'); return !v })
 
@@ -4462,6 +4482,18 @@ function SessionsPage({
             </button>
           )}
         </div>
+        {/* WHERE this run is — a full-width strip between the tab bar and the pane, so the answer is on
+            screen before you start reading terminal output. Present only once it says something the tab
+            strip's status glyph doesn't already (see progressWorthShowing). The verdict's evidence is
+            spelled out here rather than hidden in a tooltip — there's room, and a status word you can't
+            check is one people learn to ignore. */}
+        {progressWorthShowing(openProgress) && (
+          <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-900 px-3 py-1.5">
+            <ProgressLine p={openProgress} />
+            <span className="min-w-0 flex-1 truncate text-xs text-neutral-500" title={openProgress.reason}>{openProgress.reason}</span>
+            {openProgress.note && <span className="min-w-0 max-w-[40%] shrink truncate text-xs italic text-neutral-400" title={openProgress.note}>{openProgress.note}</span>}
+          </div>
+        )}
         {/* Terminal + the hand-off chain, side by side: the pane keeps its height, the rail takes width
             only when this session actually delegated (it renders nothing for a solo run). */}
         <div className="flex min-h-0 flex-1">
@@ -4872,6 +4904,71 @@ function SessionFacts({ session: s, members = [] }: { session?: Session; members
   )
 }
 
+/** Tone per verdict, deliberately reusing the console's existing status vocabulary: `blocked` is amber
+ *  because it IS the "needs you" state (a human's queue is holding the run up, not a fault of the agent),
+ *  emerald means moving, and the two failure shades stay distinct from red (which means crashed). */
+const PROGRESS_META: Record<SessionProgress['verdict'], { label: string; bar: string; text: string; chip: string }> = {
+  forward: { label: 'forward', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', chip: 'border-emerald-300 bg-emerald-50/60 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400' },
+  blocked: { label: 'blocked', bar: 'bg-amber-400', text: 'text-amber-600 dark:text-amber-400', chip: 'border-amber-300 bg-amber-50/60 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400' },
+  stuck: { label: 'stuck', bar: 'bg-orange-500', text: 'text-orange-600 dark:text-orange-400', chip: 'border-orange-300 bg-orange-50/60 text-orange-700 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-400' },
+  circling: { label: 'circling', bar: 'bg-violet-500', text: 'text-violet-600 dark:text-violet-400', chip: 'border-violet-300 bg-violet-50/60 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-400' },
+}
+
+/** True when the line actually says something a viewer could not already see. A `forward` verdict with
+ *  no declared position is just "it is running", which the row's status glyph already says — rendering
+ *  it would add a chip to every live row and teach people to ignore the whole indicator. */
+function progressWorthShowing(p: SessionProgress | null | undefined): p is SessionProgress {
+  return Boolean(p && (p.pct != null || p.step != null || p.subject || p.verdict !== 'forward'))
+}
+
+/** The progress BAR. Rendered only with a real denominator — a bar with no total would be a made-up
+ *  number, and the whole point of this line is that its parts are each traceable to something. A stale
+ *  claim renders dimmed: the position may no longer be true and must not look current. */
+function ProgressBar({ p, className = 'w-24' }: { p: SessionProgress; className?: string }) {
+  if (p.pct == null) return null
+  const m = PROGRESS_META[p.verdict]
+  return (
+    <span className={`inline-block h-1.5 shrink-0 overflow-hidden rounded-full bg-muted ${className} ${p.stale ? 'opacity-40' : ''}`}>
+      <span className={`block h-full rounded-full ${m.bar} transition-[width] duration-500`} style={{ width: `${Math.round(p.pct * 100)}%` }} />
+    </span>
+  )
+}
+
+/**
+ * The one-line "where is this run, and is it moving?" — the answer you otherwise had to read a whole
+ * transcript for. Position (subject · step/total) is what the AGENT declared; the delta and the verdict
+ * are derived server-side, so nothing here is the agent grading its own homework.
+ *
+ * `activity` is the row's existing "currently…" text, folded in as the trailing clause so a running feed
+ * row stays ONE line instead of growing a second.
+ */
+function ProgressLine({ p, activity, compact = false }: { p: SessionProgress; activity?: string | null; compact?: boolean }) {
+  const m = PROGRESS_META[p.verdict]
+  const pos = p.step != null ? (p.total != null ? `${p.step}/${p.total}` : `step ${p.step}`) : null
+  // The delta is the half that makes a bar mean anything, so it is shown whenever it exists — including
+  // a flat 0, which is precisely the interesting case.
+  const delta = p.delta == null ? null : p.delta > 0 ? `+${p.delta}` : String(p.delta)
+  return (
+    <div className={`flex min-w-0 items-center gap-1.5 ${compact ? 'text-xs' : 'text-[13px]'} text-muted-foreground`}>
+      <ProgressBar p={p} className={compact ? 'w-16' : 'w-28'} />
+      {p.subject && <span className="shrink-0 font-medium text-foreground/80">{p.subject}</span>}
+      {pos && <span className={`shrink-0 tabular-nums ${p.stale ? 'opacity-50' : ''}`}>{pos}</span>}
+      {delta && <span className={`shrink-0 tabular-nums ${p.delta! > 0 ? m.text : 'opacity-60'}`}>{delta}</span>}
+      {/* The verdict carries its evidence in the tooltip — a status word nobody can check is one people
+          learn to ignore. */}
+      <span className={`shrink-0 rounded border px-1 py-px text-[10px] font-medium uppercase tracking-wide ${m.chip}`} title={p.reason}>
+        {m.label}
+      </span>
+      {p.stale && p.ts && (
+        <span className="shrink-0 text-[10px] opacity-60" title="the agent has not restated its position since — the number above may be out of date">
+          as of {timeAgo(p.ts)} ago
+        </span>
+      )}
+      {activity && <span className="min-w-0 truncate italic">{activity}</span>}
+    </div>
+  )
+}
+
 function timeAgo(ts: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
   if (s < 60) return `${s}s`
@@ -5276,7 +5373,11 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
               )}
               {preview.kind === 'none' && (
                 <>
-                  <div className="text-sm text-muted-foreground">I couldn't confidently match an agent. Pick one to start:</div>
+                  <div className="text-sm text-muted-foreground">
+                    {preview.noFit
+                      ? "No agent here does this yet — I've flagged it for your admins. Pick one anyway, or start a new agent:"
+                      : 'I couldn\u2019t confidently match an agent. Pick one to start:'}
+                  </div>
                   <div className="max-h-[46vh] overflow-y-auto rounded-lg border">
                     <div className="flex flex-col divide-y">
                       {preview.candidates.length === 0 && <div className="p-3 text-sm text-muted-foreground">No agents you can run yet.</div>}
@@ -5941,14 +6042,22 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
     ) : (
       <div>
         {snippet(it)}
-        {/* live progress: what the agent is doing right now, refreshed by the poll (no terminal needed).
-            Only render when there's an actual summary — otherwise the dot dangles with nothing after it. */}
-        {it.state === 'running' && it.lastActivity?.summary?.trim() && (
+        {/* live progress, refreshed by the poll (no terminal needed). Two shapes, never both — the row
+            stays ONE line either way:
+              · WHERE it is — the agent's declared position + a server-derived forward/stuck/circling
+                verdict, with what it's doing folded in as the trailing clause;
+              · failing that, just what it's doing (the pre-existing "currently…" line), for a run that
+                never declared a position and is moving normally. */}
+        {it.state === 'running' && (progressWorthShowing(it.progress) ? (
+          <div className="mt-1">
+            <ProgressLine p={it.progress} activity={it.lastActivity?.summary?.trim() || null} compact />
+          </div>
+        ) : it.lastActivity?.summary?.trim() ? (
           <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
             <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 motion-safe:animate-pulse" />
             <span className="min-w-0 truncate italic">{it.lastActivity.summary.trim()}</span>
           </div>
-        )}
+        ) : null)}
         {attribution(it, chain)}
       </div>
     )
@@ -10051,6 +10160,18 @@ function matchesQuickStatus(t: Task, s: QuickStatus): boolean {
   return true
 }
 
+// Who FILED the task. `createdBy` has always been stored (member id | `agent:<id>`) and was never shown
+// or filterable, so on a board where agents file most of the rows a person's own tasks were unfindable —
+// and an agent-filed sub-task looked exactly like one you'd written yourself. 'me' is the narrow case of
+// 'human'; both are answered from the row, so this is a lens, not a schema change.
+type TaskAuthor = '' | 'me' | 'human' | 'agent'
+function matchesAuthor(t: Task, a: TaskAuthor, meId: string): boolean {
+  if (a === 'me') return t.createdBy === meId
+  if (a === 'human') return !t.createdBy.startsWith('agent:')
+  if (a === 'agent') return t.createdBy.startsWith('agent:')
+  return true
+}
+
 function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void; backTo: (fallback: Route) => BackTarget }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
@@ -10124,9 +10245,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   useEffect(() => { localStorage.setItem('aos_task_room_side', roomSide ? '1' : '0') }, [roomSide])
   // Sticky like the view mode next to it — the grouping is a way of *reading* the board, and having it
   // snap back to Priority on every visit made Chain in particular feel like a toy rather than a lens.
-  const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'goal' | 'chain' | 'none'>(() => {
+  const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'author' | 'goal' | 'chain' | 'none'>(() => {
     const v = localStorage.getItem('aos_tasks_group')
-    return v === 'status' || v === 'assignee' || v === 'goal' || v === 'chain' || v === 'none' ? v : 'priority'
+    return v === 'status' || v === 'assignee' || v === 'author' || v === 'goal' || v === 'chain' || v === 'none' ? v : 'priority'
   })
   useEffect(() => { localStorage.setItem('aos_tasks_group', listGroup) }, [listGroup])
   const [mine, setMine] = useState(false)
@@ -10142,6 +10263,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   // opens exactly as it always has.
   const [fStatus, setFStatus] = useState<'' | 'open' | 'blocked' | 'done'>('')
   const [fUnassigned, setFUnassigned] = useState(false)
+  // Authorship lens (see `matchesAuthor`) + the sub-task brake next to it: `fRoot` hides anything with a
+  // parent, so the board shows the work somebody actually asked for rather than the decomposition an
+  // agent generated under it. Both default off — the view opens exactly as it always has.
+  const [fAuthor, setFAuthor] = useState<TaskAuthor>('')
+  const [fRoot, setFRoot] = useState(false)
   const [sort, setSort] = useState<'priority' | 'due' | 'updated'>('priority')
   // drag-and-drop
   const [dragId, setDragId] = useState<string | null>(null)
@@ -10220,6 +10346,35 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     )
   }
 
+  /** Who filed the task, on a card — shown only when that isn't the assignee (when it is, the assignee
+   *  badge already says it). This is the one place the board distinguishes a task a PERSON wrote from a
+   *  sub-task an AGENT split out of its own work, which used to render identically. */
+  const filedByChip = (t: Task) => {
+    if (!t.createdBy || t.createdBy === t.assignee) return null
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/80" title={`Filed by ${nameOf(t.createdBy)}`}>
+        <span className="shrink-0 opacity-70">by</span>{assigneeIcon(t.createdBy, 'h-3 w-3')}
+        <span className="max-w-[7rem] truncate">{nameOf(t.createdBy)}</span>
+      </span>
+    )
+  }
+  /** The parent this task was split out of — an agent decomposing its work is the usual author, so the
+   *  chip is what tells you a row is a sub-task rather than something anyone asked for directly. */
+  const parentChip = (t: Task) => {
+    if (!t.parentId) return null
+    const parent = taskById(t.parentId)
+    return (
+      <a
+        href={navHref('tasks', t.parentId)}
+        onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.parentId!))(e) }}
+        title={`Sub-task of: ${parent ? parent.title : t.parentId}`}
+        className="inline-flex min-w-0 items-center gap-0.5 rounded bg-muted px-1 text-[10px] text-muted-foreground no-underline hover:text-foreground hover:underline"
+      >
+        <span className="shrink-0">↳</span><span className="max-w-[8rem] truncate">{parent ? parent.title : t.parentId}</span>
+      </a>
+    )
+  }
+
   const load = async () => {
     const r = await api.tasks(q)
     setTasks(r.tasks ?? [])
@@ -10283,7 +10438,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   // One predicate for every lens, with `skip` naming a dimension to ignore. That's what lets each quick
   // filter show a count of what picking it would actually yield *given the other filters* — a facet count,
   // not a global tally, so "Blocked 7" doesn't promise 7 when you're already narrowed to one assignee.
-  const passes = (t: Task, skip?: 'status' | 'unassigned' | 'overdue'): boolean => {
+  const passes = (t: Task, skip?: 'status' | 'unassigned' | 'overdue' | 'author' | 'root'): boolean => {
     if (mine && t.assignee !== me.id) return false
     if (fAssignee && t.assignee !== fAssignee) return false
     if (fLabel && !t.labels.includes(fLabel)) return false
@@ -10293,6 +10448,8 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     if (fLive && !liveOf(t)) return false
     if (skip !== 'unassigned' && fUnassigned && t.assignee) return false
     if (skip !== 'status' && !matchesQuickStatus(t, fStatus)) return false
+    if (skip !== 'author' && !matchesAuthor(t, fAuthor, me.id)) return false
+    if (skip !== 'root' && fRoot && t.parentId) return false
     return true
   }
   const visible = (tasks ?? []).filter((t) => passes(t))
@@ -10300,10 +10457,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   const statusPool = (tasks ?? []).filter((t) => passes(t, 'status'))
   const statusCount = (s: '' | 'open' | 'blocked' | 'done') => statusPool.filter((t) => matchesQuickStatus(t, s)).length
   const unassignedCount = (tasks ?? []).filter((t) => passes(t, 'unassigned') && !t.assignee).length
+  const authorPool = (tasks ?? []).filter((t) => passes(t, 'author'))
+  const authorCount = (a: TaskAuthor) => authorPool.filter((t) => matchesAuthor(t, a, me.id)).length
+  const subCount = (tasks ?? []).filter((t) => passes(t, 'root') && t.parentId).length
   const overdueCount = (tasks ?? []).filter((t) => passes(t, 'overdue') && dueMeta(t.dueAt, t.status)?.overdue).length
   const goalsPresent = [...new Set((tasks ?? []).map((t) => t.goalId).filter(Boolean) as string[])]
-  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue || fLive || fStatus !== '' || fUnassigned
-  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false); setFLive(false); setFStatus(''); setFUnassigned(false) }
+  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue || fLive || fStatus !== '' || fUnassigned || fAuthor !== '' || fRoot
+  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false); setFLive(false); setFStatus(''); setFUnassigned(false); setFAuthor(''); setFRoot(false) }
 
   const liveTasks = visible.filter((t) => liveOf(t))
   const liveCount = liveTasks.length
@@ -10322,7 +10482,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     const r = await api.addTask(req)
     if (r.error) return setHint('⚠ ' + r.error)
     setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setDue(''); setGoalId(''); setCriteria(''); setNewDeps([]); setShowNew(false)
-    load()
+    await load()
+    // Land IN the task you just filed. Creating one used to drop you back on the board with the new card
+    // somewhere in it — on a busy board you then had to hunt for your own task to add detail or dispatch
+    // it. The room is where the next action lives, so go there. (Board first, so closing the room via
+    // `backTo` returns to a list that already holds the card.)
+    if (r.task?.id) openTask(r.task.id)
   }
   // Re-link or complete a task and the goal's derived progress moves with it, so refresh the goal
   // list too — otherwise the "part of goal" banner keeps showing the pre-edit bar.
@@ -10402,6 +10567,8 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
               <span className="text-[10px] text-muted-foreground">{workers[t.id].agents.length} ran</span>
             </span>
           )}
+          {filedByChip(t)}
+          {parentChip(t)}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
           {/* What a blocked task waits on, as its delegate declared it. The column header says "Needs you",
               which is only true for `human` — this says which of the three it actually is, and `human` is
@@ -10483,7 +10650,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     ) : (
       <div className="space-y-3.5">
         <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
-          <span>{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</span>
+          <span>{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}{detail.task.createdBy ? ` · filed by ${nameOf(detail.task.createdBy)}` : ''}</span>
           {draftNow && <Badge variant="outline" className="px-1.5 py-0 font-sans text-[10px]" title="never dispatched — no session has worked this yet, so it's still yours to edit or delete">draft</Badge>}
         </div>
 
@@ -10866,6 +11033,29 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
           <button onClick={() => setMine(false)} className={`px-2.5 py-1 ${!mine ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>All</button>
           <button onClick={() => setMine(true)} className={`border-l px-2.5 py-1 ${mine ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>My tasks</button>
         </div>
+        {/* Who FILED it. Sits next to "My tasks" (which is about the ASSIGNEE) because the two answer
+            different questions — what's on my plate vs. what I asked for. */}
+        <div className="inline-flex overflow-hidden rounded-md border" title="Filter by who filed the task">
+          {([['', 'Anyone'], ['me', 'I filed'], ['human', 'People'], ['agent', 'Agents']] as [TaskAuthor, string][]).map(([a, label], i) => {
+            const on = fAuthor === a
+            return (
+              <button
+                key={a || 'any'}
+                onClick={() => setFAuthor(a)}
+                title={a === 'me' ? 'Tasks you created yourself' : a === 'human' ? 'Tasks a person created' : a === 'agent' ? 'Tasks an agent created (its own work and the sub-tasks it split out)' : 'No author filter'}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 ${i ? 'border-l' : ''} ${on ? 'bg-muted font-medium' : 'text-muted-foreground'}`}
+              >
+                {a === 'agent' && <Bot className="h-3.5 w-3.5" />}{a === 'human' && <Users className="h-3.5 w-3.5" />}{label}
+                {a !== '' && <span className="font-mono text-[10px] tabular-nums opacity-70">{authorCount(a)}</span>}
+              </button>
+            )
+          })}
+        </div>
+        {subCount > 0 && (
+          <button onClick={() => setFRoot((v) => !v)} title="Hide sub-tasks — show only the work somebody asked for, not the decomposition under it" className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fRoot ? 'border-primary bg-primary/10 font-medium text-foreground' : 'text-muted-foreground'}`}>
+            <FolderTree className="h-3.5 w-3.5" />Top level<span className="font-mono text-[10px] tabular-nums opacity-70">{subCount} sub</span>
+          </button>
+        )}
         <button onClick={() => setFUnassigned((v) => !v)} title="Work nobody has picked up" className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fUnassigned ? 'border-amber-500 bg-amber-500/10 text-amber-600' : 'text-muted-foreground'}`}>
           <User className="h-3.5 w-3.5" />Unassigned{unassignedCount > 0 && <span className="font-mono text-[10px] tabular-nums">{unassignedCount}</span>}
         </button>
@@ -10893,9 +11083,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
         <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue{overdueCount > 0 && <span className="font-mono text-[10px] tabular-nums">{overdueCount}</span>}</button>
         {view === 'list' && (
           <>
-            <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', goal: 'Group: Goal', chain: 'Group: Chain', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>
+            {/* `chain` was in the trigger's label map but had no SelectItem, so the mode the list already
+                implemented could not actually be picked. Listed now, alongside the new author grouping. */}
+            <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', author: 'Group: Filed by', goal: 'Group: Goal', chain: 'Group: Chain', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>
               <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="priority">Group: Priority</SelectItem><SelectItem value="status">Group: Status</SelectItem><SelectItem value="assignee">Group: Assignee</SelectItem><SelectItem value="goal">Group: Goal</SelectItem><SelectItem value="none">Group: None</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="priority">Group: Priority</SelectItem><SelectItem value="status">Group: Status</SelectItem><SelectItem value="assignee">Group: Assignee</SelectItem><SelectItem value="author">Group: Filed by</SelectItem><SelectItem value="goal">Group: Goal</SelectItem><SelectItem value="chain">Group: Chain</SelectItem><SelectItem value="none">Group: None</SelectItem></SelectContent>
             </Select>
             <Select items={{ priority: 'Sort: Priority', due: 'Sort: Due date', updated: 'Sort: Updated' }} value={sort} onValueChange={(v) => v && setSort(v as typeof sort)}>
               <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
@@ -11059,6 +11251,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
               if (listGroup === 'priority') groups = [0, 1, 2, 3].map((p) => ({ key: String(p), label: <span className="flex items-center gap-2"><PriorityPips p={p} />{PRIORITY_LABEL[p]}</span>, items: within(visible.filter((t) => t.priority === p)) })).filter((g) => g.items.length)
               else if (listGroup === 'status') groups = (['doing', 'blocked', 'todo', 'done', 'cancelled'] as TaskStatus[]).map((s) => ({ key: s, label: <span className="flex items-center gap-2"><StatusDot status={s} /><span className="capitalize">{s}</span></span>, items: within(visible.filter((t) => t.status === s)) })).filter((g) => g.items.length)
               else if (listGroup === 'assignee') groups = [...new Set(visible.map((t) => t.assignee || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unassigned'}</span>, items: within(visible.filter((t) => (t.assignee || '') === k)) })).filter((g) => g.items.length)
+              else if (listGroup === 'author') groups = [...new Set(visible.map((t) => t.createdBy || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unknown'}</span>, items: within(visible.filter((t) => (t.createdBy || '') === k)) })).filter((g) => g.items.length)
               else if (listGroup === 'goal') groups = [...new Set(visible.map((t) => t.goalId || ''))].sort((a, b) => (a ? goalTitle(a) : 'zzz').localeCompare(b ? goalTitle(b) : 'zzz')).map((k) => ({ key: k || 'none', label: <span className="flex items-center gap-1.5">{k ? <><Target className="h-3.5 w-3.5 text-muted-foreground" /><a href={navHref('goals', k)} onClick={onNavClick(() => nav('goals', k))} className="text-muted-foreground no-underline hover:text-foreground hover:underline">{goalTitle(k)}</a></> : 'No goal'}</span>, items: within(visible.filter((t) => (t.goalId || '') === k)) })).filter((g) => g.items.length)
               else if (listGroup === 'chain') {
                 chain = chainOrder(visible, within)
@@ -11101,6 +11294,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
                         </div>
                         <div className="hidden w-32 shrink-0 items-center gap-1.5 truncate text-xs text-muted-foreground sm:flex">
                           <span className="min-w-0 truncate">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</span>
+                          {/* The filer, when it isn't the assignee — the same distinction the board card
+                              makes, kept in the list so switching view doesn't lose it. */}
+                          {t.createdBy && t.createdBy !== t.assignee && (
+                            <span className="shrink-0 opacity-60" title={`Filed by ${nameOf(t.createdBy)}`}>{assigneeIcon(t.createdBy, 'h-3 w-3')}</span>
+                          )}
                           {workers[t.id] && (
                             <span title={`worked by ${workers[t.id].agents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')}`}><AgentStack agents={workers[t.id].agents} /></span>
                           )}
@@ -12114,6 +12312,8 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
   useEffect(load, [])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   const agentName = (id: string) => agents.find((a) => a.id === id)?.id || id
+  // A workflow proposal carries several parts; an older single-automation card carries only `spec`.
+  const partsOf = (pr: AutomationProposal) => pr.specs?.length ? pr.specs : [pr.spec]
   // The run-as identity decides which connectors the fired session gets (a member → their personal Composio
   // Gmail/etc.; company → shared account only), so let the approver confirm/override the agent's suggestion.
   const runAsFor = (pr: AutomationProposal) => runAsEdit[pr.id] ?? pr.spec.runAs ?? ''
@@ -12128,11 +12328,18 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
           <Card key={pr.id} className="border-amber-200">
             <CardContent className="space-y-2 p-3">
               <div className="flex flex-wrap items-center gap-1.5">
-                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{pr.spec.type}</Badge>
-                <span className="text-sm font-medium">{pr.spec.name}</span>
-                <span className="text-[11px] text-muted-foreground">runs <span className="font-mono">{agentName(pr.spec.agentId)}</span> · by <span className="font-mono">{pr.agent}</span>{pr.createdAt ? ` · ${timeAgo(pr.createdAt)}` : ''}</span>
+                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{partsOf(pr).length > 1 ? `workflow · ${partsOf(pr).length}` : pr.spec.type}</Badge>
+                <span className="text-sm font-medium">{pr.workflow || pr.spec.name}</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {partsOf(pr).length > 1
+                    ? <>runs <span className="font-mono">{[...new Set(partsOf(pr).map((sp) => agentName(sp.agentId)))].join(', ')}</span></>
+                    : <>runs <span className="font-mono">{agentName(pr.spec.agentId)}</span></>} · by <span className="font-mono">{pr.agent}</span>{pr.createdAt ? ` · ${timeAgo(pr.createdAt)}` : ''}
+                </span>
               </div>
-              {pr.preview && <div className="rounded bg-muted/50 px-2 py-1 font-mono text-[11px]">{pr.preview}</div>}
+              {/* Every part is listed: a workflow is approved as a unit, so the approver must see the whole
+                  set before pressing one button. */}
+              {pr.preview && <div className="whitespace-pre-wrap rounded bg-muted/50 px-2 py-1 font-mono text-[11px]">{pr.preview}</div>}
+              {partsOf(pr).length > 1 && <div className="text-[11px] text-muted-foreground">Approving creates all {partsOf(pr).length} — or none, if any part fails.</div>}
               {pr.rationale && <p className="text-[11px] italic text-muted-foreground">“{pr.rationale}”</p>}
               <div className="flex flex-wrap items-center gap-2">
                 <label className="text-[11px] text-muted-foreground" title="The fired session acts as this member, so their personal connectors (e.g. their own Composio Gmail) are injected. Company identity = shared company account only.">Run as</label>
@@ -13666,7 +13873,7 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
         <div className="space-y-1">
           <label className="flex items-center gap-2 text-xs font-medium">
             <input type="checkbox" checked={chatReachable} onChange={(e) => setChatReachable(e.target.checked)} className="h-3.5 w-3.5" />
-            Reachable from chat <span className="font-mono">/agent-os {agentId}</span> (Slack · Discord · ClickUp)
+            Reachable from chat <span className="font-mono">/agentric {agentId}</span> (Slack · Discord · ClickUp)
           </label>
           <p className="text-[11px] text-muted-foreground">On by default. Uncheck to keep <span className="font-mono">{agentId}</span> off the open chat front door — a <span className="font-mono">/{agentId}</span> message in Slack/Discord or a ClickUp task comment won't invoke it. It can still be run from the console, tasks, delegation, or an explicitly-configured automation. Use for supervisor/ops agents you don't want spawned from a shared thread.</p>
         </div>
@@ -19113,9 +19320,12 @@ function IntegrationsSettings({ me }: { me: Member }) {
                 : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
             </div>
             <p className="text-xs text-muted-foreground">
-              Reach any agent from a ClickUp task comment: <code className="text-[11px]">/agent-os &lt;agent&gt; your request</code> (or just <code className="text-[11px]">/&lt;agent&gt;</code>).
+              Reach any agent from a ClickUp task comment: <code className="text-[11px]">/&lt;agent&gt; your request</code>.
               The agent works the task and posts its answer back as a comment; follow-up comments continue the same
-              conversation. One company ClickUp API token reads the comment and posts the reply.
+              conversation. <code className="text-[11px]">/agentric …</code> instead keeps ONE Agentric task per ticket
+              (created on first use, later comments land in its discussion); <code className="text-[11px]">/agentric &lt;agent&gt; …</code> also
+              puts that agent on it; <code className="text-[11px]">/agentric status</code> · <code className="text-[11px]">done</code> · <code className="text-[11px]">reopen</code> act on that task with no agent run
+              (<code className="text-[11px]">/agentric help</code> lists them — the same helpers work in Slack, Discord and Telegram). One company ClickUp API token reads the comment and posts the reply.
             </p>
           </div>
           <Field label="API token" help="ClickUp → Settings → Apps → API Token (pk_…). Needs comment read + write on the tasks you'll use it from.">
@@ -19796,6 +20006,81 @@ function coerceValue(s: string): number | string | boolean {
   return s
 }
 
+/**
+ * Settings → Policy: rules this tenant still enforces that the PRODUCT retired.
+ *
+ * A tenant's `<home>/policy/default.policy.json` is a full snapshot, so it stops tracking the shipped
+ * default the moment it exists — a rule dropped from the product keeps firing here forever. That is not
+ * hypothetical: the blunt `shell.exec`+`risky` rule was retired in v0.17.0 and went on waking owners on
+ * three separate tenants for over a year, found each time only by hand-auditing the approvals table.
+ *
+ * Dropping one LOOSENS governance, so this never acts on its own — it shows the rule, the version that
+ * retired it and why, and waits for an owner. `missing` baseline rules are listed as diagnosis only:
+ * inserting a rule would change first-match order, and a new guardrail belongs in the engine anyway.
+ * Renders nothing when the ruleset is in step, which is the normal case.
+ */
+function PolicyDriftPanel({ drift, canEdit, dirty, onDropped }: {
+  drift: PolicyDrift | null
+  canEdit: boolean
+  dirty: boolean
+  onDropped: (r: { document?: PolicyDocument; drift?: PolicyDrift }) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  if (!drift || drift.clean) return null
+
+  const drop = async (indices: number[]) => {
+    setBusy(true); setErr('')
+    const r = await api.dropRetiredPolicyRules(indices)
+    setBusy(false)
+    if (r.error) return setErr(r.error)
+    onDropped(r)
+  }
+
+  return (
+    <Card className="mt-4 border-amber-500/40">
+      <CardContent className="space-y-3 p-4">
+        <div className="text-sm font-medium">This ruleset has drifted from the shipped default</div>
+
+        {drift.retired.map((hit) => (
+          <div key={hit.index} className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm">
+                  <code className="text-xs">{hit.rule.match.capability}</code>
+                  {hit.rule.match.when ? <span className="text-xs text-muted-foreground"> when {hit.rule.match.when.arg}</span> : null}
+                  {' → '}
+                  <strong>{hit.rule.action}{hit.rule.approver ? ` (${hit.rule.approver})` : ''}</strong>
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Retired from the product in <strong>v{hit.since}</strong>, but still enforced here. {hit.reason}
+                </div>
+              </div>
+              {canEdit ? (
+                <Button size="sm" variant="outline" disabled={busy || dirty} onClick={() => drop([hit.index])}>
+                  Drop rule
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ))}
+
+        {drift.missing.length ? (
+          <div className="text-xs text-muted-foreground">
+            {drift.missing.length} rule{drift.missing.length === 1 ? '' : 's'} in the shipped default {drift.missing.length === 1 ? 'is' : 'are'} not in
+            this ruleset ({drift.missing.map((r) => r.match.capability).join(', ')}). Listed for diagnosis only — adding
+            one changes first-match order, so edit it below if you want it.
+          </div>
+        ) : null}
+
+        {dirty ? <div className="text-xs text-muted-foreground">Save or discard your pending edits first.</div> : null}
+        {!canEdit ? <div className="text-xs text-muted-foreground">Only an owner can change the ruleset.</div> : null}
+        {err ? <div className="text-xs text-red-500">⚠ {err}</div> : null}
+      </CardContent>
+    </Card>
+  )
+}
+
 /** Settings → Governance: agent-proposed policy changes (tighten-only, owner-approved) + revision history
  *  with one-click revert. Sits atop the PolicyEditor so the review queue is the first thing an owner sees. */
 function PolicyProposalsPanel({ me, onApplied }: { me: Member; onApplied: () => void }) {
@@ -19869,10 +20154,13 @@ function PolicyEditor({ me }: { me: Member }) {
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner'
 
+  const [drift, setDrift] = useState<PolicyDrift | null>(null)
+
   useEffect(() => {
     api.policy().then((r) => {
       if (r.error) return setHint('⚠ ' + r.error)
       setEditable(r.editable)
+      setDrift(r.drift ?? null)
       if (r.document) { setDoc(r.document); setSaved(JSON.stringify(r.document)) }
     }).catch(() => {})
   }, [])
@@ -19935,6 +20223,16 @@ function PolicyEditor({ me }: { me: Member }) {
         <strong> Ask</strong> pauses for an admin or owner to approve in the Inbox, <strong>Never</strong> is refused outright.
         {canEdit ? ' Changes apply live to every running session.' : ' Only an owner can edit the policy.'}
       </p>
+
+      <PolicyDriftPanel
+        drift={drift}
+        canEdit={canEdit}
+        dirty={dirty}
+        onDropped={(r) => {
+          setDrift(r.drift ?? null)
+          if (r.document) { setDoc(r.document); setSaved(JSON.stringify(r.document)) }
+        }}
+      />
 
       <PolicyProposalsPanel me={me} onApplied={() => api.policy().then((r) => { if (r.document) { setDoc(r.document); setSaved(JSON.stringify(r.document)) } }).catch(() => {})} />
 

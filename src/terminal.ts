@@ -15,6 +15,7 @@ import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { clipText } from './state/session-activity';
+import { ProgressPosition } from './state/session-progress';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
@@ -126,7 +127,11 @@ import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
 import { guidanceStale } from './edge/dreaming';
 import { GithubIdentity } from './edge/github-identity';
-import { credentialDirHasLogin, preflightCredential } from './edge/runtime-account-check';
+import { credentialDirHasLogin, preflightCredential, readConfigDirToken, configDirCanRefresh, checkClaudeToken } from './edge/runtime-account-check';
+
+/** What a credential pre-flight refuses on — the two states in which a launch is certain to authenticate
+ *  as nobody. Mirrors `preflightCredential`'s return so the refusal path has one shape to switch on. */
+type CredentialBlock = NonNullable<ReturnType<typeof preflightCredential>>;
 import type { RuntimeAccount } from './state/runtime-accounts';
 import { RuntimeLoginManager } from './edge/runtime-login';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -2627,6 +2632,9 @@ export class TerminalManager {
    * the automations pile-up guard releases. Interactive (the default, e.g. manual spawns) opens a
    * normal attachable TUI that stays live until closed.
    */
+  /** The console's public origin (`scheme://host`), '' when unknown — the base for task links in chat. */
+  get consoleOrigin(): string { return this.publicOrigin; }
+
   createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning, clickup?: { taskId: string; commentId: string }, telegram?: { chat: string; messageThreadId?: string; messageId: string }): Session {
     const id = newId('session');
     const tmux = `aos-${id}`;
@@ -3989,11 +3997,11 @@ export class TerminalManager {
    *  everywhere else) does not help either: on macOS the box default reads through the SAME locked
    *  keychain. */
   private assertCredentialsUsable(env: Record<string, string>, o: { id: string; agent: string }, runtime: CodingRuntimeId): boolean {
-    let blocked: { dir: string; service: string } | null = null;
+    let blocked: CredentialBlock | null = null;
     try { blocked = preflightCredential(runtime, env); }
     catch { return true; }                              // a probe that can't run must never block a launch
     if (!blocked) return true;
-    this.refuseForLockedCredential(o.id, o.agent, runtime, blocked.dir, blocked.service);
+    this.refuseForCredential(o.id, o.agent, runtime, blocked);
     return false;
   }
 
@@ -4011,48 +4019,67 @@ export class TerminalManager {
    * `configDir` is whatever the resumed environment carries (empty → the box default). Returns the
    * blocking condition, having already recorded it, or null to proceed.
    */
-  checkResumeCredentials(sessionId: string, configDir: string, runtime: CodingRuntimeId = 'claude-code'): { reason: 'keychain_locked'; dir: string; message: string } | null {
+  checkResumeCredentials(sessionId: string, configDir: string, runtime: CodingRuntimeId = 'claude-code'): { reason: CredentialBlock['reason']; dir: string; message: string } | null {
     const agent = this.sessionAgent(sessionId) ?? 'system';
-    let blocked: { dir: string; service: string } | null = null;
+    let blocked: CredentialBlock | null = null;
     try { blocked = preflightCredential(runtime, configDir ? { [CODING_RUNTIMES[runtime].credentialEnv.configDirVar]: configDir } : {}); }
     catch { return null; }
     if (!blocked) return null;
-    this.refuseForLockedCredential(sessionId, agent, runtime, blocked.dir, blocked.service);
-    return { reason: 'keychain_locked', dir: blocked.dir, message: TerminalManager.lockedCredentialWhy(runtime, blocked.dir) };
+    this.refuseForCredential(sessionId, agent, runtime, blocked);
+    return { reason: blocked.reason, dir: blocked.dir, message: TerminalManager.credentialBlockWhy(runtime, blocked) };
   }
 
-  private static lockedCredentialWhy(runtime: CodingRuntimeId, dir: string): string {
-    return `the macOS login keychain is locked, so ${CODING_RUNTIMES[runtime].label} cannot read the credential for ${dir} — this run would start, authenticate as nobody and end with no work done`;
+  /** Why this run cannot authenticate, in one clause — the same sentence for the session card, the resume
+   *  reply and the audit, so an operator never has to reconcile two accounts of the same refusal. */
+  private static credentialBlockWhy(runtime: CodingRuntimeId, b: CredentialBlock): string {
+    const label = CODING_RUNTIMES[runtime].label;
+    return b.reason === 'keychain_locked'
+      ? `the macOS login keychain is locked, so ${label} cannot read the credential for ${b.dir} — this run would start, authenticate as nobody and end with no work done`
+      : `the login in ${b.dir} expired on ${new Date(b.expiredAt).toISOString().slice(0, 16).replace('T', ' ')} UTC and has no refresh token left, so ${label} would start, get "Login expired · Please run /login" on its first call and end with no work done`;
   }
 
   /** Record a refused run: audit, crash the row, tell its owner, badge the pool account, alert admins.
    *  Shared by the launch and resume pre-flights so the two can never disagree about what a refusal is. */
-  private refuseForLockedCredential(sessionId: string, agent: string, runtime: CodingRuntimeId, dir: string, service: string): void {
-    const why = TerminalManager.lockedCredentialWhy(runtime, dir);
-    this.audit(sessionId, agent, 'session.launch.refused', { runtime, reason: 'credential unreadable: keychain locked', dir, service });
+  private refuseForCredential(sessionId: string, agent: string, runtime: CodingRuntimeId, b: CredentialBlock): void {
+    const dir = b.dir;
+    const why = TerminalManager.credentialBlockWhy(runtime, b);
+    this.audit(sessionId, agent, 'session.launch.refused', b.reason === 'keychain_locked'
+      ? { runtime, reason: 'credential unreadable: keychain locked', dir, service: b.service }
+      : { runtime, reason: 'credential expired: no refresh token left', dir, expiredAt: b.expiredAt });
     this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.addMessage({ type: 'completed', sessionId, agent, title: `Could not start — ${agent}`, body: `Did not launch: ${why}.`, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: sessionId });
     // Badge the pool row this dir belongs to, so Settings → Runtime shows the cause where an operator
     // would go looking for it rather than only in one session's card.
     try {
       const acct = this.os.runtimeAccounts.list().find((a) => a.runtime === runtime && a.configDir === dir);
-      if (acct) this.os.runtimeAccounts.recordCheck(runtime, acct.name, { ok: false, note: 'macOS login keychain is locked — the credential cannot be read from this security session' });
+      if (acct) this.os.runtimeAccounts.recordCheck(runtime, acct.name, { ok: false, note: b.reason === 'keychain_locked'
+        ? 'macOS login keychain is locked — the credential cannot be read from this security session'
+        : 'the stored login expired and has no refresh token — re-run `claude login` for this account' });
     } catch { /* badging is a nicety */ }
-    this.alertCredentialsLocked(dir);
+    this.alertCredentialsBlocked(runtime, b);
   }
 
   /** Tell a human, once per cooldown. This is the half the 2026-09-01 incident was missing: the refusal
-   *  above makes each run honest, but nothing about a crashed session reaches someone who is not looking. */
-  private alertCredentialsLocked(dir: string): void {
+   *  above makes each run honest, but nothing about a crashed session reaches someone who is not looking.
+   *  The 2026-09-09 instawp outage was the same gap with a different cause — 14 hours of $0 runs on a box
+   *  whose default login had simply expired — so both blocking reasons alert through here. */
+  private alertCredentialsBlocked(runtime: CodingRuntimeId, b: CredentialBlock): void {
     const now = Date.now();
     if (now - this.lastCredentialAlertAt < TerminalManager.CREDENTIAL_ALERT_COOLDOWN_MS) return;
     this.lastCredentialAlertAt = now;
+    const label = CODING_RUNTIMES[runtime].label;
     try {
-      this.postSystemCard({
+      this.postSystemCard(b.reason === 'keychain_locked' ? {
         topic: 'credentials-locked',
         type: 'notification',
         title: 'Agent runs are blocked — the macOS login keychain is locked',
-        body: `Claude Code stores this box's logins in the macOS Keychain, and its value cannot be read right now, so no session can authenticate (${dir}). Runs are being refused rather than started and left to fail silently. Unlock it on the box itself:\n\n    security unlock-keychain ~/Library/Keychains/login.keychain-db\n\nThen re-run the check from Settings → Runtime → Runtime accounts.`,
+        body: `Claude Code stores this box's logins in the macOS Keychain, and its value cannot be read right now, so no session can authenticate (${b.dir}). Runs are being refused rather than started and left to fail silently. Unlock it on the box itself:\n\n    security unlock-keychain ~/Library/Keychains/login.keychain-db\n\nThen re-run the check from Settings → Runtime → Runtime accounts.`,
+        audience: { kind: 'admins' },
+      } : {
+        topic: 'credentials-expired',
+        type: 'notification',
+        title: `Agent runs are blocked — the ${label} login has expired`,
+        body: `The login in ${b.dir} expired on ${new Date(b.expiredAt).toISOString().slice(0, 16).replace('T', ' ')} UTC and carries no refresh token, so every session started with it would get "Login expired · Please run /login" on its first call. Runs are being refused rather than started and left to fail silently.\n\nSign that credential in again on the box:\n\n    CLAUDE_CONFIG_DIR=${b.dir} claude /login\n\nOr add a working account under Settings → Runtime → Runtime accounts, which is what sessions rotate onto when the box default is unusable.`,
         audience: { kind: 'admins' },
       });
     } catch { /* the audit line above is the durable record */ }
@@ -4082,6 +4109,15 @@ export class TerminalManager {
         // box account, which is exactly the failure this audit line exists to make visible.
         if (this.os.runtimeAccounts.enabledCount(runtime, { anyKind: true }) > 0 && this.os.runtimeAccounts.enabledCount(runtime) === 0) {
           this.audit(sessionId, agent, 'runtime.account.unusable', { runtime, resident, kinds: CODING_RUNTIMES[runtime].liveCredentialKinds, reason: 'no enabled account of a kind this runtime can launch with — using the box default' });
+        } else {
+          // The other way a configured pool hands back nothing: every account in it is parked or disabled
+          // right now. Previously silent, which is how instawp spent 14 hours quietly launching onto a box
+          // default nobody had checked. The pre-flight refuses the run when that default is dead; this line
+          // says WHY rotation had nothing to offer, which is the question an operator asks next.
+          const all = this.os.runtimeAccounts.allLimited(runtime);
+          if (all.limited || this.os.runtimeAccounts.enabledCount(runtime) > 0) {
+            this.audit(sessionId, agent, 'runtime.account.unusable', { runtime, resident, reason: 'every enabled account is limited or disabled — using the box default', until: all.until });
+          }
         }
         return;
       }
@@ -4189,9 +4225,17 @@ export class TerminalManager {
    *  Best-effort — never throws, never blocks teardown. */
   private detectUsageLimit(sessionId: string, space: string, tmux: string): void {
     try {
-      const row = this.db.prepare('SELECT agent, runtime_account FROM term_sessions WHERE id = ?')
-        .get<{ agent: string; runtime_account: string | null }>(sessionId);
+      const row = this.db.prepare('SELECT agent, runtime_account, created_at FROM term_sessions WHERE id = ?')
+        .get<{ agent: string; runtime_account: string | null; created_at: number }>(sessionId);
       if (!row) return;
+      // The credential dir this run actually authenticated through. It disambiguates the transcript below:
+      // one claude conversation resumed across accounts leaves a copy under each, and the stale one is the
+      // wrong evidence to judge this run by (see `findTranscript`).
+      const manifest = this.os.agents.get(row.agent);
+      const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
+      const acctDir = row.runtime_account
+        ? this.os.runtimeAccounts.get(runtime, row.runtime_account)?.configDir
+        : undefined;
       // The pane is the fast path, but it is VOLATILE — a run killed on its first API call has usually
       // already lost its pane by teardown, and `capturePane` then returns nothing. Measured on the live
       // corpus: of 31 runs the derived outcome identifies as quota/auth deaths (from the
@@ -4204,8 +4248,11 @@ export class TerminalManager {
       if (!text || !(TerminalManager.USAGE_LIMIT_RE.test(text) || TerminalManager.AUTH_FAIL_RE.test(text))) {
         const claudeId = this.db.prepare('SELECT claude_session_id FROM term_sessions WHERE id = ?')
           .get<{ claude_session_id: string | null }>(sessionId)?.claude_session_id;
-        const end = claudeId ? readTranscriptEnd(claudeId) : undefined;
-        if (end?.died) {
+        const end = claudeId ? readTranscriptEnd(claudeId, (id) => findTranscript(id, { preferRoot: acctDir })) : undefined;
+        // Only evidence written DURING this run describes this run. A copy left in another credential dir
+        // by an earlier run of the same conversation is stale by definition, and acting on it is how a
+        // healthy account gets retired for someone else's failure (instawp, 2026-09-09).
+        if (end?.died && end.mtimeMs >= row.created_at) {
           // Hand the classifier the phrase it expects rather than re-deriving here, so the two sources
           // can never disagree about what counts as a limit vs a bad token.
           text = end.deathKind === 'auth' ? 'oauth token expired' : 'hit your weekly limit';
@@ -4218,15 +4265,9 @@ export class TerminalManager {
       // acted on when there's no usage-limit signature, so an exhausted-but-valid token is never disabled.
       const authFailed = !usageLimited && TerminalManager.AUTH_FAIL_RE.test(text);
       if (!usageLimited && !authFailed) return;
-      const manifest = this.os.agents.get(row.agent);
-      const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
       if (authFailed) {
-        if (row.runtime_account) {
-          this.os.runtimeAccounts.markInvalid(runtime, row.runtime_account, 'auto-disabled: a run authenticated with this token and was rejected (401)');
-          this.audit(sessionId, 'system', 'runtime.account.invalid', { runtime, account: row.runtime_account, via });
-        } else {
-          this.audit(sessionId, 'system', 'runtime.auth_failed', { runtime, via });
-        }
+        if (row.runtime_account) this.retireOrVerifyAccount(sessionId, runtime, row.runtime_account, via);
+        else this.audit(sessionId, 'system', 'runtime.auth_failed', { runtime, via });
         return;
       }
       const until = this.parseLimitReset(text) ?? Date.now() + 60 * 60_000; // 1h fallback keeps it parked but self-heals
@@ -4238,6 +4279,63 @@ export class TerminalManager {
         this.audit(sessionId, 'system', 'runtime.usage_limited', { runtime, until, via });
       }
     } catch { /* detection is best-effort — never block teardown */ }
+  }
+
+  /** How long an account sits parked while its auth failure is being verified. Short: the point is only
+   *  to keep the next launch off it until a live probe answers, and `recover()` un-parks it if the probe
+   *  never lands (a restart, a network hole) rather than leaving it stuck. */
+  private static readonly AUTH_SUSPECT_PARK_MS = 10 * 60_000;
+
+  /**
+   * A run under this pool account ended on an auth banner. Park it, then ASK the account itself before
+   * retiring it.
+   *
+   * Disabling straight off the transcript is what took instawp down on 2026-09-09: the signal was a stale
+   * copy of the conversation from an earlier run under a different credential dir, the account was
+   * perfectly valid (weekly 60% used), and disabling it emptied the pool onto a box default whose login
+   * really had expired — 14 hours of $0 runs. `findTranscript`'s preferRoot fixes the misread; this fixes
+   * the blast radius, which is the part that turned one wrong bit into an outage.
+   *
+   * A credential DIR is also the case where a 401 is routinely NOT fatal: an aged-out access token 401s
+   * exactly like a revoked one and `claude` trades its refresh token for a new one on the next launch. So
+   * only a probe that comes back definitively rejected retires the account; `ok` clears the park, and
+   * "couldn't verify" leaves it parked to lapse on its own.
+   */
+  private retireOrVerifyAccount(sessionId: string, runtime: CodingRuntimeId, name: string, via: string): void {
+    const acct = this.os.runtimeAccounts.get(runtime, name);
+    // A static key/token can't refresh and can't be probed through its dir — a 401 there is final, which
+    // is the behaviour this path has always had.
+    if (!acct || acct.kind !== 'oauth' || !acct.configDir || runtime !== 'claude-code') {
+      this.os.runtimeAccounts.markInvalid(runtime, name, 'auto-disabled: a run authenticated with this token and was rejected (401)');
+      this.audit(sessionId, 'system', 'runtime.account.invalid', { runtime, account: name, via });
+      return;
+    }
+    const dir = acct.configDir;
+    this.os.runtimeAccounts.markLimited(runtime, name, Date.now() + TerminalManager.AUTH_SUSPECT_PARK_MS);
+    this.audit(sessionId, 'system', 'runtime.account.auth_suspect', { runtime, account: name, via, dir });
+    void (async () => {
+      try {
+        const token = readConfigDirToken(dir);
+        const r = token
+          ? await checkClaudeToken(token, 12000, { configDir: dir })
+          : { ok: configDirCanRefresh(dir) ? null : false, note: 'no readable credential in the account dir', usage: undefined, limitedUntil: undefined } as Awaited<ReturnType<typeof checkClaudeToken>>;
+        this.os.runtimeAccounts.recordCheck(runtime, name, { ok: r.ok, note: r.note, usage: r.usage });
+        if (r.ok === false) {
+          this.os.runtimeAccounts.markInvalid(runtime, name, `auto-disabled: ${r.note}`);
+          this.audit(sessionId, 'system', 'runtime.account.invalid', { runtime, account: name, via, confirmed: 'probe' });
+          return;
+        }
+        if (r.ok === true && !r.limitedUntil) {
+          this.os.runtimeAccounts.clearLimit(runtime, name);
+          this.audit(sessionId, 'system', 'runtime.account.cleared', { runtime, account: name, note: r.note, was: 'auth_suspect' });
+          return;
+        }
+        if (r.limitedUntil) {
+          this.os.runtimeAccounts.markLimited(runtime, name, r.limitedUntil);
+          this.audit(sessionId, 'system', 'runtime.account.limited', { runtime, account: name, until: r.limitedUntil, via: 'probe' });
+        }
+      } catch { /* leave it parked — recover() un-parks it at AUTH_SUSPECT_PARK_MS */ }
+    })();
   }
 
   /** Best-effort parse of a reset time from a limit message ("resets Jul 30, 10am (UTC)" / "resets 3:10pm").
@@ -5286,9 +5384,9 @@ export class TerminalManager {
     // (internal → green, external → yellow) instead of the generic connector-mutation tier.
     if (args.emailSend === true) {
       capability = 'email.send';
-      // Fail-closed (UC5): a session running AS a member must send email from THAT member's own
-      // account. Reaching for the COMPANY email tool from a member-scoped run is the silent fallback we
-      // must not allow — it means the member's Gmail isn't connected. Deny with a clear reason.
+      // Identity guard (UC5): refuse a send that would go out wearing ANOTHER named person's mailbox.
+      // Evidence-based, not namespace-based — reaching for the company shelf is normal (a shared role
+      // mailbox is exactly what it is for); see `emailIdentityDenial` for what actually convicts.
       const emailDenial = this.emailIdentityDenial(sessionId, rawArgs);
       if (emailDenial) {
         this.audit(sessionId, agent, 'gate.email.blocked', { capability, reason: emailDenial, recipients: args.emailRecipients ?? [] });
@@ -5612,18 +5710,83 @@ export class TerminalManager {
   }
 
   /**
-   * Fail-closed guard for act-as-member email (UC5). Returns a denial reason, or null to allow. A
-   * session that runs AS a specific member may only send email from that member's OWN account: if the
-   * agent reaches for the COMPANY Composio email tool from a member-scoped run, the member simply hasn't
-   * connected their Gmail, so we refuse rather than silently send from the company identity. Company /
-   * automation runs (no run_as member) legitimately use the company account and pass through.
+   * Guard for act-as-member email (UC5). Returns a denial reason, or null to let the normal policy
+   * gate decide.
+   *
+   * THE HARM this exists for is misattribution: an agent acting as one person sends mail that the
+   * world sees as coming from ANOTHER named person. That is not hypothetical — a "company" Google
+   * connection turned out to be one teammate's personal Google account, so an agent acting "as the
+   * company" created a document owned by a person who had no idea (see `composio-identity.ts`).
+   *
+   * The first version caught that by NAMESPACE: any member-scoped run reaching for `composio-company`
+   * email was denied, on the reasoning that a member should send from their own account and the
+   * company shelf is a silent fallback. That conflates a SHELF with a MAILBOX and it broke a
+   * legitimate, deliberate pattern — a shared role mailbox (`sales@`, `support@`) connected at the
+   * company level, which members are *supposed* to send from and which has its own thread history and
+   * ownership. It denied even internal mail between teammates, it was unconditional (an owner-run
+   * session was refused identically), and its own message claimed a precondition ("the run-as member
+   * has no Gmail connected") that it never actually checked. Every company-account send in this
+   * workspace failed the moment v0.420.0 started classifying Composio actions as `email.send` and the
+   * dormant guard woke up.
+   *
+   * So it now denies on EVIDENCE about the account that would ACTUALLY send this message:
+   *
+   *   - resolve the TOOLKIT from the action slug (`…__GMAIL_SEND_EMAIL` → `gmail`), longest match
+   *     against the toolkits on the company shelf, so a `microsoft_outlook_…` action is not read as
+   *     `microsoft`. Convicting on a sibling toolkit's connection would reintroduce the same false
+   *     denial one shelf over — a role `gmail` send blocked because `outlook` happens to be a
+   *     teammate's. Unresolvable toolkit → we do not know what would send → fall through;
+   *   - skip a CLAIMED connection (`composio_claims`). A claim is the sanctioned remediation for
+   *     exactly this problem, and `composioSessionPlan` already makes a claimed account unreachable
+   *     from anyone else's run — so it is not what would send, and denying on it would punish the
+   *     workspace for having fixed the thing properly;
+   *   - convict only when the surviving account IS an ACTIVE team member's own mailbox, and not the
+   *     actor's. An unresolved account label is "we don't know yet", which must never read as guilty,
+   *     and an `invited`-status row is a shared alias someone added to the console, not a person.
+   *
+   * A role mailbox, or an account we cannot tie to a person, falls through. That is not the same as
+   * ungoverned: `email.send` carries its own policy, which routes every EXTERNAL recipient to a human
+   * approval, and the agent's prompt names the account behind each namespace so the choice is made
+   * with open eyes. It is a real residual, though — internal mail is not separately gated, so while an
+   * account is unresolved a member-scoped run can mail a teammate from it with nothing in the way.
+   * Resolving the identity cache (or filing a claim) is what closes that, not this guard.
+   *
+   * Company / automation runs (no run_as member) legitimately use the company account and pass
+   * through. Shared (`composio-shared-*`) namespaces are out of scope: those connections were
+   * explicitly lent by their owner to the team.
    */
   private emailIdentityDenial(sessionId: string, rawArgs: Record<string, unknown>): string | null {
     const runAs = this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(sessionId)?.run_as ?? null;
     if (!runAs) return null; // company/automation identity → company email account is correct
     const tool = typeof rawArgs.tool === 'string' ? rawArgs.tool : '';
-    if (/composio-company/i.test(tool)) {
-      return 'acting as a member — send email from your own connected account, not the company one (the run-as member has no Gmail connected)';
+    if (!/composio-company/i.test(tool)) return null;
+    const actor = this.os.team.resolveMemberRef(runAs);
+    const actorEmail = (actor?.email ?? '').trim().toLowerCase();
+    const entity = serviceUserId(this.os.tenant);
+    // Only ACTIVE connections can send, and only one toolkit is about to. `GMAIL_SEND_EMAIL` and
+    // `MICROSOFT_OUTLOOK_SEND_EMAIL` both start with their toolkit slug, so the longest toolkit that
+    // prefixes the action wins; nothing matches → we cannot say what would send, so we do not convict.
+    const action = (tool.includes('__') ? tool.slice(tool.lastIndexOf('__') + 2) : tool).toLowerCase();
+    const live = this.os.composioIdentities.forEntity(entity).filter((i) => i.status.toUpperCase() === 'ACTIVE');
+    const toolkit = [...new Set(live.map((i) => i.toolkit.toLowerCase()))]
+      .filter((t) => t && action.startsWith(`${t}_`))
+      .sort((a, b) => b.length - a.length)[0];
+    if (!toolkit) return null;
+    const claimed = new Set(
+      this.os.composioClaims.list()
+        .filter((c) => c.userId === entity && c.memberId !== actor?.id)
+        .map((c) => c.id),
+    );
+    for (const conn of live) {
+      if (conn.toolkit.toLowerCase() !== toolkit) continue;
+      if (claimed.has(conn.id)) continue; // walled off from this run — it is not what would send
+      const account = (conn.account ?? '').trim().toLowerCase();
+      if (!account || account === actorEmail) continue;
+      // A role mailbox belongs to nobody in particular. A mailbox that IS an active member's own login
+      // is that person, and sending from it makes them the apparent author.
+      const owner = this.os.team.getMemberByEmail(account);
+      if (!owner || owner.status !== 'active' || owner.id === actor?.id) continue;
+      return `the company ${conn.toolkit} connection is ${owner.name || owner.email}'s own mailbox (${account}) — sending would appear to come from them, not from ${actor?.email ?? runAs}; connect this run-as member's own account, claim that connection for ${owner.name || owner.email} in Settings → Connections, or connect a shared role mailbox at the company level`;
     }
     return null;
   }
@@ -5710,6 +5873,9 @@ export class TerminalManager {
     level?: string;
     capability?: string;
     notify?: boolean;
+    /** Where the DM's link lands. Defaults to Settings → Updates (the self-update watcher, the first
+     *  caller); a card about something else must say so or the push points at the wrong page. */
+    link?: { page: string; detail?: string; label?: string };
   }): string {
     const id = this.addMessage({
       type: input.type, sessionId: `system:${input.topic}`, agent: 'system',
@@ -5724,7 +5890,7 @@ export class TerminalManager {
     // out-of-band DM is the point rather than a nicety — but it stays advisory: a chat outage must not
     // stop the card being recorded.
     if (input.notify !== false) {
-      try { this.reviewNotifier?.({ sessionId: `system:${input.topic}`, agent: 'system', kind: 'system.update', title: input.title, summary: input.body, audience: input.audience, link: { page: 'settings', detail: 'updates', label: 'Settings → Updates' } }); }
+      try { this.reviewNotifier?.({ sessionId: `system:${input.topic}`, agent: 'system', kind: 'system.update', title: input.title, summary: input.body, audience: input.audience, link: input.link ?? { page: 'settings', detail: 'updates', label: 'Settings → Updates' } }); }
       catch { /* out-of-band push is advisory */ }
     }
     return id;
@@ -6956,14 +7122,76 @@ export class TerminalManager {
    * time (by `add`), so a bad expression fails loudly for the human rather than being silently created.
    */
   proposeAutomation(sessionId: string, agent: string, spec: ProposedAutomation, rationale?: string): { ok: boolean; preview?: string; error?: string } {
+    return this.proposeWorkflow(sessionId, agent, [spec], rationale);
+  }
+
+  /**
+   * The multi-part form: ONE reviewable proposal carrying several automations — a standing *function*
+   * ("watch for tickets, and sweep every 30 minutes for anything missed") rather than a single job.
+   *
+   * A function is normally two or three triggers around agents that already exist; the judgment inside it
+   * (classify, answer, escalate) stays the agent's at runtime, which is the point of using agents at all.
+   * So this composes triggers, nothing more — there is no step graph and no new runtime.
+   *
+   * Reviewed and approved as a UNIT: one card, one Approve, and the approve route creates every part or
+   * none (see the route — a part that fails validation rolls the earlier ones back). Every part is
+   * validated HERE too, so a proposal that could not be approved is refused at the point it is made.
+   * `workflow` names the function on the card; omit it for a single automation and the card reads exactly
+   * as it always did.
+   */
+  proposeWorkflow(sessionId: string, agent: string, specs: ProposedAutomation[], rationale?: string, workflow?: string): { ok: boolean; preview?: string; error?: string } {
+    if (!specs.length) return { ok: false, error: 'a proposal needs at least one automation' };
+    if (specs.length > 6) return { ok: false, error: 'a workflow proposal carries at most 6 automations — split it, or lean on the agent\'s own judgment at runtime instead of another trigger' };
+    const cleaned: ProposedAutomation[] = [];
+    const previews: string[] = [];
+    for (let i = 0; i < specs.length; i++) {
+      const one = this.validateProposedAutomation(agent, specs[i]);
+      if ('error' in one) return { ok: false, error: specs.length > 1 ? `part ${i + 1}: ${one.error}` : one.error };
+      cleaned.push(one.clean);
+      previews.push(one.preview);
+    }
+    const preview = previews.join('\n');
+    // Cap the queue + dedupe an identical open proposal from this agent (mirrors proposePolicy).
+    const open = this.db.prepare(`SELECT id, args FROM messages WHERE type = 'automation.proposed' AND status = 'open' AND agent = ?`).all<{ id: string; args: string | null }>(agent);
+    if (open.length >= 10) return { ok: false, error: 'you already have 10 open automation proposals awaiting review — wait for a human to act on them first' };
+    const specKey = JSON.stringify(cleaned);
+    if (open.some((o) => {
+      try {
+        const a = JSON.parse(o.args || '{}') as { spec?: unknown; specs?: unknown };
+        return JSON.stringify(a.specs ?? (a.spec ? [a.spec] : [])) === specKey;
+      } catch { return false; }
+    })) {
+      return { ok: false, error: 'an identical proposal from you is already awaiting review' };
+    }
+    const name = (workflow || '').trim() || cleaned[0].name;
+    const multi = cleaned.length > 1;
+    this.postReviewCard({
+      type: 'automation.proposed', sessionId, agent,
+      title: multi ? `Workflow proposed — ${name} (${cleaned.length} automations)` : `Automation proposed — ${name}`,
+      body: (rationale?.trim() || (multi
+        ? `${agent} proposes the "${name}" workflow — ${cleaned.length} automations, approved together.`
+        : `${agent} proposes a ${cleaned[0].type} automation "${name}".`)) + `\n\n${preview}`,
+      // `spec` is kept alongside `specs` so a card written by this build still reads correctly on an older
+      // one (and vice versa — the readers below fall back to `spec` when `specs` is absent).
+      args: { specs: cleaned, spec: cleaned[0], preview, ...(multi ? { workflow: name } : {}), ...(rationale ? { rationale } : {}) },
+      summary: rationale?.trim() || (multi
+        ? `${agent} proposes the "${name}" workflow (${cleaned.length} automations).`
+        : `${agent} proposes a ${cleaned[0].type} automation "${name}".`),
+    });
+    this.audit(sessionId, agent, 'automation.proposed', { name, parts: cleaned.length, ...(multi ? { workflow: name } : {}), types: cleaned.map((c) => c.type), agents: cleaned.map((c) => c.agentId) });
+    return { ok: true, preview };
+  }
+
+  /** Validate + normalise ONE proposed automation, returning its stored shape and its preview line. */
+  private validateProposedAutomation(agent: string, spec: ProposedAutomation): { clean: ProposedAutomation; preview: string } | { error: string } {
     const agentId = (spec.agentId || agent).trim();
-    if (!this.os.agents.has(agentId)) return { ok: false, error: `unknown agent "${agentId}"` };
+    if (!this.os.agents.has(agentId)) return { error: `unknown agent "${agentId}"` };
     const name = (spec.name || '').trim();
     const task = (spec.task || '').trim();
-    if (!name) return { ok: false, error: 'a name is required' };
-    if (!task) return { ok: false, error: 'a task template is required' };
+    if (!name) return { error: 'a name is required' };
+    if (!task) return { error: 'a task template is required' };
     const type = (['cron', 'webhook', 'composio', 'slack', 'discord'] as const).includes(spec.type as never) ? spec.type : 'cron';
-    if (type === 'cron' && !(spec.schedule || '').trim()) return { ok: false, error: 'a cron automation needs a schedule (5-field cron expression)' };
+    if (type === 'cron' && !(spec.schedule || '').trim()) return { error: 'a cron automation needs a schedule (5-field cron expression)' };
     // Resolve the suggested run-as identity to a canonical member id. Agents name a member by id or email
     // (e.g. from `directory_lookup`); the automations store keys run_as by member id (fire → createSession
     // runAs → composioUserId(member).email). Reject an unresolvable value so a typo can't silently degrade
@@ -6972,55 +7200,50 @@ export class TerminalManager {
     if ((spec.runAs || '').trim()) {
       const raw = String(spec.runAs).trim();
       const m = this.os.team.resolveMemberRef(raw);
-      if (!m) return { ok: false, error: `unknown member "${raw}" for runAs — pass a member id or email (use directory_lookup), or omit runAs to run as the company identity` };
+      if (!m) return { error: `unknown member "${raw}" for runAs — pass a member id or email (use directory_lookup), or omit runAs to run as the company identity` };
       runAs = m.id;
     }
     const clean: ProposedAutomation = { agentId, name, type, task, ...(spec.schedule ? { schedule: String(spec.schedule).trim() } : {}), ...(spec.filter ? { filter: String(spec.filter).trim() } : {}), ...(spec.mode === 'headless' || spec.mode === 'interactive' ? { mode: spec.mode } : {}), ...(runAs ? { runAs } : {}) };
-    // Cap the queue + dedupe an identical open proposal from this agent (mirrors proposePolicy).
-    const open = this.db.prepare(`SELECT id, args FROM messages WHERE type = 'automation.proposed' AND status = 'open' AND agent = ?`).all<{ id: string; args: string | null }>(agent);
-    if (open.length >= 10) return { ok: false, error: 'you already have 10 open automation proposals awaiting review — wait for a human to act on them first' };
-    const specKey = JSON.stringify(clean);
-    if (open.some((o) => { try { return JSON.stringify((JSON.parse(o.args || '{}') as { spec?: unknown }).spec) === specKey; } catch { return false; } })) {
-      return { ok: false, error: 'an identical automation proposal from you is already awaiting review' };
-    }
     // Surface the run-as identity in the preview: it decides which connectors the fired session gets
     // (a member → their personal Composio Gmail/etc.; unset → company identity only), so the approver
     // consciously consents to whose credentials will be used.
     const asWho = runAs ? (this.os.team.getMember(runAs)?.name || this.os.team.getMember(runAs)?.email || runAs) : 'company identity';
-    const preview = `${type}${clean.schedule ? ` \`${clean.schedule}\`` : ''} → runs \`${agentId}\` as ${asWho}: ${task.slice(0, 80)}${task.length > 80 ? '…' : ''}`;
-    this.postReviewCard({
-      type: 'automation.proposed', sessionId, agent,
-      title: `Automation proposed — ${name}`,
-      body: (rationale?.trim() || `${agent} proposes a ${type} automation "${name}".`) + `\n\n${preview}`,
-      args: { spec: clean, preview, ...(rationale ? { rationale } : {}) },
-      summary: rationale?.trim() || `${agent} proposes a ${type} automation "${name}".`,
-    });
-    this.audit(sessionId, agent, 'automation.proposed', { name, type, agentId, schedule: clean.schedule });
-    return { ok: true, preview };
+    const preview = `${name}: ${type}${clean.schedule ? ` \`${clean.schedule}\`` : ''} → runs \`${agentId}\` as ${asWho}: ${task.slice(0, 80)}${task.length > 80 ? '…' : ''}`;
+    return { clean, preview };
   }
 
-  /** The proposed-automation review card by id (its spec + status) — for the approve/reject routes. */
-  automationProposalCard(id: string): { agent: string; spec: ProposedAutomation; rationale?: string; preview?: string; status: string } | undefined {
+  /** Every part of a proposal card's payload — `specs` when this build wrote it, the single legacy
+   *  `spec` when an older one did. Empty means the card is unreadable and must not be approved. */
+  private proposalSpecs(a: Record<string, unknown>): ProposedAutomation[] {
+    if (Array.isArray(a.specs)) return (a.specs as ProposedAutomation[]).filter((x) => x && typeof x === 'object');
+    return a.spec ? [a.spec as ProposedAutomation] : [];
+  }
+
+  /** The proposed-automation review card by id (its specs + status) — for the approve/reject routes.
+   *  `spec` stays on the return as the FIRST part, so single-automation callers read unchanged. */
+  automationProposalCard(id: string): { agent: string; spec: ProposedAutomation; specs: ProposedAutomation[]; workflow?: string; rationale?: string; preview?: string; status: string } | undefined {
     const row = this.db.prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'automation.proposed'`).get<{ agent: string; args: string | null; status: string }>(id);
     if (!row) return undefined;
     let a: Record<string, unknown> = {};
     try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
-    if (!a.spec) return undefined;
-    return { agent: row.agent, spec: a.spec as ProposedAutomation, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
+    const specs = this.proposalSpecs(a);
+    if (!specs.length) return undefined;
+    return { agent: row.agent, spec: specs[0], specs, workflow: a.workflow ? String(a.workflow) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
   }
   setAutomationProposalStatus(id: string, status: 'approved' | 'rejected'): void {
     this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'automation.proposed'`).run(status, id);
   }
-  openAutomationProposals(): { id: string; agent: string; spec: ProposedAutomation; rationale?: string; preview?: string; createdAt: number }[] {
+  openAutomationProposals(): { id: string; agent: string; spec: ProposedAutomation; specs: ProposedAutomation[]; workflow?: string; rationale?: string; preview?: string; createdAt: number }[] {
     return this.db
       .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'automation.proposed' AND status = 'open' ORDER BY created_at DESC`)
       .all<{ id: string; agent: string; args: string | null; created_at: number }>()
       .map((r) => {
         let a: Record<string, unknown> = {};
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
-        return { id: r.id, agent: r.agent, spec: a.spec as ProposedAutomation, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
+        const specs = this.proposalSpecs(a);
+        return { id: r.id, agent: r.agent, spec: specs[0], specs, workflow: a.workflow ? String(a.workflow) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
       })
-      .filter((p) => p.spec);
+      .filter((p) => !!p.spec);
   }
 
   /**
@@ -7367,19 +7590,28 @@ export class TerminalManager {
    *  lifecycle cards, this is an agent-authored signal: a short note on what it just did or is about to
    *  do. Flagging it `important` highlights it in the feed — a milestone or heads-up worth the operator's
    *  eye. Each call is its own feed entry (a timeline), never deduped. Empty messages are dropped. */
-  progress(sessionId: string, agent: string, message: string, important = false): void {
+  progress(sessionId: string, agent: string, message: string, important = false, pos?: ProgressPosition): void {
     const body = (message || '').trim();
     if (!body) return;
+    // The agent-declared position rides in the message's `args` blob and is mirrored into the audit row,
+    // so no migration is needed and the claim HISTORY (which is what makes a delta derivable) is the
+    // existing timeline of `update` rows. See src/state/session-progress.ts.
+    const claim: Record<string, unknown> = {};
+    if (pos?.subject) claim.subject = pos.subject;
+    if (typeof pos?.step === 'number' && Number.isFinite(pos.step)) claim.step = pos.step;
+    if (typeof pos?.of === 'number' && Number.isFinite(pos.of)) claim.of = pos.of;
+    const hasClaim = Object.keys(claim).length > 0;
     // A task-dispatched run narrates INTO its task's Discussion, not the owner's Inbox (§3.2) — its
     // progress IS the conversation, and stays quiet (Discussion messages don't hit the Inbox feed).
     const taskId = this.taskForSession(sessionId);
     if (taskId) {
       this.postTaskMessage({ taskId, author: `agent:${agent}`, agent, body });
-      this.audit(sessionId, agent, 'session.progress', { important, message: body, taskId });
+      this.audit(sessionId, agent, 'session.progress', { important, message: body, taskId, ...claim });
       return;
     }
-    this.addMessage({ type: 'update', sessionId, agent, title: `Update — ${agent}`, body, status: 'open', args: important ? { important: true } : undefined, audienceKind: 'sessionOwner', audienceId: sessionId });
-    this.audit(sessionId, agent, 'session.progress', { important, message: body });
+    const args = important || hasClaim ? { ...(important ? { important: true } : {}), ...claim } : undefined;
+    this.addMessage({ type: 'update', sessionId, agent, title: `Update — ${agent}`, body, status: 'open', args, audienceKind: 'sessionOwner', audienceId: sessionId });
+    this.audit(sessionId, agent, 'session.progress', { important, message: body, ...claim });
   }
 
   /** The task id a session was dispatched for (`task:<id>` provenance), else undefined. Drives the §3.2
@@ -7903,7 +8135,13 @@ export class TerminalManager {
     const row = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?')
       .get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
-    if (row.status !== 'running') return { ok: false, error: 'session is not live — attachments need a running session' };
+    // Ask the PANE, not the row's `status` — the same rule `injectToSession` already follows. An agent
+    // that called `report` is stamped `done` while its claude keeps running (the normal shape of a
+    // long-lived interactive/resident run: 3 of 8 live panes on northwind at the time of this fix), and
+    // the console rightly shows it green + attachable (`isLive`). Gating this on `status === 'running'`
+    // therefore refused the paste on the exact sessions a human was sitting in front of, with a message
+    // ("session is not live") the visible pane flatly contradicts. See {@link reachable}.
+    if (!this.reachable(sessionId)) return { ok: false, error: 'session is not live — its terminal has ended' };
     const manifest = this.os.agents.get(row.agent);
     if (!manifest?.dir) return { ok: false, error: 'agent has no working folder' };
     const safeExt = (ext || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';

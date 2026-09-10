@@ -48,15 +48,32 @@ const TASK_WAIT_S = Number(process.env.AOS_TASK_WAIT_S) || 900;
  * dispatched without awaiting the last), so a module-level "current tool" variable would mislabel
  * interleaved calls; an AsyncLocalStorage keeps the name bound to its own async chain.
  */
-const toolContext = new AsyncLocalStorage<string>();
+const toolContext = new AsyncLocalStorage<{ tool: string; seq: number }>();
 
 /** Headers for a loopback agent call: the session bearer + tenant route, plus any extras (e.g. JSON). */
 function H(extra: Record<string, string> = {}): Record<string, string> {
   // `x-aos-tool` and `x-aos-agent` are TELEMETRY only — the server buckets per-tool latency by the
   // first (request-metrics.ts) and counts per-agent tool usage by the pair (tool-usage.ts). Neither
   // grants anything. Authority stays with the session secret above.
-  const tool = toolContext.getStore();
-  return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...(AGENT ? { 'x-aos-agent': AGENT } : {}), ...(tool ? { 'x-aos-tool': tool } : {}), ...extra };
+  //
+  // `x-aos-tool-seq` counts this request's position WITHIN its tool call, and exists because the two
+  // consumers want different things from the same header. Latency wants every request (a poll that
+  // stalls is a stall); usage wants one count per tool call, because a tool call is what the model
+  // actually decided to do. They diverge badly: `task_wait` polls /api/tasks/wait every 3s inside ONE
+  // call, and `task_create({wait:true})` runs that same loop under its OWN label — so the first read of
+  // this data (2026-09-04) showed `task_wait: 4212` and `task_create: 1848` on a tenant that had created
+  // 311 tasks. ~83% of the second number was poll spill. The counts led the table for a reason that had
+  // nothing to do with agent behaviour. Only seq 1 is counted; the header still rides on every request
+  // so per-tool latency and the blocking-tool exemption are unchanged.
+  const ctx = toolContext.getStore();
+  const seq = ctx ? ++ctx.seq : 0;
+  return {
+    'x-aos-secret': SECRET,
+    ...(TENANT ? { 'x-aos-tenant': TENANT } : {}),
+    ...(AGENT ? { 'x-aos-agent': AGENT } : {}),
+    ...(ctx ? { 'x-aos-tool': ctx.tool, 'x-aos-tool-seq': String(seq) } : {}),
+    ...extra,
+  };
 }
 
 interface JsonRpc {
@@ -558,13 +575,21 @@ const TOOLS = [
       'a milestone reached, or a heads-up they should see. Use it sparingly for SIGNAL on a longer task ' +
       '(not a play-by-play): "Scraped 40 pages, analysing now", "Found the bug, drafting the fix". This ' +
       'does NOT block — keep working after calling it. Set `important: true` for a key milestone or a ' +
-      'heads-up worth highlighting. For finishing the task use `report`; to ask a blocking question use `ask_human`.',
+      'heads-up worth highlighting. For finishing the task use `report`; to ask a blocking question use `ask_human`.\n' +
+      'WHERE ARE YOU: when your work divides into countable units, also pass `subject` (what the whole ' +
+      'job is) plus `step`/`of` (how far in). That is the ONLY way the console can draw a position for ' +
+      'your run — without it a watching human sees prose and cannot tell a run that is advancing from ' +
+      'one that is looping. Declare `of` once you know the plan and keep `step` honest; the console ' +
+      'derives whether you are moving on its own, so a step that stops rising is visible either way.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         message: { type: 'string', description: 'One line: what just happened / what you are doing next.' },
         important: { type: 'boolean', description: 'Highlight this as a key milestone or heads-up. Default false.' },
+        subject: { type: 'string', description: 'Optional — a few words naming the WHOLE job, e.g. "css-free theme.json". Set it once; later updates inherit it.' },
+        step: { type: 'number', description: 'Optional — units of work finished so far (e.g. 6). Pair with `of`.' },
+        of: { type: 'number', description: 'Optional — the total number of units the job divides into (e.g. 22). Set it as soon as the plan is known.' },
       },
       required: ['message'],
     },
@@ -739,6 +764,51 @@ const TOOLS = [
         rationale: { type: 'string', description: 'Why this automation is worth running — the approver reads this to decide.' },
       },
       required: ['name', 'task'],
+    },
+  },
+  {
+    name: 'workflow_propose',
+    description:
+      'Propose a WORKFLOW — several automations that make up one ongoing FUNCTION ("support", "release ' +
+      'hygiene"), reviewed and approved by a human as a single unit. Use this instead of several ' +
+      '`automation_propose` calls when the member describes a standing responsibility rather than one job: ' +
+      '"every time a support ticket arrives, classify it, answer the easy ones and escalate bugs to the ' +
+      'engineer, and sweep every 30 minutes for anything missed" is ONE function with two triggers. ' +
+      'IMPORTANT — propose TRIGGERS, not steps: the judgment inside a function (classify, answer, escalate, ' +
+      'hand off via `task_create`) belongs in the agent\'s `task` prompt where it is decided at runtime. ' +
+      'There is no step graph here; an automation per branch is the wrong shape and multiplies spend. Two or ' +
+      'three parts is typical, six is the maximum. Every part names the agent that runs it — verify each one ' +
+      'exists (`directory_lookup` / `list_capabilities`); if the function needs an agent this workspace does ' +
+      'not have, say so in your reply instead of assigning the work to a poor fit. Same governance as ' +
+      '`automation_propose`: a DRAFT that creates nothing and fires nothing until an owner/admin approves ' +
+      'the one card, and approval is all-or-nothing — a part that fails validation rolls the others back.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'The FUNCTION\'s name — what the whole set is for (e.g. "Support triage"). Shown on the review card.' },
+        rationale: { type: 'string', description: 'Why this function is worth running — the approver reads this to decide.' },
+        automations: {
+          type: 'array',
+          description: 'The triggers that make up the function — 1 to 6. Each entry takes the same fields as `automation_propose`.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              name: { type: 'string', description: 'A short label for this part (e.g. "New ticket" / "30-minute sweep").' },
+              task: { type: 'string', description: 'The prompt the spawned session runs each time this part fires — put the judgment here.' },
+              type: { type: 'string', enum: ['cron', 'webhook', 'composio', 'slack', 'discord'], description: 'Trigger type. Default: cron.' },
+              schedule: { type: 'string', description: 'For type:"cron" — a 5-field cron expression, e.g. "*/30 * * * *".' },
+              filter: { type: 'string', description: 'For event triggers — composio trigger slug, or slack/discord event type or channel id ("" = any).' },
+              agentId: { type: 'string', description: 'Which agent runs this part. Defaults to you (the proposing agent).' },
+              mode: { type: 'string', enum: ['headless', 'interactive'], description: 'headless (unattended, the default) or interactive.' },
+              runAs: { type: 'string', description: 'Optional member (id or email) the fired session acts as, so THEIR personal connectors are injected. Omit for the company identity.' },
+            },
+            required: ['name', 'task'],
+          },
+        },
+      },
+      required: ['automations'],
     },
   },
   {
@@ -2009,6 +2079,34 @@ async function policyPropose(args: Record<string, unknown>): Promise<string> {
     : `Could not propose the policy change: ${d.error ?? 'unknown error'}`;
 }
 
+async function workflowPropose(args: Record<string, unknown>): Promise<string> {
+  const parts = Array.isArray(args.automations) ? (args.automations as Record<string, unknown>[]) : [];
+  if (!parts.length) return 'workflow_propose needs an `automations` array — one entry per trigger in the function.';
+  const res = await fetch(AOS_URL + '/api/agent/workflow/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({
+      session: SESSION, agent: AGENT,
+      name: args.name ? String(args.name) : undefined,
+      rationale: args.rationale ? String(args.rationale) : undefined,
+      automations: parts.map((a) => ({
+        name: a.name ? String(a.name) : '',
+        task: a.task ? String(a.task) : '',
+        type: a.type ? String(a.type) : undefined,
+        schedule: a.schedule ? String(a.schedule) : undefined,
+        filter: a.filter ? String(a.filter) : undefined,
+        agentId: a.agentId ? String(a.agentId) : undefined,
+        mode: a.mode ? String(a.mode) : undefined,
+        runAs: a.runAs ? String(a.runAs) : undefined,
+      })),
+    }),
+  });
+  const d = (await res.json()) as { ok?: boolean; preview?: string; error?: string };
+  return d.ok
+    ? `Workflow proposed — ${parts.length} automation(s), ONE card for a human to review:\n${d.preview ?? ''}\n\nNothing is created and nothing will fire until an owner/admin approves it, and approval is all-or-nothing (every part, or none).`
+    : `Could not propose the workflow: ${d.error ?? 'unknown error'}`;
+}
+
 async function automationPropose(args: Record<string, unknown>): Promise<string> {
   const name = String(args.name ?? '').trim();
   const task = String(args.task ?? '').trim();
@@ -2112,7 +2210,14 @@ async function update(args: Record<string, unknown>): Promise<string> {
   const res = await fetch(AOS_URL + '/api/update', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, message, important: args.important === true }),
+    body: JSON.stringify({
+      session: SESSION,
+      message,
+      important: args.important === true,
+      subject: typeof args.subject === 'string' ? args.subject : undefined,
+      step: typeof args.step === 'number' ? args.step : undefined,
+      of: typeof args.of === 'number' ? args.of : undefined,
+    }),
   });
   const d = (await res.json()) as { ok?: boolean; error?: string };
   return d.ok ? 'Progress posted to the inbox.' : `Could not post update: ${d.error ?? 'unknown error'}`;
@@ -3230,7 +3335,7 @@ async function handle(req: JsonRpc): Promise<void> {
     // indexed row-test and a by-id build. Sharing a bucket made the tool table rank a deliberate model
     // call second-slowest in the system and hid any regression on the cheap path behind its average.
     const label = name === 'session_open' && args.summary ? 'session_open:summary' : name;
-    return toolContext.run(label ?? 'unknown', async () => {
+    return toolContext.run({ tool: label ?? 'unknown', seq: 0 }, async () => {
     try {
       const text =
         name === 'recall' ? await recall(args)
@@ -3252,6 +3357,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'skill_get' ? await skillGet(args)
         : name === 'policy_propose' ? await policyPropose(args)
         : name === 'automation_propose' ? await automationPropose(args)
+        : name === 'workflow_propose' ? await workflowPropose(args)
         : name === 'host_propose' ? await hostPropose(args)
         : name === 'skill_find' ? await skillFind(args)
         : name === 'skill_request' ? await skillRequest(args)

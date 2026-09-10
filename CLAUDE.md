@@ -235,7 +235,17 @@ Key modules:
   own `skills` allowlist ANDed with each skill's audience; see `docs/per-agent-context.md`, which also
   covers the sibling `tools` allowlist over the agentos MCP tool list. Both default to "everything" and
   shape CONTEXT only — neither grants or withholds a capability, the gateway still governs every
-  effect), budget, identity.
+  effect), budget, identity, `policy-baseline.ts` (**baseline drift** — a tenant's persisted
+  `<home>/policy/default.policy.json` is a SNAPSHOT and stops tracking the bundled default forever, so a
+  rule the product RETIRES keeps firing on live tenants; the blunt `shell.exec`+`risky` rule dropped in
+  v0.17.0 was still waking owners on three tenants a year later, found each time only by a human auditing
+  the approvals table. A **retirement ledger** + `baselineDrift()` classify each rule as retired /
+  missing / tenant-authored, audited at boot as `policy.drift.detected`. ⚠ Mind the asymmetry: ADDING a
+  guardrail still belongs in the ENGINE via `stricterDecision` — never as a JSON rule — while RETIRING
+  one is surfaced and left to an OWNER click (`POST /api/policy/drift/drop`), because it loosens
+  governance and the same rule is pure noise on one tenant and a guardrail somebody uses on another.
+  Matching is deep-equal on the shipped signature, so an EDITED rule is intent and is never offered for
+  removal).
   The Inbox surface itself — its data model, the notifier/chat-mirror sinks, per-member read/dismiss, and
   the gap roadmap — is documented in `docs/inbox-plan.md`.
 - `src/edge/automations.ts` — Automations: cron/webhook/composio/**slack**/**discord** triggers that spawn
@@ -356,7 +366,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 61 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 62 always-on tools
   + 11 conditional (chat-reply / egress / media, each exposed only when its env flag is set; full list
   in `docs/agent-mcp-tools.md`). Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):
@@ -446,7 +456,13 @@ Key modules:
   that target: maturity predicts intent, not correctness of transcription). Both tools echo the
   **server-composed `message`** rather than writing their own outcome sentence — an MCP process outlives
   a server upgrade, which is how a live session reported "NOTHING changes until an owner approves" about
-  an already-applied edit. Pinned by `scripts/agent-edit-guard-test.cjs`. Governance (propose, don't apply): `policy_propose` — an agent that spots a weak
+  an already-applied edit. Pinned by `scripts/agent-edit-guard-test.cjs`. Workflows: `workflow_propose` — 1–6 automations that make up one ongoing FUNCTION, on ONE
+  `automation.proposed` card approved as a unit (all-or-nothing: a part `Automations.add` rejects rolls
+  the earlier ones back). Shares the validator/card/queue-cap/routes with the one-part
+  `automation_propose`; proposes TRIGGERS only — the judgment stays in each part's `task` prompt, so a
+  branch never becomes its own automation. The Cockpit **operator** composes one from a plain-English
+  function description ("every time a ticket comes in … and sweep every 30 minutes"), which
+  `classifyIntent` now reads as an `action`. Governance (propose, don't apply): `policy_propose` — an agent that spots a weak
   guardrail proposes a **TIGHTEN-ONLY** ruleset change (`tighten` a rule stricter, `reorder` a conditional
   rule above the unconditional allows — the first-match ordering fix, or `add` a new `ask`/`never`
   guardrail). `applyProposal` (`src/governance/policy.ts`) refuses any loosening (by construction + an

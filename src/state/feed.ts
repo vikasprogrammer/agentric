@@ -1,4 +1,5 @@
 import { Db } from './db';
+import type { SessionProgress } from './session-progress';
 
 /**
  * The **unified activity feed** (`os.feed`) — a *read-only derived view*, not a stored table.
@@ -53,6 +54,11 @@ export interface FeedItem {
   // for a RUNNING session: the newest thing the agent just did, so you can watch progress without
   // opening the terminal. Enriched by the route (classifyActivity over the audit tail); null otherwise.
   lastActivity?: { primitive: string; summary: string; ts: number } | null;
+  // for a RUNNING session: WHERE it is and whether it is moving — the agent's declared position plus a
+  // server-derived forward/stuck/circling/blocked verdict. Enriched by the route; null when the run has
+  // produced nothing legible yet. See src/state/session-progress.ts for why the verdict is not the
+  // agent's to assert.
+  progress?: SessionProgress | null;
   // hand-off chain grouping (enriched by the route via TerminalManager.threadsFor). `threadId` folds a
   // conversation's runs; `parentThreadId` nests it under the caller that delegated it — so the feed can
   // collapse a delegation burst under one root. Only set on session-backed items.

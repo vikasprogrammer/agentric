@@ -38,7 +38,7 @@ interface PolicyOutcome {
   approver?: Approver;
 }
 
-interface PolicyRule extends PolicyOutcome {
+export interface PolicyRule extends PolicyOutcome {
   match: { capability: string; when?: When };
 }
 

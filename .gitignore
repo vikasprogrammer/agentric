@@ -10,3 +10,13 @@ dist/
 
 # Local process-per-tenant manifest (instance-specific; copy from config/tenants.example.json)
 config/tenants.json
+
+# Claude Code's per-machine local settings, written by `claude` itself the moment anyone runs it inside a
+# checkout (an output style, an allowed tool). It is not the project's config — `.claude/skills` and any
+# tracked settings stay tracked, only the `*.local.*` half is ignored. Why this matters beyond tidiness:
+# `scripts/make-live.sh` refuses to deploy a live checkout that has local changes (so nobody's hand-edit
+# is silently discarded), and an untracked file counts. On 2026-09-04 one `claude` run inside the instawp
+# live checkout left this file behind and blocked that tenant's deploy — the guard doing its job over a
+# file that carries none of the risk it guards against.
+.claude/settings.local.json
+.claude/*.local.json

@@ -202,6 +202,40 @@ export interface ClickupCommentEvent {
   raw: any;
 }
 
+/** The slice of a ClickUp TASK (not a comment) the `/agentric` bridge mirrors into an Agentric task. */
+export interface ClickupTaskInfo {
+  id: string;
+  /** The human-facing id (`ABC-123`) when the workspace has custom task ids on, else ''. */
+  customId: string;
+  name: string;
+  /** Markdown description when ClickUp returns one, else its plain-text form. '' when empty. */
+  description: string;
+  url: string;
+}
+
+/** Fetch a task's name + description. The comment webhook carries neither, and the `/agentric` bridge
+ *  titles and seeds the Agentric task from them. Never throws — null on any failure. */
+export async function fetchTask(token: string, taskId: string): Promise<ClickupTaskInfo | null> {
+  if (!token || !taskId) return null;
+  try {
+    const res = await fetch(`${CLICKUP_API}/task/${encodeURIComponent(taskId)}?include_markdown_description=true`, {
+      headers: { authorization: token, 'content-type': 'application/json' },
+    });
+    if (!res.ok) return null;
+    const j: any = await res.json().catch(() => null);
+    if (!j?.id) return null;
+    return {
+      id: String(j.id),
+      customId: String(j.custom_id || ''),
+      name: String(j.name || ''),
+      description: String(j.markdown_description || j.description || j.text_content || '').trim(),
+      url: String(j.url || taskUrl(String(j.id))),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Build the canonical task URL from a task id (for context + deep-links). */
 export function taskUrl(taskId: string): string {
   return `https://app.clickup.com/t/${encodeURIComponent(taskId)}`;

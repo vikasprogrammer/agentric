@@ -451,6 +451,9 @@ export interface Session {
   /** Last time the session's status changed (report/end/stop/resume/crash); = createdAt until the
    *  first transition. Sortable "Updated" column on the sessions list. */
   updatedAt: number
+  /** Where a RUNNING run is and whether it is moving — the agent's declared position plus a
+   *  server-derived verdict. Only set on the by-id fetch (`api.session`), and only while running. */
+  progress?: SessionProgress | null
   /** Human verdict on the finished run — 👍 ('up') / 👎 ('down'); feeds the agent maturity score. */
   rating?: 'up' | 'down'
   ratedBy?: string
@@ -1053,10 +1056,16 @@ export interface Automation {
 }
 /** An agent-proposed automation awaiting owner/admin approval — the spec lives in the review card until
  *  approved (then it's created via Automations.add). Mirrors PolicyProposal. */
+export interface ProposedAutomationSpec { agentId: string; name: string; type: Automation['type']; schedule?: string; filter?: string; task: string; mode?: ExecMode; runAs?: string }
+/** An agent-proposed automation awaiting sign-off. A WORKFLOW proposal carries several parts in `specs`
+ *  and a `workflow` name — one card, one Approve, all-or-nothing. `spec` is always the first part, so a
+ *  single-automation proposal reads exactly as it always did. */
 export interface AutomationProposal {
   id: string
   agent: string
-  spec: { agentId: string; name: string; type: Automation['type']; schedule?: string; filter?: string; task: string; mode?: ExecMode; runAs?: string }
+  spec: ProposedAutomationSpec
+  specs?: ProposedAutomationSpec[]
+  workflow?: string
   rationale?: string
   preview?: string
   createdAt: number
@@ -1591,7 +1600,22 @@ export interface PolicyResp {
   canEdit?: boolean
   document?: PolicyDocument
   id?: string
+  drift?: PolicyDrift
   error?: string
+}
+/** A rule the product retired that this tenant still enforces (see src/governance/policy-baseline.ts). */
+export interface RetiredHit {
+  index: number
+  rule: PolicyRule
+  since: string
+  reason: string
+}
+/** How far a tenant's persisted ruleset has drifted from the shipped default. */
+export interface PolicyDrift {
+  retired: RetiredHit[]
+  missing: PolicyRule[]
+  tenant: { index: number; rule: PolicyRule }[]
+  clean: boolean
 }
 /** A tighten-only change an agent proposed to the ruleset (awaiting owner approval). */
 export interface PolicyDelta {
@@ -1660,6 +1684,9 @@ export interface RouterPreviewResp {
   /** work only: `route` → confident single pick in `suggested`; `disambiguate` → choose from
    *  `candidates`; `none` → nothing matched, `candidates` is the runnable fleet to pick from. */
   kind?: 'route' | 'disambiguate' | 'none'
+  /** `none` only: nothing on the fleet scored at all (as opposed to a match this member can't run), so
+   *  the request was logged as a capability gap for the admins. */
+  noFit?: boolean
   method?: 'keyword' | 'embedding' | 'llm'
   suggested?: RouterCard
   candidates: RouterCard[]
@@ -1778,6 +1805,22 @@ export interface SessionChain {
 export type FeedFilter = 'all' | 'needsYou' | 'running' | 'done'
 /** One line in the stream. A running/finished session, or a pending/resolved approval or question —
  *  all projected to this shape by the server's UNION view, with attribution joined onto every row. */
+/** The "where is this run, and is it moving?" line. `subject`/`step`/`total` are declared by the agent
+ *  (only it knows its work divides into N units); `delta`, `verdict` and `reason` are derived
+ *  server-side from the audit stream — an agent cannot assert that it is making progress. `blocked`
+ *  means a human is holding it up, and is deliberately NOT a failure state. */
+export interface SessionProgress {
+  subject: string | null
+  step: number | null
+  total: number | null
+  pct: number | null
+  delta: number | null
+  verdict: 'forward' | 'stuck' | 'circling' | 'blocked'
+  reason: string
+  note: string | null
+  ts: number | null
+  stale: boolean
+}
 export interface FeedItem {
   uid: string // "<source>:<id>" — stable id + pagination tiebreak
   ts: number
@@ -1803,6 +1846,8 @@ export interface FeedItem {
   target: { kind: 'session' | 'task' | 'goal' | 'artifact'; id: string } | null
   /** For a running session: the newest thing the agent just did (audit-derived), so you can watch progress. */
   lastActivity?: { primitive: string; summary: string; ts: number } | null
+  /** For a running session: where it is and whether it is moving. Position is the agent's; the verdict is not. */
+  progress?: SessionProgress | null
   /** Hand-off chain grouping — folds a conversation's runs and nests a delegated run under its caller. */
   threadId?: string
   parentThreadId?: string
@@ -2287,6 +2332,7 @@ export const api = {
   },
 
   policy: () => call<PolicyResp>('GET', '/api/policy'),
+  dropRetiredPolicyRules: (indices: number[]) => call<{ ok: boolean; rev?: number; dropped?: number; document?: PolicyDocument; drift?: PolicyDrift; error?: string }>('POST', '/api/policy/drift/drop', { indices }),
   savePolicy: (document: PolicyDocument) => call<{ ok: boolean; document?: PolicyDocument; error?: string }>('PUT', '/api/policy', { document }),
   policyProposals: () => call<PolicyProposalsResp>('GET', '/api/policy/proposals'),
   approvePolicyProposal: (id: string) => call<{ ok: boolean; rev?: number; document?: PolicyDocument; error?: string }>('POST', '/api/policy/proposals/' + encodeURIComponent(id) + '/approve'),

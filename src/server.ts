@@ -24,6 +24,7 @@ import { governedCapabilities } from './capabilities/normalize';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
+import { deriveProgress, parseClaim, ProgressClaim, SessionProgress } from './state/session-progress';
 
 /**
  * How much long-form text a LIST endpoint ships per row. List views render a title, a badge row and at
@@ -36,6 +37,7 @@ import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/co
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { chooseAgent } from './edge/router';
+import { recordCapabilityGap } from './edge/capability-gap';
 import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerAsk } from './edge/ask';
@@ -332,9 +334,16 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
       // place a READ tool is observable at all: the loopback tools sit before the member-auth gate, so
       // the PreToolUse hook never sees them, and only the writing ones audit anything. A Map bump here,
       // never a write — the flush timer in startServer does the I/O.
+      // One count per TOOL CALL, not per request: `x-aos-tool-seq` is the request's position within its
+      // call, and only the first is counted. A blocking tool polls a route in a loop under one label
+      // (`task_wait` every 3s; `task_create({wait:true})` runs that loop under its own name), so counting
+      // requests measured how long agents waited, not what they chose to do — on a tenant that created
+      // 311 tasks it read `task_create: 1848`. An absent header counts as 1, so a caller that doesn't
+      // stamp a seq (an older MCP process outliving a server upgrade) is not silently dropped.
       const usageAgent = String(req.headers['x-aos-agent'] || '').trim();
       const usageTenant = String(req.headers['x-aos-tenant'] || '').trim() || registry.default()?.os.tenant || '';
-      if (tool && usageAgent) toolUsage.record(usageTenant, usageAgent, tool);
+      const toolSeq = Number(req.headers['x-aos-tool-seq'] ?? 1);
+      if (tool && usageAgent && (!Number.isFinite(toolSeq) || toolSeq <= 1)) toolUsage.record(usageTenant, usageAgent, tool);
     });
     // Superadmin control plane — host-independent (bearer-gated), so it sits before tenant routing.
     if ((req.url || '').split('?')[0].startsWith('/api/admin/')) {
@@ -930,6 +939,31 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, out.ok ? 200 : 400, out);
   }
 
+  // `workflow_propose` — the multi-part sibling: several automations reviewed and approved as ONE unit (a
+  // standing function, not a single job). Same gate as above; nothing is created until an owner/admin
+  // approves the single card, and approval is all-or-nothing. Pre-auth loopback, session-secret gated.
+  if (method === 'POST' && p === '/api/agent/workflow/propose') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const raw = Array.isArray(b.automations) ? (b.automations as Record<string, unknown>[]) : [];
+    if (!raw.length) return sendJson(res, 400, { error: 'automations must be a non-empty array' });
+    const specs: ProposedAutomation[] = raw.map((a) => ({
+      agentId: a.agentId != null ? String(a.agentId) : '',
+      name: String(a.name || ''),
+      type: (['cron', 'webhook', 'composio', 'slack', 'discord'].includes(String(a.type)) ? String(a.type) : 'cron') as ProposedAutomation['type'],
+      schedule: a.schedule != null ? String(a.schedule) : undefined,
+      filter: a.filter != null ? String(a.filter) : undefined,
+      task: String(a.task || ''),
+      mode: (a.mode === 'headless' || a.mode === 'interactive' ? a.mode : undefined) as ProposedAutomation['mode'],
+      runAs: a.runAs != null ? String(a.runAs) : undefined,
+    }));
+    const out = tm.proposeWorkflow(session, agent, specs, b.rationale != null ? String(b.rationale) : undefined, b.name != null ? String(b.name) : undefined);
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
+
   // Agent PROPOSES an edit to ANOTHER agent's listing / CLAUDE.md (`agent_propose_update`) — the gated,
   // cross-agent sibling of the self-only `agent_update`. Nothing is written here; a valid proposal posts an
   // owner-addressed 'agent.update.proposed' card and applies NOTHING until an OWNER who can run the target
@@ -1354,7 +1388,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const message = String(b.message || '').trim();
     if (!message) return sendJson(res, 400, { error: 'message is required' });
-    tm.progress(session, agent, message, b.important === true || b.important === 'true');
+    // Optional position: the agent's own denominator (see src/state/session-progress.ts). Only the
+    // agent knows its work divides into N units; the VERDICT on whether it is moving is derived
+    // server-side and is deliberately not something it can assert.
+    const pos = {
+      subject: typeof b.subject === 'string' && b.subject.trim() ? b.subject.trim().slice(0, 120) : undefined,
+      step: Number.isFinite(Number(b.step)) ? Number(b.step) : undefined,
+      of: Number.isFinite(Number(b.of)) ? Number(b.of) : undefined,
+    };
+    tm.progress(session, agent, message, b.important === true || b.important === 'true', pos);
     return sendJson(res, 200, { ok: true });
   }
   // agent deliberately notifies a specific teammate (the `notify` tool) — the escape hatch from the
@@ -2775,18 +2817,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         runAs = m.id;
       }
     }
+    // A workflow proposal carries several automations and is approved as a UNIT: a part that `add`
+    // rejects (a bad cron, an agent deleted since the proposal was made) rolls the earlier parts back, so
+    // the approver never ends up with half a function running and no record of which half. The proposal
+    // stays open for them to fix or reject.
+    const created: Automation[] = [];
     try {
-      const created = autos.add({
-        agentId: card.spec.agentId, name: card.spec.name, type: card.spec.type,
-        mode: card.spec.mode, schedule: card.spec.schedule, filter: card.spec.filter,
-        task: card.spec.task, createdBy: me.id, runAs,
-      });
+      for (const spec of card.specs) {
+        created.push(autos.add({
+          agentId: spec.agentId, name: spec.name, type: spec.type,
+          mode: spec.mode, schedule: spec.schedule, filter: spec.filter,
+          task: spec.task, createdBy: me.id, runAs,
+        }));
+      }
       tm.setAutomationProposalStatus(autoPropApprove[1], 'approved');
-      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.approved', data: { by: me.email, agent: card.agent, id: created.id, name: created.name, type: created.type, runAs: runAs ?? null } });
-      return sendJson(res, 200, { ok: true, automation: automationView(created, req, true) });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.approved', data: { by: me.email, agent: card.agent, ...(card.workflow ? { workflow: card.workflow } : {}), ids: created.map((c) => c.id), names: created.map((c) => c.name), runAs: runAs ?? null } });
+      return sendJson(res, 200, { ok: true, automation: automationView(created[0], req, true), automations: created.map((c) => automationView(c, req, true)) });
     } catch (e) {
+      for (const c of created) { try { autos.remove(c.id); } catch { /* best-effort rollback */ } }
+      const msg = e instanceof Error ? e.message : String(e);
+      if (created.length) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.rolled_back', data: { by: me.email, agent: card.agent, undone: created.length, error: msg } });
       // A bad cron / unknown agent surfaces to the human here (validated by `add`); the proposal stays open.
-      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      return sendJson(res, 400, { error: card.specs.length > 1 ? `part ${created.length + 1} of ${card.specs.length}: ${msg} — nothing was created` : msg });
     }
   }
   const autoPropReject = p.match(/^\/api\/automations\/proposals\/([\w.-]+)\/reject$/);
@@ -3019,7 +3071,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Live progress: for the RUNNING lines, attach the newest thing the agent just did (classified from
     // the audit tail, with the un-audited `update` note as a fallback), so a viewer can watch a session
     // advance without opening its terminal. Bounded to the running items on the page (a handful).
-    for (const it of page.items) if (it.state === 'running') it.lastActivity = latestActivity(os, it.runId);
+    // …and WHERE it is: the agent's declared position (subject / step of total) plus a server-derived
+    // verdict on whether it is actually advancing. `lastActivity` says what it just did; this says
+    // whether that is getting anywhere.
+    const progressNow = Date.now();
+    for (const it of page.items) if (it.state === 'running') {
+      it.lastActivity = latestActivity(os, it.runId);
+      it.progress = sessionProgress(os, it.runId, progressNow);
+    }
     // Hand-off chain: stamp thread identity on session-backed items so the console can collapse a
     // delegation burst under its root (same threadId/parentThreadId the sessions list + chain rail use).
     const threads = tm.threadsFor(page.items.filter((it) => it.target?.kind === 'session').map((it) => it.target!.id));
@@ -3046,7 +3105,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && sessByIdMatch) {
     const [row] = tm.listSessions(me, LIST_CLIP, [sessByIdMatch[1]]);
     if (!row) return sendJson(res, 404, { error: 'unknown session' });
-    return sendJson(res, 200, row.task ? { ...row, task: clipText(row.task, LIST_CLIP) } : row);
+    // Detail view carries the progress line too (the feed row's twin), so opening a session answers
+    // "where is this" without reading the transcript. Only meaningful while it is running.
+    const progress = row.status === 'running' ? sessionProgress(os, sessByIdMatch[1], Date.now()) : null;
+    const view = row.task ? { ...row, task: clipText(row.task, LIST_CLIP) } : { ...row };
+    return sendJson(res, 200, { ...view, progress });
   }
   if (method === 'POST' && p === '/api/sessions') {
     const b = await readBody(req);
@@ -3108,7 +3171,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         if (list.length >= 2) return sendJson(res, 200, { ...base, kind: 'disambiguate', candidates: list.map((c) => card(c.agentId, c.score)) });
         if (list.length === 1) return sendJson(res, 200, { ...base, kind: 'route', method: 'keyword', suggested: card(list[0].agentId, list[0].score), candidates: [] });
       }
-      return sendJson(res, 200, { ...base, kind: 'none', candidates: fleet() });
+      // Nothing scored at all → a capability gap: no agent on this fleet matches the request. Recorded
+      // (audit + a rolling admin card) so misses accumulate into a list of agents worth building. A
+      // routed-but-not-runnable agent, or a disambiguation the member can't run, is a PERMISSIONS
+      // outcome, not a missing capability — it lands here too, and must not be recorded as a gap.
+      if (decision.kind === 'none' && !askFallback) recordCapabilityGap(os, tm, { text, requester: me.id, source: 'cockpit' });
+      return sendJson(res, 200, { ...base, kind: 'none', noFit: decision.kind === 'none' || undefined, candidates: fleet() });
     };
 
     const intent = b.force === 'work' ? { intent: 'work' as const } : classifyIntent(text);
@@ -6457,7 +6525,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/policy') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     if (!(os.policy instanceof JsonPolicyEngine)) return sendJson(res, 200, { editable: false, id: os.policy.id });
-    return sendJson(res, 200, { editable: true, document: os.policy.document, canEdit: me.role === 'owner' });
+    // `drift` rides along on the read the console already makes, so a tenant carrying a rule the product
+    // retired is visible the moment anyone opens the Policy page — the failure mode it fixes is that
+    // nobody ever went looking. See src/governance/policy-baseline.ts.
+    return sendJson(res, 200, { editable: true, document: os.policy.document, canEdit: me.role === 'owner', drift: os.policyDrift() ?? undefined });
   }
   if (method === 'PUT' && p === '/api/policy') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
@@ -6469,6 +6540,24 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.applyPolicyDocument(doc, me.email, 'edited in the console'); // snapshot + persist + hot reload
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.updated', data: { id: doc.id, rules: doc.rules.length } });
     return sendJson(res, 200, { ok: true, document: os.policy.document });
+  }
+  // Drop rules the product RETIRED that this tenant still enforces. OWNER only, like PUT /api/policy —
+  // it LOOSENS the ruleset, which is exactly why it is a click and not something boot does on its own
+  // (the same retired rule is pure noise on one tenant and a guardrail somebody uses on another).
+  // Removal only, by index, re-validated server-side against the live document.
+  if (method === 'POST' && p === '/api/policy/drift/drop') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    if (!(os.policy instanceof JsonPolicyEngine)) return sendJson(res, 400, { error: 'active policy engine is not editable' });
+    const b = await readBody(req);
+    const indices = Array.isArray(b.indices) ? b.indices.filter((i: unknown): i is number => Number.isInteger(i)) : [];
+    if (!indices.length) return sendJson(res, 400, { error: 'indices required' });
+    const out = os.dropRetiredPolicyRules(indices, me.email);
+    if (!out) return sendJson(res, 400, { error: 'no bundled baseline to compare against' });
+    if (out.dropped.length) {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.retired_dropped',
+        data: { rev: out.rev, dropped: out.dropped.map((r) => r.match.capability), count: out.dropped.length } });
+    }
+    return sendJson(res, 200, { ok: true, rev: out.rev, dropped: out.dropped.length, document: os.policy.document, drift: os.policyDrift() ?? undefined });
   }
   // Agent policy proposals — the owner-approved fine-tuning path (tighten-only). Review list is owner/admin;
   // approve/reject/revert are OWNER only (same guard as PUT /api/policy — an admin may see but not rewrite).
@@ -7238,6 +7327,50 @@ function latestActivity(os: AgentOS, runId: string): { primitive: string; summar
     .prepare("SELECT created_at AS ts, body FROM messages WHERE session_id = ? AND type = 'update' ORDER BY created_at DESC LIMIT 1")
     .get<{ ts: number; body: string }>(runId);
   return u ? { primitive: 'update', summary: clipText(u.body, 140), ts: u.ts } : null;
+}
+/** Build a run's progress line: the agent's declared position + a SERVER-derived verdict on whether it
+ *  is moving. The reads live here (the derivation in `src/state/session-progress.ts` is pure, like the
+ *  activity classifier). Claims come from the `session.progress` AUDIT rows rather than the `update`
+ *  inbox messages, because a task-dispatched run narrates into its task Discussion instead of the Inbox
+ *  — audit is the one stream both branches always write. Bounded LIMITs so it stays cheap per poll. */
+function sessionProgress(os: AgentOS, runId: string, now: number): SessionProgress | null {
+  const rows = os.db
+    .prepare("SELECT ts, type, data FROM audit_events WHERE tenant = ? AND run_id = ? ORDER BY ts DESC, id DESC LIMIT 120")
+    .all<{ ts: number; type: string; data: string }>(os.tenant, runId);
+  const claims: ProgressClaim[] = [];
+  let lastActivityTs: number | null = null;
+  let loopTs: number | null = null;
+  let loopCount: number | null = null;
+  for (const r of rows) {
+    const d = safeJson(r.data);
+    if (r.type === 'session.progress') {
+      claims.push(parseClaim(r.ts, clipText(d.message, 140), d));
+      continue;
+    }
+    if (r.type === 'reliability.loop' && loopTs == null) {
+      loopTs = r.ts;
+      loopCount = typeof d.count === 'number' ? d.count : null;
+      continue;
+    }
+    // The newest legible primitive — same classifier the trail and `latestActivity` use, so "activity"
+    // means the same thing everywhere and session plumbing never reads as progress.
+    if (lastActivityTs == null && classifyActivity(r.type, d)) lastActivityTs = r.ts;
+  }
+  if (!claims.length && lastActivityTs == null && loopTs == null) return null;
+  const pendingApproval = os.db
+    .prepare("SELECT 1 FROM approvals WHERE tenant = ? AND run_id = ? AND status = 'pending' LIMIT 1")
+    .get<{ 1: number }>(os.tenant, runId) != null;
+  const pendingQuestion = !pendingApproval && os.db
+    .prepare("SELECT 1 FROM questions WHERE run_id = ? AND status = 'pending' LIMIT 1")
+    .get<{ 1: number }>(runId) != null;
+  return deriveProgress({
+    now,
+    claims, // already newest-first (the query is DESC)
+    lastActivityTs,
+    loopTs,
+    loopCount,
+    awaiting: pendingApproval ? 'approval' : pendingQuestion ? 'question' : null,
+  });
 }
 /** Resolve the requested inbox scope from `?scope=`. Only owner/admin may see the `all` oversight view;
  *  a member is always pinned to `mine` (they can't see others' cards regardless, so this just keeps the

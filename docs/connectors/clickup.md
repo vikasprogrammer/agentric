@@ -84,6 +84,28 @@ rather than handed to the agent as a link. Host-checked against `*.clickup.com`.
 drops the extension, so it is re-appended from `extension` — an agent needs to know it is looking at a
 `.png`. Audit: `clickup.file.received` / `.failed` / `.skipped`.
 
+### `/agentric` — one ticket, one Agentric task (v0.431.0)
+
+`/<agent> …` maps a ticket to SESSIONS, so nothing on the Agentric side outlives the run. `/agentric`
+maps it to a **Task** instead, intercepted in `ClickupIngress.dispatch` before continuity and routing:
+
+| Comment | Effect |
+|---|---|
+| `/agentric <text>` | find-or-create the task keyed `clickup:<ticket id>`; `<text>` goes to its discussion (reaches the live run, fans out `@mentions`). Dispatches nothing. |
+| `/agentric <agent> <request>` | the same, then reopen the task if it's closed and put `<agent>` on it — continue its run if it owns the task, else assign + dispatch a run bound to the ticket (`clickup_reply` answers there). |
+| `/agentric` | link only. |
+| `/agentric status` · `done` · `reopen` · `help` | helper commands on the ticket's task — the WHOLE comment, answered as one comment, no run (v0.432.0). `/agentric done testing, looks good` is text, not a close. |
+
+- **Title** `#<custom_id or ticket id> <ticket name>`; **body** the ticket link + description (`fetchTask`,
+  `include_markdown_description=true`). A failed fetch still links, titled `#<id> ClickUp ticket`.
+- **Identity** — `owner` and `createdBy` are the commenter's member; unmapped → `createdBy: 'clickup'`,
+  no owner. `createdBy` is what the Tasks board's **Filed by** lens reads.
+- **Idempotency** — `tasks.external_key` under a partial UNIQUE index; a racing duplicate webhook re-reads.
+- **Reply** — one comment with the Agentric task link on first use (or when a named agent couldn't be
+  started); repeats get the 👀 reaction only.
+- Audited `clickup.task.linked` / `clickup.task.discussed` / `clickup.task.failed`. Pinned by
+  `scripts/clickup-task-bridge-test.cjs`; design in `docs/clickup-task-bridge-plan.md`.
+
 ### What ClickUp deliberately does NOT get
 
 The Slack/Discord fix for *untagged* replies does not transfer. There, a thread the bot opened is **ours**,

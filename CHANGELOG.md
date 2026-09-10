@@ -19,6 +19,308 @@ new version heading in the same commit.
   tmux pane. `AOS_UID_ISOLATION` stays off, so the app's own `/terminal/` proxy means one published
   port is enough. Carries no host, tenant or token — all deployment identity stays in runtime config.
 
+## [0.432.0] - 2026-09-10
+### Added
+- **`/agentric` helper commands — work the Tasks board from chat without starting an agent.** A small,
+  closed verb set answered by the server itself (no agent run, no quota), on Slack (the `/agentric` slash
+  command or an @mention), Discord, Telegram (`/agentric@Bot` too) and ClickUp comments:
+  `help` · `tasks [open|done|all]` (assigned to, filed by, or run as you) · `task new <title> [@agent]`
+  (naming an agent assigns and starts it) · `task <id> <text>` (into the discussion, reaching the run
+  working it) · `status|done|reopen <id>`. On a ClickUp ticket the ticket's own task is the default target,
+  so `/agentric status`, `/agentric done` and `/agentric reopen` need no id; chat-only verbs there get a
+  pointer rather than being filed as a comment. The grammar is strict on purpose — a status verb counts
+  only as the WHOLE message, so `/agentric done testing, looks good` on a ticket stays a comment and
+  `/agentric <agent> …` still routes to the agent. Helper commands are answered ahead of every automation,
+  so a `*`-scoped Slack automation no longer spends a run on `/agentric tasks`. Anything beyond `help`
+  needs the sender resolved to a member (identity map / ClickUp email); an unmapped sender is told how to
+  get linked instead of editing the shared board anonymously. Audited `chat.command`. Pinned by
+  `scripts/agentric-commands-test.cjs`.
+
+## [0.431.0] - 2026-09-10
+### Added
+- **`/agentric` in a ClickUp comment — one ticket, one Agentric task.** The first `/agentric` comment on
+  a ticket creates a task titled `#<ticket id> <ticket name>` (the ClickUp custom id when the workspace has
+  one) with the ticket link + description as its body, filed and owned by the commenting member, and posts
+  the task link back on the ticket. Every later `/agentric …` comment on that ticket lands in the SAME
+  task's discussion — reaching the run working it, fanning out `@mentions` — instead of starting over.
+  `/agentric <agent> <request>` also puts that agent on the task: it continues its own run if it already
+  owns the task, otherwise the task is assigned and dispatched as a run bound to the ticket, so the agent
+  answers there with `clickup_reply`. A done task is reopened first, so a ticket is reworkable from
+  ClickUp. A plain `/agentric <text>` deliberately dispatches nothing — naming the agent is the opt-in to
+  spend a run. Keyed by a new `tasks.external_key` (`clickup:<ticket id>`) under a partial UNIQUE index,
+  so a racing duplicate webhook re-reads the task rather than filing a second one. Audited
+  `clickup.task.linked` / `clickup.task.discussed` / `clickup.task.failed`. Pinned by
+  `scripts/clickup-task-bridge-test.cjs`; design in `docs/clickup-task-bridge-plan.md`.
+
+### Fixed
+- **`/agentric <agent>` only worked in Slack.** The roster reply tells people to type `/agentric <agent> …`
+  on every platform, but only Slack strips it (as a declared slash command); on Discord, Telegram and
+  ClickUp the namespace wasn't recognised, so the message was read as addressing an agent called
+  `agentric` and answered with "I don't have an agent named `agentric`". The chat normaliser now strips
+  `/agentric` alongside `/agent-os` / `/agentos` (`CHAT_NAMESPACE_RE`, shared with the ClickUp ingress).
+
+## [0.430.0] - 2026-09-10
+### Added
+- **Tasks: who filed it.** `createdBy` has always been stored on every task and was never shown or
+  filterable, so on a board where agents file most of the rows a person's own tasks were unfindable and an
+  agent-generated sub-task looked exactly like one somebody wrote. The board now carries a **Filed by**
+  lens (`Anyone · I filed · People · Agents`, each with a facet count), names the filer on the card and in
+  the list row whenever that isn't the assignee, lists **Group: Filed by** in the list view, and stamps
+  `filed by …` in the task room's meta line.
+- **Tasks: a top-level lens.** A one-click *Top level* filter hides every task with a parent — the
+  decomposition an agent split out of its own work — leaving the work somebody actually asked for. Shown
+  only when the board holds sub-tasks, with a count of what it would hide. Board cards now also show a
+  `↳ <parent>` chip linking to the task they were split from.
+- Creating a task **opens it**. The create form used to drop you back on the board with the new card
+  somewhere in it; you then had to find your own task to add detail or dispatch it. It now navigates to
+  `#/tasks/<id>` — the room, where the next action is. (Board is refreshed first, so closing the room
+  lands on a list that already holds the card.)
+
+### Fixed
+- **List view: `Group: Chain` could not be selected.** The mode was implemented and named in the group
+  selector's label map, but had no `SelectItem` — so the hand-off-chain grouping was unreachable from the
+  dropdown and only appeared if `aos_tasks_group` was already set to it.
+
+### Docs
+- `docs/clickup-task-bridge-plan.md` — plan for `/agentric` in a ClickUp comment: find-or-create one
+  Agentric task per ticket (`#<ticketId> <heading>`), repeat comments landing in that task's discussion
+  rather than spawning duplicates. Specs the reserved command, a `tasks.external_key` idempotency key
+  (which FreeScout and Slack threads want too), title/body/attachment sourcing, and identity — the task's
+  `createdBy` is what the new Filed-by lens reads. Docs only — no behaviour change.
+- `docs/github-multi-org-plan.md` — plan for making the company-bot GitHub lane multi-org. Today
+  `ensureBotToken` stores one `github_installation_id` and resolves it as `installations[0]`, so an App
+  installed on two orgs silently acts on one of them and 404s the other with no error at launch.
+  Specs an installation registry + per-installation token cache, a per-repo git credential helper
+  (`useHttpPath` → a session-secret loopback route), the member-lane guard that keeps a linked human's
+  PR authorship, and the `gh`-doesn't-read-git-helpers gap. Docs only — no behaviour change.
+
+## [0.429.1] - 2026-09-10
+### Fixed
+- `scripts/headless-resumable-test.cjs` isolates its `CLAUDE_CONFIG_DIR`. The new launch pre-flight reads
+  the box's real claude login, so on a box whose login has lapsed — the box you most want to run the
+  deploy gate on — nine assertions failed for a reason unrelated to resumability. Caught running the gate
+  on the instawp box, whose expired default login was the outage in 0.429.0.
+
+## [0.429.0] - 2026-09-10
+### Fixed
+- **A pooled runtime account was disabled for another run's failure, and the whole tenant fell onto a
+  dead box login** (instawp, 2026-09-09 → 09-10; 14 hours, ~14 runs, every one $0 and one turn, no
+  alert). One claude conversation resumed across two credential dirs leaves the same `<id>.jsonl` under
+  each; `findTranscript` searched the server's own `~/.claude` FIRST and returned a stale 19-line copy
+  ending in `authentication_failed · Login expired`, from an earlier run. Teardown read that as "this
+  account's token is bad" and disabled `tools` — which was fine (weekly 60% used) and was the pool's last
+  usable account. Rotation then had nothing to hand out, so every session fell back to the box default,
+  whose login really had expired with no refresh token, and died on its first API call. Four guards:
+  - `findTranscript(id, { preferRoot })` answers with the copy that describes the run being asked about —
+    the credential dir the run used, else the most recently written — instead of the first root listed.
+  - `readTranscriptEnd` reports the transcript's `mtimeMs`, and teardown ignores death evidence written
+    before the run began. Evidence older than the run is not evidence about the run.
+  - an auth banner now PARKS a credential-dir account for 10 minutes and asks the account itself before
+    retiring it; only a probe that comes back definitively rejected disables it, `ok` un-parks it, and
+    "couldn't verify" lets the park lapse. (An aged-out access token 401s exactly like a revoked one and
+    heals itself on the next launch — the case that must never cost an account.)
+  - a login that is present but DEAD (expired, no refresh token left) is a launch blocker, not a
+    fail-open fallback — the same treatment a locked macOS keychain already got. The run is refused,
+    explained on its own card, badged on the pool row and alerted to admins, instead of starting,
+    authenticating as nobody and burning a turn.
+- Rotation returning nothing because every enabled account is limited is now audited
+  (`runtime.account.unusable`), not silent — that was the state the box spent the outage in.
+
+## [0.428.0] - 2026-09-09
+### Added
+- **A tenant's ruleset now says where it has drifted from the shipped one — instead of nobody finding
+  out for a year.** `<home>/policy/default.policy.json` is a full SNAPSHOT, so the moment a tenant has
+  one (every workspace whose owner ever hit Save in the Policy editor) it stops tracking
+  `config/policy/default.policy.json` forever, in both directions. The ADD direction was already
+  answered — a new guardrail belongs in the ENGINE, combined most-restrictive via `stricterDecision`
+  the way `hostGovernanceDecision`, `fileGovernanceDecision` and `injectionDecision` are. The RETIRE
+  direction had no answer at all, and it is the one that kept costing: the blunt `shell.exec`+`risky`
+  → ask-owner rule was dropped from the bundled default in **v0.17.0** and went on waking owners on
+  three separate tenants for over a year — instawp (~70 approvals/14d, cleared by hand 2026-07-27),
+  instapods (15 in 30d, **11/11 approved**, cleared by hand 2026-09-07) and expresstech, which still
+  carries it. Each was found only by a human auditing the approvals table months late. That
+  invisibility was the defect. `src/governance/policy-baseline.ts` adds a **retirement ledger** (each
+  entry the rule exactly as it shipped, the version that dropped it, and why) and `baselineDrift()`,
+  which classifies every rule in a tenant's document as *retired* (stale product text), *missing*
+  (baseline rules that never arrived — reported for diagnosis, never auto-applied, since inserting one
+  changes first-match order) or *tenant* (the owner's own — reported, never touched). Drift is audited
+  once per tenant at boot as `policy.drift.detected` and printed to the server log, so it is findable
+  in a fleet sweep even if nobody opens the console; `GET /api/policy` carries it, and Settings →
+  Policy shows each retired rule with its receipt.
+- **Dropping a retired rule is an owner's click, never automatic** (`POST /api/policy/drift/drop`,
+  owner-only, removal-by-index re-validated server-side). Deliberate: it LOOSENS governance, and the
+  fleet shows the same rule means opposite things on different boxes — pure noise on instapods (0
+  rejected) and a guardrail somebody is actively using on expresstech (5 rejected of 26). It routes
+  through `applyPolicyDocument`, so it snapshots to `policy_revisions`, rewrites the override,
+  hot-reloads every running session and is one-click revertable like any edit. The safety property:
+  a rule matches the ledger only when **deep-equal** to the shipped signature, so an owner who
+  retargeted the approver or narrowed the `when` is classified as tenant-authored and never offered
+  for removal. Pinned by `scripts/policy-baseline-test.cjs` (32 cases over the real fleet document
+  shapes; the load-bearing half asserts an edited or owner-authored rule is never retirable).
+
+## [0.427.0] - 2026-09-09
+### Added
+- **A whole workflow can be proposed in one sentence, and approved as one thing.** `automation_propose`
+  drafts a single job, so a standing *function* — "every time a support ticket comes in, classify it,
+  answer the easy ones and escalate bugs to the engineer, and sweep every 30 minutes for anything
+  missed" — arrived as unrelated cards or not at all. The new `workflow_propose` tool carries 1–6
+  automations on ONE `automation.proposed` card (`args.specs` + a `workflow` name) which an owner/admin
+  approves as a unit. Approval is **all-or-nothing**: a part `Automations.add` rejects (a bad cron, an
+  agent deleted between proposal and approval) rolls the earlier parts back and names the failing part,
+  because half a function running with no record of which half is worse than none. Every part is
+  validated at propose time too, so a proposal that could not be approved is refused where it is made.
+  The Cockpit **operator** composes one from a plain-English description, and `classifyIntent` now reads
+  "every time …", "whenever …" and "set up a workflow" as an `action` rather than a one-off job (a bare
+  "every" as a quantifier — "check every pod" — is still work). It proposes **triggers, not steps**: the
+  judgment inside a function belongs in each part's `task` prompt where the agent decides it at runtime,
+  so a branch never becomes its own automation and the cap is 6. `automation_propose` is now the
+  one-part sibling on the same validator, card type, queue cap, dedupe and approve/reject routes;
+  single-automation proposals — including cards written by an older build, which carry only `spec` —
+  behave exactly as before. Pinned by `scripts/workflow-proposal-test.cjs`.
+
+## [0.426.0] - 2026-09-08
+### Added
+- **A request no agent can take is now evidence, not a shrug.** The router already failed safe — a
+  confident win routes, a near-tie asks, and nothing-scored returns `none` — but at that point both
+  front doors (Cockpit's `/api/router/preview` and the Slack/Discord `/agent` router) handed back the
+  full roster and the miss evaporated. Those misses are the cheapest possible signal of which agent to
+  build next, so every one is now recorded as a `router.gap` audit event (queryable on the Audit page)
+  and summarised into ONE rolling admin inbox card listing the recent unmatched requests
+  (`src/edge/capability-gap.ts`). Rolling on purpose: an unmatched request is high-volume and
+  low-urgency, exactly the shape that turns the Inbox into noise, so repeat misses refresh the single
+  card in place and only the first gap in the window pushes a DM. Cockpit's `none` panel now says *"No
+  agent here does this yet — I've flagged it for your admins"* (`noFit`) instead of implying it simply
+  guessed badly. A routed-but-not-runnable agent is a permissions outcome, not a missing capability,
+  and is deliberately never recorded as a gap. `postSystemCard` grew an optional `link` so the DM lands
+  on Agents rather than the update page it defaults to. Pinned by
+  `scripts/capability-gap-test.cjs`.
+
+## [0.425.2] - 2026-09-07
+### Fixed
+- **A magic link printed by the CLI pointed at the recipient's own loopback.** `agent-os invite`,
+  `login-link` and `tenant create` built the `/accept?token=…` URL from a hardcoded
+  `http://127.0.0.1:$PORT`, ignoring `AGENT_OS_PUBLIC_URL` / config `publicUrl` — so the one recovery
+  path that still works when no chat platform is connected handed the locked-out person a link to
+  *their* machine, which 404s or, worse, hits an unrelated local service. All three now resolve the
+  origin the way `TenantRegistry.consoleOrigin` does (env → config `publicUrl` → the loopback dev
+  fallback), so a link works as printed. Pinned by `scripts/cli-link-origin-test.cjs`.
+
+### Added
+- **Telegram is a DM delivery lane, not just an ingress.** It had its own socket, its own identity-map
+  provider, and inbound handlers that already accepted `'telegram'` for approvals, questions and
+  session continuation — but `deliverDM` sent only to Slack/Discord and `bindDmRecipients` bound only
+  those two. A member reachable *only* on Telegram therefore had every push silently dropped, and could
+  never resolve an approval by replying, because no `approval_dms` row was ever written for them. Both
+  halves now include Telegram, so every notifier that reaches Slack/Discord (sign-in links, approvals,
+  questions, tasks, goals, reviews, session events, hand-offs) reaches Telegram too. Outbound needs no
+  socket — `sendMessage` is a stateless POST — so the lane lights up in one place instead of being
+  threaded through twelve notifier signatures. Pinned by `scripts/telegram-dm-lane-test.cjs`.
+
+## [0.425.1] - 2026-09-07
+### Fixed
+- **Writing a shell script with a heredoc read as EXECUTING one, so the gate woke the owner for
+  `cat > drive.sh`.** Every approval instapods raised in 30 days was `shell.exec`, and every one
+  resolved *approved* — pure false positives. Two were bugs in `sanitizeForIntent`, the pass that
+  strips DATA payloads out of a command before intent-matching. (1) Its interpreter test was a
+  substring `/\b(bash|sh|…)\b/` over the heredoc opener, and `\bsh\b` matches the *filename*
+  `drive.sh` (`.` is a word boundary) — so `mkdir -p … && cat > probe/drive.sh <<'EOF'`, the
+  commonest reason anyone writes a heredoc, was classified as executed code and an `incus delete`
+  inside the script body read as a real delete. `isInterpreter()` now compares each token's
+  **basename** to the interpreter list (`/bin/sh` yes, `drive.sh` no) and never accepts a `>`/`>>`
+  redirect operand. (2) `git commit -q -F - <<'MSG'` has no `cat`/`tee` and no redirect, so it was
+  not a "sink" and the whole **commit message** was scanned as code — the word "prod" in a prose
+  paragraph tripped the gate. Heredocs consumed as a message by git/gh (`-F -`, `--file=-`,
+  `--body-file -`) are now recognised as data; the `-` operand and the git/gh/hub leading command
+  are both required, so `curl -F` and `git commit -F msg.txt` cannot widen it. Interpreter heredocs
+  (`bash <<`, `python <<`, `ssh host bash <<`) still classify in full — stripping only ever removes
+  text, so it can cost a missed match but can never hide an executed command. Pinned by
+  `scripts/heredoc-intent-test.cjs` (23 cases, both directions).
+
+## [0.425.0] - 2026-09-07
+### Added
+- **A session now says WHERE it is and whether it is moving — in the console, not buried in the
+  transcript.** A running session surfaced two things and neither answered the question: `lastActivity`
+  says what the agent *just did* (a point event, no position), and `update` posts agent-authored prose
+  (position-free, and self-graded). Watching a fleet agent, you could not tell a run that was advancing
+  from one re-reading the same file for the fortieth time. The new progress line splits the answer along
+  the only honest seam: the agent owns the **denominator** (`update` takes optional `subject` / `step` /
+  `of` — only it knows its work divides into 22 files), and the **verdict is derived server-side**
+  (`src/state/session-progress.ts`) from the audit stream, because an agent that believes it is
+  progressing is exactly the one going in circles. Renders on the feed row (folded into the existing
+  "currently…" line, so a row stays one line) and as a strip above the terminal on session detail.
+  - `circling` has two sources, and the first was **already built and shown to nobody**: the
+    `ReliabilityMonitor` loop detector has been auditing `reliability.loop` all along while only ever
+    nudging the agent. The second is a step that stops rising across three updates — busy is not the
+    same as advancing.
+  - `blocked` is deliberately **not** a failure state. A run parked on a human's approval queue is
+    behaving correctly, and reporting it as `stuck` would blame the agent for the human's backlog and
+    train people to ignore the one indicator that has to stay trustworthy.
+  - Every verdict carries its `reason` ("no activity for 12 min", "3 updates and step is still 6"). A
+    status word nobody can check is one people learn to ignore.
+  - A claim older than the stall window is flagged `stale` and dimmed — a frozen bar must not pretend to
+    be current. No migration: the claim rides in the existing `update` message args + `session.progress`
+    audit row, which is also what makes the delta derivable from the claim history.
+  - Pinned by `scripts/session-progress-test.cjs` (46 assertions), added to `npm run test:governance`.
+
+## [0.424.3] - 2026-09-04
+### Fixed
+- **Every send from a shared company mailbox was denied at the gate.** `emailIdentityDenial` refused any
+  member-scoped run that reached for `composio-company` email, on the reasoning that a member should send
+  from their own account. That conflates a Composio SHELF with a MAILBOX: a shared role mailbox
+  (`sales@`, `support@`) connected at the company level is an identity members are *meant* to send from,
+  with its own thread history and ownership. The guard denied it unconditionally — internal mail between
+  teammates included, an owner-run session refused identically — while its own message claimed a
+  precondition it never checked ("the run-as member has no Gmail connected"). It had been dormant since
+  it shipped, because Composio calls were governed as an anonymous `connector.call` that never reached
+  the `email.send` branch; v0.420.0 fixed that classification and woke an always-failing guard, breaking
+  every company-account send in a live tenant at once. ⚠ A `policy_check` could not predict it either —
+  the identity block sits in FRONT of the rule engine, so the preview said ALLOWED and the send died
+  anyway. It now denies on EVIDENCE instead of on a namespace: only when the company email connection
+  resolves to another TEAM MEMBER's own mailbox, which is the actual harm (mail leaving as a named person
+  who does not know) — and specifically the connection that would send THIS message: the toolkit is read
+  off the action slug (longest match, so `microsoft_outlook_…` is not read as `microsoft`), and a
+  connection already CLAIMED for someone else is skipped, since `composioSessionPlan` has walled it off
+  from this run and a claim is the sanctioned fix for this exact problem, not a reason to deny. An
+  `invited`-status member row is a shared alias somebody added to the console, not a person, so it does
+  not convict either. A role mailbox, or an account not yet resolved, falls through: the `email.send`
+  policy still routes every EXTERNAL recipient to a human approval. ⚠ That leaves a real residual —
+  internal mail is not separately gated, so while a company account is unresolved a member-scoped run can
+  mail a teammate from it unchallenged. Resolving the identity cache, or filing a claim, is what closes
+  that; this guard does not. Pinned by `scripts/email-identity-guard-test.cjs` (18 assertions).
+
+## [0.424.2] - 2026-09-04
+### Fixed
+- **Pasting a file into an open terminal no longer says "session is not live" on a live session.**
+  `attachFile` gated on the row's `status === 'running'` — the status-folding liveness rule
+  `reachable()` was introduced to replace. An agent that calls `report` is stamped `done` while its
+  claude keeps running, which is the normal shape of a long-lived interactive/resident run (3 of 8 live
+  panes on a live tenant at the time of the fix), and the console shows exactly those sessions green and
+  attachable. So a human pasting a screenshot into the pane in front of them was refused by the server
+  most of the time, with a message the visible, typeable terminal contradicted. Same defect class as the
+  poke-back bug `injectToSession` already fixed; deliberately ended runs (`stopped`/`crashed`) are still
+  refused. Pinned by `scripts/attach-file-liveness-test.cjs`.
+
+## [0.424.1] - 2026-09-04
+### Fixed
+- **Tool-usage counts one tool CALL, not one loopback request.** The first live read of the v0.414.6
+  counters (2026-09-04, 2.5 days of data) put `task_wait: 4212` and `task_create: 1848` at the top of a
+  tenant's table — a tenant that had created **311 tasks** in the window. Neither number meant what it
+  said. `task_wait` polls `/api/tasks/wait` every 3s *inside one tool call*, `task_create({wait:true})`
+  runs that same loop under its OWN label, and `toolContext` (set once per `tools/call`) stamps
+  `x-aos-tool` on every request the call makes. So the metric was measuring how long agents **waited**,
+  not what they **chose to do**, and the two tools that block by design led the ranking for that reason
+  alone.
+
+  `x-aos-tool-seq` now carries the request's position within its tool call, and only seq 1 is counted.
+  The header still rides on *every* request, because the other consumer wants the opposite: per-tool
+  latency and the blocking-tool exemption in `request-metrics` need to see the polls (a poll that stalls
+  is a stall). An absent seq counts as 1, so an older MCP process outliving a server upgrade keeps being
+  counted rather than silently vanishing from the data.
+
+  Only the two blocking tools were distorted; the **used/unused set is unaffected**, which is the
+  question the counters were added to settle. Rows written before this fix keep the inflated counts for
+  `task_wait`/`task_create` — worth remembering when reading a window that spans 2026-09-04.
+
 ## [0.424.0] - 2026-09-04
 ### Added
 - **A Slack agent can read the thread it was tagged into.** A mention delivers one message, so an agent
