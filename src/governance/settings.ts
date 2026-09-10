@@ -10,7 +10,7 @@
  * so adding more instance-level settings later is just another key.
  */
 import { Db } from '../state/db';
-import { AgentProposalTrust, Branding, EnrichPattern, MemoryConfig, Recommendation, RouterConfig, RuntimeTuning, sanitizeAgentProposalTrust, sanitizeBranding, sanitizeRuntimeTuning } from '../types';
+import { AgentProposalTrust, Branding, EnrichPattern, GithubInstallationRecord, MemoryConfig, Recommendation, RouterConfig, RuntimeTuning, sanitizeAgentProposalTrust, sanitizeBranding, sanitizeGithubInstallation, sanitizeRuntimeTuning } from '../types';
 
 const COMPANY_KEY = 'company_md';
 const REVIEW_KEY = 'code_review_md'; // the fleet-wide code-review policy (how agents review a diff/PR)
@@ -29,6 +29,7 @@ const GITHUB_CLIENT_ID_KEY = 'github_client_id'; // the company GitHub App / OAu
 const GITHUB_APP_SLUG_KEY = 'github_app_slug'; // the created App's slug (from the manifest flow) → the Install-on-repos link
 const GITHUB_APP_ID_KEY = 'github_app_id'; // the GitHub App's numeric App ID (for the company-bot installation-token minter)
 const GITHUB_INSTALLATION_ID_KEY = 'github_installation_id'; // the App installation to mint bot tokens against (auto-resolved)
+const GITHUB_INSTALLATIONS_KEY = 'github_installations'; // every org/user the App is installed on (the multi-org registry)
 const IMAGE_OPENROUTER_KEY = 'image_openrouter_key'; // OpenRouter Unified Image API key (default backend)
 const IMAGE_ATLAS_KEY = 'image_atlas_key'; // Atlas Cloud key (alt backend; covers video later)
 const IMAGE_MODEL_KEY = 'image_default_model'; // workspace default image model id (backend-specific); '' = adapter default
@@ -389,6 +390,28 @@ export class SettingsStore {
   }
   setGithubInstallationId(v: string, by?: string): void {
     this.set(GITHUB_INSTALLATION_ID_KEY, v.trim(), by);
+  }
+
+  // The App can be installed on MANY orgs, and each install mints its own token. This row is the whole
+  // set; `github_installation_id` above keeps its original meaning as the PRIMARY — the one whose token
+  // is injected as GH_TOKEN at launch. Two plain settings rows, so a one-org tenant is unchanged and a
+  // rollback needs no migration. See docs/github-multi-org-plan.md.
+
+  /** Every installation the App has, as last seen from `GET /app/installations`. Empty when unknown. */
+  githubInstallations(): GithubInstallationRecord[] {
+    const raw = this.getRow(GITHUB_INSTALLATIONS_KEY)?.value;
+    if (!raw) return [];
+    try {
+      const arr = JSON.parse(raw) as unknown;
+      return Array.isArray(arr) ? arr.map(sanitizeGithubInstallation).filter((i): i is GithubInstallationRecord => !!i) : [];
+    } catch {
+      return [];
+    }
+  }
+  setGithubInstallations(list: GithubInstallationRecord[], by?: string): GithubInstallationRecord[] {
+    const clean = list.map(sanitizeGithubInstallation).filter((i): i is GithubInstallationRecord => !!i);
+    this.set(GITHUB_INSTALLATIONS_KEY, JSON.stringify(clean), by);
+    return clean;
   }
 
   // ── image generation ─────────────────────────────────────────────────────────────

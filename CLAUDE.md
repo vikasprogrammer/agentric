@@ -224,7 +224,14 @@ Key modules:
   account (per-member OAuth — `src/edge/github-identity.ts`, `docs/per-member-github-plan.md`), THEIR
   vault-stored user token OVERRIDES the agent bot's `GH_TOKEN`/`GITHUB_TOKEN`, so git/PRs are authored as
   the actual human (bot = fallback). Token stored under the member principal (never shared `*`), refreshed
-  on demand; audited `github.token.injected`.
+  on demand; audited `github.token.injected`. ⚠ The **bot** half is org-SCOPED: one App can be installed
+  on several orgs and each install mints its OWN token, so a push to an org the injected token doesn't
+  cover 404s with a perfectly valid credential and reads as "the repo doesn't exist". `github_installation_id`
+  is the PRIMARY (what launch injects, exported as `AOS_GH_ORG`); `github_installations` is the whole
+  registry (`AOS_GH_ORGS`, and a prompt block naming the gap); each installation caches under
+  `github_bot_token:<id>`. `ensureBotToken(nowMs?, by?, org?)` / `loadBotToken(org?)` take an org login —
+  never assume the ambient `GH_TOKEN` reaches every org. Reaching a NON-primary org from a session isn't
+  wired yet (phases 2–4 of `docs/github-multi-org-plan.md`); the member OAuth lane already spans orgs.
 - `src/governance/` — `policy.ts` (JSON rule engine; first-match, glob capability + `when` arg predicates.
   `withAlwaysAllow`/`hasHardDeny` back the Inbox **"Always approve"** — an owner appending a durable `allow`
   rule from an approval card, inserted AFTER every `never` so deny guardrails survive; `POST

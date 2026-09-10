@@ -18954,7 +18954,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [telegram, setTelegram] = useState<IntegrationsResp['telegram']>({ botToken: false, configured: false })
   const [telegramState, setTelegramState] = useState<TelegramStatus | null>(null)
   const [clickup, setClickup] = useState<IntegrationsResp['clickup']>({ token: false, hint: '', webhookSecret: false, configured: false, hookPath: '' })
-  const [github, setGithub] = useState<IntegrationsResp['github']>({ clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false })
+  const [github, setGithub] = useState<IntegrationsResp['github']>({ clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false, installations: [], primaryInstallationId: '' })
   const [ghId, setGhId] = useState('')
   const [ghSecret, setGhSecret] = useState('')
   const [ghAppId, setGhAppId] = useState('')
@@ -18991,7 +18991,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const DISCORD_DEFAULT = { botToken: false, configured: false }
   const TELEGRAM_DEFAULT = { botToken: false, configured: false }
   const CLICKUP_DEFAULT = { token: false, hint: '', webhookSecret: false, configured: false, hookPath: '' }
-  const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false }
+  const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false, installations: [], primaryInstallationId: '' }
   const IMAGE_DEFAULT = { openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const VIDEO_DEFAULT = { fal: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const ANTHROPIC_DEFAULT = { set: false, source: null, model: 'claude-haiku-4-5' } as const

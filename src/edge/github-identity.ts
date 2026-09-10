@@ -12,6 +12,7 @@
  * `os.tenant`) — no kernel wiring, so the blast radius stays small.
  */
 import { authorizeUrl, exchangeUserCode, refreshUserToken, githubUser, UserToken, listInstallations, mintInstallationToken, appMetadata } from '../connectors/github';
+import { GithubInstallationRecord } from '../types';
 
 /** The vault key (per-member principal) holding the JSON token blob. */
 const USER_BLOB_KEY = 'github_user';
@@ -19,8 +20,15 @@ const USER_BLOB_KEY = 'github_user';
 const CLIENT_SECRET_KEY = 'github_client_secret';
 /** The vault key (tenant-wide `*`) holding the App's RSA private key — the company-bot minter's credential. */
 const PRIVATE_KEY_KEY = 'github_private_key';
-/** The vault key (tenant-wide `*`) caching the current installation (bot) token so launch reads it sync. */
+/**
+ * The vault key (tenant-wide `*`) caching an installation (bot) token so launch reads it sync. The App
+ * can be installed on SEVERAL orgs and each install mints its own org-scoped token, so the cache is
+ * keyed PER INSTALLATION: `github_bot_token:<installationId>`. The bare, unsuffixed key is the legacy
+ * single-org slot — read once and migrated onto the primary's suffixed key (`migrateLegacyBotToken`),
+ * never written again. See docs/github-multi-org-plan.md.
+ */
 const BOT_TOKEN_KEY = 'github_bot_token';
+const botTokenKey = (installationId: string | number): string => `${BOT_TOKEN_KEY}:${installationId}`;
 /** Refresh an expiring token this many ms before it actually expires. */
 const REFRESH_SKEW_MS = 10 * 60_000;
 /** The bot (installation) token lasts ~1 h; refresh with a wide skew so an injected token has plenty of life. */
@@ -59,6 +67,8 @@ interface GithubDeps {
     setGithubAppId(v: string, by?: string): void;
     githubInstallationId(): string;
     setGithubInstallationId(v: string, by?: string): void;
+    githubInstallations(): GithubInstallationRecord[];
+    setGithubInstallations(list: GithubInstallationRecord[], by?: string): GithubInstallationRecord[];
   };
 }
 
@@ -127,9 +137,14 @@ export class GithubIdentity {
     if (v) {
       this.os.secrets.set(this.os.tenant, PRIVATE_KEY_KEY, v, { principal: '*', updatedBy: by });
     } else {
-      // Clearing the key detaches the bot entirely — drop the cached token + resolved installation.
+      // Clearing the key detaches the bot entirely — drop EVERY cached token (one per installation,
+      // plus the legacy unsuffixed slot) and the whole resolved registry.
       this.os.secrets.delete(this.os.tenant, PRIVATE_KEY_KEY, '*');
       this.os.secrets.delete(this.os.tenant, BOT_TOKEN_KEY, '*');
+      for (const inst of this.installations()) this.os.secrets.delete(this.os.tenant, botTokenKey(inst.id), '*');
+      const primary = this.os.settings.githubInstallationId();
+      if (primary) this.os.secrets.delete(this.os.tenant, botTokenKey(primary), '*');
+      this.os.settings.setGithubInstallations([], by);
       this.os.settings.setGithubInstallationId('', by);
     }
   }
@@ -138,9 +153,91 @@ export class GithubIdentity {
     return !!this.appId() && !!this.privateKey();
   }
 
-  /** Read the cached bot token (sync — the launch path reads it synchronously). */
-  loadBotToken(): BotToken | undefined {
-    const raw = this.os.secrets.getSync(this.os.tenant, '*', BOT_TOKEN_KEY);
+  // ── the installation registry (multi-org) ───────────────────────────────────
+  // One App, potentially many orgs. `github_installations` is the whole set; `github_installation_id`
+  // keeps its original meaning as the PRIMARY — the install whose token is injected as GH_TOKEN at
+  // launch. A one-org tenant never notices any of this.
+
+  /** Every installation the App has, as last resolved. Empty when we've never asked GitHub. */
+  installations(): GithubInstallationRecord[] {
+    return this.os.settings.githubInstallations();
+  }
+
+  /** The installation for an org/user login (case-insensitive), or undefined when the App isn't on it. */
+  installationFor(org: string): GithubInstallationRecord | undefined {
+    const want = org.trim().toLowerCase();
+    if (!want) return undefined;
+    return this.installations().find((i) => i.account.toLowerCase() === want);
+  }
+
+  /** The primary installation record, when the primary id resolves to one we know about. */
+  primaryInstallation(): GithubInstallationRecord | undefined {
+    const id = this.os.settings.githubInstallationId();
+    return id ? this.installations().find((i) => String(i.id) === id) : undefined;
+  }
+
+  /** The org/user logins the bot can reach — what an agent is told it has git access to. */
+  orgs(): string[] {
+    return this.installations().map((i) => i.account);
+  }
+
+  /**
+   * Re-resolve the App's installations from GitHub and persist the set. Also settles the PRIMARY: it is
+   * left alone while it still names a live installation, and otherwise adopts the first (which is what
+   * the old single-installation code did unconditionally — the difference is that now the rest of the
+   * set is recorded, so a second org is visible instead of silently unreachable). Returns the stored
+   * list, or the last-known one when GitHub can't be reached.
+   */
+  async refreshInstallations(by?: string): Promise<GithubInstallationRecord[]> {
+    if (!this.botConfigured()) return this.installations();
+    const li = await listInstallations(this.appId(), this.privateKey());
+    if ('error' in li) return this.installations();
+    const list = this.os.settings.setGithubInstallations(li.installations, by);
+    const primary = this.os.settings.githubInstallationId();
+    const stillThere = primary && list.some((i) => String(i.id) === primary);
+    if (!stillThere) this.os.settings.setGithubInstallationId(list.length ? String(list[0].id) : '', by);
+    return list;
+  }
+
+  /**
+   * Resolve which installation a request means: a named org (undefined when the App isn't installed on
+   * it — the caller must NOT silently fall through to another org's token), or the primary when no org
+   * is named. Falls back to the bare primary id even when the registry is empty, so a tenant that has
+   * never refreshed still mints exactly as it did before.
+   */
+  private resolveInstallationId(org?: string): string {
+    if (org) {
+      const inst = this.installationFor(org);
+      return inst ? String(inst.id) : '';
+    }
+    return this.os.settings.githubInstallationId();
+  }
+
+  /**
+   * One-shot migration of the pre-multi-org cache: a token stored under the bare `github_bot_token` key
+   * belongs to whatever installation was primary at the time, so move it onto that installation's
+   * suffixed key. Idempotent, and a no-op once the legacy slot is empty.
+   */
+  private migrateLegacyBotToken(): void {
+    const legacy = this.os.secrets.getSync(this.os.tenant, '*', BOT_TOKEN_KEY);
+    if (!legacy) return;
+    const primary = this.os.settings.githubInstallationId();
+    if (primary && !this.os.secrets.getSync(this.os.tenant, '*', botTokenKey(primary))) {
+      this.os.secrets.set(this.os.tenant, botTokenKey(primary), legacy, { principal: '*' });
+    }
+    this.os.secrets.delete(this.os.tenant, BOT_TOKEN_KEY, '*');
+  }
+
+  /**
+   * Read a cached bot token (sync — the launch path reads it synchronously). `org` picks an
+   * installation by account login; omitted means the primary. Returns undefined when that installation
+   * has no cached token — or, for a named org, when the App isn't installed on it at all.
+   */
+  loadBotToken(org?: string): BotToken | undefined {
+    this.migrateLegacyBotToken();
+    const id = this.resolveInstallationId(org);
+    if (!id) return undefined;
+    const raw = this.os.secrets.getSync(this.os.tenant, '*', botTokenKey(id));
     if (!raw) return undefined;
     try {
       const j = JSON.parse(raw) as BotToken;
@@ -154,43 +251,43 @@ export class GithubIdentity {
   }
 
   /**
-   * Return a live bot token, minting + caching one if missing/expiring. Resolves the installation id
-   * from `listInstallations` on first use (a single-org App has exactly one). Returns undefined when the
-   * bot isn't configured or a mint fails hard (a stale cached token is kept so callers can still try it).
-   * Async: the sync launch path fires-and-forgets this while injecting the current cached token.
+   * Return a live bot token, minting + caching one if missing/expiring. `org` names an installation by
+   * account login; omitted (the usual case, and every launch-path caller) means the PRIMARY.
+   *
+   * The registry is resolved on first use — and re-resolved whenever we're asked for an org we don't
+   * know about, since the App may have been installed on it since we last looked. Returns undefined
+   * when the bot isn't configured, the named org has no installation, or a mint fails hard (a stale
+   * cached token is kept so callers can still try it). Async: the sync launch path fires-and-forgets
+   * this while injecting the current cached token.
    */
-  async ensureBotToken(nowMs: number = Date.now(), by?: string): Promise<BotToken | undefined> {
+  async ensureBotToken(nowMs: number = Date.now(), by?: string, org?: string): Promise<BotToken | undefined> {
     if (!this.botConfigured()) return undefined;
-    const cached = this.loadBotToken();
+    const cached = this.loadBotToken(org);
     if (cached && !this.botNeedsRefresh(cached, nowMs)) return cached;
-    const appId = this.appId();
-    const pem = this.privateKey();
-    let instId = this.os.settings.githubInstallationId();
+    let instId = this.resolveInstallationId(org);
     if (!instId) {
-      const li = await listInstallations(appId, pem);
-      if ('error' in li) return cached;
-      if (!li.installations.length) return cached;
-      instId = String(li.installations[0].id);
-      this.os.settings.setGithubInstallationId(instId, by);
+      // No primary yet, or an org we've not seen — ask GitHub and settle the registry.
+      await this.refreshInstallations(by);
+      instId = this.resolveInstallationId(org);
+      if (!instId) return cached; // the App genuinely isn't installed there
     }
-    const minted = await mintInstallationToken(appId, pem, instId);
+    const minted = await mintInstallationToken(this.appId(), this.privateKey(), instId);
     if ('error' in minted) {
-      // A stale installation id (App reinstalled) → re-resolve once and retry.
-      this.os.settings.setGithubInstallationId('', by);
-      const li = await listInstallations(appId, pem);
-      if ('error' in li || !li.installations.length) return cached;
-      const retryId = String(li.installations[0].id);
-      this.os.settings.setGithubInstallationId(retryId, by);
-      const retry = await mintInstallationToken(appId, pem, retryId);
+      // A stale installation id (App reinstalled/uninstalled) → re-resolve once and retry.
+      const before = instId;
+      await this.refreshInstallations(by);
+      const retryId = this.resolveInstallationId(org);
+      if (!retryId || retryId === before) return cached;
+      const retry = await mintInstallationToken(this.appId(), this.privateKey(), retryId);
       if ('error' in retry) return cached;
-      return this.saveBotToken(retry, by);
+      return this.saveBotToken(retryId, retry, by);
     }
-    return this.saveBotToken(minted, by);
+    return this.saveBotToken(instId, minted, by);
   }
 
-  private saveBotToken(minted: { token: string; expiresAt: number }, by?: string): BotToken {
+  private saveBotToken(installationId: string | number, minted: { token: string; expiresAt: number }, by?: string): BotToken {
     const blob: BotToken = { token: minted.token, expiresAt: minted.expiresAt };
-    this.os.secrets.set(this.os.tenant, BOT_TOKEN_KEY, JSON.stringify(blob), { principal: '*', updatedBy: by });
+    this.os.secrets.set(this.os.tenant, botTokenKey(installationId), JSON.stringify(blob), { principal: '*', updatedBy: by });
     return blob;
   }
   /** Both halves present — the minimum to run the OAuth flow. */

@@ -8,6 +8,35 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.434.0] - 2026-09-10
+### Added
+- **The company GitHub bot no longer collapses a multi-org App down to one org.** `ensureBotToken`
+  persisted a single `github_installation_id` and, when it was unset, resolved it as
+  **`installations[0]`** — whichever install `GET /app/installations` happened to return first — then
+  cached one token under one vault key. With the App installed on two orgs the bot acted on one of
+  them and 404'd every repo in the other, and nothing failed at launch: the token is valid, it just
+  doesn't cover that repo, so it reads to a human as "the agent can't see our repo". The stale-id
+  retry re-picked `[0]` as well, so a reinstall could flip which org worked with nobody touching a
+  setting. Now a `github_installations` registry records the whole set (`GithubIdentity.installations`
+  / `installationFor` / `primaryInstallation` / `orgs` / `refreshInstallations`), each installation
+  caches its own token under `github_bot_token:<id>`, and `loadBotToken(org?)` /
+  `ensureBotToken(nowMs?, by?, org?)` resolve per org — an org the App isn't installed on yields
+  nothing rather than silently another org's credential. `github_installation_id` keeps its exact
+  meaning as the PRIMARY (both are plain settings rows, so no migration and a rollback is safe), and a
+  pre-upgrade token in the bare `github_bot_token` slot migrates onto the primary's key on first read.
+  A one-org tenant is unchanged.
+  **For admins:** Install the GitHub App on as many orgs as you like — Agentric now records all of
+  them instead of quietly using whichever one GitHub listed first.
+- **A session is now told which org its git credential actually covers.** Launch exports `AOS_GH_ORG`
+  (the injected token's org) and, when the App spans more, `AOS_GH_ORGS`; `github.bot_token.injected`
+  carries both. When there's more than one installation the agent's prompt names them and says plainly
+  that a call against the others will fail as though the repository didn't exist — so an agent asks a
+  human instead of concluding the repo is missing. `GET /api/state` exposes `installations` +
+  `primaryInstallationId` for the console. Reaching a non-primary org from a session is phases 2–4 of
+  `docs/github-multi-org-plan.md`; the per-member OAuth lane already spans every org that human can
+  reach and is deliberately untouched. Pinned by `scripts/github-multi-org-test.cjs`.
+  **For admins:** If your App spans several orgs, agents are now told which one their git credential
+  covers — so a push to another org reports the real reason instead of "repository not found".
 ## [0.433.0] - 2026-09-10
 ### Added
 - **What's new — a user-facing feed generated from this changelog.** The changelog is written for the

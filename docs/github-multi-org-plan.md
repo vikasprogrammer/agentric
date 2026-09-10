@@ -117,20 +117,27 @@ resolution per-repo. Out of scope here.
 
 ## Phases (each its own PR)
 
-1. **Registry + per-installation cache** (§1 + §2) — `SettingsStore` accessors, `GithubIdentity`
-   org-aware, `AOS_GH_ORGS` + the prompt block. No behaviour change for a one-org tenant.
+1. ✅ **Registry + per-installation cache** (§1 + §2) — `SettingsStore.githubInstallations()`,
+   `GithubIdentity` org-aware (`installations`/`installationFor`/`primaryInstallation`/`orgs`/
+   `refreshInstallations`, `loadBotToken(org?)`, `ensureBotToken(nowMs?, by?, org?)`), the
+   `github_bot_token:<id>` cache with a one-shot migration off the legacy key, `AOS_GH_ORG` +
+   `AOS_GH_ORGS`, and the prompt block that says which org the injected token actually covers.
+   No behaviour change for a one-org tenant. Pinned by `scripts/github-multi-org-test.cjs`.
 2. **Per-repo git credentials** (§3) — the helper, the loopback route, the member-lane guard.
 3. **`github_token({ org })`** — the `gh` answer.
 4. **Console list + primary picker.**
 
 ## Tests
 
-Extend `scripts/github-per-member-test.cjs` (stub `globalThis.fetch`, as it already does) and add
-`scripts/github-multi-org-test.cjs` to `npm run test:governance`, pinning:
+`scripts/github-multi-org-test.cjs` (in `npm run test:governance`) pins phases 1–2; the helper/route
+cases below land with phase 2. Both stub `globalThis.fetch`, as `github-per-member-test.cjs` does:
 
-- two installations ⇒ both ids cached under distinct vault keys; the primary is the one injected;
-- a legacy `github_bot_token` + `github_installation_id` pair migrates to the suffixed key and the
+- ✅ two installations ⇒ both ids cached under distinct vault keys; the primary is the one injected;
+- ✅ a legacy `github_bot_token` + `github_installation_id` pair migrates to the suffixed key and the
   same org stays primary (the rollback-safety claim);
+- ✅ an org the App isn't installed on mints nothing and never yields another org's token;
+- ✅ reinstall churn: a vanished primary is replaced, a surviving one is left alone;
+- ✅ clearing the private key drops every installation's token, not just the primary's;
 - the helper's org parse: `path=globex/site.git` ⇒ the `globex` token, `path=` absent ⇒ `$GH_TOKEN`;
 - **the guard**: a run with a linked member token gets `member_identity`, never a bot token;
 - an org the App isn't installed on ⇒ `not_installed`, and `$GH_TOKEN` is left alone.

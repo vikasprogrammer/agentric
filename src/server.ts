@@ -5588,10 +5588,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (typeof b.githubAppId === 'string' || typeof b.githubPrivateKey === 'string') {
       const ghb = new GithubIdentity(os);
       if (ghb.botConfigured()) {
+        // Resolve the whole installation set first — the App may be installed on several orgs, and the
+        // registry is what makes the non-primary ones visible instead of silently unreachable. It also
+        // settles the primary, so the mint below has an id to work with.
+        const installs = await ghb.refreshInstallations(me.email).catch(() => []);
         const bot = await ghb.ensureBotToken(Date.now(), me.email).catch(() => undefined);
         // Also resolve the App slug now → the "Install the App" link/button (a hand-set App has no slug yet).
         if (!ghb.appSlug()) await ghb.ensureAppSlug(me.email).catch(() => { /* best-effort */ });
-        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: bot ? 'github.bot_token.minted' : 'github.bot_token.failed', data: { installationId: os.settings.githubInstallationId() || null } });
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: bot ? 'github.bot_token.minted' : 'github.bot_token.failed', data: { installationId: os.settings.githubInstallationId() || null, orgs: installs.map((i) => i.account) } });
       }
     }
     // Image generation backend keys (OpenRouter default / Atlas alt) + optional default model.
@@ -7835,7 +7839,7 @@ function integrationsView(os: AgentOS): {
   discord: { botToken: boolean; configured: boolean };
   telegram: { botToken: boolean; configured: boolean };
   clickup: { token: boolean; hint: string; webhookSecret: boolean; configured: boolean; hookPath: string };
-  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean };
+  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean; installations: { id: number; account: string; repositorySelection?: string }[]; primaryInstallationId: string };
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean };
   video: { fal: boolean; atlas: boolean; backend: 'fal' | 'atlas' | null; defaultModel: string; configured: boolean };
   anthropic: { set: boolean; source: 'settings' | 'env' | null; model: string };
@@ -7859,7 +7863,7 @@ function integrationsView(os: AgentOS): {
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
     telegram: { botToken: telegram.botToken, configured: os.settings.telegramConfigured() },
     clickup: { token: clickup.token, hint: redactSecret(os.settings.clickupToken()), webhookSecret: clickup.webhookSecret, configured: os.settings.clickupConfigured(), hookPath: os.settings.clickupWebhookSecret() ? `/hooks/clickup?key=${os.settings.clickupWebhookSecret()}` : '' },
-    github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '', appId: !!gh.appId(), privateKey: !!gh.privateKey(), botReady: !!gh.loadBotToken() },
+    github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '', appId: !!gh.appId(), privateKey: !!gh.privateKey(), botReady: !!gh.loadBotToken(), installations: gh.installations(), primaryInstallationId: os.settings.githubInstallationId() || '' },
     image: { openRouter: image.openRouter, atlas: image.atlas, backend: image.backend, defaultModel: image.defaultModel, configured: os.settings.imageGenConfigured() },
     video: { fal: video.fal, atlas: video.atlas, backend: video.backend, defaultModel: video.defaultModel, configured: os.settings.videoGenConfigured() },
     anthropic: (() => { const a = os.settings.anthropicMeta(); return { set: a.set, source: a.source, model: a.model }; })(),

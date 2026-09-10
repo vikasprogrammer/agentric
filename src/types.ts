@@ -1842,6 +1842,30 @@ export function sanitizeBranding(input: Partial<Record<keyof Branding, unknown>>
   return out;
 }
 
+/** One GitHub App installation — a single org (or user account) the company App is installed on.
+ *  A tenant's App may be installed on several; each mints its own org-scoped token, so this is the
+ *  unit the bot lane caches and resolves against. `account` is the org/user login and the key the
+ *  per-repo lookup matches on; `repositorySelection` is what the installer granted (`all` |
+ *  `selected`). See docs/github-multi-org-plan.md. */
+export interface GithubInstallationRecord {
+  id: number;
+  account: string;
+  repositorySelection?: string;
+}
+
+/** Normalize one installation record (from the GitHub API or the persisted settings row). Returns
+ *  undefined for anything without both a positive numeric id and a non-empty account, so a truncated
+ *  or hand-edited row is dropped rather than becoming an installation nobody can mint against. */
+export function sanitizeGithubInstallation(input: unknown): GithubInstallationRecord | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const v = input as Record<string, unknown>;
+  const id = Number(v.id);
+  const account = typeof v.account === 'string' ? v.account.trim() : '';
+  if (!Number.isFinite(id) || id <= 0 || !account) return undefined;
+  const sel = typeof v.repositorySelection === 'string' ? v.repositorySelection.trim() : '';
+  return { id, account, ...(sel ? { repositorySelection: sel } : {}) };
+}
+
 /** Normalize a starter-prompts payload (from an API body or config file): coerces to an array of
  *  trimmed, non-empty strings, caps each at 500 chars and the list at 6. Returns undefined when the
  *  result is empty so the manifest stays clean (the card just falls back to its placeholder). */

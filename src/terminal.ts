@@ -4720,8 +4720,9 @@ export class TerminalManager {
     // committing as a shared bot (or failing auth). Only when acting as a real member, and only the
     // actionable case (not connected) — a connected member's token is injected and just works.
     let github = '';
+    const ghIdent = new GithubIdentity(this.os);
     if (actingMember) {
-      const gh = new GithubIdentity(this.os);
+      const gh = ghIdent;
       if (!gh.load(actingMember)) {
         const who = this.os.team.getMember(actingMember)?.name || 'the person you run as';
         github = gh.configured()
@@ -4736,6 +4737,28 @@ export class TerminalManager {
             'code or open a PR, use `ask` to have an owner or admin set up the GitHub App in one click ' +
             `(**Connections → Creds → GitHub → Create GitHub App**), then ask **${who}** to connect their account.`;
       }
+    }
+    // Multi-org git reach. The company App may be installed on SEVERAL orgs, but the token injected at
+    // launch is scoped to ONE of them (the primary) — a push to any other org 404s with a perfectly
+    // valid credential, which reads as "the repo doesn't exist" and has cost real debugging time. Say
+    // so up front, and only when it can actually bite (more than one installation). Appended rather
+    // than merged into the block above because it applies to unattended runs too, which have no
+    // acting member. See docs/github-multi-org-plan.md.
+    const ghOrgs = ghIdent.orgs();
+    if (ghOrgs.length > 1) {
+      const primary = ghIdent.primaryInstallation()?.account;
+      const others = ghOrgs.filter((o) => o !== primary);
+      github +=
+        (github ? '\n\n' : '') +
+        '# Git reach — this workspace spans several GitHub orgs\n\n' +
+        `The company GitHub App is installed on: ${ghOrgs.map((o) => `**${o}**`).join(', ')}. ` +
+        (primary
+          ? `The credential in your environment is scoped to **${primary}** only. A \`git\` or \`gh\` call ` +
+            `against ${others.map((o) => `**${o}**`).join(' or ')} will fail as though the repository did not ` +
+            'exist — the token is valid, it just does not cover that org. If your task needs one of those ' +
+            'repos, `ask` a human rather than retrying or assuming the repo is missing.'
+          : 'No primary org is set, so git may not authenticate at all — `ask` an owner to pick one in ' +
+            '**Connections → Creds → GitHub**.');
     }
     // Launch-time recall preamble (Settings → Memory, off by default): seed the prompt with this
     // agent's most salient memories so a cold session isn't blind, instead of relying on it to call
@@ -8714,9 +8737,17 @@ export class TerminalManager {
     }
     env.GH_TOKEN = blob.token;
     env.GITHUB_TOKEN = blob.token;
-    this.audit(sessionId, agent, 'github.bot_token.injected', { expiresAt: blob.expiresAt });
+    // Which org this token actually covers, and the full set the App is installed on. The token is
+    // scoped to ONE installation, so a session that touches another org gets a 404 from a valid
+    // credential — naming both here (and in the prompt) makes that legible to a human reading the env
+    // or the audit trail. Only exported when the registry knows more than the injected org.
+    const orgs = gh.orgs();
+    const primary = gh.primaryInstallation()?.account;
+    if (primary) env.AOS_GH_ORG = primary;
+    if (orgs.length > 1) env.AOS_GH_ORGS = orgs.join(',');
+    this.audit(sessionId, agent, 'github.bot_token.injected', { expiresAt: blob.expiresAt, org: primary, orgs: orgs.length });
     if (gh.botNeedsRefresh(blob)) {
-      this.audit(sessionId, agent, 'github.bot_token.stale', { expiresAt: blob.expiresAt });
+      this.audit(sessionId, agent, 'github.bot_token.stale', { expiresAt: blob.expiresAt, org: primary });
       void gh.ensureBotToken().catch(() => { /* best-effort; next launch retries */ });
     }
   }

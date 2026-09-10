@@ -16,6 +16,7 @@
  * than throwing, so a flaky network or bad credential degrades gracefully at the call site.
  */
 import { createSign } from 'crypto';
+import { GithubInstallationRecord } from '../types';
 
 const GH_API = 'https://api.github.com';
 const UA = 'agent-os';
@@ -247,13 +248,10 @@ export async function userInstallationStatus(token: string): Promise<Installatio
   }
 }
 
-/** A GitHub App installation — one org/user the App is installed on. `account` is the org/user login. */
-export interface GithubInstallation {
-  id: number;
-  account: string;
-  /** The repository selection the installer granted: `all` or `selected`. */
-  repositorySelection?: string;
-}
+/** A GitHub App installation — one org/user the App is installed on. `account` is the org/user login,
+ *  `repositorySelection` what the installer granted (`all` | `selected`). Same shape the settings
+ *  registry persists, so the wire result can be stored without a translation step. */
+export type GithubInstallation = GithubInstallationRecord;
 
 /**
  * List the App's installations (`GET /app/installations`) — for the settings UI to confirm/pick which

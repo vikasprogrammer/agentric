@@ -1455,7 +1455,7 @@ export interface IntegrationsResp {
   clickup: { token: boolean; hint: string; webhookSecret: boolean; configured: boolean; hookPath: string }
   /** Per-member GitHub App OAuth — whether the client id / secret are set (never the secret itself),
    *  plus the created App's slug + the install-on-repos link (empty until an App is created). */
-  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean }
+  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean; installations: { id: number; account: string; repositorySelection?: string }[]; primaryInstallationId: string }
   /** Image generation backend — which keys are set (never the keys), the active backend, default model. */
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean }
   /** Video generation backend — which keys are set (never the keys), the active backend, default model. */
