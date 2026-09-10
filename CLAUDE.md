@@ -751,6 +751,13 @@ a new version heading in the same commit. The sidebar version therefore tells yo
 build a long-running server is holding in memory — the first thing to check when a change "isn't
 taking".
 
+**What's new is generated from the changelog.** An entry a USER would notice also carries a
+`**For users:**` line (or `**For admins:**` for owner/admin-only features) as the last line of its
+bullet: one or two sentences of "you can now …", in plain words, optionally ending with a console link
+(`[Open Tasks](#/tasks)`). `src/edge/whats-new.ts` parses those lines into the console's **What's new**
+panel (sidebar, per-member unread badge). Internal fixes and refactors get no tag — the feed is only
+useful while it stays short. Entries under **Unreleased** never show; they appear once the version ships.
+
 **Bump with `npm version`, never by hand-editing `package.json`.** The lockfile also records the root
 version (in `.version` AND `.packages[""].version`), and npm rewrites both on the next `npm install`.
 So a hand bump leaves `package-lock.json` behind, and the drift surfaces on the DEPLOY box:

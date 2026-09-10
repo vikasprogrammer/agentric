@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.433.0] - 2026-09-10
+### Added
+- **What's new — a user-facing feed generated from this changelog.** The changelog is written for the
+  people who build Agentric; the people who use it need one sentence of "you can now …" and where to try
+  it. An entry now opts in with a `**For users:**` (or `**For admins:**`) line as the last line of its
+  bullet, and `src/edge/whats-new.ts` parses those lines into a **What's new** link under the version in
+  the console sidebar: a dialog grouped by release, with a per-member unread badge (the version they last
+  opened it at, stored in `settings`; a member who never opened it sees the last 14 days as new), "New"
+  highlights, admin-only entries filtered by role, and console links in an entry acting as its "try it".
+  Unreleased entries never show. One source of truth — a feature can't reach the feed without a changelog
+  entry, and the feed can't drift from what shipped. `GET /api/whats-new`, `POST /api/whats-new/seen`.
+  Backfilled for v0.430.0–v0.432.0; the convention is in CLAUDE.md → Versioning. Pinned by
+  `scripts/whats-new-test.cjs`.
+  **For users:** This panel. Each release, it lists what you can now do — with a link to try it. The
+  badge counts what's new since you last looked.
+
 ## [0.432.0] - 2026-09-10
 ### Added
 - **`/agentric` helper commands — work the Tasks board from chat without starting an agent.** A small,
@@ -24,6 +40,9 @@ new version heading in the same commit.
   needs the sender resolved to a member (identity map / ClickUp email); an unmapped sender is told how to
   get linked instead of editing the shared board anonymously. Audited `chat.command`. Pinned by
   `scripts/agentric-commands-test.cjs`.
+  **For users:** Work your tasks from Slack, Discord, Telegram or a ClickUp comment without starting an
+  agent: `/agentric tasks` lists yours, `/agentric task new <title> @agent` files one and hands it off,
+  and `/agentric status`, `done` and `reopen` update one. Type `/agentric help` to see them all.
 
 ## [0.431.0] - 2026-09-10
 ### Added
@@ -40,6 +59,9 @@ new version heading in the same commit.
   so a racing duplicate webhook re-reads the task rather than filing a second one. Audited
   `clickup.task.linked` / `clickup.task.discussed` / `clickup.task.failed`. Pinned by
   `scripts/clickup-task-bridge-test.cjs`; design in `docs/clickup-task-bridge-plan.md`.
+  **For users:** Comment `/agentric <text>` on a ClickUp ticket and it gets ONE Agentric task, titled
+  `#<ticket id> <heading>`; every later `/agentric` comment adds to that same task. `/agentric <agent>
+  <request>` also puts that agent on it, and reopens it if it was done.
 
 ### Fixed
 - **`/agentric <agent>` only worked in Slack.** The roster reply tells people to type `/agentric <agent> …`
@@ -47,6 +69,7 @@ new version heading in the same commit.
   ClickUp the namespace wasn't recognised, so the message was read as addressing an agent called
   `agentric` and answered with "I don't have an agent named `agentric`". The chat normaliser now strips
   `/agentric` alongside `/agent-os` / `/agentos` (`CHAT_NAMESPACE_RE`, shared with the ClickUp ingress).
+  **For users:** `/agentric <agent> <request>` now works in Discord, Telegram and ClickUp, not just Slack.
 
 ## [0.430.0] - 2026-09-10
 ### Added
@@ -56,14 +79,21 @@ new version heading in the same commit.
   lens (`Anyone · I filed · People · Agents`, each with a facet count), names the filer on the card and in
   the list row whenever that isn't the assignee, lists **Group: Filed by** in the list view, and stamps
   `filed by …` in the task room's meta line.
+  **For users:** Find your own tasks fast: the Tasks board's new **Filed by** filter has **I filed**,
+  **People** and **Agents** — pair **I filed** with **Done** to pick finished work back up. Cards now say
+  who filed each task. [Open Tasks](#/tasks)
 - **Tasks: a top-level lens.** A one-click *Top level* filter hides every task with a parent — the
   decomposition an agent split out of its own work — leaving the work somebody actually asked for. Shown
   only when the board holds sub-tasks, with a count of what it would hide. Board cards now also show a
   `↳ <parent>` chip linking to the task they were split from.
+  **For users:** Hide the sub-tasks agents split out of their work with the **Top level** filter; a
+  sub-task's card links back to its parent with `↳`. [Open Tasks](#/tasks)
 - Creating a task **opens it**. The create form used to drop you back on the board with the new card
   somewhere in it; you then had to find your own task to add detail or dispatch it. It now navigates to
   `#/tasks/<id>` — the room, where the next action is. (Board is refreshed first, so closing the room
   lands on a list that already holds the card.)
+  **For users:** Creating a task now takes you straight into it, ready to add detail or hand it to an
+  agent.
 
 ### Fixed
 - **List view: `Group: Chain` could not be selected.** The mode was implemented and named in the group
