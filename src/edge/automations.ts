@@ -26,6 +26,8 @@ import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './co
 import { sweepStrandedTasks } from './task-reconcile';
 import { refreshStaleUsage, BACKGROUND_USAGE_STALE_MS } from './runtime-account-usage';
 import { WakeupQueue } from './wakeups';
+import { AgentricCommand, AgentricSurface, agentricBody, agentricHelp, parseAgentricCommand } from './agentric-commands';
+import { consolePage } from '../governance/chat-links';
 import {
   DEDUPE_TTL_MS,
   Headers as WHHeaders,
@@ -287,6 +289,15 @@ export interface AddAutomationInput {
 /** The command namespace a chat message may lead with before the agent name: `/agentric <agent> …`, or the
  *  older `/agent-os` / `/agentos`. Exported so the ClickUp ingress strips exactly the same forms. */
 export const CHAT_NAMESPACE_RE = /^(\s*)\/(?:agentric|agent-?os)\s+\/?/i;
+
+/** "5m ago" / "3h ago" / "2d ago" — for the one-line task status a chat command replies with. */
+function agoLabel(ts: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 90) return 'just now';
+  if (s < 5400) return `${Math.round(s / 60)}m ago`;
+  if (s < 129600) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
 
 export type FireResult =
   | { ok: true; sessionId: string; tmux: string }
@@ -1335,6 +1346,13 @@ export class Automations {
     const sessions: string[] = [];
     const agents: string[] = [];
     let dropped: string | undefined;
+    // `/agentric <verb> …` helper commands are answered here, ahead of every automation and the router —
+    // a `*`-scoped automation would otherwise fire an agent run on `/agentric tasks`. Not on a channel
+    // watch: that lane exists to wake one specific automation, never to answer on its behalf.
+    if (!opts.channelWatch) {
+      const reply = this.agentricCommand(event.text, 'slack', runAsMember);
+      if (reply !== null) return { fired: 0, sessions, agents, reply };
+    }
     // What the `when`/`unless` paths read. The raw Slack event, but with `text` replaced by the
     // mention-stripped body the agent will actually be given (so a filter matches what a human reads,
     // not `<@B123> …`), plus the resolved sender label — `unless actor == "Status Bot"` is a filter
@@ -1778,6 +1796,108 @@ export class Automations {
   }
 
   /**
+   * `/agentric` helper commands (`agentric-commands.ts`) — answered by the server itself: no agent run, no
+   * quota. Returns the reply to post, or null when the message isn't a helper command, in which case the
+   * caller routes it exactly as before. `ticketTask` is a ClickUp ticket's linked task — the default target
+   * of done/reopen/status there. `bodyOnly`: `text` has already had `/agentric` stripped (the ClickUp path).
+   */
+  agentricCommand(text: string, surface: AgentricSurface, member?: string, opts: { ticketTask?: Task | null; bodyOnly?: boolean } = {}): string | null {
+    const body = opts.bodyOnly ? text : agentricBody(text);
+    if (body === null) return null;
+    const cmd = parseAgentricCommand(body, surface);
+    if (!cmd) return null;
+    const reply = this.runAgentricCommand(cmd, surface, member, opts.ticketTask ?? undefined);
+    this.os.audit.append({
+      ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: member ? `member:${member}` : surface,
+      type: 'chat.command', data: { surface, verb: cmd.verb, id: 'id' in cmd ? cmd.id ?? null : null, member: member ?? null },
+    });
+    return reply;
+  }
+
+  private runAgentricCommand(cmd: AgentricCommand, surface: AgentricSurface, member: string | undefined, ticketTask?: Task): string {
+    const platform = surface === 'clickup' ? 'ClickUp' : surface[0].toUpperCase() + surface.slice(1);
+    if (cmd.verb === 'help') return agentricHelp(surface);
+    if (cmd.verb === 'unsupported') return `"/agentric ${cmd.what}" works from Slack or Discord. On a ClickUp ticket, the ticket's own Agentric task is the one you're working.\n\n${agentricHelp('clickup')}`;
+    // Every other verb reads or changes the shared board, so it needs to know WHO is asking. The chat router
+    // lets an unmapped sender reach an agent under the company identity; closing a task as "somebody on
+    // Slack" is a different thing, so here an unresolved sender gets the fix instead of an anonymous edit.
+    if (!member) {
+      return `I can't tell who you are on ${platform}, so I can't work tasks for you. Ask an admin to link your ${platform} account to your member on the Agentric Team page` +
+        (surface === 'clickup' ? ' (ClickUp matches you by email).' : '.');
+    }
+    const link = (t: Task) => (this.tm.consoleOrigin ? consolePage(this.tm.consoleOrigin, 'tasks', t.id) : t.id);
+    const who = (id?: string) => (!id ? 'unassigned' : id.startsWith('agent:') ? id.slice('agent:'.length) : this.os.team.getMember(id)?.name || id);
+    const name = this.os.team.getMember(member)?.name || member;
+
+    if (cmd.verb === 'tasks') {
+      const statuses = cmd.scope === 'open' ? (['todo', 'doing', 'blocked'] as const)
+        : cmd.scope === 'done' ? (['done', 'cancelled'] as const)
+        : (['todo', 'doing', 'blocked', 'done', 'cancelled'] as const);
+      const SHOW = 10;
+      const rows = this.os.tasks.forMember(this.os.tenant, member, statuses, SHOW + 1);
+      if (!rows.length) return cmd.scope === 'done' ? 'None of your tasks are finished yet.' : 'Nothing open for you. Create one with /agentric task new <title>.';
+      const more = rows.length > SHOW ? `\n…and more on the board: ${this.tm.consoleOrigin ? consolePage(this.tm.consoleOrigin, 'tasks') : '#/tasks'}` : '';
+      const label = cmd.scope === 'all' ? 'Your tasks' : `Your ${cmd.scope} tasks`;
+      return `${label}:\n` + rows.slice(0, SHOW).map((t) => `• ${t.title} — ${t.status} · ${who(t.assignee)} · ${t.id}\n  ${link(t)}`).join('\n') + more;
+    }
+
+    if (cmd.verb === 'new') {
+      if (!cmd.title) return 'Usage: /agentric task new <title> [@agent]';
+      let agentId: string | undefined;
+      let note = '';
+      if (cmd.agent) {
+        // Same bar as the chat router: a user-facing coding agent that's open to chat.
+        const a = this.os.agents.get(cmd.agent);
+        if (a && isCodingRuntime(a.runtime) && a.category !== 'System' && a.chatReachable !== false) agentId = a.id;
+        else note = `\n(no agent "${cmd.agent}" I can hand this to, so it's unassigned)`;
+      }
+      const t = this.os.tasks.create({
+        tenant: this.os.tenant, title: cmd.title, owner: member, createdBy: member,
+        assignee: agentId ? `agent:${agentId}` : undefined, autoDispatch: !!agentId,
+      });
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: `member:${member}`, type: 'task.created', data: { id: t.id, title: t.title, assignee: t.assignee ?? null, via: surface } });
+      let started = '';
+      if (agentId) {
+        const d = this.dispatchTask(t.id, { guard: true, by: member });
+        started = d.ok ? `\n${agentId} is on it.` : `\n${agentId} will pick it up when it can (${d.reason}).`;
+      }
+      return `Created: ${t.title} (${t.id})\n${link(t)}${started}${note}`;
+    }
+
+    if (cmd.verb === 'say') {
+      const t = this.os.tasks.get(cmd.id);
+      if (!t) return `No task ${cmd.id}. Find ids with /agentric tasks.`;
+      const r = this.postTaskDiscussion({ taskId: t.id, author: member, body: cmd.text, runAs: member });
+      if (!r.ok) return `Couldn't add that: ${r.error}`;
+      const d = r.delivery;
+      const reached = d && 'agent' in d && d.agent && (d.status === 'delivered' || d.status === 'answered') ? ` — ${d.agent} is working it and has your message` : '';
+      return `Added to ${t.title}${reached}\n${link(t)}`;
+    }
+
+    // done | reopen | status
+    const t = cmd.id ? this.os.tasks.get(cmd.id) : ticketTask;
+    if (!t) {
+      if (cmd.id) return `No task ${cmd.id}. Find ids with /agentric tasks.`;
+      return surface === 'clickup'
+        ? 'This ticket has no Agentric task yet. /agentric <text> creates one.'
+        : `Which task? /agentric ${cmd.verb} <task id>. Find ids with /agentric tasks.`;
+    }
+    if (cmd.verb === 'status') {
+      const last = this.os.tasks.latestNote(t.id);
+      const clip = last && last.length > 280 ? last.slice(0, 279) + '…' : last;
+      return `${t.title}\n${t.status} · ${who(t.assignee)} · updated ${agoLabel(t.updatedAt)}` + (clip ? `\nLatest note: ${clip}` : '') + `\n${link(t)}`;
+    }
+    if (cmd.verb === 'done') {
+      if (t.status === 'done') return `Already done: ${t.title}\n${link(t)}`;
+      this.os.tasks.update(t.id, { status: 'done', note: `closed from ${platform} by ${name}`, by: member });
+      return `Closed: ${t.title}\n${link(t)}`;
+    }
+    if (t.status !== 'done' && t.status !== 'cancelled') return `Not closed — it's ${t.status}: ${t.title}\n${link(t)}`;
+    this.os.tasks.update(t.id, { status: 'todo', note: `reopened from ${platform} by ${name}`, by: member });
+    return `Reopened: ${t.title}\n${link(t)}`;
+  }
+
+  /**
    * The `/agentric` ClickUp bridge — one ClickUp ticket, one Agentric task (`docs/clickup-task-bridge-plan.md`).
    *
    * Find-or-create the task keyed `clickup:<ticket id>` (the partial unique index on `tasks.external_key`
@@ -1956,6 +2076,8 @@ export class Automations {
   ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string }> {
     const sessions: string[] = [];
     const agents: string[] = [];
+    const command = this.agentricCommand(event.text, 'discord', runAsMember);
+    if (command !== null) return { fired: 0, sessions, agents, reply: command };
     const extra =
       `Triggered from Discord by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}.\n` +
       `Message:\n${event.text}\n` +
@@ -2003,6 +2125,8 @@ export class Automations {
   ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string }> {
     const sessions: string[] = [];
     const agents: string[] = [];
+    const command = this.agentricCommand(event.text, 'telegram', runAsMember);
+    if (command !== null) return { fired: 0, sessions, agents, reply: command };
     const bind = { chat: event.chat, messageThreadId: event.messageThreadId, messageId: event.messageId };
     const extra =
       `Triggered from Telegram by ${event.actorLabel} (${event.eventType}) in chat ${event.chat}.\n` +

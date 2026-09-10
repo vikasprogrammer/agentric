@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.432.0] - 2026-09-10
+### Added
+- **`/agentric` helper commands — work the Tasks board from chat without starting an agent.** A small,
+  closed verb set answered by the server itself (no agent run, no quota), on Slack (the `/agentric` slash
+  command or an @mention), Discord, Telegram (`/agentric@Bot` too) and ClickUp comments:
+  `help` · `tasks [open|done|all]` (assigned to, filed by, or run as you) · `task new <title> [@agent]`
+  (naming an agent assigns and starts it) · `task <id> <text>` (into the discussion, reaching the run
+  working it) · `status|done|reopen <id>`. On a ClickUp ticket the ticket's own task is the default target,
+  so `/agentric status`, `/agentric done` and `/agentric reopen` need no id; chat-only verbs there get a
+  pointer rather than being filed as a comment. The grammar is strict on purpose — a status verb counts
+  only as the WHOLE message, so `/agentric done testing, looks good` on a ticket stays a comment and
+  `/agentric <agent> …` still routes to the agent. Helper commands are answered ahead of every automation,
+  so a `*`-scoped Slack automation no longer spends a run on `/agentric tasks`. Anything beyond `help`
+  needs the sender resolved to a member (identity map / ClickUp email); an unmapped sender is told how to
+  get linked instead of editing the shared board anonymously. Audited `chat.command`. Pinned by
+  `scripts/agentric-commands-test.cjs`.
+
 ## [0.431.0] - 2026-09-10
 ### Added
 - **`/agentric` in a ClickUp comment — one ticket, one Agentric task.** The first `/agentric` comment on

@@ -94,6 +94,7 @@ maps it to a **Task** instead, intercepted in `ClickupIngress.dispatch` before c
 | `/agentric <text>` | find-or-create the task keyed `clickup:<ticket id>`; `<text>` goes to its discussion (reaches the live run, fans out `@mentions`). Dispatches nothing. |
 | `/agentric <agent> <request>` | the same, then reopen the task if it's closed and put `<agent>` on it — continue its run if it owns the task, else assign + dispatch a run bound to the ticket (`clickup_reply` answers there). |
 | `/agentric` | link only. |
+| `/agentric status` · `done` · `reopen` · `help` | helper commands on the ticket's task — the WHOLE comment, answered as one comment, no run (v0.432.0). `/agentric done testing, looks good` is text, not a close. |
 
 - **Title** `#<custom_id or ticket id> <ticket name>`; **body** the ticket link + description (`fetchTask`,
   `include_markdown_description=true`). A failed fetch still links, titled `#<id> ClickUp ticket`.

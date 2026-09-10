@@ -129,6 +129,17 @@ export class TaskStore {
     return r ? this.withDeps(toTask(r)) : undefined;
   }
 
+  /** A member's tasks — assigned to them, filed by them, or run as them — most recently active first.
+   *  Backs `/agentric tasks`: "mine" has to cover what I asked for as well as what I was handed. */
+  forMember(tenant: string, memberId: string, statuses: readonly TaskStatus[], limit: number): Task[] {
+    const marks = statuses.map(() => '?').join(', ');
+    return this.db
+      .prepare(`SELECT * FROM tasks WHERE tenant = ? AND (assignee = ? OR created_by = ? OR owner = ?)
+                 AND status IN (${marks}) ORDER BY updated_at DESC LIMIT ?`)
+      .all<TaskRow>(tenant, memberId, memberId, memberId, ...statuses, limit)
+      .map(toTask);
+  }
+
   /** The task mirroring an outside record (`clickup:<ticket id>`), if one was ever linked. */
   byExternalKey(tenant: string, key: string): Task | undefined {
     const r = this.db.prepare('SELECT * FROM tasks WHERE tenant = ? AND external_key = ?').get<TaskRow>(tenant, key);
