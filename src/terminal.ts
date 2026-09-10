@@ -2632,6 +2632,9 @@ export class TerminalManager {
    * the automations pile-up guard releases. Interactive (the default, e.g. manual spawns) opens a
    * normal attachable TUI that stays live until closed.
    */
+  /** The console's public origin (`scheme://host`), '' when unknown — the base for task links in chat. */
+  get consoleOrigin(): string { return this.publicOrigin; }
+
   createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning, clickup?: { taskId: string; commentId: string }, telegram?: { chat: string; messageThreadId?: string; messageId: string }): Session {
     const id = newId('session');
     const tmux = `aos-${id}`;

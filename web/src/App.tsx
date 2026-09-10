@@ -19324,7 +19324,8 @@ function IntegrationsSettings({ me }: { me: Member }) {
               The agent works the task and posts its answer back as a comment; follow-up comments continue the same
               conversation. <code className="text-[11px]">/agentric …</code> instead keeps ONE Agentric task per ticket
               (created on first use, later comments land in its discussion); <code className="text-[11px]">/agentric &lt;agent&gt; …</code> also
-              puts that agent on it. One company ClickUp API token reads the comment and posts the reply.
+              puts that agent on it; <code className="text-[11px]">/agentric status</code> · <code className="text-[11px]">done</code> · <code className="text-[11px]">reopen</code> act on that task with no agent run
+              (<code className="text-[11px]">/agentric help</code> lists them — the same helpers work in Slack, Discord and Telegram). One company ClickUp API token reads the comment and posts the reply.
             </p>
           </div>
           <Field label="API token" help="ClickUp → Settings → Apps → API Token (pk_…). Needs comment read + write on the tasks you'll use it from.">

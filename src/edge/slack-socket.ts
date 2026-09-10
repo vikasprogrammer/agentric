@@ -476,8 +476,10 @@ export class SlackSocket {
     const userId = String(p.user_id || '');
     const { runAsMember, actorLabel } = await this.resolveActor(userId);
     // Slack strips the command itself: `/agentric support-ops fix X` arrives as text `support-ops fix X`.
+    // Put the namespace back so `fireSlack` sees exactly what a Discord/Telegram user types: a helper
+    // command (`/agentric tasks`) is answered there, anything else is stripped to `/support-ops fix X`.
     const body = String(p.text || '').trim();
-    const text = body.startsWith('/') ? body : `/${body}`;
+    const text = `/agentric ${body}`;
     const token = this.os.settings.slackBotToken();
     const result = await this.autos.fireSlack(
       { eventType: 'slash_command', channel, threadTs: '', user: userId, actorLabel, text, raw: p },

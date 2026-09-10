@@ -139,6 +139,16 @@ export class ClickupIngress {
    * reaction alone, since a comment per comment doubles the noise on a shared ticket. Never throws.
    */
   private async bridge(token: string, ticketId: string, commentId: string, text: string, member: string | undefined, actorLabel: string, files: { name: string; data: Buffer }[]): Promise<{ ok: boolean; status: string; sessions?: string[] }> {
+    // `/agentric status|done|reopen|help` — a helper command about THIS ticket's task, answered as one
+    // comment. Anything else (including a sentence that merely starts with "done") is text for the task.
+    const reply = this.autos.agentricCommand(text, 'clickup', member, {
+      bodyOnly: true, ticketTask: this.os.tasks.byExternalKey(this.os.tenant, `clickup:${ticketId}`),
+    });
+    if (reply !== null) {
+      const a = await addComment(token, ticketId, reply);
+      if ('ok' in a) this.remember(a.id);
+      return { ok: true, status: 'agentric:command' };
+    }
     const ticket = await fetchTask(token, ticketId);
     let r: ReturnType<Automations['linkClickupTicket']>;
     try {
