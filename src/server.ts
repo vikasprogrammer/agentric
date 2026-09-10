@@ -46,6 +46,7 @@ import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, keychainHa
 import { refreshStaleUsage } from './edge/runtime-account-usage';
 import { runtimePresence, installRuntime } from './edge/runtime-install';
 import { ClickupIngress } from './edge/clickup-ingress';
+import { whatsNew, unseen } from './edge/whats-new';
 import { DiscordSocket } from './edge/discord-socket';
 import { TelegramSocket } from './edge/telegram-socket';
 import { AppSupervisor } from './edge/app-supervisor';
@@ -2516,6 +2517,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // Host pressure for the sidebar chip (see host-metrics.ts). Deliberately tiny and DB-free: it is polled
   // on a timer by every open console tab, and the whole point is to stay honest when the box is struggling.
   if (method === 'GET' && p === '/api/host') return sendJson(res, 200, hostMetrics());
+  // "What's new" — the user-facing feed generated from CHANGELOG.md's `**For users:**` / `**For admins:**`
+  // lines (src/edge/whats-new.ts). Admin-only entries are filtered by role; `unseen` is per member.
+  if (method === 'GET' && p === '/api/whats-new') {
+    const admin = me.role === 'owner' || me.role === 'admin';
+    const entries = whatsNew().filter((e) => admin || e.audience === 'all').slice(0, 40);
+    const seen = os.settings.whatsNewSeen(me.id);
+    return sendJson(res, 200, { entries, unseen: unseen(entries, seen).map((e) => e.id), seen, version: VERSION });
+  }
+  if (method === 'POST' && p === '/api/whats-new/seen') {
+    os.settings.setWhatsNewSeen(me.id, VERSION);
+    return sendJson(res, 200, { ok: true, seen: VERSION });
+  }
   if (method === 'GET' && p === '/api/state') {
     // Members see only the agents they're allowed to run; owner/admin see all.
     const agents = terminalAgents(os).filter((a) => os.team.canRun(me, a.id));
