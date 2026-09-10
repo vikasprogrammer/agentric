@@ -2096,6 +2096,8 @@ export const api = {
   deliverTaskMessage: (id: string, sessionId: string, body: string) => call<{ ok: boolean; delivery?: TaskDiscussionDelivery; error?: string }>('POST', `/api/tasks/${id}/deliver`, { sessionId, body }),
   readTaskDiscussion: (id: string) => call<{ ok: boolean }>('POST', `/api/tasks/${id}/read`),
   resolveTaskMention: (msgId: string, action: 'answer' | 'session' | 'dismiss') => call<{ ok: boolean; error?: string }>('POST', `/api/tasks/mention/${msgId}`, { action }),
+  whatsNew: () => call<{ entries: WhatsNewEntry[]; unseen: string[]; seen: string | null; version: string }>('GET', '/api/whats-new'),
+  markWhatsNewSeen: () => call<{ ok: boolean; seen: string }>('POST', '/api/whats-new/seen'),
   addTask: (b: AddTaskReq) => call<{ ok: boolean; task?: Task; error?: string }>('POST', '/api/tasks', b),
   patchTask: (id: string, b: { title?: string; body?: string; status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; goalId?: string | null; criteria?: string | null; dependsOn?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
   commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
@@ -2412,3 +2414,6 @@ export const api = {
   deleteHost: (id: string) => call<{ ok: boolean }>('DELETE', '/api/hosts/' + id),
   publishHost: (id: string) => call<Host | { error: string }>('POST', '/api/hosts/' + id + '/publish'),
 }
+
+/** One "What's new" entry — generated server-side from a `**For users:**` line in CHANGELOG.md. */
+export interface WhatsNewEntry { id: string; version: string; date?: string; text: string; audience: 'all' | 'admins' }

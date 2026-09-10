@@ -151,6 +151,14 @@ export class SettingsStore {
       .run(key, value, Date.now(), by ?? null);
   }
 
+  /** The version a member last opened "What's new" at (null = never) — what separates new from seen. */
+  whatsNewSeen(memberId: string): string | null {
+    return this.getRow(`whats_new_seen:${memberId}`)?.value || null;
+  }
+  setWhatsNewSeen(memberId: string, version: string): void {
+    this.set(`whats_new_seen:${memberId}`, version, memberId);
+  }
+
   /** The Company context document + the code-review policy + who last touched each. */
   company(): CompanySettings {
     const row = this.getRow(COMPANY_KEY);

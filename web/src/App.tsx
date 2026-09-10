@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -1158,6 +1158,65 @@ function HostChip() {
   )
 }
 
+/**
+ * "What's new" — the sidebar link + dialog over the feed generated from CHANGELOG.md's `**For users:**`
+ * lines (`src/edge/whats-new.ts`). The badge counts what shipped since THIS member last opened it; opening
+ * marks it seen server-side, while the dialog keeps the "New" highlights until it closes. Renders nothing
+ * when the running build has no tagged entries. A console link in an entry (`#/tasks`) is its "try it".
+ */
+function WhatsNew() {
+  const [data, setData] = useState<{ entries: WhatsNewEntry[]; unseen: string[] } | null>(null)
+  const [open, setOpen] = useState(false)
+  useEffect(() => { api.whatsNew().then((r) => setData({ entries: r.entries ?? [], unseen: r.unseen ?? [] })).catch(() => {}) }, [])
+  if (!data || !data.entries.length) return null
+  const fresh = new Set(data.unseen)
+  const show = () => { setOpen(true); if (fresh.size) api.markWhatsNewSeen().catch(() => {}) }
+  const close = () => { setOpen(false); setData((d) => (d ? { ...d, unseen: [] } : d)) }
+  const groups: { version: string; date?: string; items: WhatsNewEntry[] }[] = []
+  for (const e of data.entries) {
+    const g = groups[groups.length - 1]
+    if (g && g.version === e.version) g.items.push(e)
+    else groups.push({ version: e.version, date: e.date, items: [e] })
+  }
+  return (
+    <>
+      <button onClick={show} className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground" title="What you can do now that you couldn't before">
+        <Sparkles className="h-3 w-3" />What's new
+        {fresh.size > 0 && <span className="rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground">{fresh.size}</span>}
+      </button>
+      <Dialog open={open} onOpenChange={(o) => { if (!o) close() }}>
+        <DialogContent className="max-h-[80vh] max-w-lg overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5"><Sparkles className="h-4 w-4" />What's new</DialogTitle>
+            <DialogDescription>What you can do now that you couldn't before.</DialogDescription>
+          </DialogHeader>
+          {/* A console link inside an entry navigates in place — close the dialog so the page is visible. */}
+          <div className="space-y-5" onClick={(ev) => { if ((ev.target as HTMLElement).closest('a[href^="#/"]')) close() }}>
+            {groups.map((g) => (
+              <div key={g.version}>
+                <div className="mb-1.5 font-mono text-[11px] text-muted-foreground">v{g.version}{g.date ? ` · ${g.date}` : ''}</div>
+                <ul className="space-y-2">
+                  {g.items.map((e) => (
+                    <li key={e.id} className={`rounded-md border p-2.5 ${fresh.has(e.id) ? 'border-primary/40 bg-primary/5' : ''}`}>
+                      {(fresh.has(e.id) || e.audience === 'admins') && (
+                        <div className="mb-1 flex gap-1">
+                          {fresh.has(e.id) && <Badge className="px-1.5 py-0 text-[10px]">New</Badge>}
+                          {e.audience === 'admins' && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">Admins</Badge>}
+                        </div>
+                      )}
+                      <div className="prose prose-sm max-w-none text-[13px] dark:prose-invert prose-p:my-0 prose-a:font-medium prose-a:text-sky-600 prose-a:underline prose-a:underline-offset-2"><ReactMarkdown remarkPlugins={[remarkGfm]}>{e.text}</ReactMarkdown></div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
 function UpdateNotice({ compact = false }: { compact?: boolean } = {}) {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
   const [open, setOpen] = useState(false)
@@ -1845,6 +1904,7 @@ function Console({ me }: { me: Member }) {
               {state && <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={`tenant${state.version ? ` · Agentric v${state.version}` : ''}`}>{state.tenantName || state.tenant}{state.version ? ` · v${state.version}` : ''}</div>}
               <HostChip />
               <UpdateNotice />
+              <WhatsNew />
             </div>
             <Button size="icon" variant="ghost" className="-mr-1 h-7 w-7 shrink-0 text-muted-foreground" title="collapse sidebar" onClick={() => setSidebarCollapsed(true)}>
               <PanelLeftClose className="h-4 w-4" />
