@@ -284,6 +284,10 @@ export interface AddAutomationInput {
   runAs?: string;
 }
 
+/** The command namespace a chat message may lead with before the agent name: `/agentric <agent> …`, or the
+ *  older `/agent-os` / `/agentos`. Exported so the ClickUp ingress strips exactly the same forms. */
+export const CHAT_NAMESPACE_RE = /^(\s*)\/(?:agentric|agent-?os)\s+\/?/i;
+
 export type FireResult =
   | { ok: true; sessionId: string; tmux: string }
   | { ok: false; reason: string };
@@ -838,7 +842,7 @@ export class Automations {
    * TASK_MAX_ATTEMPTS so a failing task can't spin). Every effect the session has still passes the gateway,
    * so "start work" adds no new trust surface. Audited `task.dispatched`.
    */
-  dispatchTask(id: string, opts: { guard?: boolean; by?: string } = {}): FireResult {
+  dispatchTask(id: string, opts: { guard?: boolean; by?: string; clickup?: { taskId: string; commentId: string }; extra?: string } = {}): FireResult {
     const guard = opts.guard ?? true;
     const pre = this.canDispatch(id, { guard });
     if (!pre.ok) {
@@ -872,7 +876,11 @@ export class Automations {
     const resumable = this.tm.resumableTaskTranscript(t.id, agentId);
     const resuming = !!resumable && resumable.uses < 1 + MAX_TASK_RESUMES;
     const resumeId = resuming ? resumable!.claudeSessionId : undefined;
-    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t, { goalMode, priorRuns, resuming }), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner, resumeId, false, tuning);
+    // `clickup` binds the run to the ticket it was started from (`clickup_threads`), which is what exposes
+    // `clickup_reply` and mirrors the run's completion back onto the ticket — so a run started with
+    // `/agentric <agent> …` answers where it was asked, like one started with `/<agent> …` always has.
+    const prompt = buildTaskPrompt(t, { goalMode, priorRuns, resuming }) + (opts.extra ? `\n\n${opts.extra}` : '');
+    const s = this.tm.createSession(agentId, `Task: ${t.title}`, prompt, `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner, resumeId, false, tuning, opts.clickup);
     this.os.tasks.markDispatched(t.id, s.id);
     this.os.audit.append({
       ts: Date.now(),
@@ -891,12 +899,15 @@ export class Automations {
    * is the fallback used by fireSlack/fireDiscord when NO automation matched, so connecting the bot once
    * makes the whole fleet reachable ("/pod-troubleshooter why is X down?").
    */
-  /** Normalise the optional `/agent-os` namespace prefix: `/agent-os engineer …` (or `/agentos …`, with
-   *  an optional second slash) collapses to `/engineer …`, so a namespaced invocation and the bare
+  /** Normalise the optional namespace prefix: `/agentric engineer …` (or `/agent-os …` / `/agentos …`,
+   *  with an optional second slash) collapses to `/engineer …`, so a namespaced invocation and the bare
    *  `/<agent>` form route identically. Useful in shared spaces (ClickUp task comments) where a bare
-   *  `/name` is ambiguous; a no-op for a plain `/<agent>`. */
+   *  `/name` is ambiguous; a no-op for a plain `/<agent>`. `/agentric` is the brand name the help roster
+   *  tells people to type on EVERY platform — it used to be stripped only by Slack (which removes a
+   *  declared slash command itself), so on Discord/Telegram/ClickUp it was read as an agent called
+   *  `agentric` and answered with "I don't have an agent named agentric". */
   private normalizeChatCommand(text: string): string {
-    const t = (text || '').replace(/^(\s*)\/agent-?os\s+\/?/i, '$1/');
+    const t = (text || '').replace(CHAT_NAMESPACE_RE, '$1/');
     if (t.trimStart().startsWith('/')) return t; // already the canonical form
     // Slack INTERCEPTS a leading `/` as a slash command: `/support-ops fix this` typed in a DM never
     // leaves the client, so the documented way to address an agent is unusable in exactly the place a
@@ -1764,6 +1775,98 @@ export class Automations {
       reply = r.reply;
     }
     return { fired: sessions.length, sessions, agents, reply };
+  }
+
+  /**
+   * The `/agentric` ClickUp bridge — one ClickUp ticket, one Agentric task (`docs/clickup-task-bridge-plan.md`).
+   *
+   * Find-or-create the task keyed `clickup:<ticket id>` (the partial unique index on `tasks.external_key`
+   * turns a racing duplicate webhook into a re-read, never a second task), then:
+   * - `/agentric <text>` → `<text>` lands in the task's Discussion through {@link postTaskDiscussion}, so it
+   *   also reaches the run working the task and fans out any `@mentions` — exactly as if typed in the room;
+   * - `/agentric <agent> <request>` → records the request, reopens a closed task (the "rework it" case),
+   *   and puts `<agent>` on it: continuing its own run when it already owns the task, else assigning and
+   *   dispatching a run bound to the ticket so it answers there with `clickup_reply`.
+   *
+   * A plain `/agentric <text>` deliberately dispatches nothing: a ticket comment should not spend a run
+   * unless someone named who does the work. Task edits are auto-apply + audited, as on every other path;
+   * a dispatched run's effects still pass the gateway. Audited `clickup.task.linked` / `.discussed`.
+   */
+  linkClickupTicket(input: {
+    ticketId: string;
+    commentId: string;
+    /** The comment with `/agentric` already stripped. */
+    text: string;
+    ticket: { customId?: string; name?: string; description?: string; url: string } | null;
+    member?: string;
+    actorLabel: string;
+    files?: { name: string; data: Buffer }[];
+  }): { task: Task; created: boolean; agent?: string; status: 'linked' | 'discussed' | 'delivered' | 'revived' | 'spawned' | 'dispatched' | 'refused'; sessionId?: string; reason?: string } {
+    const key = `clickup:${input.ticketId}`;
+    const author = input.member ?? 'clickup';
+    let task = this.os.tasks.byExternalKey(this.os.tenant, key);
+    let created = false;
+    if (!task) {
+      const ref = input.ticket?.customId || input.ticketId;
+      const name = input.ticket?.name?.trim() || 'ClickUp ticket';
+      const url = input.ticket?.url || `https://app.clickup.com/t/${encodeURIComponent(input.ticketId)}`;
+      try {
+        task = this.os.tasks.create({
+          tenant: this.os.tenant,
+          title: `#${ref} ${name}`,
+          body: `ClickUp: ${url}\n\n${input.ticket?.description || '(no description on the ticket)'}`,
+          owner: input.member,
+          labels: ['clickup'],
+          createdBy: author,
+          externalKey: key,
+        });
+        created = true;
+      } catch (e) {
+        // Lost the race to a duplicate webhook for the same ticket — the winner's row is the task.
+        task = this.os.tasks.byExternalKey(this.os.tenant, key);
+        if (!task) throw e;
+      }
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: input.member ? `member:${input.member}` : 'clickup', type: 'clickup.task.linked', data: { task: task.id, ticket: input.ticketId, created } });
+    }
+    for (const f of input.files ?? []) this.os.tasks.attachBytes({ taskId: task.id, filename: f.name, bytes: f.data, uploadedBy: author });
+
+    // `/agentric <agent> …` — only a real, user-facing coding agent counts; any other first word is text.
+    const head = input.text.trim().match(/^([A-Za-z0-9][\w-]*)\b\s*([\s\S]*)$/);
+    const named = head ? this.os.agents.get(head[1]) : undefined;
+    const agentId = named && isCodingRuntime(named.runtime) && named.category !== 'System' && named.chatReachable !== false ? named.id : undefined;
+    const request = (agentId ? head![2] : input.text).trim();
+    const discussed = () => this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: input.member ? `member:${input.member}` : 'clickup', type: 'clickup.task.discussed', data: { task: task!.id, ticket: input.ticketId, agent: agentId ?? null, chars: request.length } });
+
+    if (!agentId) {
+      if (!request) return { task, created, status: 'linked' };
+      this.postTaskDiscussion({ taskId: task.id, author, body: request, runAs: input.member });
+      discussed();
+      return { task, created, status: 'discussed' };
+    }
+
+    // Record the request on the task FIRST (no fan-out — the named agent is routed explicitly below, and a
+    // discussion delivery could otherwise type it into a DIFFERENT agent's live pane).
+    if (request) { this.tm.postTaskMessage({ taskId: task.id, author, body: request }); discussed(); }
+    if (task.status === 'done' || task.status === 'cancelled') {
+      task = this.os.tasks.update(task.id, { status: 'todo', note: `reopened from ClickUp by ${input.actorLabel}`, by: author }) ?? task;
+    }
+    const ask = request || 'Pick this task up.';
+    const boundAgent = task.lastSessionId ? this.tm.sessionAgent(task.lastSessionId) : undefined;
+    if (boundAgent === agentId) {
+      const r = this.continueTaskThread(task.id, input.actorLabel, ask, agentId, input.member ?? task.owner ?? undefined);
+      if (r.status !== 'none') return { task, created, agent: agentId, status: r.status, sessionId: r.sessionId };
+    }
+    if (task.assignee !== `agent:${agentId}`) task = this.os.tasks.update(task.id, { assignee: `agent:${agentId}`, by: author }) ?? task;
+    const d = this.dispatchTask(task.id, {
+      guard: false, by: author,
+      clickup: { taskId: input.ticketId, commentId: input.commentId },
+      extra: `Started from ClickUp by ${input.actorLabel} on ticket ${input.ticket?.url || input.ticketId}. Their request:\n${ask}\n\n` +
+        `This Agentric task IS the ticket's tracking task — do not create another. Post your result on the ticket with ` +
+        `\`clickup_reply\` (plain text, concise), and close this task with task_update when the work is done.`,
+    });
+    if (!d.ok) return { task, created, agent: agentId, status: 'refused', reason: d.reason };
+    this.tm.stageInboundFiles(d.sessionId, input.files ?? []);
+    return { task, created, agent: agentId, status: 'dispatched', sessionId: d.sessionId };
   }
 
   /**

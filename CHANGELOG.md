@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.431.0] - 2026-09-10
+### Added
+- **`/agentric` in a ClickUp comment — one ticket, one Agentric task.** The first `/agentric` comment on
+  a ticket creates a task titled `#<ticket id> <ticket name>` (the ClickUp custom id when the workspace has
+  one) with the ticket link + description as its body, filed and owned by the commenting member, and posts
+  the task link back on the ticket. Every later `/agentric …` comment on that ticket lands in the SAME
+  task's discussion — reaching the run working it, fanning out `@mentions` — instead of starting over.
+  `/agentric <agent> <request>` also puts that agent on the task: it continues its own run if it already
+  owns the task, otherwise the task is assigned and dispatched as a run bound to the ticket, so the agent
+  answers there with `clickup_reply`. A done task is reopened first, so a ticket is reworkable from
+  ClickUp. A plain `/agentric <text>` deliberately dispatches nothing — naming the agent is the opt-in to
+  spend a run. Keyed by a new `tasks.external_key` (`clickup:<ticket id>`) under a partial UNIQUE index,
+  so a racing duplicate webhook re-reads the task rather than filing a second one. Audited
+  `clickup.task.linked` / `clickup.task.discussed` / `clickup.task.failed`. Pinned by
+  `scripts/clickup-task-bridge-test.cjs`; design in `docs/clickup-task-bridge-plan.md`.
+
+### Fixed
+- **`/agentric <agent>` only worked in Slack.** The roster reply tells people to type `/agentric <agent> …`
+  on every platform, but only Slack strips it (as a declared slash command); on Discord, Telegram and
+  ClickUp the namespace wasn't recognised, so the message was read as addressing an agent called
+  `agentric` and answered with "I don't have an agent named `agentric`". The chat normaliser now strips
+  `/agentric` alongside `/agent-os` / `/agentos` (`CHAT_NAMESPACE_RE`, shared with the ClickUp ingress).
+
 ## [0.430.0] - 2026-09-10
 ### Added
 - **Tasks: who filed it.** `createdBy` has always been stored on every task and was never shown or

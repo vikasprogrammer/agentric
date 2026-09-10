@@ -13873,7 +13873,7 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
         <div className="space-y-1">
           <label className="flex items-center gap-2 text-xs font-medium">
             <input type="checkbox" checked={chatReachable} onChange={(e) => setChatReachable(e.target.checked)} className="h-3.5 w-3.5" />
-            Reachable from chat <span className="font-mono">/agent-os {agentId}</span> (Slack · Discord · ClickUp)
+            Reachable from chat <span className="font-mono">/agentric {agentId}</span> (Slack · Discord · ClickUp)
           </label>
           <p className="text-[11px] text-muted-foreground">On by default. Uncheck to keep <span className="font-mono">{agentId}</span> off the open chat front door — a <span className="font-mono">/{agentId}</span> message in Slack/Discord or a ClickUp task comment won't invoke it. It can still be run from the console, tasks, delegation, or an explicitly-configured automation. Use for supervisor/ops agents you don't want spawned from a shared thread.</p>
         </div>
@@ -19320,9 +19320,11 @@ function IntegrationsSettings({ me }: { me: Member }) {
                 : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
             </div>
             <p className="text-xs text-muted-foreground">
-              Reach any agent from a ClickUp task comment: <code className="text-[11px]">/agent-os &lt;agent&gt; your request</code> (or just <code className="text-[11px]">/&lt;agent&gt;</code>).
+              Reach any agent from a ClickUp task comment: <code className="text-[11px]">/&lt;agent&gt; your request</code>.
               The agent works the task and posts its answer back as a comment; follow-up comments continue the same
-              conversation. One company ClickUp API token reads the comment and posts the reply.
+              conversation. <code className="text-[11px]">/agentric …</code> instead keeps ONE Agentric task per ticket
+              (created on first use, later comments land in its discussion); <code className="text-[11px]">/agentric &lt;agent&gt; …</code> also
+              puts that agent on it. One company ClickUp API token reads the comment and posts the reply.
             </p>
           </div>
           <Field label="API token" help="ClickUp → Settings → Apps → API Token (pk_…). Needs comment read + write on the tasks you'll use it from.">

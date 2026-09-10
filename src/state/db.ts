@@ -1295,6 +1295,13 @@ function migrate(db: Db): void {
   // re-checks each of the few matches with a real JSON.parse, so a false positive can't skew a stat.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_deny ON audit_events(run_id)
              WHERE type = 'gate.decision' AND data LIKE '%"effect":"deny"%'`);
+
+  // The record a task MIRRORS outside Agentric — `clickup:<ticket id>` today. Find-or-create needs a
+  // stable link and nothing else provides one (labels aren't unique; `clickup_threads` binds SESSIONS, not
+  // tasks). The partial UNIQUE index is what makes a racing duplicate webhook a constraint violation the
+  // caller swallows instead of a second task for one ticket. NULL for every ordinary task.
+  addColumn(db, 'tasks', 'external_key', 'TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external_key ON tasks(tenant, external_key) WHERE external_key IS NOT NULL');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */
