@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.438.0] - 2026-09-10
+### Added
+- **`gh` can now reach every org the GitHub App is installed on, not just the primary.** v0.435.0 fixed
+  plain `git` with a per-repo credential helper, but `gh` reads `GH_TOKEN` and ignores git credential
+  helpers, so `gh pr create` / `gh issue` / `gh api` stayed stuck on whichever org the ambient token
+  covered — failing with a 404 that reads as "no such repository". The new **`github_token({ org })`**
+  MCP tool hands back that org's bot token for the agent to `export`, over the same session-secret
+  loopback route the credential helper uses, and says plainly that the export REPLACES the ambient token
+  for the rest of the shell. `not_installed` is a typed, non-retryable refusal naming the orgs that do
+  work, so an agent asks for an install instead of looping. It is **conditional** — offered only when the
+  App spans several orgs AND the run is on the bot lane (`GH_ORG_TOKEN=1`), so a single-org tenant pays
+  nothing for a schema it can never use, and a run acting as a human who linked their own GitHub is never
+  offered it: their user token already spans every org they can reach, and a bot token would re-author
+  their work as the bot. Same guard as the credential helper, enforced at launch and again in the route.
+  Pinned by `scripts/github-multi-org-test.cjs`, which drives the real MCP server.
+  **For admins:** Agents can now open PRs and run `gh` in any org your GitHub App is installed on — not
+  only the primary one.
+
 ## [0.437.1] - 2026-09-10
 ### Fixed
 - **An agent's `npm install` can no longer rewrite the Agentric software checkout.** npm installs into

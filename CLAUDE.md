@@ -233,8 +233,9 @@ Key modules:
   never assume the ambient `GH_TOKEN` reaches every org. **Plain `git` is covered**: on a multi-org bot run
   `configureGitCredentials` turns on `credential.useHttpPath` so git hands the helper `path=<org>/<repo>`,
   and the helper fetches that installation's token from `POST /api/agent/github/credential` (session-secret
-  loopback, any failure falls back to `$GH_TOKEN`). **`gh` is NOT** — it ignores git credential helpers, so
-  it stays on the primary org (phase 3 of `docs/github-multi-org-plan.md`). The helper is deliberately off
+  loopback, any failure falls back to `$GH_TOKEN`). **`gh` is NOT** — it ignores git credential helpers, so its ambient
+  token stays on the primary org; the escape hatch is the conditional **`github_token({ org })`** MCP tool
+  (`GH_ORG_TOKEN=1`, offered only on a multi-org bot run), which hands back that org's token to re-export. The helper is deliberately off
   for a run carrying a linked member's token, and the route refuses one too: a per-repo bot token would
   re-author that human's commits as the bot. The member OAuth lane already spans orgs.
 - `src/governance/` — `policy.ts` (JSON rule engine; first-match, glob capability + `when` arg predicates.
@@ -379,8 +380,8 @@ Key modules:
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
   **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 62 always-on tools
-  + 11 conditional (chat-reply / egress / media, each exposed only when its env flag is set; full list
-  in `docs/agent-mcp-tools.md`). Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
+  + 13 conditional (chat-reply / egress / media / multi-org `github_token`, each exposed only when its
+  env flag is set; full list in `docs/agent-mcp-tools.md`). Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):
   `session_history` lists the agent's OWN past sessions (id/title/status/rating, own-scoped, "have I done
   this before?") and `session_open` reopens any one — the friendly transcript timeline (`readConversation`)
