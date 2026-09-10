@@ -222,7 +222,12 @@ export class GithubIdentity {
     const legacy = this.os.secrets.getSync(this.os.tenant, '*', BOT_TOKEN_KEY);
     if (!legacy) return;
     const primary = this.os.settings.githubInstallationId();
-    if (primary && !this.os.secrets.getSync(this.os.tenant, '*', botTokenKey(primary))) {
+    // No primary to migrate ONTO yet → leave the legacy slot alone. Deleting here would throw away a
+    // live credential to no purpose: the token stays valid for the hour, and the next `ensureBotToken`
+    // resolves a primary, after which this runs again and moves it. (An earlier version deleted
+    // unconditionally, so a tenant with a cached token but no resolved installation silently lost it.)
+    if (!primary) return;
+    if (!this.os.secrets.getSync(this.os.tenant, '*', botTokenKey(primary))) {
       this.os.secrets.set(this.os.tenant, botTokenKey(primary), legacy, { principal: '*' });
     }
     this.os.secrets.delete(this.os.tenant, BOT_TOKEN_KEY, '*');
