@@ -1094,7 +1094,10 @@ export interface Goal {
   title: string;
   body: string; // markdown "what / why" narrative
   status: GoalStatus;
-  target?: string; // free-text target caption (v1); numeric/derived metrics come later
+  target?: string; // free-text target caption, the human's own words
+  /** The MEASURED counterpart to `target` — what number this goal is judged on, and where it stands.
+   *  Optional throughout: a goal with no metric is reviewed on activity exactly as it always was. */
+  metric?: GoalMetric;
   owner?: string; // member id accountable for the goal
   parentId?: string; // hierarchy: strategy → objective → key result
   labels: string[];
@@ -1103,6 +1106,57 @@ export interface Goal {
   createdAt: number;
   updatedAt: number;
   updatedBy: string;
+}
+
+/**
+ * A goal's metric definition — the number the goal is actually about.
+ *
+ * `target` on a Goal is the human's caption ("double AI citations"); this is the machine-readable
+ * counterpart, so a review can ask "did the number move?" instead of "did work happen?". `direction`
+ * exists because plenty of real goals go DOWN (production incidents, p95 latency, churn), and a
+ * reviewer that assumes up-is-better would read every one of those backwards.
+ */
+export interface GoalMetric {
+  name: string; // what is measured, e.g. 'organic sessions / mo'
+  unit?: string; // display suffix, e.g. 'ms', '%', 'sessions'
+  target?: number; // the value that means done
+  baseline?: number; // where it stood when the goal was set
+  direction: 'up' | 'down'; // which way counts as progress
+  /** How often a reading is expected, in days. Past this with no reading, the goal is UNMEASURED —
+   *  which is a finding in itself, not a silent gap. Default 14. */
+  everyDays: number;
+}
+
+/** One measured value of a goal's metric. Append-only: a wrong reading is corrected by taking another,
+ *  never by editing history — a number someone can quietly rewrite is worth less than no number. */
+export interface GoalReading {
+  id: string;
+  goalId: string;
+  value: number;
+  at: number; // when the value was TRUE (may predate when it was recorded)
+  source: string; // member id | 'agent:<id>' | 'automation:<id>' — who measured it
+  note?: string;
+  createdAt: number;
+}
+
+/** How a goal's metric is doing: the latest reading, movement since baseline, and the verdict a
+ *  deterministic review reaches. `unmeasured` is deliberately distinct from `flat` — "nobody is
+ *  measuring this" and "this isn't working" call for opposite responses. */
+export interface GoalMetricStatus {
+  metric: GoalMetric;
+  latest?: GoalReading;
+  first?: GoalReading;
+  readings: number;
+  /** Signed movement in metric units from the first reading (or baseline) to the latest. */
+  moved?: number;
+  /** 0-100 toward target, direction-aware; undefined when there's no target or nothing to measure from. */
+  percent?: number;
+  /** `measuring` = readings are arriving and moving the right way. `flat` = enough readings over enough
+   *  time with no meaningful movement. `regressing` = moving the wrong way. `achieved` = target reached.
+   *  `unmeasured` = a metric is defined but nobody has taken a reading lately. `new` = too early to say. */
+  verdict: 'new' | 'measuring' | 'flat' | 'regressing' | 'achieved' | 'unmeasured';
+  /** Days since the latest reading; undefined when there has never been one. */
+  staleDays?: number;
 }
 
 export interface GoalEvent {
@@ -1139,6 +1193,7 @@ export interface GoalCreateInput {
   body?: string;
   status?: GoalStatus; // default 'active' (console) — the agent propose path passes 'draft'
   target?: string;
+  metric?: Partial<GoalMetric> & { name: string };
   owner?: string;
   parentId?: string;
   labels?: string[];
@@ -1151,6 +1206,7 @@ export interface GoalUpdateInput {
   body?: string;
   status?: GoalStatus;
   target?: string | null; // null clears the target caption
+  metric?: (Partial<GoalMetric> & { name: string }) | null; // null clears the metric (readings are kept)
   owner?: string | null; // null clears the owner
   parentId?: string | null; // null detaches from a parent
   labels?: string[];

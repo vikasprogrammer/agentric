@@ -85,7 +85,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, Task, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, Task, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, GoalMetric, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -178,6 +178,25 @@ function pendingProposals(os: AgentOS): string[] {
     .filter((pg) => pg.slug.startsWith('proposed-'))
     .map((pg) => pg.slug.slice('proposed-'.length))
     .filter((id) => !!os.agents.get(id));
+}
+
+/** Read a goal METRIC off a request body. Returns `undefined` (leave alone), `null` (clear it), or the
+ *  parsed metric. A metric with no name is not a metric — that's how the console clears one. */
+function readMetric(b: Record<string, unknown>): (Partial<GoalMetric> & { name: string }) | null | undefined {
+  if (b.metric === undefined) return undefined;
+  if (b.metric === null) return null;
+  const m = b.metric as Record<string, unknown>;
+  const name = typeof m?.name === 'string' ? m.name.trim() : '';
+  if (!name) return null;
+  const num = (v: unknown) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : undefined);
+  return {
+    name,
+    unit: typeof m.unit === 'string' ? m.unit : undefined,
+    target: num(m.target),
+    baseline: num(m.baseline),
+    direction: m.direction === 'down' ? 'down' : 'up',
+    everyDays: num(m.everyDays),
+  };
 }
 
 /** Active goals with no progress (no goal_event) in 7+ days — the Insights Goals tile's "plan"-able list.
@@ -2173,6 +2192,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!found) return sendJson(res, 404, { error: 'goal not found' });
     return sendJson(res, 200, { ...found, tasks: os.tasks.tasksForGoal(found.goal.id), progress: os.goals.progress(found.goal.id) });
   }
+  // `goal_measure` — an agent (usually one woken by a cron whose whole job is measuring) records a reading
+  // of a goal's metric. This is the input the deterministic review runs on, so it is deliberately the ONE
+  // goal write agents get besides proposing: they may report the number, they may not move the goalposts
+  // (target/status stay human-owned). The reading records WHO measured it, so a number posted by the same
+  // agent that did the work is visibly self-reported. Pre-auth loopback, session-secret gated.
+  if (method === 'POST' && p === '/api/goals/measure') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const goal = os.goals.get(String(b.goalId || ''));
+    if (!goal) return sendJson(res, 404, { error: 'goal not found' });
+    if (!goal.metric) return sendJson(res, 400, { error: `goal "${goal.title}" has no metric — a human sets what it measures before readings can be recorded` });
+    const value = Number(b.value);
+    if (!Number.isFinite(value)) return sendJson(res, 400, { error: 'value must be a number' });
+    const reading = os.goals.addReading(goal.id, value, `agent:${agent}`, { note: b.note != null ? String(b.note) : undefined });
+    if (!reading) return sendJson(res, 400, { error: 'could not record the reading' });
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'goal.measured', data: { goalId: goal.id, metric: goal.metric.name, value } });
+    const st = os.goals.metricStatus(goal.id);
+    return sendJson(res, 200, { ok: true, reading, verdict: st?.verdict, metric: goal.metric.name, target: goal.metric.target ?? null });
+  }
+
   // agent proposes a new goal — drafts a NOT-YET-ACTIVE goal (status 'draft') + posts a 'goal.proposed'
   // inbox card for an owner/admin to review and activate. Auto-apply + audited, like skill_propose.
   if (method === 'POST' && p === '/api/goals/propose') {
@@ -4184,6 +4226,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // steering-wheel concern). Auto-apply + audited; the append-only goal_events log is the safety net.
   const goalId = p.match(/^\/api\/goals\/([\w-]+)$/);
   const goalComment = p.match(/^\/api\/goals\/([\w-]+)\/comment$/);
+  const goalReadings = p.match(/^\/api\/goals\/([\w-]+)\/readings$/);
+  // A goal's METRIC — the number it is judged on, and its measured history. GET is open to any member
+  // (seeing whether the company is winning is not privileged); POSTing a reading is owner/admin, because
+  // a reading is the input every review verdict is computed from and a wrong one misreads the whole goal.
+  if (goalReadings && method === 'GET') {
+    const goal = os.goals.get(goalReadings[1]);
+    if (!goal) return sendJson(res, 404, { error: 'goal not found' });
+    return sendJson(res, 200, { readings: os.goals.readings(goal.id), status: os.goals.metricStatus(goal.id) ?? null });
+  }
+  if (goalReadings && method === 'POST') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const goal = os.goals.get(goalReadings[1]);
+    if (!goal) return sendJson(res, 404, { error: 'goal not found' });
+    if (!goal.metric) return sendJson(res, 400, { error: 'this goal has no metric yet — set one before recording readings' });
+    const rb = await readBody(req);
+    const value = Number(rb.value);
+    if (!Number.isFinite(value)) return sendJson(res, 400, { error: 'value must be a number' });
+    const at = Number.isFinite(Number(rb.at)) && Number(rb.at) > 0 ? Number(rb.at) : undefined;
+    const reading = os.goals.addReading(goal.id, value, me.id, { at, note: rb.note != null ? String(rb.note) : undefined });
+    if (!reading) return sendJson(res, 400, { error: 'could not record the reading' });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'goal.measured', data: { goalId: goal.id, metric: goal.metric.name, value } });
+    return sendJson(res, 200, { ok: true, reading, status: os.goals.metricStatus(goal.id) ?? null });
+  }
   const goalPlan = p.match(/^\/api\/goals\/([\w-]+)\/plan$/);
   const goalChat = p.match(/^\/api\/goals\/([\w-]+)\/chat$/);
   // "Discuss this goal" — the goal room's chat. One WARM conversation per goal with the strategist: the
@@ -4231,7 +4296,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const goals = os.goals.list({ tenant: os.tenant, status: (url.searchParams.get('status') as GoalStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
     // Derived progress per goal (from its linked tasks) for the page's progress bars — keyed by id.
     const progress = Object.fromEntries(goals.map((g) => [g.id, os.goals.progress(g.id)]));
-    return sendJson(res, 200, { goals, counts: os.goals.counts(os.tenant), progress, autoPlan: os.settings.autoPlanGoals() });
+    // Each measured goal's verdict, so the board can show which goals are actually working without a
+    // request per card. Cheap: arithmetic over readings already indexed by goal.
+    const metrics = Object.fromEntries(goals.flatMap((g) => { const st = os.goals.metricStatus(g.id); return st ? [[g.id, st]] : []; }));
+    return sendJson(res, 200, { goals, counts: os.goals.counts(os.tenant), progress, metrics, autoPlan: os.settings.autoPlanGoals() });
   }
   // Toggle the goal auto-planner (Phase 2) — opt-in, owner/admin. When on, the scheduler drafts a plan for
   // any stuck active goal (file-only). Placed before the /:id routes so "autoplan" isn't read as a goal id.
@@ -4276,7 +4344,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         live: live[t.id],
       };
     }
-    return sendJson(res, 200, { ...found, tasks, runs, progress: os.goals.progress(found.goal.id), chat: tm.goalChatSession(found.goal.id) ?? null });
+    return sendJson(res, 200, { ...found, tasks, runs, progress: os.goals.progress(found.goal.id), chat: tm.goalChatSession(found.goal.id) ?? null, metricStatus: os.goals.metricStatus(found.goal.id) ?? null, readings: os.goals.readings(found.goal.id, 40) });
   }
   if (method === 'POST' && p === '/api/goals') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -4288,6 +4356,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         tenant: os.tenant, title, body: b.body !== undefined ? String(b.body) : '',
         status: typeof b.status === 'string' ? (b.status as GoalStatus) : 'active',
         target: typeof b.target === 'string' && b.target ? b.target : undefined,
+        metric: readMetric(b) ?? undefined,
         owner: typeof b.owner === 'string' && b.owner ? b.owner : undefined,
         parentId: typeof b.parentId === 'string' && b.parentId ? b.parentId : undefined,
         labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
@@ -4308,6 +4377,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       body: typeof b.body === 'string' ? b.body : undefined,
       status: typeof b.status === 'string' ? (b.status as GoalStatus) : undefined,
       target: b.target === null ? null : (typeof b.target === 'string' ? b.target : undefined),
+      metric: readMetric(b),
       owner: b.owner === null ? null : (typeof b.owner === 'string' ? b.owner : undefined),
       parentId: b.parentId === null ? null : (typeof b.parentId === 'string' ? b.parentId : undefined),
       labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,

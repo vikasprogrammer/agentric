@@ -43,6 +43,7 @@ export const ID_PREFIX = {
   taskAttachment: 'tatt', // task file attachments
   goal: 'goal', // goals
   goalEvent: 'gev', // goal event-log entries
+  goalReading: 'grd', // measured values of a goal's metric
   agentRevision: 'arev', // agent self-edit revisions
   policyRevision: 'prev', // policy revisions
   autoApproval: 'aappr', // auto-approval list rules

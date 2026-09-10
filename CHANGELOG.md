@@ -8,6 +8,40 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.439.0] - 2026-09-10
+### Added
+- **A goal can now be judged on whether the number moved, not on whether work happened.** The Goals plane
+  measured activity: `stuck` asks whether a goal has had events lately, which is the wrong question — a
+  goal can be busy and failing, or quiet and succeeding. Goals gain an optional **metric** (name, unit,
+  target, baseline, direction, expected interval) and an append-only `goal_readings` table, and
+  `GoalStore.metricStatus` turns those readings into a verdict: `measuring`, `flat`, `regressing`,
+  `achieved`, `unmeasured` or `new`.
+  The verdict refuses to be confident on thin evidence — `flat`/`regressing` need at least three readings
+  spanning the metric's own interval and movement smaller than 5% of the distance to target, so a single
+  wobble, or three readings taken the same afternoon, is reported as `new` rather than failure. `direction`
+  is first-class because plenty of real goals go DOWN (incidents, p95, churn) and a reviewer that assumes
+  up-is-better reads every one of those backwards. `unmeasured` is deliberately distinct from `flat`:
+  "nobody is measuring this" and "this isn't working" call for opposite responses.
+- **A deterministic performance review** (`src/edge/goal-review.ts`) runs hourly off the scheduler tick.
+  It **spawns nothing** — the judgement is arithmetic, and a review that cost a session per tick would
+  bill a tenant for being told nothing changed. It raises ONE standing card per goal, addressed to the
+  goal's owner (admins when unowned), and only when the verdict **changes**; the guard is the
+  `goal.reviewed` audit event, so a restart never re-alarms and a goal's verdict history stays queryable.
+  The response stays human: the existing "Plan this goal" button.
+- **The strategist is told the verdict in words** (`metricBrief`), in both the plan run and the goal room.
+  A flat goal now instructs it to say what isn't working and plan a *different* approach rather than file
+  more of the same; an unmeasured goal instructs it to establish the measurement first.
+- **`goal_measure`** — the agent tool that records a reading, so a run whose job is measuring closes the
+  loop. It is the one goal write agents get besides proposing: they may report the number, they may not
+  move the goalposts (metric, target and status stay human-owned). Every reading records who took it, so a
+  number reported by the same agent that did the work is visibly self-reported. Readings also land on the
+  goal timeline, so a diligently-measured goal is never reported "stuck" by the activity sweep.
+- **Console:** the goal drawer shows the metric, its verdict, movement since the first reading, a
+  sparkline, and a one-line control to record the next reading. A goal with no metric says so plainly —
+  that it can only be judged on whether work happened is itself the finding.
+  Pinned by `scripts/goal-metric-review-test.cjs`.
+
+
 ## [0.438.0] - 2026-09-10
 ### Added
 - **`gh` can now reach every org the GitHub App is installed on, not just the primary.** v0.435.0 fixed
