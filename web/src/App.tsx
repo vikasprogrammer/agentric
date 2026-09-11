@@ -1986,18 +1986,17 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && selected ? (
             /* Open session: a compact title over its facts row, so the facts read as a subline rather
                than crowding the terminal tab strip or the header's right edge. */
-            <div className="flex min-w-0 flex-col gap-1">
-              <div className="flex items-center gap-3">
-                <EditableSessionTitle
-                  title={selected.title}
-                  onRename={(t) => { const id = sessions.find((s) => s.tmux === selected.tmux)?.id; if (id) renameSession(id, t) }}
-                />
+            <SessionHeading
+              title={selected.title}
+              session={sessions.find((s) => s.tmux === selected.tmux)}
+              members={members}
+              onRename={(t) => { const id = sessions.find((s) => s.tmux === selected.tmux)?.id; if (id) renameSession(id, t) }}
+              action={
                 <Button render={<a href={navHref('sessions')} />} size="sm" variant="outline" className="h-6 gap-1 px-2 text-xs" onClick={onNavClick(() => nav('sessions'))} title="back to the full sessions list">
                   <ArrowLeft className="h-3.5 w-3.5" /> All sessions
                 </Button>
-              </div>
-              <SessionFacts session={sessions.find((s) => s.tmux === selected.tmux)} members={members} />
-            </div>
+              }
+            />
           ) : (
             <div className="flex items-center gap-3">
               <h1 className="max-w-[60vw] truncate text-lg font-semibold">
@@ -2024,7 +2023,7 @@ function Console({ me }: { me: Member }) {
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} sessions={sessions} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} agentFilter={detail} />}
           {route === 'feed' && <FeedPage me={me} members={members} sessions={sessions} nav={nav} onOpen={openTerminal} query={urlQuery} setQuery={setUrlQuery} />}
           {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} backTo={backTo} />}
-          {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} backTo={backTo} />}
+          {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} backTo={backTo} sessionActions={{ onStop: stopSession, onDelete: deleteSession, onTransfer: transferSession, onRename: renameSession, onAttend: clearAlerts }} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
           {route === 'insights' && <DreamingSettings me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} permalink={detail} nav={nav} />}
@@ -4172,6 +4171,108 @@ function ChainRail({ chain, session, open, onToggle, onReload, onOpen }: {
   )
 }
 
+/** The rail's show/hide button — the discoverable way in and out of it, badged with the chain's rolled-up
+ *  state. `dark` for the terminal-coloured Sessions tab strip, light for a console-coloured header. */
+function ChainToggle({ chain, open, onToggle, dark = false }: { chain: SessionChain; open: boolean; onToggle: () => void; dark?: boolean }) {
+  const tone = dark
+    ? (open ? 'bg-neutral-700 text-neutral-100' : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200')
+    : (open ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground')
+  return (
+    <button
+      onClick={onToggle}
+      title={open ? 'hide the hand-off chain' : `show the hand-off chain — ${chain.nodes.length} conversations across ${chain.agents} agents`}
+      className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs ${tone}`}>
+      <GitBranch className="h-3.5 w-3.5 shrink-0" />
+      <span className="whitespace-nowrap">Chain {chain.nodes.length}</span>
+      {/* Same dots as everywhere else, rolled up over the chain. */}
+      {chainPending(chain) > 0
+        ? <span className={`h-2 w-2 shrink-0 rounded-full ${STATE_META.waiting.dot}`} title={`${chainPending(chain)} item${chainPending(chain) === 1 ? '' : 's'} in this chain need you`} />
+        : chainWorking(chain) > 0 ? <span className={`h-2 w-2 shrink-0 rounded-full ${STATE_META.working.dot}`} title={`${chainWorking(chain)} conversation${chainWorking(chain) === 1 ? '' : 's'} working right now`} />
+          : chainLive(chain) > 0 && <span className={`h-2 w-2 shrink-0 rounded-full ${STATE_META.idle.dot}`} title={`${chainLive(chain)} live, none working right now`} />}
+    </button>
+  )
+}
+
+/** The App-level session handlers a page must thread in to embed a {@link SessionDetailPane}. They live
+ *  on App because they reconcile App's own session list; a page that keeps its own rows wraps them. */
+type SessionActions = Pick<SessionOps, 'onStop' | 'onDelete' | 'onTransfer'> & {
+  onRename: (id: string, title: string) => void
+  /** The human interacted with the pane — clear that session's waiting bell. */
+  onAttend: (sid: string) => void
+}
+
+/**
+ * ONE open-session view, embedded wherever a session is shown: the Sessions page's open tab and the task
+ * room's Session tab. It owns everything that belongs to the session rather than to the page around it —
+ * the progress strip, the terminal (with its Operations menu), the hand-off chain rail and the Activity
+ * panel — so the two places can't drift apart again. (They did: the task room rendered a bare
+ * TerminalFrame and silently had no Stop, Reload, Fork, Transfer, Activity, progress or chain.)
+ *
+ * The page supplies only its own strip above the pane, via `bar`, which is handed a Chain-toggle factory
+ * to place (it renders null when the session delegated nothing).
+ */
+function SessionDetailPane({ session, tmux, ops, onAttend, bar }: {
+  session?: Session
+  tmux: string
+  ops: Omit<SessionOps, 'onActivity'>
+  onAttend?: (sid: string) => void
+  bar?: (chainToggle: (dark?: boolean) => ReactNode) => ReactNode
+}) {
+  const { chain, reload: reloadChain } = useSessionChain(session?.id)
+  // Where the open run is + whether it's moving — the detail-view twin of the feed row's line.
+  const progress = useSessionProgress(session?.id, Boolean(session && isLive(session)))
+  // Collapsed state persists per browser, shared by every place the rail appears.
+  const [railOpen, setRailOpen] = useState(() => localStorage.getItem('aos_chain_rail') !== '0')
+  const toggleRail = () => setRailOpen((v) => { localStorage.setItem('aos_chain_rail', v ? '0' : '1'); return !v })
+  // The session whose primitive activity is open in the side panel (Operations → Activity).
+  const [inspect, setInspect] = useState<Session | null>(null)
+  const chainToggle = (dark = false) => hasChain(chain) ? <ChainToggle chain={chain!} open={railOpen} onToggle={toggleRail} dark={dark} /> : null
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {bar?.(chainToggle)}
+      {/* WHERE this run is — a full-width strip between the page's bar and the pane, so the answer is on
+          screen before you start reading terminal output. Present only once it says something the status
+          glyph doesn't already (see progressWorthShowing). The verdict's evidence is spelled out here
+          rather than hidden in a tooltip — there's room, and a status word you can't check is one people
+          learn to ignore. */}
+      {progressWorthShowing(progress) && (
+        <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-900 px-3 py-1.5">
+          <ProgressLine p={progress} />
+          <span className="min-w-0 flex-1 truncate text-xs text-neutral-500" title={progress.reason}>{progress.reason}</span>
+          {progress.note && <span className="min-w-0 max-w-[40%] shrink truncate text-xs italic text-neutral-400" title={progress.note}>{progress.note}</span>}
+        </div>
+      )}
+      {/* Terminal + the hand-off chain, side by side: the pane keeps its height, the rail takes width
+          only when this session actually delegated (it renders nothing for a solo run). */}
+      <div className="flex min-h-0 flex-1">
+        <TerminalFrame key={tmux} session={session} tmux={tmux} onActivity={onAttend} ops={{ ...ops, onActivity: setInspect }} />
+        <ChainRail chain={chain} session={session} open={railOpen} onToggle={toggleRail} onReload={reloadChain} onOpen={ops.onOpen} />
+      </div>
+      {inspect && <SessionActivity session={inspect} onClose={() => setInspect(null)} />}
+    </div>
+  )
+}
+
+/** An open session's title (renamable) over its facts row, with one page-specific action beside the
+ *  title — "All sessions" in the console header, "Open in Sessions" in the task room. */
+function SessionHeading({ title, session, members, onRename, action }: {
+  title: string
+  session?: Session
+  members: Member[]
+  onRename: (title: string) => void
+  action?: ReactNode
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex items-center gap-3">
+        <EditableSessionTitle title={title} onRename={onRename} />
+        {action}
+      </div>
+      <SessionFacts session={session} members={members} />
+    </div>
+  )
+}
+
 function SessionsPage({
   me, members, sessions, waiting, selected, hiddenTabs, metrics, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onRename, onTransfer, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
@@ -4402,14 +4503,7 @@ function SessionsPage({
     else filtered.forEach((s) => n.add(s.id))
     return n
   })
-  // The open session's chain — shared by the top-bar toggle and the rail itself, so the button can exist
-  // (and badge) even while the rail is hidden. Collapsed state persists per browser.
   const openSession = selected ? sessions.find((s) => s.tmux === selected.tmux) : undefined
-  const { chain, reload: reloadChain } = useSessionChain(openSession?.id)
-  // Where the open run is + whether it's moving — the detail-view twin of the feed row's line.
-  const openProgress = useSessionProgress(openSession?.id, Boolean(openSession && isLive(openSession)))
-  const [railOpen, setRailOpen] = useState(() => localStorage.getItem('aos_chain_rail') !== '0')
-  const toggleRail = () => setRailOpen((v) => { localStorage.setItem('aos_chain_rail', v ? '0' : '1'); return !v })
 
   const selectedRunning = sessions.filter((s) => sel.has(s.id) && isLive(s))
   const bulkStop = () => onBulkStop(selectedRunning.map((s) => s.id))
@@ -4498,73 +4592,44 @@ function SessionsPage({
     const selectedEnded = endedTabs.find((s) => s.tmux === selected.tmux)
     const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux && visible(s) && mine(s))
     return (
-      <div className="flex h-full flex-col">
-        <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
-          <TerminalSquare className="h-4 w-4 shrink-0" />
-          {/* Only the tabs scroll; the "ended" toggle stays pinned right so it's always reachable. */}
-          <div
-            ref={stripRef}
-            onScroll={syncFade}
-            className="no-scrollbar flex min-w-0 flex-1 items-center gap-2 overflow-x-auto"
-            style={{ maskImage: edgeFadeMask(fade), WebkitMaskImage: edgeFadeMask(fade) }}
-          >
-            {liveTabs.map((s) => renderTab(s, true))}
-            {selectedEnded && renderTab(selectedEnded)}
-            {showEnded && collapsibleEnded.map((s) => renderTab(s))}
-            {collapsibleEnded.length > 0 && (
-              <>
-                <span className="h-4 w-px shrink-0 bg-neutral-700" />
-                <button
-                  className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-                  onClick={() => setShowEnded((v) => !v)}
-                  title={showEnded ? 'hide ended sessions' : 'show stopped/ended sessions'}
-                >
-                  <span className="whitespace-nowrap">{showEnded ? 'hide ended' : `${collapsibleEnded.length} ended`}</span>
-                  <ChevronDown className={`h-3 w-3 transition-transform ${showEnded ? '' : '-rotate-90'}`} />
-                </button>
-              </>
-            )}
-          </div>
-          {/* Chain toggle — the discoverable way in and out of the rail. Present only when this session
-              actually handed work off, so it doubles as the signal that there IS a chain to look at. */}
-          {hasChain(chain) && (
-            <button
-              onClick={toggleRail}
-              title={railOpen ? 'hide the hand-off chain' : `show the hand-off chain — ${chain!.nodes.length} conversations across ${chain!.agents} agents`}
-              className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 ${railOpen ? 'bg-neutral-700 text-neutral-100' : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'}`}>
-              <GitBranch className="h-3.5 w-3.5 shrink-0" />
-              <span className="whitespace-nowrap">Chain {chain!.nodes.length}</span>
-              {/* Same dots as everywhere else, rolled up over the chain. */}
-              {chainPending(chain) > 0
-                ? <span className={`h-2 w-2 shrink-0 rounded-full ${STATE_META.waiting.dot}`} title={`${chainPending(chain)} item${chainPending(chain) === 1 ? '' : 's'} in this chain need you`} />
-                : chainWorking(chain) > 0 ? <span className={`h-2 w-2 shrink-0 rounded-full ${STATE_META.working.dot}`} title={`${chainWorking(chain)} conversation${chainWorking(chain) === 1 ? '' : 's'} working right now`} />
-                  : chainLive(chain) > 0 && <span className={`h-2 w-2 shrink-0 rounded-full ${STATE_META.idle.dot}`} title={`${chainLive(chain)} live, none working right now`} />}
-            </button>
-          )}
-        </div>
-        {/* WHERE this run is — a full-width strip between the tab bar and the pane, so the answer is on
-            screen before you start reading terminal output. Present only once it says something the tab
-            strip's status glyph doesn't already (see progressWorthShowing). The verdict's evidence is
-            spelled out here rather than hidden in a tooltip — there's room, and a status word you can't
-            check is one people learn to ignore. */}
-        {progressWorthShowing(openProgress) && (
-          <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-900 px-3 py-1.5">
-            <ProgressLine p={openProgress} />
-            <span className="min-w-0 flex-1 truncate text-xs text-neutral-500" title={openProgress.reason}>{openProgress.reason}</span>
-            {openProgress.note && <span className="min-w-0 max-w-[40%] shrink truncate text-xs italic text-neutral-400" title={openProgress.note}>{openProgress.note}</span>}
+      <SessionDetailPane
+        session={openSession}
+        tmux={selected.tmux}
+        ops={{ members, me, onOpen, onStop, onDelete, onTransfer }}
+        onAttend={onActivity}
+        bar={(chainToggle) => (
+          <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
+            <TerminalSquare className="h-4 w-4 shrink-0" />
+            {/* Only the tabs scroll; the "ended" toggle stays pinned right so it's always reachable. */}
+            <div
+              ref={stripRef}
+              onScroll={syncFade}
+              className="no-scrollbar flex min-w-0 flex-1 items-center gap-2 overflow-x-auto"
+              style={{ maskImage: edgeFadeMask(fade), WebkitMaskImage: edgeFadeMask(fade) }}
+            >
+              {liveTabs.map((s) => renderTab(s, true))}
+              {selectedEnded && renderTab(selectedEnded)}
+              {showEnded && collapsibleEnded.map((s) => renderTab(s))}
+              {collapsibleEnded.length > 0 && (
+                <>
+                  <span className="h-4 w-px shrink-0 bg-neutral-700" />
+                  <button
+                    className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                    onClick={() => setShowEnded((v) => !v)}
+                    title={showEnded ? 'hide ended sessions' : 'show stopped/ended sessions'}
+                  >
+                    <span className="whitespace-nowrap">{showEnded ? 'hide ended' : `${collapsibleEnded.length} ended`}</span>
+                    <ChevronDown className={`h-3 w-3 transition-transform ${showEnded ? '' : '-rotate-90'}`} />
+                  </button>
+                </>
+              )}
+            </div>
+            {/* Present only when this session actually handed work off, so it doubles as the signal
+                that there IS a chain to look at. */}
+            {chainToggle(true)}
           </div>
         )}
-        {/* Terminal + the hand-off chain, side by side: the pane keeps its height, the rail takes width
-            only when this session actually delegated (it renders nothing for a solo run). */}
-        <div className="flex min-h-0 flex-1">
-          <TerminalFrame key={selected.tmux} session={openSession} tmux={selected.tmux} onActivity={onActivity}
-            ops={{ members, me, onOpen, onStop, onDelete, onTransfer, onActivity: setInspect }} />
-          <ChainRail chain={chain} session={openSession} open={railOpen} onToggle={toggleRail} onReload={reloadChain} onOpen={onOpen} />
-        </div>
-        {/* Activity side panel — mounted here too so the Operations→Activity shortcut works from the
-            terminal-tabs view, not just the list view (this branch early-returns before the list's copy). */}
-        {inspect && <SessionActivity session={inspect} onClose={() => setInspect(null)} />}
-      </div>
+      />
     )
   }
 
@@ -10475,7 +10540,7 @@ function matchesAuthor(t: Task, a: TaskAuthor, meId: string): boolean {
   return true
 }
 
-function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void; backTo: (fallback: Route) => BackTarget }) {
+function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void; backTo: (fallback: Route) => BackTarget; sessionActions: SessionActions }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   // Goals to populate the task↔goal selector (and to resolve a task's goal title for its chip). Pull
@@ -10840,6 +10905,22 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   }
   // Re-pull the open task's detail (events + attachments + dependency edges) after a mutation that doesn't move columns.
   const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], prs: r.prs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) }
+  // The room's session pane acts through App's handlers, which reconcile App's session list — not this
+  // page's own rows (`sessions` / `extraRuns`) or the run history. So each action re-reads both after it,
+  // and drops the cached by-id row so an earlier attempt that was stopped/renamed/deleted is re-fetched.
+  const afterSessionAction = (fn: (id: string, ...rest: string[]) => unknown) => async (id: string, ...rest: string[]) => {
+    await fn(id, ...rest)
+    setExtraRuns(({ [id]: _dropped, ...keep }) => keep)
+    await load()
+    if (detail) await refreshDetail(detail.task.id)
+  }
+  const roomOps: Omit<SessionOps, 'onActivity'> = {
+    members, me, onOpen,
+    onStop: afterSessionAction(sessionActions.onStop),
+    onDelete: afterSessionAction(sessionActions.onDelete),
+    onTransfer: afterSessionAction(sessionActions.onTransfer),
+  }
+  const renameRun = afterSessionAction(sessionActions.onRename)
 
   if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -11287,10 +11368,36 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
                   )}
                   {sessPending
                     ? <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening session…</div>
-                    // NOT `standalone` — the room is an embedded pane, not the chrome-less popout, so it keeps
-                    // its own "Pop out" (open just this session in a fresh tab, no room/console around it) and
-                    // "Focus" buttons. It used to pass `standalone` and silently lost both.
-                    : <TerminalFrame key={sessTmux} session={sessRow} tmux={sessTmux} />}
+                    // The SAME pane the Sessions page renders (progress, Operations menu, chain rail,
+                    // Activity) — it used to be a bare TerminalFrame with none of them. NOT `standalone`
+                    // either: the room keeps its own "Pop out" and "Focus" buttons.
+                    : <div className="min-h-0 flex-1">
+                        <SessionDetailPane
+                          key={sessTmux}
+                          session={sessRow}
+                          tmux={sessTmux}
+                          ops={roomOps}
+                          onAttend={sessionActions.onAttend}
+                          bar={(chainToggle) => sessRow && (
+                            <div className="flex shrink-0 items-start gap-2 border-b px-3 py-2">
+                              <div className="min-w-0 flex-1">
+                                <SessionHeading
+                                  title={sessRow.title}
+                                  session={sessRow}
+                                  members={members}
+                                  onRename={(title) => renameRun(sessRow.id, title)}
+                                  action={
+                                    <Button render={<a href={navHref('sessions', sessTmux)} />} size="sm" variant="outline" className="h-6 shrink-0 gap-1 px-2 text-xs" onClick={onNavClick(() => onOpen(sessTmux, `${sessRow.agent} · ${sessRow.id}`))} title="open this run on the Sessions page">
+                                      <ExternalLink className="h-3.5 w-3.5" /> Open in Sessions
+                                    </Button>
+                                  }
+                                />
+                              </div>
+                              {chainToggle()}
+                            </div>
+                          )}
+                        />
+                      </div>}
                 </div>
               )}
             </div>
