@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.440.0] - 2026-09-11
+### Added
+- **A task's Session tab now has every control the Sessions page has.** It used to render a bare
+  terminal, so from the task you could watch a run but not Stop, Reload, Reload on another account,
+  Fork, Transfer or open its Activity, and it showed no progress line, no hand-off chain, no session
+  title or facts, and interacting with it never cleared the run's waiting bell. Both views now render
+  one shared `SessionDetailPane` (progress strip + terminal with its Operations menu + chain rail +
+  Activity panel), and the title-over-facts header is one `SessionHeading` used by both. So the two
+  can't drift apart again. The task room also gets an **Open in Sessions** link; before this, clicking
+  a run in the history only switched the tab.
+  **For users:** A task's Session tab now lets you stop, reload, fork or hand off the run, see its
+  progress and hand-off chain, and jump to it on the Sessions page. [Open Tasks](#/tasks)
+
 ## [0.439.1] - 2026-09-10
 ### Fixed
 - **The multi-org bot-token migration could throw away a live credential.** `migrateLegacyBotToken`
