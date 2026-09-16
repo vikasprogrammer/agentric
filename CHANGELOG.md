@@ -8,6 +8,38 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.443.0] - 2026-09-16
+### Changed
+- **A stopped session now opens on what came of it, not on the prompt that started it.** The read-only
+  view of a finished run led with its opening task brief — a machine-composed spec that routinely runs
+  to a couple of thousand words — rendered as one giant inverted chat bubble with its markdown
+  unrendered. The run's verdict, duration, cost, turn count and one-line report, meanwhile, appeared
+  ONLY on the fallback path taken when a transcript was missing, so the case with the most information
+  was the one that answered "did it work?" least. Four changes, all in the read-only session view:
+  - The outcome now leads every ended surface: verdict · engaged duration · cost · turns, with the
+    run's own summary underneath, pinned above the transcript. `RunReport` (the no-transcript path)
+    renders the same component, so the two can no longer disagree.
+  - An unattended run's opening prompt is pulled out of the timeline into a collapsed **Task brief**
+    card linking its task, so the run's actual work starts at the top of the pane.
+  - A user turn long enough to be a document rather than a message (>240 chars or >4 lines) renders as
+    a bordered card on the normal surface with its markdown rendered and its height capped behind a
+    "Show more", instead of inverted unformatted text at full length.
+  - The timeline opens at the LAST turn — where a dead run's answer is — with one "Jump to start" chip
+    back to the beginning.
+  **For users:** Opening a finished session now shows how it went, what it cost and what it concluded
+  right at the top, and starts you at the end of the run instead of at the instructions it was given.
+  [Open Sessions](#/sessions)
+
+### Fixed
+- **Markdown in chat turns, task briefs and agent answers renders as markdown.** Every markdown surface
+  in the console carried `prose prose-sm` classes, but `@tailwindcss/typography` was never installed —
+  so they were inert, and Tailwind's preflight then flattened headings, lists, tables and quotes back
+  to plain paragraphs. An agent's structured answer arrived as an undifferentiated wall of text. A
+  scoped `.md` stylesheet in `web/src/index.css` does the job in ~40 lines with no new dependency;
+  the seven dead `prose` surfaces now use it.
+  **For users:** Agent answers, task briefs and chat messages now show their headings, bullet lists,
+  tables and code properly instead of running together as flat text.
+
 ## [0.442.0] - 2026-09-15
 ### Added
 - **Reassign a proposed task, or accept it and run it straight away, from its Inbox card.** Before, a

@@ -1204,7 +1204,7 @@ function WhatsNew() {
                           {e.audience === 'admins' && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">Admins</Badge>}
                         </div>
                       )}
-                      <div className="prose prose-sm max-w-none text-[13px] dark:prose-invert prose-p:my-0 prose-a:font-medium prose-a:text-sky-600 prose-a:underline prose-a:underline-offset-2"><ReactMarkdown remarkPlugins={[remarkGfm]}>{e.text}</ReactMarkdown></div>
+                      <div className="md max-w-none text-[13px]"><ReactMarkdown remarkPlugins={[remarkGfm]}>{e.text}</ReactMarkdown></div>
                     </li>
                   ))}
                 </ul>
@@ -3226,6 +3226,115 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
  * run that only tee'd a pane log, with no structured transcript). When neither exists, we show what the
  * run REPORTED via {@link RunReport}, so the pane always answers "what came of it".
  */
+/**
+ * What a finished run CAME TO, as one strip: the agent's own verdict, the facts behind it, and the
+ * one-line summary. The read-only view used to carry this only on the path where the transcript was
+ * MISSING ({@link RunReport}), so the richest case — a full timeline — was the one that answered
+ * "did it work?" least: you inferred the verdict by reading the whole run. It is now the first thing
+ * on every ended surface, above the transcript, and both surfaces render this same component so they
+ * can't drift apart.
+ */
+function RunOutcome({ session: s, right }: { session: Session; right?: ReactNode }) {
+  const v = verdictOf(s.outcome) ?? 'none'
+  const m = VERDICT_META[v]
+  const Icon = m.icon
+  // The agent's own word when we don't recognise it — printing it verbatim is honest, bucketing it isn't.
+  const word = s.outcome && !VERDICT_OF[s.outcome] ? s.outcome : m.label
+  const facts = [
+    s.activeMs != null ? formatDuration(s.activeMs) : null,
+    s.costUsd != null ? fmtCost(s.costUsd) : null,
+    s.turns ? `${s.turns} turn${s.turns === 1 ? '' : 's'}` : null,
+  ].filter(Boolean) as string[]
+  return (
+    <div className="shrink-0 border-b bg-muted/30 px-3 py-2 md:px-6">
+      <div className="mx-auto flex max-w-3xl flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <span className={`flex items-center gap-1.5 text-sm font-medium ${m.tone}`}>
+            <Icon className="h-4 w-4 shrink-0" /> {word}
+          </span>
+          {facts.length > 0 && <span className="text-xs text-muted-foreground">{facts.join(' · ')}</span>}
+          <span className="text-xs text-muted-foreground">· read-only</span>
+          <span className="ml-auto flex items-center gap-2">{right}</span>
+        </div>
+        {s.summary
+          ? <p className="text-sm leading-relaxed text-foreground">{s.summary}</p>
+          : v === 'none' && <p className="text-xs italic text-muted-foreground">The run left no report — nobody closed the loop on what came of it.</p>}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Long prose, capped with a fade and an expander. A dispatched brief or a long agent answer is often
+ * thousands of words; rendered whole it becomes the entire viewport and buries everything after it.
+ * The cap is measured, not guessed at from the character count, so a block that happens to fit renders
+ * with no chrome at all.
+ */
+function Collapsible({ children, cap = 280, moreLabel = 'Show more', fade = 'from-background' }: {
+  children: ReactNode
+  cap?: number
+  moreLabel?: string
+  /** Tailwind `from-*` of the surface behind the content — the fade has to end in the bubble's own
+   *  colour or it reads as a grey band rather than the text running out. */
+  fade?: string
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (el) setOverflows(el.scrollHeight > cap + 24)   // a few px over the cap isn't worth a control
+  }, [children, cap])
+  return (
+    <div>
+      <div ref={ref} className="relative overflow-hidden" style={open || !overflows ? undefined : { maxHeight: cap }}>
+        {children}
+        {overflows && !open && <div className={`pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t ${fade} to-transparent`} />}
+      </div>
+      {overflows && (
+        <button onClick={() => setOpen((v) => !v)} className="mt-1 flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+          <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+          {open ? 'Show less' : moreLabel}
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The opening prompt of an UNATTENDED run, which is a task SPEC rather than a conversation turn — a
+ * machine-composed brief that routinely runs to a couple of thousand words. Rendering it as a chat
+ * bubble made it the whole screen and put the reader's first question ("what came of this?") below
+ * two viewports of instructions. It gets its own labelled card, collapsed by default, so the run's
+ * actual conversation starts at the top of the pane.
+ */
+function BriefCard({ text, taskId }: { text: string; taskId?: string }) {
+  const [open, setOpen] = useState(false)
+  const firstLine = text.split('\n').find((l) => l.trim()) ?? ''
+  return (
+    <div className="rounded-xl border bg-card">
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-90' : ''}`} />
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Task brief</span>
+        {!open && <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground/80" title={firstLine}>{firstLine}</span>}
+      </button>
+      {open && (
+        <div className="border-t px-3 py-2.5">
+          <div className="md max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{text}</ReactMarkdown>
+          </div>
+        </div>
+      )}
+      {taskId && (
+        <a href={navHref('tasks', taskId)} className="flex items-center gap-1 border-t px-3 py-1.5 text-[11px] text-muted-foreground hover:text-foreground hover:underline">
+          <ListChecks className="h-3 w-3 shrink-0" /> {taskId}
+        </a>
+      )}
+    </div>
+  )
+}
+
 /** "Resume & take over" on a read-only run — the ONE affordance that turns a finished/stopped session
  *  back into a live TUI. Server-side `takeoverRun` relaunches `claude --resume` on the same transcript,
  *  claims it for the human, and persists the launch env; the frame then re-attaches to the new pane.
@@ -3289,35 +3398,77 @@ function EndedSession({ session, onTakeOver, takingOver }: { session: Session; o
 
   const canToggle = phase === 'timeline' // a raw-only run has nothing friendlier to switch back to
   const showingRaw = raw || phase === 'raw-only'
+  // An unattended run's opening prompt is its SPEC, not a conversation turn — pull it out of the
+  // timeline and into a collapsed brief card so the run itself starts at the top of the pane.
+  const briefed = Boolean(session.headless || session.taskId) && turns[0]?.kind === 'user'
+  const brief = briefed ? (turns[0] as Extract<ChatTurn, { kind: 'user' }>).text : null
+  const body = briefed ? turns.slice(1) : turns
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
-        <span>Session ended · read-only{showingRaw && phase === 'timeline' ? ' · raw terminal' : ''}</span>
-        <span className="flex items-center gap-2">
-        {onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />}
-        {canToggle && (
-          <button
-            onClick={() => (showingRaw ? setRaw(false) : void showRaw())}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 font-medium hover:bg-muted hover:text-foreground"
-            title={showingRaw ? 'Back to the readable timeline' : 'Show the exact terminal output'}
-          >
-            <Terminal className="h-3 w-3" /> {showingRaw ? 'Timeline' : 'Raw'}
-          </button>
-        )}
-        </span>
-      </div>
+      <RunOutcome
+        session={session}
+        right={
+          <>
+            {onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />}
+            {canToggle && (
+              <button
+                onClick={() => (showingRaw ? setRaw(false) : void showRaw())}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                title={showingRaw ? 'Back to the readable timeline' : 'Show the exact terminal output'}
+              >
+                <Terminal className="h-3 w-3" /> {showingRaw ? 'Timeline' : 'Raw'}
+              </button>
+            )}
+          </>
+        }
+      />
       {showingRaw ? (
         rawLoading
           ? <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground"><RefreshCw className="mr-2 h-4 w-4 animate-spin" /> loading raw output…</div>
           : <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-relaxed text-foreground">{transcript || '(no output captured)'}</pre>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 md:px-6">
-          <div className="mx-auto max-w-3xl space-y-3">
-            {turns.map((t, i) =>
-              t.kind === 'activity' ? <ActivityCard key={i} turn={t} /> : <ChatBubble key={i} turn={t} />,
-            )}
-          </div>
+        <EndedTimeline sessionId={session.id} brief={brief} taskId={session.taskId} turns={body} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The finished run's conversation, opened at its END. A dead transcript's value is at the bottom — what
+ * the agent last said and what it left behind — so landing at the top meant scrolling past the whole run
+ * to reach the answer. We jump to the last turn once the content has settled (the brief card and the
+ * collapsible bubbles both change height after mount, so it takes a frame), and offer one chip back to
+ * the start for the reader who does want to read it forwards.
+ */
+function EndedTimeline({ sessionId, brief, taskId, turns }: {
+  sessionId: string; brief: string | null; taskId?: string; turns: ChatTurn[]
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [atTop, setAtTop] = useState(true)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !turns.length) return
+    const id = requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
+    return () => cancelAnimationFrame(id)
+  }, [sessionId, turns.length])
+  return (
+    <div className="relative min-h-0 flex-1">
+      <div ref={ref} onScroll={(e) => setAtTop(e.currentTarget.scrollTop < 8)} className="h-full overflow-y-auto px-3 py-3 md:px-6">
+        <div className="mx-auto max-w-3xl space-y-3">
+          {brief != null && <BriefCard text={brief} taskId={taskId} />}
+          {turns.map((t, i) =>
+            t.kind === 'activity' ? <ActivityCard key={i} turn={t} /> : <ChatBubble key={i} turn={t} />,
+          )}
         </div>
+      </div>
+      {!atTop && (
+        <button
+          onClick={() => ref.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+          className="absolute bottom-3 right-4 flex items-center gap-1 rounded-full border bg-background/95 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur hover:text-foreground"
+          title="back to the start of the run"
+        >
+          <ChevronDown className="h-3 w-3 rotate-180" /> Jump to start
+        </button>
       )}
     </div>
   )
@@ -3330,49 +3481,19 @@ function EndedSession({ session, onTakeOver, takingOver }: { session: Session; o
  * doesn't. Strictly better than the bare error this replaced, which told the reader nothing at all.
  */
 function RunReport({ session: s, note, onTakeOver, takingOver }: { session: Session; note: string; onTakeOver?: () => void; takingOver?: boolean }) {
-  const v = OUTCOME_TONE[verdictOf(s.outcome) ?? 'none']
-  const facts = [
-    s.agent,
-    s.activeMs != null ? formatDuration(s.activeMs) : null,
-    s.costUsd != null ? fmtCost(s.costUsd) : null,
-    s.turns ? `${s.turns} turn${s.turns === 1 ? '' : 's'}` : null,
-    `${timeAgo(s.updatedAt)} ago`,
-  ].filter(Boolean) as string[]
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-black">
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-800 px-3 py-1.5 text-xs text-neutral-500">
-        <span>Session ended · report</span>
-        {onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />}
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
-        <div className="mx-auto max-w-2xl space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${v}`}>{s.outcome === 'unknown' || !s.outcome ? 'no report' : s.outcome}</span>
-            <span className="font-mono text-[11px] text-neutral-500">{facts.join(' · ')}</span>
-          </div>
-          {s.summary
-            ? <p className="text-sm leading-relaxed text-neutral-300">{s.summary}</p>
-            : <p className="text-sm italic text-neutral-500">The run left no summary — nobody closed the loop with a report.</p>}
+    <div className="flex min-h-0 flex-1 flex-col bg-background">
+      <RunOutcome session={s} right={onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />} />
+      <div className="min-h-0 flex-1 overflow-auto px-3 py-4 md:px-6">
+        <div className="mx-auto max-w-3xl space-y-2 text-xs text-muted-foreground">
+          <p>{s.agent} · {timeAgo(s.updatedAt)} ago</p>
           {/* The usual `note` is just "no transcript", which would read as a stutter — only show it when
               it says something the sentence doesn't (a permission error, say). */}
-          <p className="border-t border-neutral-800 pt-3 font-mono text-[11px] text-neutral-600">
-            No transcript was captured for this run{/^no transcript/i.test(note) ? '' : ` — ${note}`}.
-          </p>
+          <p>No transcript was captured for this run{/^no transcript/i.test(note) ? '' : ` — ${note}`}.</p>
         </div>
       </div>
     </div>
   )
-}
-
-/** Outcome → pill tone, for the dark terminal pane (OUTCOME_STYLE's light-mode 700s are unreadable here). */
-/** Verdict tint for the DARK transcript surface — the same {@link VERDICT_META} buckets (so the synonyms
- *  `completed`/`progressed`/`blocked` land where they belong instead of falling through to grey), in the
- *  deeper shades that read on near-black. */
-const OUTCOME_TONE: Record<Verdict, string> = {
-  success: 'border-emerald-800 text-emerald-400',
-  failure: 'border-red-900 text-red-400',
-  partial: 'border-amber-900 text-amber-400',
-  none: 'border-neutral-700 text-neutral-400',
 }
 
 /** Wraps the first-party terminal (<Xterm>) with the console chrome: the font stepper, the "how to use"
@@ -5238,18 +5359,32 @@ function ActivityCard({ turn }: { turn: Extract<ChatTurn, { kind: 'activity' }> 
   )
 }
 
+/** A user turn long enough that the inverted bubble stops being a chat message and starts being a
+ *  document: inverted text is comfortable for a sentence and punishing for a page, and a machine-composed
+ *  prompt at that length is markdown that deserves rendering. Past this it gets the card treatment. */
+const isLongTurn = (text: string): boolean => text.length > 240 || text.split('\n').length > 4
+
 function ChatBubble({ turn, agentIcon }: { turn: Extract<ChatTurn, { kind: 'user' | 'assistant' }>; agentIcon?: string }) {
   const mine = turn.kind === 'user'
+  // A short human turn keeps the familiar inverted bubble; a long one flips to a bordered card on the
+  // normal surface (readable at length) with its markdown rendered and its height capped.
+  const asDoc = mine && isLongTurn(turn.text)
   return (
     <div className={`flex gap-2.5 ${mine ? 'flex-row-reverse' : ''}`}>
       <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted">
         {mine ? <User className="h-3.5 w-3.5 text-muted-foreground" /> : <AgentIcon icon={agentIcon} className="h-3.5 w-3.5 text-muted-foreground" />}
       </div>
-      <div className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm ${mine ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
-        {mine ? (
+      <div className={`rounded-2xl px-3.5 py-2 text-sm ${
+        asDoc ? 'max-w-[92%] border border-l-2 border-l-primary/30 bg-card text-foreground'
+              : `max-w-[80%] ${mine ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}`}>
+        {mine && !asDoc ? (
           <span className="whitespace-pre-wrap">{turn.text}</span>
+        ) : asDoc ? (
+          <Collapsible fade="from-card">
+            <div className="md max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{turn.text}</ReactMarkdown></div>
+          </Collapsible>
         ) : (
-          <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-pre:my-1"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{turn.text}</ReactMarkdown></div>
+          <div className="md max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{turn.text}</ReactMarkdown></div>
         )}
       </div>
     </div>
@@ -5419,11 +5554,11 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
                 <span>{preview.source === 'state' ? 'Answered from your workspace' : preview.run ? 'Concierge · looked it up for you' : 'Answered'}</span>
               </div>
               {preview.answer && (
-                <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{preview.answer}</ReactMarkdown></div>
+                <div className="md max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{preview.answer}</ReactMarkdown></div>
               )}
               {preview.run && (
                 runAnswer
-                  ? <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{runAnswer}</ReactMarkdown></div>
+                  ? <div className="md max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{runAnswer}</ReactMarkdown></div>
                   : <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" />Looking into it…</div>
               )}
               <div className="mt-3 flex items-center gap-3 text-xs">
@@ -5445,7 +5580,7 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
               </div>
               {runId ? (
                 runAnswer
-                  ? <div className="mt-3 rounded-lg border bg-muted/40 p-3"><div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{runAnswer}</ReactMarkdown></div>
+                  ? <div className="mt-3 rounded-lg border bg-muted/40 p-3"><div className="md max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{runAnswer}</ReactMarkdown></div>
                       <div className="mt-2 flex gap-3 text-xs">
                         <button onClick={() => nav(preview.surface === 'automations' ? 'inbox' : 'tasks')} className="text-muted-foreground underline-offset-2 hover:underline">{preview.surface === 'automations' ? 'Review in Inbox →' : 'Open Tasks →'}</button>
                         <button onClick={() => onOpenChat(runId)} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>
