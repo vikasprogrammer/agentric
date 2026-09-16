@@ -233,6 +233,23 @@ export class TelegramSocket {
       }
     }
 
+    // Inline unblock: a DM reply from someone whose task is blocked ON THEM files that reply as the task's
+    // next comment and puts it back on the board (re-dispatching the agent that was waiting). After the
+    // question path — a pending question is the more specific claim on the same reply — and before session
+    // continuity, which would deliver the words into a run without ever clearing the block.
+    if (isDM) {
+      const unblocked = this.autos.unblockTaskFromChat('telegram', ev.user, text);
+      if (unblocked) {
+        void this.dmUser(ev.chatId, `✅ Unblocked — *${unblocked.title}* is back on the board${unblocked.agent ? ` and ${unblocked.agent} is picking it up` : ''}.`);
+        this.os.audit.append({
+          ts: Date.now(), runId: '-', tenant: this.os.tenant,
+          principal: runAsMember ? `member:${runAsMember}` : 'telegram',
+          type: 'task.unblocked.viaDm', data: { id: unblocked.taskId, chat: ev.chatId },
+        });
+        return;
+      }
+    }
+
     // DM continuity: a reply to a private-chat message we sent ABOUT a run (an agent's `notify`, "your run
     // finished / crashed") goes back INTO that run — after the two decision paths, before the router.
     if (isDM) {

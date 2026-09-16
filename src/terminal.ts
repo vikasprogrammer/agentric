@@ -2523,7 +2523,7 @@ export class TerminalManager {
     // aren't flooded by every session's cards; `all` is the explicit oversight view (owner/admin only —
     // a member's `all` and `mine` are identical since they only ever see their own).
     if (viewer && scope === 'mine') visible = visible.filter((r) => this.isAddressedTo(r, viewer));
-    return visible.map(toMessage).map((m) => (m.type === 'task.proposed' ? this.hydrateTaskProposalCard(m) : m));
+    return visible.map(toMessage).map((m) => (m.type === 'task.proposed' ? this.hydrateTaskProposalCard(m) : m.type === 'task' ? this.hydrateTaskCard(m) : m));
   }
 
   /** Mark one message read for a member (per-member; idempotent upsert). Visibility-guarded like the
@@ -5889,12 +5889,74 @@ export class TerminalManager {
    * audience via `canViewMessageRow`). `args.taskId` deep-links the card to the board. Public so the
    * tenant-registry wiring (the `os.tasks` notifier) can call it.
    */
-  postTaskCard(input: { taskId: string; agent: string; title: string; body: string; audience: Audience; event: string }): void {
+  postTaskCard(input: { taskId: string; agent: string; title: string; body: string; audience: Audience; event: string; reason?: string }): void {
     this.addMessage({
       type: 'task', sessionId: `task:${input.taskId}`, agent: input.agent, title: input.title,
-      body: input.body, status: 'open', args: { taskId: input.taskId, event: input.event },
+      body: input.body, status: 'open',
+      // `reason` is the agent's own last comment on a block — the card's answer to "needs you for WHAT",
+      // which the title alone has never carried.
+      args: { taskId: input.taskId, event: input.event, ...(input.reason ? { reason: input.reason } : {}) },
       audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
     });
+  }
+
+  /**
+   * Bind a BLOCKED task to the Slack/Discord/Telegram DM we sent its owner, so a reply in that DM unblocks
+   * it — the task-side twin of {@link bindQuestionDm}. Called by the task notifier once per recipient ×
+   * provider it DM'd, and only for a task blocked on a HUMAN (the one case where a reply is unambiguous).
+   */
+  bindTaskDm(taskId: string, provider: 'slack' | 'discord' | 'telegram', externalId: string, memberId?: string): void {
+    if (!taskId || !externalId) return;
+    this.db
+      .prepare('INSERT OR REPLACE INTO task_dms (task_id, tenant, provider, external_id, member_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(taskId, this.os.tenant, provider, externalId, memberId ?? null, Date.now());
+  }
+
+  /**
+   * Unblock a task from an inbound DM reply — the task-side twin of {@link answerQuestionFromChat}. Matches
+   * the sender to the newest still-blocked task we DM'd them about, files their reply as the task's next
+   * comment, and returns it to `todo`. Returns the task on success, or `null` when nothing blocked is bound
+   * to this sender (so the caller falls through to the session/router path exactly as before).
+   *
+   * The reply is filed as a COMMENT rather than interpreted: the agent asked an open question ("which spec
+   * is right?"), and a chat reply is the answer to it, not a command. Returning the task to `todo` is what
+   * makes the answer reach the agent — an auto-dispatch task is re-dispatched by the very next tick with
+   * the comment in its prompt.
+   */
+  unblockTaskFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, reply: string):
+    { taskId: string; title: string; assignee?: string; by: string } | null {
+    const body = (reply || '').trim();
+    if (!body || !externalId) return null;
+    const row = this.db
+      .prepare(
+        `SELECT td.task_id AS tid
+           FROM task_dms td JOIN tasks t ON t.id = td.task_id
+          WHERE td.provider = ? AND td.external_id = ? AND t.status = 'blocked'
+          ORDER BY td.created_at DESC LIMIT 1`,
+      )
+      .get<{ tid: string }>(provider, externalId);
+    if (!row) return null;
+    // Defense in depth: the binding proves we DM'd them, not that they are still on the team.
+    const member = this.os.team.memberByExternalId(provider, externalId);
+    if (!member) return null;
+    const task = this.os.tasks.update(row.tid, { status: 'todo', note: body, by: member.id });
+    if (!task) return null;
+    this.audit(`task:${task.id}`, member.email, 'task.unblocked.viaDm', { id: task.id, provider });
+    return { taskId: task.id, title: task.title, assignee: task.assignee, by: member.email };
+  }
+
+  /**
+   * Close the open `blocked` inbox card(s) for a task that is no longer blocked — however it was unblocked
+   * (a DM reply, the card's own button, the board, the sweep, the agent itself). The twin of
+   * {@link syncTaskProposalCards}: without it a resolved block stays in "Needs you" forever, which is the
+   * exact failure the card exists to prevent.
+   */
+  syncTaskBlockedCards(taskId: string): void {
+    if (this.os.tasks.get(taskId)?.status === 'blocked') return;
+    // Only the BLOCKED cards — a task's "assigned to you" / "done" cards share the `task:<id>` sentinel.
+    this.db
+      .prepare(`UPDATE messages SET status = 'approved' WHERE type = 'task' AND status = 'open' AND session_id = ? AND args LIKE '%"event":"blocked"%'`)
+      .run(`task:${taskId}`);
   }
 
   /**
@@ -5968,6 +6030,29 @@ export class TerminalManager {
       };
     });
     return { ...m, args: { tasks } };
+  }
+
+  /** Stamp a Tasks lifecycle card with its task's CURRENT state at read time — the same live-JOIN trick as
+   *  {@link hydrateTaskProposalCard}, and for the same reason: the card is acted on (unblock / reassign /
+   *  cancel), so deciding on a snapshot means deciding on whoever the assignee was an hour ago. `status`
+   *  also tells the client a `blocked` card has already been resolved elsewhere. */
+  private hydrateTaskCard(m: FeedMessage): FeedMessage {
+    const args = (m.args ?? {}) as { taskId?: string; event?: string; reason?: string };
+    if (!args.taskId) return m;
+    const live = this.os.tasks.get(args.taskId);
+    return {
+      ...m,
+      args: {
+        ...args,
+        ...(live
+          ? {
+              taskTitle: live.title, taskStatus: live.status, autoDispatch: live.autoDispatch,
+              ...(live.assignee ? { assignee: live.assignee } : {}),
+              ...(live.blockedOn ? { blockedOn: live.blockedOn } : {}),
+            }
+          : { taskStatus: 'deleted' }),
+      },
+    };
   }
 
   /**

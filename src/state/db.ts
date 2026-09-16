@@ -409,6 +409,25 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_approval_dms_lookup ON approval_dms (provider, external_id, created_at);
 
+    -- The task-side twin of question_dms: binds a task that is BLOCKED ON A HUMAN to the Slack/Discord DM
+    -- we sent its owner, so they can unblock it by REPLYING in that DM — their reply becomes the task's
+    -- next comment and the task goes back to 'todo' (and, for an auto-dispatch agent task, straight back
+    -- out to a session). Before this the blocked notification was the one pending-decision DM with no
+    -- inbound half at all: the human was told they were needed and given nothing to answer with, so every
+    -- unblock meant opening the console and hand-flipping a status dropdown.
+    -- Keyed (task_id, provider, external_id) like approval_dms, so several recipients can each be bound; a
+    -- task drops out of the match once it is no longer blocked (join on tasks.status), so no cleanup.
+    CREATE TABLE IF NOT EXISTS task_dms (
+      task_id     TEXT NOT NULL,
+      tenant      TEXT NOT NULL,
+      provider    TEXT NOT NULL,          -- 'slack' | 'discord' | 'telegram'
+      external_id TEXT NOT NULL,          -- the recipient's chat user id (the DM sender on reply)
+      member_id   TEXT,                   -- the member we DM'd (for the unblocked-by attribution)
+      created_at  INTEGER NOT NULL,
+      PRIMARY KEY (task_id, provider, external_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_dms_lookup ON task_dms (provider, external_id, created_at);
+
     -- The third DM binding, and the general one: binds a SESSION to a Slack/Discord DM we sent someone
     -- ABOUT that run, so a reply in that DM reaches the run instead of the /agent router. question_dms
     -- and approval_dms cover the two cases where the DM carries a pending DECISION; this covers every

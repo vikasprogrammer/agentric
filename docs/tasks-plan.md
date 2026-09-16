@@ -526,6 +526,41 @@ Pinned by `scripts/wakeup-queue-test.cjs` (cases 12-15).
 
 ---
 
+### 3.10 How a block ENDS — the reason, the sweep, and the reply
+
+§3.7 settled who a block is *for*. It left open the harder half: what the person it names is supposed to
+DO. Until v0.444.0, nothing. The notice said "Task blocked — needs you", named the task by title and
+linked the console; the Inbox card rendered as a muted Activity row with no controls; the only way
+forward was the board's status dropdown. And it fired on every park regardless of `blockedOn`, so a task
+an agent had chained behind another task — a wait no person could shorten — DM'd its owner anyway.
+(Live, instapods 2026-09-16: `tsk_87979339f659814a`, parked `blockedOn: 'agent'` behind a revert PR with
+a 1.5 KB stand-down comment explaining exactly why, DM'd its owner a title and a link.)
+
+Three changes, one per gap:
+
+**Routing reads `blockedOn` (`taskCard`).** `human` → the ask: card + DM, as before. Parked behind
+**unfinished dependencies** → nobody is told; it clears itself (below). Anything else → a card, no DM: the
+Inbox keeps the record, nobody's day is interrupted for a decision that isn't urgent. The asymmetry is
+deliberate — a card is a queue, a DM is an interrupt, and only one of the three cases earns an interrupt.
+
+**A settled block returns to the board by itself** (`TaskStore.settledBlocked` +
+`Automations.sweepSettledBlocked`, run at the top of the tick so it lands in the SAME drain). Nothing did
+this before: `dispatchable()` scans `todo` only, so a dependency-parked task stayed blocked after its
+blocker shipped until a human noticed and hand-flipped it. Narrow by construction — it requires at least
+one dependency edge (a bare `blocked` is somebody parking the task deliberately, and clearing that would
+undo their decision), every edge finished, `blockedOn != 'human'`, and under the attempt ceiling (a task
+parked for FAILING is not waiting on anything). Audited `task.unblocked`.
+
+**The reason travels, and the reply comes back.** The card and DM now carry the agent's own last comment
+— the explanation that was already in `task_events`, unread. And a human-blocked task binds to the DM it
+was sent in (`task_dms`, the third of the `question_dms`/`approval_dms` family): the reply is filed as the
+task's next comment, the task returns to `todo`, and an agent-assigned task is re-dispatched immediately
+(`TerminalManager.unblockTaskFromChat` → `Automations.unblockTaskFromChat`, audited
+`task.unblocked.viaDm`). The reply is **filed, not interpreted** — the agent asked an open question, and
+returning the task to the board is what makes the answer reach it. In the console the card is now
+action-required, with the reason, a reply box, a reassign picker and Unblock & run / Unblock / Cancel;
+`syncTaskBlockedCards` closes it however the block ended. Pinned by `scripts/task-unblock-test.cjs`.
+
 ## 4. Agent-facing MCP tools — `src/memory/memory-mcp.ts`
 
 Five tools on the OS-owned MCP server (every claude-code session already gets `agentos` injected — no new

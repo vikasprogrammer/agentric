@@ -5101,7 +5101,21 @@ const isActionRequired = (m: Msg): boolean =>
   ((m.type === 'approval' || m.type === 'question') && m.status === 'pending') ||
   (m.type === 'notification' && m.status === 'open') ||
   (m.type === 'task.proposed' && m.status === 'open') ||
+  isBlockedTaskCard(m) ||
   (m.status === 'open' && !!REVIEW_KINDS[m.type])
+
+/** A task parked `blocked` — the Inbox's only literal "needs you" that used to render as a muted Activity
+ *  row with no controls at all. Naming a person and then giving them nothing to press is what made
+ *  "Task blocked — needs you" read as a dead end: the only way on was the board's status dropdown. */
+const isBlockedTaskCard = (m: Msg): boolean =>
+  m.type === 'task' && m.status === 'open' && (m.args as BlockedTaskArgs | undefined)?.event === 'blocked' &&
+  (m.args as BlockedTaskArgs).taskStatus === 'blocked'
+
+/** A `task` card's live-hydrated args (see TerminalManager.hydrateTaskCard). */
+type BlockedTaskArgs = {
+  taskId?: string; event?: string; reason?: string
+  taskTitle?: string; taskStatus?: TaskStatus | 'deleted'; assignee?: string; blockedOn?: string; autoDispatch?: boolean
+}
 
 /** An agent flagged a progress update as a key milestone / heads-up (carried in `args.important`). */
 const isImportant = (m: Msg): boolean =>
@@ -6834,6 +6848,79 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
             {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
           </div>
         )}
+      </div>
+    )
+  }
+
+  // ── A task is parked `blocked`. The card IS the unblock: the agent's own reason for stopping, a box to
+  //    answer it in, and the three moves that end a block — put it back on the board (and run it), hand it
+  //    to someone else, or call it off. Previously this landed in Activity as a muted line whose only
+  //    affordance was a deep link to a status dropdown. ──
+  if (isBlockedTaskCard(m)) {
+    const a = (m.args ?? {}) as BlockedTaskArgs
+    const taskId = a.taskId!
+    const title = a.taskTitle || m.body
+    const assignee = a.assignee ?? null
+    const agentId = assignee?.startsWith('agent:') ? assignee.slice('agent:'.length) : ''
+    const onHuman = a.blockedOn === 'human'
+    const runnable = agents.filter((ag) => ag.runtime === 'claude-code')
+    const act = async (next: 'todo' | 'cancelled', run = false) => {
+      setBusy(true); setHint('')
+      const r = await api.patchTask(taskId, { status: next, ...(answer.trim() ? { note: answer.trim() } : {}) })
+      if (r.error) { setBusy(false); return setHint('⚠ ' + r.error) }
+      setAnswer('')
+      if (next === 'cancelled') { setBusy(false); return setHint('cancelled') }
+      if (!run) { setBusy(false); return setHint('back on the board') }
+      const d = await api.dispatchTask(taskId)
+      setBusy(false)
+      setHint(d.error ? '⚠ unblocked, but ' + d.error : 'unblocked — a session is running it')
+    }
+    const reassign = async (to: string | null) => {
+      setBusy(true); setHint('')
+      const r = await api.patchTask(taskId, { assignee: to })
+      setBusy(false)
+      setHint(r.error ? '⚠ ' + r.error : to ? 'reassigned to ' + principalLabel(to, members) : 'unassigned')
+    }
+    return (
+      <div className="rounded-lg border border-amber-300 bg-amber-50/40 px-3 py-2.5">
+        <div className="flex items-start gap-2.5">
+          <ListChecks className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+          <div className="min-w-0 flex-1">
+            <MsgHeading m={m}>
+              <Badge variant="outline" className="shrink-0 border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{onHuman ? 'blocked on you' : a.blockedOn === 'agent' ? 'waiting on an agent' : 'blocked'}</Badge>
+            </MsgHeading>
+            <a href={navHref('tasks', taskId)} className="mt-0.5 block break-words text-xs font-medium text-foreground no-underline hover:underline">{title}</a>
+            {a.reason
+              ? <div className="mt-1 whitespace-pre-line break-words text-xs text-muted-foreground"><span className="text-amber-700">why:</span> <InlineLinks text={a.reason} /></div>
+              : <div className="mt-1 text-[11px] italic text-muted-foreground/80">The agent left no reason — open the task to see what it was doing.</div>}
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+              <Select value={assignee || 'none'} onValueChange={(v) => { const next = !v || v === 'none' ? null : v; if (next !== assignee) reassign(next) }}>
+                <SelectTrigger size="sm" className="h-6 max-w-44 gap-1 border-dashed px-1.5 text-[11px]" disabled={busy} aria-label="Assignee">
+                  <SelectValue>{(v) => '→ ' + (!v || v === 'none' ? 'Unassigned' : principalLabel(v as string, members))}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Unassigned</SelectItem>
+                  {runnable.map((ag) => <SelectItem key={ag.id} value={`agent:${ag.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={ag.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{ag.id}</span></SelectItem>)}
+                  {members.map((mm) => <SelectItem key={mm.id} value={mm.id}><span className="flex items-center gap-1.5"><MemberAvatar member={mm} className="h-4 w-4 text-[8px]" />{mm.name || mm.email}</span></SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <textarea
+              value={answer} onChange={(e) => setAnswer(e.target.value)} disabled={busy} rows={2}
+              placeholder={onHuman ? 'Answer what it asked — filed as a comment the agent reads on its next run' : 'Add a note (optional)'}
+              className="mt-1.5 w-full resize-y rounded-md border bg-background px-2 py-1.5 text-xs"
+            />
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {agentId
+                ? <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} title={`Put it back on the board and dispatch ${agentId} now`} onClick={() => act('todo', true)}><Play className="mr-1 h-3 w-3" />Unblock &amp; run</Button>
+                : null}
+              <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => act('todo')}><Check className="mr-1 h-3 w-3" />Unblock</Button>
+              <Button size="sm" variant="ghost" className="h-7 px-2.5 text-xs text-muted-foreground" disabled={busy} onClick={() => act('cancelled')}>Cancel task</Button>
+              {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
+            </div>
+          </div>
+          {time}
+        </div>
       </div>
     )
   }

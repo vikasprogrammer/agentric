@@ -519,27 +519,43 @@ function isHumanMember(who: string | undefined): who is string {
 }
 
 /**
- * Map a {@link TaskNotice} to the inbox card it warrants — WHO should hear about it (an {@link Audience})
- * and the card copy — or `null` when the change doesn't merit a notification. The routing:
+ * Map a {@link TaskNotice} to the inbox card it warrants — WHO should hear about it (an {@link Audience}),
+ * the card copy, and whether it is worth a DM — or `null` when the change doesn't merit a notification.
+ * The routing:
  * - **created / assigned** → the human assignee ("assigned to you"); agent/unassigned tasks notify nobody
  *   (an agent-owned task announces itself by dispatching a session, not a card).
- * - **status → blocked** → the owner ("needs you to unblock"); → **done** → the owner ("finished").
+ * - **status → blocked** → the owner, but WHAT it says now depends on who the block is on (see below);
+ *   → **done** → the owner ("finished").
  * Actor-suppression (don't notify yourself) is applied by the caller against `notice.by`.
+ *
+ * `blocked` used to be one undifferentiated "Task blocked — needs you" DM on every park, which ignored the
+ * `blockedOn` field entirely and so claimed a person was needed for waits no person could end. Three cases
+ * now, and only the first is an ask:
+ * - `blockedOn: 'human'` → the ask: card + DM, carrying the agent's reason so "needs you" says what for.
+ * - parked behind unfinished dependencies → **nothing**. It is self-clearing (`sweepSettledBlocked`), and a
+ *   notification about a machine wait is pure noise on the one human who can't shorten it.
+ * - anything else → a card, no DM: a durable record in the Inbox for a park nobody is blocked on, without
+ *   interrupting someone's day for it.
  */
-function taskCard(n: TaskNotice): { audience: Audience; title: string; event: string } | null {
+function taskCard(n: TaskNotice, unmetDeps: number): { audience: Audience; title: string; event: string; dm: boolean } | null {
   const t = n.task;
   if ((n.kind === 'created' || n.kind === 'assigned') && isHumanMember(t.assignee)) {
     // A proposal isn't work yet: its Inbox review card speaks for it, and the assignee hears on ACCEPT.
     if (t.status === 'proposed') return null;
-    return { audience: { kind: 'member', id: t.assignee }, event: n.kind, title: n.kind === 'created' ? 'New task assigned to you' : 'Task assigned to you' };
+    return { audience: { kind: 'member', id: t.assignee }, event: n.kind, dm: true, title: n.kind === 'created' ? 'New task assigned to you' : 'Task assigned to you' };
   }
   // Accepting a proposal is the moment it becomes someone's work — the "assigned to you" it held back.
   if (n.kind === 'status' && n.detail === 'proposed→todo' && isHumanMember(t.assignee)) {
-    return { audience: { kind: 'member', id: t.assignee }, event: 'assigned', title: 'New task assigned to you' };
+    return { audience: { kind: 'member', id: t.assignee }, event: 'assigned', dm: true, title: 'New task assigned to you' };
   }
   if (n.kind === 'status' && isHumanMember(t.owner)) {
-    if (t.status === 'blocked') return { audience: { kind: 'member', id: t.owner }, event: 'blocked', title: 'Task blocked — needs you' };
-    if (t.status === 'done') return { audience: { kind: 'member', id: t.owner }, event: 'done', title: 'Task done' };
+    const owner: Audience = { kind: 'member', id: t.owner };
+    if (t.status === 'blocked') {
+      if (t.blockedOn === 'human') return { audience: owner, event: 'blocked', dm: true, title: 'Task blocked — needs you' };
+      if (unmetDeps > 0) return null; // waiting on another task: self-clearing, tell nobody
+      return { audience: owner, event: 'blocked', dm: false, title: t.blockedOn === 'agent' ? 'Task blocked — waiting on an agent' : 'Task blocked' };
+    }
+    if (t.status === 'done') return { audience: owner, event: 'done', dm: true, title: 'Task done' };
   }
   return null;
 }
@@ -564,6 +580,9 @@ export function wireTaskNotices(
     void notifyTaskEvent(os, tm, slack, discord, consoleOrigin, notice);
     // A proposal decided ANYWHERE (card, board, drag, the agent withdrawing it) closes its Inbox card.
     if (notice.kind === 'status' && notice.detail?.startsWith('proposed→')) tm.syncTaskProposalCards(notice.task.id);
+    // A block resolved ANYWHERE (a DM reply, the card's buttons, the board, the settled-deps sweep, the
+    // agent itself) closes its "needs you" card — otherwise the Inbox keeps asking for work already done.
+    if (notice.kind === 'status') tm.syncTaskBlockedCards(notice.task.id);
     // Async poke-back: a delegate that closed a `poke_on_done` hand-off wakes the CALLER agent with the
     // outcome, so a fire-and-forget delegation never has to poll.
     maybePokeCaller(autos, os, notice);
@@ -578,21 +597,46 @@ export function wireTaskNotices(
  * the awaited DM) so it's durable even if the process exits right after; the DM is best-effort. Skips
  * entirely when the change warrants no card or the only recipient is the actor who made it.
  */
-export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'postTaskCard'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: TaskNotice): Promise<void> {
-  const card = taskCard(notice);
+export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'postTaskCard' | 'bindTaskDm'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: TaskNotice): Promise<void> {
+  const t = notice.task;
+  const blocking = notice.kind === 'status' && t.status === 'blocked';
+  const card = taskCard(notice, blocking ? os.tasks.unmetDeps(t.id).length : 0);
   if (!card) return;
   // Resolve the receiver, then drop the actor themselves — nobody needs a card for their own action.
   const recipients = resolveRecipients(os, card.audience).filter((m) => m.id !== notice.by);
   if (!recipients.length) return;
-  const t = notice.task;
   const agentLabel = t.assignee?.startsWith('agent:') ? t.assignee.slice('agent:'.length) : 'tasks';
+  // The WHY, for a block: the agent's own last comment. Without it "needs you" names no act the reader
+  // could perform, and the explanation stays buried in the task's event log where nobody is looking.
+  const reason = blocking ? os.tasks.lastComment(t.id) : undefined;
   requestMetrics.phase('task:notify.card', () =>
-    tm.postTaskCard({ taskId: t.id, agent: agentLabel, title: card.title, body: t.title, audience: card.audience, event: card.event }));
+    tm.postTaskCard({ taskId: t.id, agent: agentLabel, title: card.title, body: t.title, audience: card.audience, event: card.event, reason }));
+  if (!card.dm) {
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms: 0, quiet: true } });
+    return;
+  }
   // Deep-link straight to the task's permalink (`#/tasks/<id>`), so the DM is one tap from the board.
   const url = consolePage(consoleOrigin, 'tasks', t.id);
-  const text = (p: ChatPlatform) => `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen it in the ${chatLink(p, url, 'Agentric console')}.`;
+  const ask = blocking && t.blockedOn === 'human';
+  const text = (p: ChatPlatform) =>
+    `${ask ? '🚧' : '📋'} ${card.title} — \`${t.title}\` (${t.id}).` +
+    (reason ? `\n${clipReason(reason)}` : '') +
+    (ask
+      ? `\n\n*Reply to this message to unblock it* — your reply is filed as a comment and the task goes back on the board. Or open it in the ${chatLink(p, url, 'Agentric console')}.`
+      : `\nOpen it in the ${chatLink(p, url, 'Agentric console')}.`);
   const dms = await deliverDM(slack, discord, os, recipients, text);
+  // Bind the task to each recipient's DM so their reply UNBLOCKS it (see TerminalManager.unblockTaskFromChat).
+  // Only for a human-blocked task: that is the one case where a reply has an unambiguous meaning. AFTER
+  // `deliverDM`, for the same auto-link reason as the question/approval binds.
+  if (ask) bindDmRecipients(os, recipients, (provider, externalId, memberId) => tm.bindTaskDm(t.id, provider, externalId, memberId));
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms } });
+}
+
+/** A task comment is written for the task's log, not for a DM — clip it so one verbose stand-down note
+ *  doesn't become a wall of text in someone's chat. The full text is on the card and the task itself. */
+function clipReason(text: string, max = 500): string {
+  const body = text.trim();
+  return body.length <= max ? body : body.slice(0, max).replace(/\s+\S*$/, '') + ' …';
 }
 
 /**

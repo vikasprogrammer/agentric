@@ -8,6 +8,36 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.444.0] - 2026-09-16
+### Changed
+- **"Task blocked — needs you" now says what for, and can be answered where you read it.** The blocked
+  notification was the Inbox's only literal request for a person that carried no reason, no controls and
+  no reply path: the DM was the task title plus a console link, the card rendered as a muted Activity
+  row, and the only way forward was the board's status dropdown. It also fired on every park regardless
+  of `blockedOn`, so a task an agent had chained behind ANOTHER task — a wait no human could shorten —
+  DM'd its owner "needs you" anyway (live: an instapods marketing task queued behind a revert PR).
+  - **Routing now reads `blockedOn`.** Blocked on a `human` → the ask: card + DM. Blocked behind
+    unfinished dependencies → nobody is told, because it is self-clearing. Any other park → a card, no
+    DM: a durable record without interrupting someone for a decision that isn't urgent.
+  - **A settled block returns to the board by itself.** A new scheduler sweep moves a task whose every
+    named blocker reached done/cancelled back to `todo` (audited `task.unblocked`), so the dispatcher
+    picks it up. Nothing did this before — `dispatchable()` scans `todo` only, so a dependency-parked
+    task stayed blocked after its blocker shipped until a human noticed. Never touches a `human` block
+    or a park that named no blockers.
+  - **The reason travels.** Card and DM now carry the agent's own last comment on the task — the
+    explanation that was sitting unread in its event log.
+  - **Reply in Slack/Discord/Telegram to unblock it.** A task blocked on a human binds to that DM
+    (`task_dms`, the twin of `question_dms`): the reply is filed as the task's next comment, the task
+    returns to `todo`, and an agent-assigned task is re-dispatched immediately. Audited
+    `task.unblocked.viaDm`.
+  - **The Inbox card is the unblock.** A blocked task is now action-required, with the reason, a reply
+    box, a reassign picker, and **Unblock & run** / **Unblock** / **Cancel task**. Resolving the block
+    anywhere closes the card.
+  - **For users:** A blocked task now tells you why it stopped and lets you answer it right there — reply
+    to the chat DM, or use the Inbox card's reply box and Unblock button. Tasks merely waiting on another
+    task no longer ping you at all, and go back on the board on their own once that task finishes.
+    [Open the Inbox](#/inbox)
+
 ## [0.443.0] - 2026-09-16
 ### Changed
 - **A stopped session now opens on what came of it, not on the prompt that started it.** The read-only

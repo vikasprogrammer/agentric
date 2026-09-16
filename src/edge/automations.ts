@@ -2038,6 +2038,19 @@ export class Automations {
     return this.tm.answerQuestionFromChat(provider, externalId, text);
   }
 
+  /** Unblock a task from an inbound DM reply — the task-side twin of {@link answerQuestionFromChat}. The
+   *  reply becomes the task's next comment and the task returns to `todo`; an auto-dispatch agent task is
+   *  then kicked straight back out to a session rather than waiting on the next tick. */
+  unblockTaskFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string):
+    { taskId: string; title: string; agent?: string } | null {
+    const r = this.tm.unblockTaskFromChat(provider, externalId, text);
+    if (!r) return null;
+    const agentId = (r.assignee || '').startsWith('agent:') ? r.assignee!.slice('agent:'.length) : '';
+    // Guarded: if a session is somehow still live on this task, don't stack a second one on it.
+    if (agentId) this.dispatchTask(r.taskId, { guard: true, by: r.by });
+    return { taskId: r.taskId, title: r.title, ...(agentId ? { agent: agentId } : {}) };
+  }
+
   /**
    * Inbound DM that might be resolving a pending approval: if the sender has a still-pending approval we
    * DM'd them, read the reply as an approve/deny and settle the gate. The approval-side twin of
@@ -2300,6 +2313,9 @@ export class Automations {
       const r = this.fire(a, { guard: true, runAs: a.runAs });
       if (r.ok) running++;
     }
+    // Settled blocks first: a task whose blockers all finished is dispatchable work, and returning it to
+    // `todo` before the drain means it goes out in THIS tick rather than waiting a whole minute more.
+    this.sweepSettledBlocked();
     // Tasks share the same budget — dispatch only up to the remaining headroom (Infinity when uncapped).
     this.dispatchTasks(cap > 0 ? Math.max(0, cap - running) : Infinity);
     if (deferred > 0) {
@@ -2449,6 +2465,37 @@ export class Automations {
    * per tick (don't stack a second on an agent already running a task session — the per-agent concurrency
    * cap). Guarded + attempt-ceilinged inside dispatchTask. Wrapped so a bad row never kills the scheduler.
    */
+  /**
+   * Return self-clearing blocked tasks to the board. A task parked `blocked` behind another task is waiting
+   * on a MACHINE, not a person, and nothing used to notice when that wait ended: `dispatchTasks` scans
+   * `todo` only, so the blocker would merge, deploy and close while its dependent sat blocked indefinitely
+   * — until a human read the board and hand-flipped the status. (Live: an instapods marketing task chained
+   * behind a revert PR, whose owner got a "Task blocked — needs you" DM for a block no human could act on.)
+   * Deliberately narrow: only tasks that named a dependency, only when every one of them is finished, and
+   * never a block that says it is waiting on a `human`. Audited `task.unblocked` so the flip is traceable
+   * to this sweep rather than looking like a silent status change.
+   */
+  private sweepSettledBlocked(): void {
+    try {
+      for (const t of this.os.tasks.settledBlocked(this.os.tenant)) {
+        // A task parked by the ATTEMPT CEILING is also `blocked` with no declared blocker. Its wait is not
+        // over just because its dependencies finished — it's parked for failing — so leave it alone.
+        if (t.attempts >= TASK_MAX_ATTEMPTS) continue;
+        const deps = this.os.tasks.deps(t.id);
+        this.os.tasks.update(t.id, {
+          status: 'todo', by: 'system',
+          note: `Dependencies cleared (${deps.join(', ')}) — back on the board.`,
+        });
+        this.os.audit.append({
+          ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'scheduler',
+          type: 'task.unblocked', data: { id: t.id, deps, blockedOn: t.blockedOn ?? null },
+        });
+      }
+    } catch {
+      // never let the unblock sweep take down the automation scheduler
+    }
+  }
+
   private dispatchTasks(budget: number = Infinity): void {
     try {
       if (budget <= 0) return; // whole-box concurrency cap already reached — dispatch nothing this tick

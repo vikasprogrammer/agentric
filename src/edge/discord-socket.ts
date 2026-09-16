@@ -255,6 +255,23 @@ export class DiscordSocket {
       }
     }
 
+    // Inline unblock: a DM reply from someone whose task is blocked ON THEM files that reply as the task's
+    // next comment and puts it back on the board (re-dispatching the agent that was waiting). After the
+    // question path — a pending question is the more specific claim on the same reply — and before session
+    // continuity, which would deliver the words into a run without ever clearing the block.
+    if (ev.eventType === 'direct_message') {
+      const unblocked = this.autos.unblockTaskFromChat('discord', ev.user, text);
+      if (unblocked) {
+        void this.dmUser(ev.user, `✅ Unblocked — *${unblocked.title}* is back on the board${unblocked.agent ? ` and ${unblocked.agent} is picking it up` : ''}.`);
+        this.os.audit.append({
+          ts: Date.now(), runId: '-', tenant: this.os.tenant,
+          principal: runAsMember ? `member:${runAsMember}` : 'discord',
+          type: 'task.unblocked.viaDm', data: { id: unblocked.taskId, channel: ev.channel },
+        });
+        return;
+      }
+    }
+
     // DM continuity: a reply to a DM we sent ABOUT a run (an agent's `notify`, "your run finished /
     // crashed") goes back INTO that run — the DM-keyed analogue of the guild-thread continuity below, and
     // the last one-way notification channel to be closed. After the two decision paths (a pending

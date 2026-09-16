@@ -461,6 +461,40 @@ export class TaskStore {
       .map((r) => ({ id: r.id, title: r.title, status: r.status as TaskStatus, assignee: r.assignee ?? undefined }));
   }
 
+  /**
+   * Blocked tasks whose wait is over: every blocker they named is done/cancelled and the park was not on a
+   * HUMAN. These are the self-clearing blocks — an agent chained its work behind another task, so nobody
+   * ever has to be told about them and nobody has to come back and flip them. Nothing swept them before:
+   * `dispatchable()` is todo-only, so a task parked `blocked` behind a dependency stayed blocked forever
+   * after its blocker landed, and the only way back onto the board was a human noticing and hand-flipping
+   * the status. Requires at least one dependency edge — a bare `blocked` with no blockers named is somebody
+   * parking the task deliberately, and clearing that would undo their decision.
+   */
+  settledBlocked(tenant: string): Task[] {
+    return this.db
+      .prepare(`SELECT * FROM tasks t WHERE t.tenant = ? AND t.status = 'blocked'
+                 AND (t.blocked_on IS NULL OR t.blocked_on != 'human')
+                 AND EXISTS (SELECT 1 FROM task_deps d WHERE d.task_id = t.id)
+                 AND NOT EXISTS (SELECT 1 FROM task_deps d JOIN tasks b ON b.id = d.depends_on
+                                  WHERE d.task_id = t.id AND b.status NOT IN ('done','cancelled'))
+                 ORDER BY t.priority, t.created_at`)
+      .all<TaskRow>(tenant)
+      .map(toTask);
+  }
+
+  /**
+   * The most recent comment on a task — the WHY behind its current state. A blocked task's notification
+   * used to carry only the title, which is the one thing the reader already knows; the agent's own
+   * explanation of what it is waiting for was sitting right here in the event log, unread.
+   */
+  lastComment(id: string): string | undefined {
+    const r = this.db
+      .prepare(`SELECT body FROM task_events WHERE task_id = ? AND kind = 'comment' AND body IS NOT NULL AND body != ''
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+      .get<{ body: string }>(id);
+    return r?.body ?? undefined;
+  }
+
   /** The subset of this task's blockers that are NOT yet done/cancelled (a missing blocker counts as met). */
   unmetDeps(id: string): string[] {
     return this.db
