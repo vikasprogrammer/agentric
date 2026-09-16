@@ -26,6 +26,8 @@ new version heading in the same commit.
     were merely asked about resolve instead of silently dropping out.
   Only the `member` audience counts — `approvers`/`admins` resolve to owner/admin, who are already
   unscoped. Pinned by `scripts/audience-session-access-test.cjs` (22 assertions).
+  **For users:** A question or heads-up an agent sends you now opens the run it came from, so you can read
+  what led to it before you answer. [Open the Inbox](#/inbox)
 
 ## [0.444.0] - 2026-09-16
 ### Changed
