@@ -1143,7 +1143,7 @@ export class TerminalManager {
         if (r.status === 'running' && !alive.has(r.tmux) && r.created_at < cutoff && !this.launching.has(r.id)) this.markCrashed(r);
       }
     }
-    const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+    const visible = viewer ? rows.filter((r) => this.canReadRow(r.id, r.spawned_by, r.run_as, viewer)) : rows;
     // Cost is derived from the transcript once a run is terminal, then cached on the row. Backfill any
     // still-uncosted terminal rows here (bounded per call so a first load with a large history doesn't
     // stall parsing hundreds of transcripts — newest first, the rest catch up over subsequent polls).
@@ -1177,7 +1177,7 @@ export class TerminalManager {
   listArchivedSessions(viewer?: Member, taskClip?: number): Session[] {
     return this.withRowCache(() => {
       const rows = this.db.prepare(`SELECT ${this.sessionSelectCols(taskClip)} FROM term_sessions WHERE archived_at IS NOT NULL ORDER BY archived_at DESC`).all<SessionRow>();
-      const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+      const visible = viewer ? rows.filter((r) => this.canReadRow(r.id, r.spawned_by, r.run_as, viewer)) : rows;
       return visible.map((r) => ({ ...toSession(r), spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as), sourceKind: this.sourceKind(r.spawned_by), runAsLabel: this.runAsLabel(r.run_as), ratedByLabel: this.runAsLabel(r.rated_by) }));
     });
   }
@@ -1601,7 +1601,7 @@ export class TerminalManager {
   sessionChain(sessionId: string, viewer?: Member): SessionChain | null {
     const seed = this.db.prepare('SELECT * FROM term_sessions WHERE id = ?').get<SessionRow>(sessionId);
     if (!seed) return null;
-    if (viewer && !this.canViewRow(seed.spawned_by, seed.run_as, viewer)) return null;
+    if (viewer && !this.canReadRow(seed.id, seed.spawned_by, seed.run_as, viewer)) return null;
 
     const threadOf = (r: SessionRow): string => r.claude_session_id ?? r.id;
     // MEMOIZED for the walk: the climb re-reads the same thread on every hop and the descent reads each
@@ -1614,7 +1614,7 @@ export class TerminalManager {
       const rows = this.db
         .prepare('SELECT * FROM term_sessions WHERE claude_session_id = ? OR (claude_session_id IS NULL AND id = ?) ORDER BY created_at ASC')
         .all<SessionRow>(threadId, threadId);
-      const out = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+      const out = viewer ? rows.filter((r) => this.canReadRow(r.id, r.spawned_by, r.run_as, viewer)) : rows;
       threadRows.set(threadId, out);
       return out;
     };
@@ -1840,6 +1840,47 @@ export class TerminalManager {
   }
 
   /**
+   * The sessions a member is the AUDIENCE of: every session carrying an inbox card explicitly addressed
+   * to them (`audience_kind = 'member'`). An agent that `ask`s a specific teammate — or `notify`s one —
+   * routes that card by Audience, which {@link canViewMessageRow} honours but `canViewRow` did not, so
+   * the card was visible and the session behind it was not: clicking it opened a blank page.
+   *
+   * Only the `member` audience counts. `approvers`/`admins` are role-derived and resolve to owner/admin,
+   * who already see every session, so branching on them would grant nothing and blur the rule.
+   *
+   * One query per call, memoized for the duration of a {@link withRowCache} scope — `listSessions` walks
+   * ~950 rows on a live tenant and a per-row EXISTS would be exactly the quadratic shape that scope exists
+   * to kill.
+   */
+  private addressedSessionIds(viewerId: string): Set<string> {
+    const cached = this.rowCache?.addressed?.get(viewerId);
+    if (cached) return cached;
+    const ids = new Set(
+      this.db
+        .prepare("SELECT DISTINCT session_id FROM messages WHERE audience_kind = 'member' AND audience_id = ? AND session_id <> ''")
+        .all<{ session_id: string }>(viewerId)
+        .map((r) => r.session_id),
+    );
+    const c = this.rowCache;
+    if (c) (c.addressed ??= new Map()).set(viewerId, ids);
+    return ids;
+  }
+
+  /**
+   * The READ rule: {@link canViewRow} (the session's own human) OR the audience branch above — a member
+   * addressed on one of this session's cards may READ it (list row, transcript, activity, trail, chain).
+   *
+   * Deliberately read-only. Every ACT route (attach, type, take over, fork, rename, stop, delete) stays on
+   * `canViewRow` via {@link canOperateSession}, so being ASKED a question never confers control of the run.
+   * Card visibility is untouched too: {@link canViewMsg} passes `sessionId` null, so being addressed on one
+   * card does not reveal the session's OTHER cards.
+   */
+  private canReadRow(sessionId: string | null, spawnedBy: string | null, runAs: string | null, viewer: Member): boolean {
+    if (this.canViewRow(spawnedBy, runAs, viewer)) return true;
+    return !!sessionId && this.addressedSessionIds(viewer.id).has(sessionId);
+  }
+
+  /**
    * Whether `viewer` may see a message ROW. A card with an explicit `audience_kind` is routed by that
    * Audience (the pull face of {@link resolveRecipients} — one definition of "receiver" for push and
    * pull); otherwise it falls back to the card's session provenance (`canViewRow`). Owner/admin see all
@@ -1919,6 +1960,8 @@ export class TerminalManager {
    *  Task, session cols null) is governed purely by the audience + the owner/admin oversight rule. */
   private canViewMsg(audienceKind: string | null, audienceId: string | null, spawnedBy: string | null, runAs: string | null, viewer: Member): boolean {
     if (audienceKind && this.canViewAudience(audienceKind, audienceId, viewer)) return true;
+    // The NARROW rule on purpose (not `canReadRow`): a card addressed to you grants you its session's
+    // transcript, never that session's OTHER cards. Card visibility is exactly what it was.
     return this.canViewRow(spawnedBy, runAs, viewer);
   }
 
@@ -1931,8 +1974,19 @@ export class TerminalManager {
     return resolveRecipients(this.os, audience).some((m) => m.id === viewer.id);
   }
 
-  /** Whether `viewer` may see a specific session (resolves its provenance + run-as, then the rule). */
+  /** Whether `viewer` may READ a specific session — its transcript, activity, trail and chain. The
+   *  session's own human, an oversight role, or a member addressed on one of its cards ({@link canReadRow}).
+   *  A card whose session row is gone resolves through the plain rule, so a stale id can't grant anything. */
   canViewSession(sessionId: string, viewer: Member): boolean {
+    const r = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
+    return this.canReadRow(r ? sessionId : null, r ? r.spawned_by : null, r ? r.run_as : null, viewer);
+  }
+
+  /** Whether `viewer` may ACT on a session — attach, type into it, take it over, fork, rename, rate,
+   *  transfer, reload, stop, delete. The NARROW rule ({@link canViewRow}): the session's own human or an
+   *  oversight role, never the merely-addressed audience. Read access is {@link canViewSession}; when in
+   *  doubt a new route belongs here, because this is the one that can change the world. */
+  canOperateSession(sessionId: string, viewer: Member): boolean {
     const r = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
     return this.canViewRow(r ? r.spawned_by : null, r ? r.run_as : null, viewer);
   }
@@ -1944,7 +1998,7 @@ export class TerminalManager {
     const q = this.db.prepare('SELECT run_id, audience_id FROM questions WHERE id = ?').get<{ run_id: string; audience_id: string | null }>(questionId);
     if (!q) return false;
     if (q.audience_id && this.canViewAudience('member', q.audience_id, viewer)) return true;
-    return this.canViewSession(q.run_id, viewer);
+    return this.canOperateSession(q.run_id, viewer);
   }
 
   /**
@@ -1976,7 +2030,7 @@ export class TerminalManager {
    * Memoized lookup tables for the duration of ONE synchronous list call — see {@link withRowCache}.
    * `null` outside such a call, which is what keeps every other caller byte-identical.
    */
-  private rowCache: { members?: Map<string, Member>; autos?: Map<string, AutomationLookup> } | null = null;
+  private rowCache: { members?: Map<string, Member>; autos?: Map<string, AutomationLookup>; addressed?: Map<string, Set<string>> } | null = null;
 
   /**
    * Run `fn` with the per-row member/automation lookups memoized.

@@ -2755,7 +2755,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tmux) return end(res, 204); // ttyd asset / no target → a valid login (already checked) is enough
     const sid = tm.sessionIdByTmux(tmux);
     if (!sid) return end(res, 403); // unknown session name → deny (no attach-to-most-recent)
-    return end(res, tm.canViewSession(sid, me) ? 204 : 403);
+    return end(res, tm.canOperateSession(sid, me) ? 204 : 403);
   }
 
   // ── team / members / assignments ─────────────────────────────────────────────
@@ -3227,7 +3227,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { steps: os.feed.trail(feedTrailMatch[1]) });
   }
   // Single session by id (Sessions-pagination Phase 1) — the by-id fetch the console lacked (every by-id
-  // read used to come from the full list array). 404 when the caller can't see it (canViewRow → no row),
+  // read used to come from the full list array). 404 when the caller can't see it (canReadRow → no row),
   // which doubles as the not-found response — no existence leak. End-anchored so it never shadows the
   // `/api/sessions/:id/<subresource>` routes above.
   const sessByIdMatch = p.match(/^\/api\/sessions\/([\w-]+)$/);
@@ -3413,7 +3413,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && chatReplyMatch) {
     const id = chatReplyMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to reply to this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to reply to this session' });
     const b = await readBody(req);
     const message = String(b.message || '').trim();
     if (!message) return sendJson(res, 400, { error: 'message is required' });
@@ -3429,13 +3429,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && takeoverMatch) {
     const id = takeoverMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to take over this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to take over this session' });
     const out = tm.takeoverToTerminal(id, me.email);
     return sendJson(res, out.ok ? 200 : 409, out);
   }
   // Session activity: "which agent-os primitives did this run use?" — the session's audit stream,
   // classified into a chronological timeline + a grouped count summary. Same visibility as the terminal
-  // (canViewSession), so a member sees the activity of the runs they can attach to, not just admins.
+  // (canViewSession), so a member sees the activity of every run they can READ, not just admins.
   // The hand-off chain this session belongs to — the tree behind the console's chain rail: who delegated
   // to whom, what came back, and what is still waiting on a person. Derived, not stored (see
   // TerminalManager.sessionChain); viewer-scoped by the same rule as the sessions list.
@@ -3566,7 +3566,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && attachMatch) {
     const id = attachMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to attach to this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to attach to this session' });
     try {
       const attachUrl = await tm.attachUrl(id);
       return sendJson(res, attachUrl ? 200 : 404, attachUrl ? { url: attachUrl } : { error: 'unknown session' });
@@ -3578,7 +3578,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const sessUnarchiveMatch = p.match(/^\/api\/sessions\/([\w-]+)\/unarchive$/);
   if (method === 'POST' && sessUnarchiveMatch) {
     const id = sessUnarchiveMatch[1];
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed' });
     const ok = tm.unarchiveSession(id);
     if (ok) os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.unarchived', data: { id } });
     return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'not found or not archived' });
@@ -3596,7 +3596,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && attachFileMatch) {
     const id = attachFileMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to attach to this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to attach to this session' });
     if (Number(req.headers['content-length'] || 0) > 16 * 1024 * 1024) return sendJson(res, 413, { error: 'attachment too large (max ~12MB)' });
     const b = await readBody(req);
     const dataB64 = String(b.dataB64 || '');
@@ -3607,14 +3607,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, r.ok ? 200 : 400, r);
   }
   // Quick Shortcuts — type text into a LIVE session's pane as if the attached human typed it (e.g.
-  // "Check now", a saved prompt). Same trust as attaching + typing, so the gate at canViewSession, not a
+  // "Check now", a saved prompt). Same trust as attaching + typing, so the gate is canOperateSession, not a
   // policy check; every effect the resulting turn triggers is still mediated by the gate hook. Body:
   // { text, submit? } (submit defaults true — the shortcut runs immediately).
   const injectMatch = p.match(/^\/api\/sessions\/([\w-]+)\/inject$/);
   if (method === 'POST' && injectMatch) {
     const id = injectMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to send to this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to send to this session' });
     const b = await readBody(req);
     const text = String(b.text || '');
     if (!text.trim()) return sendJson(res, 400, { error: 'text is required' });
@@ -3629,7 +3629,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && summarizeMatch) {
     const id = summarizeMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
+    // canOperate, not canView: summarizing SPENDS (an out-of-band LLM call), so it sits with the act
+    // routes even though it only reads. The transcript itself is readable one route up.
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
     const convo = tm.sessionConversation(id);
     const cred = tm.outOfBandCredentialEnv();
     const out = await summarizeConversation(convo, { credentials: cred?.vars, account: cred?.account });
@@ -3642,7 +3644,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && stopMatch) {
     const id = stopMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     return sendJson(res, 200, { ok: tm.stopSession(id, me.email) });
   }
   // Take over a run: if it's still LIVE, CLAIM its TUI and attach — no kill, no resume, nothing
@@ -3653,7 +3655,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && interactiveMatch) {
     const id = interactiveMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     const r = tm.takeoverRun(id, me.email);
     return sendJson(res, r.ok ? 200 : 400, r);
   }
@@ -3664,7 +3666,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && forkMatch) {
     const id = forkMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to fork this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to fork this session' });
     const b = await readBody(req);
     const r = tm.forkSession(id, me.id, b.task ? String(b.task) : undefined);
     return sendJson(res, r.ok ? 200 : 400, r.ok ? { id: r.session!.id, tmux: r.session!.tmux } : { error: r.error });
@@ -3675,7 +3677,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && rateMatch) {
     const id = rateMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     const b = await readBody(req);
     const rating = b.rating;
     if (rating !== 'up' && rating !== 'down' && rating !== null) return sendJson(res, 400, { error: "rating must be 'up', 'down', or null" });
@@ -3687,7 +3689,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && renameMatch) {
     const id = renameMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     const b = await readBody(req);
     const r = tm.renameSession(id, me, String((b as { title?: unknown }).title ?? ''));
     return sendJson(res, r.ok ? 200 : 400, r);
@@ -3699,7 +3701,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && transferMatch) {
     const id = transferMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     if (!isAdmin(me) && tm.sessionRunAs(id) !== me.id) return sendJson(res, 403, { error: 'only an owner/admin or the current owner can transfer this session' });
     const b = await readBody(req);
     const to = String((b as { to?: unknown }).to ?? '').trim();
@@ -3714,7 +3716,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && resumeMatch) {
     const id = resumeMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     tm.allowResume(id);
     return sendJson(res, 200, { ok: true });
   }
@@ -3728,7 +3730,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && reloadMatch) {
     const id = reloadMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     const b = await readBody(req);
     const r = tm.reloadSession(id, me.email, { rotate: b.rotate === true });
     return sendJson(res, r.ok ? 200 : 400, r);
@@ -3738,7 +3740,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'DELETE' && sessMatch) {
     const id = sessMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
-    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     return sendJson(res, 200, { ok: tm.deleteSession(id, me.email) });
   }
 
@@ -7457,7 +7459,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const types = os.db.prepare('SELECT DISTINCT type FROM audit_events WHERE tenant = ? ORDER BY type LIMIT 200').all<{ type: string }>(os.tenant).map((t) => t.type);
     return sendJson(res, 200, { events, types });
   }
-  if (method === 'GET' && p === '/api/approvals') return sendJson(res, 200, os.approvals.pending(os.tenant).filter((a) => tm.canViewSession(a.runId, me)).map(approvalView));
+  if (method === 'GET' && p === '/api/approvals') return sendJson(res, 200, os.approvals.pending(os.tenant).filter((a) => tm.canOperateSession(a.runId, me)).map(approvalView));
   // "Always approve": approve THIS attempt AND add its decision-brief SIGNATURE to the auto-approval list,
   // so future attempts of the SAME action shape (e.g. "reach 198.51.100.42", "use stripe refund") clear
   // without a card. Narrower + safer than a capability-wide allow rule — it only silences this one shape,
@@ -7914,7 +7916,7 @@ function sharedTerminalAuthz(os: AgentOS, tm: TerminalManager, req: http.Incomin
   const arg = new URL(req.url || '/', 'http://localhost').searchParams.get('arg');
   if (!arg) return true; // ttyd asset/probe — no targeted session, so a valid login suffices
   const id = arg.replace(/^aos-/, '');
-  return !!tm.sessionAgent(id) && tm.canViewSession(id, me);
+  return !!tm.sessionAgent(id) && tm.canOperateSession(id, me);
 }
 // ── hosted-app reverse proxy (/apps/<slug>/…) ──────────────────────────────────
 /** Extract `<slug>` from `/apps/<slug>` or `/apps/<slug>/…` (query stripped). null if it doesn't match. */

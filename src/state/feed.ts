@@ -214,6 +214,13 @@ WITH feed AS (
   WHERE m.type IN ('update','notification','task','artifact') AND m.dismissed_at IS NULL
 )`;
 
+/**
+ * The sessions a member is the AUDIENCE of — the SQL twin of `TerminalManager.addressedSessionIds`.
+ * Only the `member` audience: `approvers`/`admins` are role-derived and resolve to owner/admin, who are
+ * already unscoped. Takes one `?` (the viewer's member id).
+ */
+const ADDRESSED_SESSIONS = "SELECT session_id FROM messages WHERE audience_kind = 'member' AND audience_id = ? AND session_id <> ''";
+
 export class FeedStore {
   constructor(private db: Db) {}
 
@@ -231,12 +238,14 @@ export class FeedStore {
     if (opts.goalId) { where.push('goal_id = ?'); params.push(opts.goalId); }
 
     // Scope on the union: the session's human (run_as/spawned_by/own-automation) OR — for a folded
-    // message row — a 'member'-audience card addressed to the viewer (aud_member). Together this is
-    // exactly canViewSpawn/canViewRow OR canViewMsg's member branch. Owner/admin: no clause (see all).
+    // message row — a 'member'-audience card addressed to the viewer (aud_member) OR any row belonging to
+    // a session the viewer is addressed on (ADDRESSED_SESSIONS, the feed twin of canReadRow). That last
+    // one is what lets the session/approval/question lines of a run you were merely ASKED about resolve;
+    // without it the card was in the feed and the run behind it was not. Owner/admin: no clause (see all).
     if (!opts.viewer.isAdmin) {
       const autos = this.myAutomations(opts.viewer.id);
-      const parts = ['run_as = ?', 'spawned_by = ?', 'aud_member = ?'];
-      const p: unknown[] = [opts.viewer.id, opts.viewer.id, opts.viewer.id];
+      const parts = ['run_as = ?', 'spawned_by = ?', 'aud_member = ?', `run_id IN (${ADDRESSED_SESSIONS})`];
+      const p: unknown[] = [opts.viewer.id, opts.viewer.id, opts.viewer.id, opts.viewer.id];
       if (autos.length) { parts.push(`spawned_by IN (${autos.map(() => '?').join(',')})`); p.push(...autos); }
       where.push(`(${parts.join(' OR ')})`);
       params.push(...p);
@@ -308,15 +317,17 @@ export class FeedStore {
   }
 
   /**
-   * Visibility, mirroring TerminalManager.canViewSpawn/canViewRow: owner/admin see all; otherwise a row is
-   * visible when the viewer is its run-as, spawned it directly, or created the automation that did.
+   * Visibility, mirroring TerminalManager.canReadRow: owner/admin see all; otherwise a row is visible
+   * when the viewer is its run-as, spawned it directly, created the automation that did — or is the
+   * AUDIENCE of a card on it (an agent asked them a question about that run, so its pending decision
+   * belongs in their counters as much as in their inbox).
    * `prefix` is the column qualifier ('' for term_sessions itself, 's.' when joined as `s`).
    */
   private scopeSql(prefix: string, viewer: FeedViewer): { sql: string; params: unknown[] } {
     if (viewer.isAdmin) return { sql: '', params: [] };
     const autoIds = this.myAutomations(viewer.id);
-    const parts = [`${prefix}run_as = ?`, `${prefix}spawned_by = ?`];
-    const params: unknown[] = [viewer.id, viewer.id];
+    const parts = [`${prefix}run_as = ?`, `${prefix}spawned_by = ?`, `${prefix}id IN (${ADDRESSED_SESSIONS})`];
+    const params: unknown[] = [viewer.id, viewer.id, viewer.id];
     if (autoIds.length) {
       parts.push(`${prefix}spawned_by IN (${autoIds.map(() => '?').join(',')})`);
       params.push(...autoIds);

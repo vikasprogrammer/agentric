@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.444.1] - 2026-09-16
+### Fixed
+- **A card addressed to you opened a blank session.** An agent that `ask`s or `notify`s a specific
+  teammate routes that card by **Audience**, which `canViewMessageRow` honours — but the SESSION behind it
+  was authorised by `canViewRow`, which knows only run-as / spawned-by / own-automation. So a member could
+  see the card and not the run it came from: clicking it opened an empty page. Owner/admin never hit it
+  (they see every session), which is why it went unreported for so long.
+  Session access is now split in two, which is the part worth keeping:
+  - `canViewSession` is the **READ** rule — list row, transcript, activity, trail, chain — and now also
+    admits a member addressed on one of that session's cards (`canReadRow` + `addressedSessionIds`,
+    memoized inside `withRowCache` so `listSessions` doesn't go quadratic on a ~950-row tenant).
+  - `canOperateSession` is the **ACT** rule — attach, type, take over, fork, rename, rate, transfer,
+    reload, stop, delete — and stays narrow. Being asked a question never confers control of the run.
+  - Card visibility is unchanged: being addressed on one card does not reveal the session's others.
+  - `FeedStore` gained the same audience branch, so the feed lines and "needs you" counters of a run you
+    were merely asked about resolve instead of silently dropping out.
+  Only the `member` audience counts — `approvers`/`admins` resolve to owner/admin, who are already
+  unscoped. Pinned by `scripts/audience-session-access-test.cjs` (22 assertions).
+
 ## [0.444.0] - 2026-09-16
 ### Changed
 - **"Task blocked — needs you" now says what for, and can be answered where you read it.** The blocked
