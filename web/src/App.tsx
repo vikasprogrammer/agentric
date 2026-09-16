@@ -5115,6 +5115,8 @@ const isBlockedTaskCard = (m: Msg): boolean =>
 type BlockedTaskArgs = {
   taskId?: string; event?: string; reason?: string
   taskTitle?: string; taskStatus?: TaskStatus | 'deleted'; assignee?: string; blockedOn?: string; autoDispatch?: boolean
+  /** The ask's multiple-choice options, when the agent offered them — one-click unblock. */
+  options?: string[]
 }
 
 /** An agent flagged a progress update as a key milestone / heads-up (carried in `args.important`). */
@@ -6864,9 +6866,10 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
     const agentId = assignee?.startsWith('agent:') ? assignee.slice('agent:'.length) : ''
     const onHuman = a.blockedOn === 'human'
     const runnable = agents.filter((ag) => ag.runtime === 'claude-code')
-    const act = async (next: 'todo' | 'cancelled', run = false) => {
+    const act = async (next: 'todo' | 'cancelled', run = false, pick?: string) => {
       setBusy(true); setHint('')
-      const r = await api.patchTask(taskId, { status: next, ...(answer.trim() ? { note: answer.trim() } : {}) })
+      const note = pick ?? answer.trim()
+      const r = await api.patchTask(taskId, { status: next, ...(note ? { note } : {}) })
       if (r.error) { setBusy(false); return setHint('⚠ ' + r.error) }
       setAnswer('')
       if (next === 'cancelled') { setBusy(false); return setHint('cancelled') }
@@ -6905,9 +6908,18 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
                 </SelectContent>
               </Select>
             </div>
+            {/* The ask's own choices: one click files that option as the answer and puts the task back on
+                the board — the same shape the question card has always had, on the card that survives. */}
+            {a.options?.length ? (
+              <div className="mt-1.5 flex flex-col gap-1">
+                {a.options.map((o) => (
+                  <Button key={o} size="sm" variant="outline" className="h-auto w-full justify-start whitespace-normal px-2 py-1 text-left text-xs font-normal" disabled={busy} onClick={() => act('todo', !!agentId, o)}>{o}</Button>
+                ))}
+              </div>
+            ) : null}
             <textarea
               value={answer} onChange={(e) => setAnswer(e.target.value)} disabled={busy} rows={2}
-              placeholder={onHuman ? 'Answer what it asked — filed as a comment the agent reads on its next run' : 'Add a note (optional)'}
+              placeholder={a.options?.length ? '…or answer in your own words' : onHuman ? 'Answer what it asked — filed as a comment the agent reads on its next run' : 'Add a note (optional)'}
               className="mt-1.5 w-full resize-y rounded-md border bg-background px-2 py-1.5 text-xs"
             />
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">

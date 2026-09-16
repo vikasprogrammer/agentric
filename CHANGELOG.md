@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.444.2] - 2026-09-16
+### Fixed
+- **A blocked task now carries the actual question, and you can answer it with a number.** v0.444.0 made
+  a block explain itself using the agent's own last COMMENT — which is a progress log written for the
+  task's event trail, not the decision. The first live block proved it: the run raised a well-formed
+  four-option `ask_human`, waited, gave up, parked the task and ended — and ending the run **cancelled the
+  question** (rightly: nobody can answer into a dead pane). What reached the human was a summary
+  paragraph, clipped mid-list, ending "Unblock by answering the Inbox question" — about a card that had
+  been cancelled two minutes earlier.
+  - **The block leads with the ask.** A task blocked on a human now sources its reason from the newest
+    question its run put to a person (`latestAskFor`/`taskAsk`), falling back to the last comment.
+  - **Choices reach chat.** `ask_human`'s `options` have always rendered as one-click buttons in the
+    console; a DM got only prose. Both the question DM and the blocked-task DM now list them numbered,
+    and **replying with the number answers it** — expanded to the option's full text, so the task log
+    records the decision rather than a digit. An option the agent numbered itself isn't numbered twice.
+  - **The ask outlives the run.** When a run ends with a pending question and a task it left blocked on a
+    human, the question's text is filed onto that task. The question is still cancelled; the decision is
+    no longer lost with it.
+  - **The Inbox card offers the choices too** — one click files that option and puts the task back on the
+    board.
+  - **Clipping cuts on a paragraph or sentence boundary**, not mid-word.
+  **For users:** When an agent needs a decision from you, the chat message now shows the actual question
+  and its options — reply with just the number ("2") and the work continues. The Inbox card has the same
+  buttons. [Open the Inbox](#/inbox)
+
 ## [0.444.1] - 2026-09-16
 ### Fixed
 - **A card addressed to you opened a blank session.** An agent that `ask`s or `notify`s a specific

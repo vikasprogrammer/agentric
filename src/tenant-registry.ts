@@ -14,7 +14,7 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice } from './terminal';
+import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice, renderOptions } from './terminal';
 import { Automations } from './edge/automations';
 import { WAKE_KIND_DONE } from './edge/wakeups';
 import { AppSupervisor } from './edge/app-supervisor';
@@ -483,9 +483,13 @@ export async function notifyQuestionAsked(os: AgentOS, tm: Pick<TerminalManager,
   if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
   if (!targets.length) return;
   const inbox = consolePage(consoleOrigin, 'inbox');
+  // Choices reach chat as a numbered list. They already render as one-click buttons in the console, but a
+  // DM got only the prose — so a four-way decision arrived as an essay to be answered with another essay.
+  const choices = notice.options?.length ? renderOptions(notice.options) : '';
   const text = (p: ChatPlatform) =>
     `❓ Agent ${notice.agent} is waiting on your answer:\n${notice.prompt}` +
-    `\n\n*Reply to this message to answer*, or open the ${chatLink(p, inbox, 'Agentric Inbox')}.`;
+    (choices ? `\n\n${choices}` : '') +
+    `\n\n*Reply to this message to answer*${choices ? ' — just the number is enough' : ''}, or open the ${chatLink(p, inbox, 'Agentric Inbox')}.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   // Bind the question to each recipient's DM channel so they can answer by REPLYING to the DM (the reply
   // is matched back to this question on inbound — see TerminalManager.answerQuestionFromChat). AFTER
@@ -597,7 +601,7 @@ export function wireTaskNotices(
  * the awaited DM) so it's durable even if the process exits right after; the DM is best-effort. Skips
  * entirely when the change warrants no card or the only recipient is the actor who made it.
  */
-export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'postTaskCard' | 'bindTaskDm'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: TaskNotice): Promise<void> {
+export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'postTaskCard' | 'bindTaskDm' | 'taskAsk'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: TaskNotice): Promise<void> {
   const t = notice.task;
   const blocking = notice.kind === 'status' && t.status === 'blocked';
   const card = taskCard(notice, blocking ? os.tasks.unmetDeps(t.id).length : 0);
@@ -606,37 +610,53 @@ export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'po
   const recipients = resolveRecipients(os, card.audience).filter((m) => m.id !== notice.by);
   if (!recipients.length) return;
   const agentLabel = t.assignee?.startsWith('agent:') ? t.assignee.slice('agent:'.length) : 'tasks';
-  // The WHY, for a block: the agent's own last comment. Without it "needs you" names no act the reader
-  // could perform, and the explanation stays buried in the task's event log where nobody is looking.
-  const reason = blocking ? os.tasks.lastComment(t.id) : undefined;
+  // The WHY, for a block — and for a block ON A HUMAN, the actual ASK. Prefer the question the run put to
+  // a person (`ask_human`, which carries the decision AND its one-click choices) over the agent's last
+  // comment, which is a progress log written for the task's event trail. v0.444.0 shipped the comment and
+  // the first live block proved it wrong: the comment ended "Unblock by answering the Inbox question",
+  // about a question the run's end had just cancelled.
+  const ask = blocking && t.blockedOn === 'human' ? tm.taskAsk(t.id) : undefined;
+  const reason = blocking ? (ask?.prompt ?? os.tasks.lastComment(t.id)) : undefined;
   requestMetrics.phase('task:notify.card', () =>
-    tm.postTaskCard({ taskId: t.id, agent: agentLabel, title: card.title, body: t.title, audience: card.audience, event: card.event, reason }));
+    tm.postTaskCard({ taskId: t.id, agent: agentLabel, title: card.title, body: t.title, audience: card.audience, event: card.event, reason, options: ask?.options }));
   if (!card.dm) {
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms: 0, quiet: true } });
     return;
   }
   // Deep-link straight to the task's permalink (`#/tasks/<id>`), so the DM is one tap from the board.
   const url = consolePage(consoleOrigin, 'tasks', t.id);
-  const ask = blocking && t.blockedOn === 'human';
+  const isAsk = blocking && t.blockedOn === 'human';
+  const choices = ask?.options?.length ? renderOptions(ask.options) : '';
   const text = (p: ChatPlatform) =>
-    `${ask ? '🚧' : '📋'} ${card.title} — \`${t.title}\` (${t.id}).` +
-    (reason ? `\n${clipReason(reason)}` : '') +
-    (ask
-      ? `\n\n*Reply to this message to unblock it* — your reply is filed as a comment and the task goes back on the board. Or open it in the ${chatLink(p, url, 'Agentric console')}.`
+    `${isAsk ? '🚧' : '📋'} ${card.title} — \`${t.title}\` (${t.id}).` +
+    (reason ? `\n${clipReason(reason, choices ? 700 : 500)}` : '') +
+    (choices ? `\n\n${choices}` : '') +
+    (isAsk
+      ? `\n\n*Reply to this message to unblock it* — ${choices ? 'just the number, or your own words' : 'your reply'} is filed as a comment and the task goes back on the board. Or open it in the ${chatLink(p, url, 'Agentric console')}.`
       : `\nOpen it in the ${chatLink(p, url, 'Agentric console')}.`);
   const dms = await deliverDM(slack, discord, os, recipients, text);
   // Bind the task to each recipient's DM so their reply UNBLOCKS it (see TerminalManager.unblockTaskFromChat).
   // Only for a human-blocked task: that is the one case where a reply has an unambiguous meaning. AFTER
   // `deliverDM`, for the same auto-link reason as the question/approval binds.
-  if (ask) bindDmRecipients(os, recipients, (provider, externalId, memberId) => tm.bindTaskDm(t.id, provider, externalId, memberId));
+  if (isAsk) bindDmRecipients(os, recipients, (provider, externalId, memberId) => tm.bindTaskDm(t.id, provider, externalId, memberId));
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms } });
 }
 
-/** A task comment is written for the task's log, not for a DM — clip it so one verbose stand-down note
- *  doesn't become a wall of text in someone's chat. The full text is on the card and the task itself. */
+/** An ask (or a task comment) is written for the console, not for a DM — clip it so one verbose note
+ *  doesn't become a wall of text in someone's chat. The full text is on the card and the task itself.
+ *  Cuts on a PARAGRAPH break where there is one in the last third, else a sentence end, else a word — the
+ *  first live block clipped mid-list ("…2 live candidates on prod (whatsapp-bot, …"), which reads as
+ *  truncation damage rather than a summary. */
 function clipReason(text: string, max = 500): string {
   const body = text.trim();
-  return body.length <= max ? body : body.slice(0, max).replace(/\s+\S*$/, '') + ' …';
+  if (body.length <= max) return body;
+  const head = body.slice(0, max);
+  const floor = Math.floor(max * 0.66);
+  const para = head.lastIndexOf('\n\n');
+  if (para >= floor) return head.slice(0, para).trimEnd() + '\n\n…';
+  const sentence = Math.max(head.lastIndexOf('. '), head.lastIndexOf('.\n'));
+  if (sentence >= floor) return head.slice(0, sentence + 1) + ' …';
+  return head.replace(/\s+\S*$/, '') + ' …';
 }
 
 /**

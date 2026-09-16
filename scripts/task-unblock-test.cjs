@@ -22,7 +22,7 @@ let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
 
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
-const { TerminalManager } = require(path.join(ROOT, 'dist/terminal.js'));
+const { TerminalManager, renderOptions, resolveOptionReply } = require(path.join(ROOT, 'dist/terminal.js'));
 const { notifyTaskEvent } = require(path.join(ROOT, 'dist/tenant-registry.js'));
 const { Automations } = require(path.join(ROOT, 'dist/edge/automations.js'));
 
@@ -52,6 +52,15 @@ const mkTask = (o = {}) => aos.tasks.create({
   tenant: aos.tenant, title: 'task ' + (++n), body: '', owner: owner.id, createdBy: owner.id,
   assignee: 'agent:engineer', autoDispatch: true, ...o,
 });
+let sn = 0;
+// A term_sessions row the task points at, so `taskAsk` can find the run's question.
+const mkSession = (taskId) => {
+  const id = 'ses_' + (++sn);
+  aos.db.prepare('INSERT INTO term_sessions (id,agent,title,task,tmux,status,spawned_by,run_as,claude_session_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id, 'engineer', 't', 'x', 'aos-' + id, 'running', 'task:' + taskId, owner.id, 'cs_' + id, Date.now(), Date.now());
+  aos.db.prepare('UPDATE tasks SET last_session_id = ? WHERE id = ?').run(id, taskId);
+  return id;
+};
 const block = (id, blockedOn, note) => aos.tasks.update(id, { status: 'blocked', blockedOn, note, by: 'agent:engineer' });
 const notice = (task) => ({ task, kind: 'status', by: 'agent:engineer', detail: 'doing→blocked' });
 const cards = (taskId) => aos.db.prepare("SELECT id, title, status, args FROM messages WHERE type='task' AND session_id=?").all('task:' + taskId);
@@ -125,6 +134,47 @@ const cards = (taskId) => aos.db.prepare("SELECT id, title, status, args FROM me
   assert(cards(t1.id)[0].status !== 'open', 'unblocking closes the "needs you" card');
   tm.syncTaskBlockedCards(t3.id);
   assert(cards(t3.id)[0].status === 'open', 'a still-blocked task keeps its card');
+
+  console.log('\n\x1b[1mD. the block carries the ASK, not the progress log\x1b[0m');
+  // The shape that made the first live block unanswerable: the run asked a four-option question, waited,
+  // gave up, parked the task and ended — cancelling the question two minutes after DMing it.
+  const OPTS = ['1. Fix disclosure + copy, then flip (recommended)', '2. Fix copy only; flag stays OFF', '3. Flip now, disclosure later', '4. Not now'];
+  assert(renderOptions(OPTS).split('\n')[0] === '1. Fix disclosure + copy, then flip (recommended)', 'an already-numbered option is not numbered twice');
+  assert(renderOptions(['Ship it', 'Hold'])[0] === '1', 'an unnumbered option gets its number');
+  assert(resolveOptionReply('2', OPTS) === OPTS[1], 'a bare number picks that option');
+  assert(resolveOptionReply('  4. ', OPTS) === OPTS[3], 'so does a number with its punctuation');
+  assert(resolveOptionReply('fix copy only; flag stays off', OPTS) === OPTS[1], 'so does the option text, ordinal-stripped and case-insensitive');
+  assert(resolveOptionReply('9', OPTS) === undefined, 'a number outside the list picks nothing');
+  assert(resolveOptionReply('let me think about it', OPTS) === undefined, 'and free prose is left as the human\u2019s own words');
+
+  dms = [];
+  const t5 = mkTask({ title: 'flip the flag?' });
+  const ses = mkSession(t5.id);
+  aos.tasks.update(t5.id, { status: 'doing', by: 'agent:engineer' });
+  tm.askQuestion(ses, 'engineer', 'Sending redacted customer logs to Anthropic — which do you want?', undefined, OPTS);
+  block(t5.id, 'human', 'Part 1 complete. Part 2 re-asked in the owner Inbox; no answer within the run window. Unblock by answering the Inbox question.');
+  await notifyTaskEvent(aos, tm, slack, discord, 'https://console.example.com', notice(aos.tasks.get(t5.id)));
+  const dm = dms[0]?.text ?? '';
+  assert(/which do you want\?/i.test(dm), 'the DM leads with the QUESTION, not the progress comment');
+  assert(!/Unblock by answering the Inbox question/.test(dm), 'the progress comment is not what gets sent');
+  assert(/1\. Fix disclosure/.test(dm) && /4\. Not now/.test(dm), 'and it lists every choice, numbered');
+  assert(/just the number/.test(dm), 'and says a number is enough');
+  const c5 = JSON.parse(cards(t5.id)[0].args);
+  assert(Array.isArray(c5.options) && c5.options.length === 4, 'the card carries the choices for its one-click buttons');
+
+  const r5 = tm.unblockTaskFromChat('slack', 'U_OWNER', '2');
+  assert(r5 && r5.taskId === t5.id, 'replying "2" unblocks it');
+  assert(aos.tasks.lastComment(t5.id) === OPTS[1], 'and the DECISION is filed, not the digit');
+
+  // The ask outlives the run that raised it: ending the session cancels the question, which is right —
+  // but the task it blocked keeps the text, so the human is not left holding a cancelled card.
+  const t6 = mkTask({ title: 'second decision' });
+  const ses6 = mkSession(t6.id);
+  tm.askQuestion(ses6, 'engineer', 'Which region should the failover live in?', undefined, ['us-east', 'eu-west']);
+  block(t6.id, 'human', 'waiting on the founder');
+  tm.stopSession(ses6, 'system');
+  assert(/Which region should the failover live in\?/.test(aos.tasks.lastComment(t6.id) ?? ''), 'a question cancelled at session end is filed onto its blocked task');
+  assert(aos.db.prepare("SELECT status FROM questions WHERE run_id = ?").get(ses6).status === 'cancelled', 'the question itself is still cancelled (nobody can answer a dead pane)');
 
   console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m`);
   fs.rmSync(HOME, { recursive: true, force: true });

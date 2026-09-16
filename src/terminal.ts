@@ -678,6 +678,40 @@ export function parseApprovalIntent(text: string): 'approve' | 'deny' | null {
 /** What the question-notifier sink receives when an agent asks the human a question — so an out-of-band
  *  channel (Slack/Discord DM) can ping the person the run acts for, the way approvals already ping
  *  approvers. Without it a blocking `ask` sits unseen in the console until it times out. */
+/**
+ * A choice list rendered for a chat DM: numbered, one per line. An agent's option text OFTEN already
+ * carries its own number ("1. Fix disclosure + copy") — live on instapods 2026-09-16 — so a naive prefix
+ * yields "1. 1. Fix …". Strip any leading ordinal before numbering, so the list reads the same whether or
+ * not the agent numbered it, and the numbers always match what {@link resolveOptionReply} accepts.
+ */
+export function renderOptions(options: string[]): string {
+  return options.map((o, i) => `${i + 1}. ${stripOrdinal(o)}`).join('\n');
+}
+
+/** Drop a leading "1." / "2)" / "3 -" so an already-numbered option isn't numbered twice. */
+function stripOrdinal(text: string): string {
+  return text.trim().replace(/^\(?\d{1,2}\s*[.):\-]\s*/, '').trim();
+}
+
+/**
+ * A chat reply that PICKS one of the offered choices, resolved to that choice's full text — so a human can
+ * answer a four-way decision with "2" instead of retyping it. Accepts the option's number (the position in
+ * the list the DM rendered) or its text, with or without a leading ordinal, case-insensitively. Returns
+ * undefined for anything else, which is the safe default: an unrecognised reply is filed verbatim as the
+ * person's own words rather than silently snapped to a choice they didn't make.
+ */
+export function resolveOptionReply(reply: string, options: string[] | undefined): string | undefined {
+  const body = (reply || '').trim();
+  if (!body || !options?.length) return undefined;
+  const n = /^\(?(\d{1,2})\)?[.):]?$/.exec(body);
+  if (n) {
+    const i = Number(n[1]) - 1;
+    return i >= 0 && i < options.length ? options[i] : undefined;
+  }
+  const norm = stripOrdinal(body).toLowerCase();
+  return options.find((o) => stripOrdinal(o).toLowerCase() === norm);
+}
+
 export interface QuestionNotice {
   /** The pending question's id — the notifier binds it to the DM(s) it sends so a reply can answer it. */
   questionId: string;
@@ -687,6 +721,9 @@ export interface QuestionNotice {
   /** Resolved member id when the agent `ask`ed a SPECIFIC teammate (not the run's operator); the
    *  registry DMs them instead of the sessionOwner. Undefined = the default sessionOwner routing. */
   to?: string;
+  /** The multiple-choice options, when the agent asked one. They already render as one-click buttons in
+   *  the Inbox; the DM lists them numbered so a chat reply can be a single digit instead of an essay. */
+  options?: string[];
 }
 
 /** What the member-notifier sink receives when an agent deliberately notifies a specific teammate via
@@ -5943,15 +5980,57 @@ export class TerminalManager {
    * audience via `canViewMessageRow`). `args.taskId` deep-links the card to the board. Public so the
    * tenant-registry wiring (the `os.tasks` notifier) can call it.
    */
-  postTaskCard(input: { taskId: string; agent: string; title: string; body: string; audience: Audience; event: string; reason?: string }): void {
+  postTaskCard(input: { taskId: string; agent: string; title: string; body: string; audience: Audience; event: string; reason?: string; options?: string[] }): void {
     this.addMessage({
       type: 'task', sessionId: `task:${input.taskId}`, agent: input.agent, title: input.title,
       body: input.body, status: 'open',
       // `reason` is the agent's own last comment on a block — the card's answer to "needs you for WHAT",
       // which the title alone has never carried.
-      args: { taskId: input.taskId, event: input.event, ...(input.reason ? { reason: input.reason } : {}) },
+      args: {
+        taskId: input.taskId, event: input.event,
+        ...(input.reason ? { reason: input.reason } : {}),
+        // The ask's choices, when it had them — the card renders them as one-click unblock buttons.
+        ...(input.options?.length ? { options: input.options } : {}),
+      },
       audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
     });
+  }
+
+  /**
+   * The ASK behind a blocked task: the newest question the task's last run put to a human, with its
+   * choices. This is the field a block notification should lead with, and until v0.444.2 nothing read it.
+   *
+   * The agent's own last COMMENT is a progress log written for the task's event trail; the decision it
+   * needs is in the `ask_human` it raised, which carries the question AND its one-click options. Worse,
+   * the two have different lifetimes: ending a run cancels its pending questions (rightly — nobody can
+   * answer into a dead pane), so a run that asked, waited, gave up and parked the task left the human a
+   * DM saying "answer the Inbox question" about a card that had just been cancelled. (Live, instapods
+   * 2026-09-16: `tsk_cb76fa3da0309f38` — a well-formed four-option decision, dead two minutes after it
+   * was sent.) Reading the question here makes the TASK carry the ask, and the task outlives the run.
+   *
+   * Status-agnostic on purpose: by the time a human replies the question is usually cancelled, and its
+   * TEXT is still the question. Bounded to the run's own questions, newest first.
+   */
+  latestAskFor(sessionId: string): { prompt: string; options?: string[] } | undefined {
+    if (!sessionId) return undefined;
+    const q = this.db
+      .prepare('SELECT id, prompt FROM questions WHERE run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1')
+      .get<{ id: string; prompt: string }>(sessionId);
+    if (!q) return undefined;
+    // The choices ride on the question's CARD (`args.options`), not the questions table — see askQuestion.
+    const m = this.db.prepare("SELECT args FROM messages WHERE question_id = ? AND type = 'question' ORDER BY created_at DESC LIMIT 1").get<{ args: string | null }>(q.id);
+    let options: string[] | undefined;
+    try {
+      const parsed = m?.args ? (JSON.parse(m.args) as { options?: unknown }) : undefined;
+      if (Array.isArray(parsed?.options)) options = parsed.options.map(String).filter(Boolean);
+    } catch { /* a card with unparseable args just has no options */ }
+    return { prompt: q.prompt, ...(options?.length ? { options } : {}) };
+  }
+
+  /** The ask behind a task, via its last run — the task-level entry point to {@link latestAskFor}. */
+  taskAsk(taskId: string): { prompt: string; options?: string[] } | undefined {
+    const sid = this.os.tasks.get(taskId)?.lastSessionId;
+    return sid ? this.latestAskFor(sid) : undefined;
   }
 
   /**
@@ -5993,7 +6072,10 @@ export class TerminalManager {
     // Defense in depth: the binding proves we DM'd them, not that they are still on the team.
     const member = this.os.team.memberByExternalId(provider, externalId);
     if (!member) return null;
-    const task = this.os.tasks.update(row.tid, { status: 'todo', note: body, by: member.id });
+    // "2" is an answer when the agent offered choices: expand it to that option's full text, so the task
+    // log records the decision rather than a digit nobody can read six weeks later.
+    const picked = resolveOptionReply(body, this.taskAsk(row.tid)?.options);
+    const task = this.os.tasks.update(row.tid, { status: 'todo', note: picked ?? body, by: member.id });
     if (!task) return null;
     this.audit(`task:${task.id}`, member.email, 'task.unblocked.viaDm', { id: task.id, provider });
     return { taskId: task.id, title: task.title, assignee: task.assignee, by: member.email };
@@ -6567,7 +6649,7 @@ export class TerminalManager {
     // Out-of-band ping (like approvals): DM the person the run acts for — or the addressed teammate — so a
     // blocking `ask` doesn't sit unseen in the console. And if the run was triggered from chat, mirror the
     // question into that thread. Both best-effort, off the hot path.
-    try { this.questionNotifier?.({ questionId: id, sessionId, agent, prompt, to: target?.id }); } catch { /* notifications are advisory */ }
+    try { this.questionNotifier?.({ questionId: id, sessionId, agent, prompt, to: target?.id, ...(cleanOptions?.length ? { options: cleanOptions } : {}) }); } catch { /* notifications are advisory */ }
     try { this.chatMirror?.(sessionId, (p) => `❓ ${agent} needs your input:\n${prompt}\n\nAnswer in the ${chatLink(p, consolePage(this.publicOrigin, 'inbox'), 'Agentric Inbox')}.`); } catch { /* advisory */ }
     return { id, to: target?.email };
   }
@@ -6609,13 +6691,26 @@ export class TerminalManager {
       )
       .get<{ qid: string; agent: string }>(provider, externalId);
     if (!row) return null;
+    // A reply that just PICKS one of the offered choices ("2") is expanded to that option's text before it
+    // reaches the agent — the DM numbers them, so the number has to mean something on the way back.
+    const answer2 = resolveOptionReply(body, this.questionOptions(row.qid)) ?? body;
     // Defense in depth: the binding already implies this member was the addressee, but re-check they may
     // act on it (mirrors the web route's canViewQuestion gate) before writing the answer.
     const member = this.os.team.memberByExternalId(provider, externalId);
     if (!member || !this.canViewQuestion(row.qid, member)) return null;
-    if (!this.answerQuestion(row.qid, body, member.email)) return null;
+    if (!this.answerQuestion(row.qid, answer2, member.email)) return null;
     this.audit(this.questionRunId(row.qid) ?? row.qid, member.email, 'question.answered.viaDm', { questionId: row.qid, provider });
     return { agent: row.agent };
+  }
+
+  /** A question's multiple-choice options, read off its CARD (`args.options`) — see askQuestion. */
+  private questionOptions(questionId: string): string[] | undefined {
+    const m = this.db.prepare("SELECT args FROM messages WHERE question_id = ? AND type = 'question' ORDER BY created_at DESC LIMIT 1").get<{ args: string | null }>(questionId);
+    try {
+      const parsed = m?.args ? (JSON.parse(m.args) as { options?: unknown }) : undefined;
+      if (Array.isArray(parsed?.options)) { const o = parsed.options.map(String).filter(Boolean); return o.length ? o : undefined; }
+    } catch { /* unparseable args → no options */ }
+    return undefined;
   }
 
   /** The session id a question belongs to (for audit attribution on the DM-answer path). */
@@ -6768,11 +6863,28 @@ export class TerminalManager {
    * `cancelled` Activity rows instead of live prompts that can never be resolved. Returns how many flipped.
    */
   private cancelPendingQuestions(sessionId: string, by: string): number {
-    const pending = this.db.prepare("SELECT id FROM questions WHERE run_id = ? AND status = 'pending'").all<{ id: string }>(sessionId);
+    const pending = this.db.prepare("SELECT id, prompt FROM questions WHERE run_id = ? AND status = 'pending'").all<{ id: string; prompt: string }>(sessionId);
     if (!pending.length) return 0;
     this.db.prepare("UPDATE questions SET status = 'cancelled', answered_by = ?, answered_at = ? WHERE run_id = ? AND status = 'pending'").run(by, Date.now(), sessionId);
     for (const q of pending) this.audit(sessionId, by, 'question.cancelled', { questionId: q.id, reason: 'session ended' });
+    // If the run ALSO parked a task blocked on a human, the question it died with was that block's real
+    // ask — file it on the task, so the decision outlives the run that raised it. The task is the durable
+    // channel now (a reply to a blocked task needs no live pane), and without this the human is left
+    // holding a cancelled card and a task whose comment says "answer the Inbox question".
+    try { this.carryAskToBlockedTask(sessionId, pending[pending.length - 1]); } catch { /* advisory */ }
     return pending.length;
+  }
+
+  /** Copy a dying question onto the task its run left blocked on a human, once (guarded on the text
+   *  already being the task's latest comment, so a crash-then-reap can't file it twice). */
+  private carryAskToBlockedTask(sessionId: string, q: { prompt: string }): void {
+    const t = this.db
+      .prepare("SELECT id FROM tasks WHERE last_session_id = ? AND status = 'blocked' AND blocked_on = 'human' LIMIT 1")
+      .get<{ id: string }>(sessionId);
+    if (!t) return;
+    const note = `Unanswered when the run ended — this is what it needs:\n\n${q.prompt}`;
+    if (this.os.tasks.lastComment(t.id) === note) return;
+    this.os.tasks.update(t.id, { note, by: 'system' });
   }
 
   /**
