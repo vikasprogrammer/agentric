@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.446.1] - 2026-09-17
+### Fixed
+- **`session-pause-test` no longer depends on the deploy box's own Claude login.** Its HTTP section resumes a
+  paused session and then awaits, so the deferred launch — and its credential pre-flight against the real
+  `~/.claude` — had run by the time the row was checked. On the Linux deploy boxes (no refresh token in the
+  box default) the resume was correctly refused and the row read `crashed`, failing the make-live gate on
+  every remote target while passing on the Mac. The harness now stubs the pre-flight, as it already stubs
+  the session backend.
+
 ## [0.446.0] - 2026-09-17
 ### Added
 - **Pause a session.** A new session status, `paused`, that is neither live nor finished: pausing kills the

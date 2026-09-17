@@ -233,6 +233,11 @@ console.log('\n\x1b[1m10) end to end over real HTTP — the routes, the gate and
   htm.backend.spawn = (_s, o) => { live.add(o.tmuxName); };
   htm.backend.capturePane = () => '';
   htm.backend.hasClient = () => false;
+  // The launch credential pre-flight reads the BOX's real login (~/.claude). This harness resumes over HTTP
+  // and then awaits, so the deferred launch has run by the time we look — on a box whose default login has
+  // no refresh token (every Linux deploy box) the resume is refused and the row reads `crashed`. That's the
+  // pre-flight working, not pause; keep the test about pause.
+  htm.assertCredentialsUsable = () => true;
 
   const post = (u, cookie) => fetch(base + u, { method: 'POST', headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) }, body: '{}' });
 
