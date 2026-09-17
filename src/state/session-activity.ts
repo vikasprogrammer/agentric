@@ -51,6 +51,8 @@ const NOISE = new Set<string>([
   'action.attempt', 'policy.decision', 'space.released', 'approval.notified', 'approval.auto_approved',
   // The human side of the two agent→human channels — a follow-up to the agent's primitive, not one itself.
   'approval.resolved', 'question.answered',
+  // The focus check's own bookkeeping — an observation ABOUT the run, not something the agent did.
+  'drift.judged', 'drift.judge_failed', 'drift.nudged', 'drift.escalated',
 ]);
 
 /** Category by type-prefix — the fallback for any audited effect not spelled out below. */

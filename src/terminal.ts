@@ -29,6 +29,8 @@ import { resolveCapability } from './capabilities/normalize';
 import { unwrapComposioEnvelope } from './capabilities/composio-envelope';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
+import { DriftMonitor, DriftJudgement, buildDriftInput, judgeDriftConfirmed, driftNote, driftEscalationBody, askGist } from './edge/drift';
+import { resolveLlm } from './edge/llm';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
 import { fileGovernanceDecision } from './governance/file-guard';
 import { injectionDecision } from './governance/semantic-guard';
@@ -939,6 +941,10 @@ export class TerminalManager {
    *  agent via an `instruct` (allow + advisory note). In-memory per session. Off when AOS_RELIABILITY=0. */
   private readonly reliability = new ReliabilityMonitor();
   private readonly reliabilityOn = process.env.AOS_RELIABILITY !== '0';
+  /** The rabbit-hole focus check (edge/drift.ts). Mode lives in workspace settings; `AOS_DRIFT=0` is the
+   *  process-level kill switch (tests, or a box that must make no out-of-band model calls). */
+  private readonly drift = new DriftMonitor();
+  private readonly driftOn = process.env.AOS_DRIFT !== '0';
   /** Sessions whose runtime launch is SCHEDULED but whose pane doesn't exist yet (see
    *  `launchAgentRuntime`). `reachable` counts them as live so the window between "row written" and
    *  "tmux up" can't be read as "nothing is running" — which would let a second turn launch a
@@ -5689,8 +5695,15 @@ export class TerminalManager {
           const data: Record<string, unknown> = { capability, signature: brief.signature };
           if (sig.kind === 'loop') data.count = sig.count; else data.reason = sig.reason;
           this.audit(sessionId, agent, sig.kind === 'loop' ? 'reliability.loop' : 'reliability.detached_work', data);
+          this.driftObserve(sessionId, agent); // still counts toward the focus check; its note waits a call
           return { decision: 'allow', note: sig.note };
         }
+      }
+      // Focus check (edge/drift.ts): count the action, maybe kick an out-of-band judgement, and deliver a
+      // parked drift note on this call if an earlier judgement left one. Never blocks, never denies.
+      if (!sub) {
+        const note = this.driftObserve(sessionId, agent);
+        if (note) return { decision: 'allow', note };
       }
       return { decision: 'allow' };
     }
@@ -6028,6 +6041,57 @@ export class TerminalManager {
     if (status === 'approved') return 'allow';
     if (status === 'pending') return 'pending';
     return 'deny'; // rejected, cancelled, or unknown
+  }
+
+  /**
+   * Drift focus check, called for every allowed top-level action. Returns a parked note to deliver on THIS
+   * call (nudge mode only), and starts a judgement in the background when one is due — the gate never
+   * waits on a model. See edge/drift.ts for the trigger, the judge and the copy.
+   */
+  private driftObserve(sessionId: string, agent: string): string | undefined {
+    if (!this.driftOn) return undefined;
+    const mode = this.os.settings.driftMode();
+    if (mode === 'off' || this.os.agents.get(agent)?.driftCheck === false) return undefined;
+    if (this.drift.observe(sessionId, Date.now())) void this.runDriftJudge(sessionId, agent, mode);
+    if (mode !== 'nudge') return undefined;
+    const note = this.drift.takeNote(sessionId);
+    if (note) this.audit(sessionId, agent, 'drift.nudged', {});
+    return note;
+  }
+
+  /** One out-of-band judgement. Every outcome is audited (`drift.judged`, or `drift.judge_failed` with the
+   *  classified reason) so the focus check's hit rate and failure rate are readable from the trail. */
+  private async runDriftJudge(sessionId: string, agent: string, mode: 'observe' | 'nudge'): Promise<void> {
+    try {
+      const row = this.db.prepare('SELECT task, headless, claimed_by, status FROM term_sessions WHERE id = ?')
+        .get<{ task: string; headless: number; claimed_by: string | null; status: string }>(sessionId);
+      if (!row || row.status !== 'running') { this.drift.abort(sessionId, false); return; }
+      const input = buildDriftInput(row.task, this.sessionConversation(sessionId));
+      if (!input) { this.drift.abort(sessionId, false); return; }
+      const llm = resolveLlm(this.os);
+      const cred = llm ? null : this.outOfBandCredentialEnv();
+      const out = await judgeDriftConfirmed(input, { llm, credentials: cred?.vars, account: cred?.account });
+      if (!out.judgement) {
+        this.drift.abort(sessionId);
+        this.audit(sessionId, agent, 'drift.judge_failed', { via: out.via, reason: out.reason ?? null, account: out.account ?? null });
+        return;
+      }
+      const j: DriftJudgement = out.judgement;
+      const outcome = this.drift.record(sessionId, j, mode === 'nudge' ? driftNote(row.task, j) : undefined);
+      this.audit(sessionId, agent, 'drift.judged', { verdict: j.verdict, confidence: j.confidence, tangent: j.tangent, reason: j.reason, outcome, mode, via: out.via, votes: out.votes, ask: askGist(row.task) });
+      // One card per drifting streak, and only for a run nobody is watching: an interactive or taken-over
+      // session already has a human on it, who sees the strip — a card there is just noise.
+      if (outcome === 'escalated' && mode === 'nudge' && row.headless === 1 && !row.claimed_by) {
+        this.addMessage({
+          type: 'update', sessionId, agent, title: `Drifting — ${agent}`, body: driftEscalationBody(row.task, j),
+          status: 'open', args: { drift: { tangent: j.tangent, reason: j.reason } },
+          audienceKind: 'sessionOwner', audienceId: sessionId,
+        });
+        this.audit(sessionId, agent, 'drift.escalated', { tangent: j.tangent });
+      }
+    } catch {
+      this.drift.abort(sessionId);
+    }
   }
 
   private addMessage(m: Omit<FeedMessage, 'id' | 'createdAt'>): string {
@@ -8674,6 +8738,7 @@ export class TerminalManager {
     }
     this.audit(sessionId, s.agent, 'session.ended', {});
     this.reliability.forget(sessionId); // drop the loop-detector streak state for this run
+    this.drift.forget(sessionId);
   }
 
   /** A stopped/ended session was reconnected and is live again — the ttyd attach wrapper resurrected

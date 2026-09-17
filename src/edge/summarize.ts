@@ -100,6 +100,16 @@ const INSTRUCTION = [
 
 /** Run a fresh, throwaway `claude -p`, piping the transcript on stdin. Resolves its stdout. */
 function runClaude(instruction: string, transcript: string, credentials?: Record<string, string>): Promise<string> {
+  return runClaudePrompt(instruction, `TRANSCRIPT:\n${transcript}\n`, { credentials, model: process.env.AOS_SUMMARY_MODEL });
+}
+
+/** A throwaway, tool-less `claude -p <instruction>` with `stdin` piped in; resolves stdout. Shared by the
+ *  summarizer and the drift judge (`drift.ts`) — the one place the out-of-band CLI call is shaped. */
+export function runClaudePrompt(
+  instruction: string,
+  stdin: string,
+  opts: { credentials?: Record<string, string>; model?: string; timeoutMs?: number } = {},
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const home = os.homedir();
     // Mirror claude-launch.sh: the CLI is often under ~/.local/bin and a hardened service ships a
@@ -107,21 +117,20 @@ function runClaude(instruction: string, transcript: string, credentials?: Record
     // to pick up) — this is a pure text-in/text-out call with no tools.
     // Pool credentials LAST so they override whatever the service environment carries — that precedence
     // is the fix: the box default is what was exhausted.
-    const env = { ...process.env, PATH: `${path.join(home, '.local', 'bin')}:${process.env.PATH ?? ''}`, ...(credentials ?? {}) };
+    const env = { ...process.env, PATH: `${path.join(home, '.local', 'bin')}:${process.env.PATH ?? ''}`, ...(opts.credentials ?? {}) };
     const args = ['-p', instruction];
-    const model = process.env.AOS_SUMMARY_MODEL;
-    if (model) args.push('--model', model);
+    if (opts.model) args.push('--model', opts.model);
     const child = execFile(
       'claude',
       args,
-      { env, cwd: os.tmpdir(), timeout: 90_000, maxBuffer: 8 * 1024 * 1024 },
+      { env, cwd: os.tmpdir(), timeout: opts.timeoutMs ?? 90_000, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout) => {
         if (err) return reject(err);
         resolve(String(stdout || ''));
       },
     );
     child.stdin?.on('error', () => {}); // a claude that exits early would EPIPE the write — ignore
-    child.stdin?.end(`TRANSCRIPT:\n${transcript}\n`);
+    child.stdin?.end(stdin);
   });
 }
 

@@ -5626,7 +5626,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // ── governance thresholds (the numeric caps the never-tier policy rules read) ──
   if (method === 'GET' && p === '/api/settings/governance') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    return sendJson(res, 200, { ...os.settings.governanceThresholds(), hostGovernanceEnabled: os.settings.hostGovernanceEnabled(), semanticGuardEnabled: os.settings.semanticGuardEnabled(), fileWriteGuardEnabled: os.settings.fileWriteGuardEnabled(), ...os.settings.governanceMeta() });
+    return sendJson(res, 200, { ...os.settings.governanceThresholds(), hostGovernanceEnabled: os.settings.hostGovernanceEnabled(), semanticGuardEnabled: os.settings.semanticGuardEnabled(), fileWriteGuardEnabled: os.settings.fileWriteGuardEnabled(), driftMode: os.settings.driftMode(), ...os.settings.governanceMeta() });
   }
   if (method === 'PUT' && p === '/api/settings/governance') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -5652,8 +5652,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       os.settings.setSemanticGuardEnabled(b.semanticGuardEnabled, me.email);
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.semantic_guard.updated', data: { enabled: b.semanticGuardEnabled } });
     }
+    // Drift focus check mode. Advisory (it never gates an effect), so owner OR admin — whoever reaches this
+    // route. Present-only, and an unknown value is refused rather than silently read back as the default.
+    if (b.driftMode !== undefined) {
+      if (b.driftMode !== 'off' && b.driftMode !== 'observe' && b.driftMode !== 'nudge') return sendJson(res, 400, { error: 'driftMode must be off, observe or nudge' });
+      os.settings.setDriftMode(b.driftMode, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.drift_mode.updated', data: { mode: b.driftMode } });
+    }
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.governance.updated', data: { ...saved } });
-    return sendJson(res, 200, { ok: true, ...saved, hostGovernanceEnabled: os.settings.hostGovernanceEnabled(), semanticGuardEnabled: os.settings.semanticGuardEnabled(), fileWriteGuardEnabled: os.settings.fileWriteGuardEnabled() });
+    return sendJson(res, 200, { ok: true, ...saved, hostGovernanceEnabled: os.settings.hostGovernanceEnabled(), semanticGuardEnabled: os.settings.semanticGuardEnabled(), fileWriteGuardEnabled: os.settings.fileWriteGuardEnabled(), driftMode: os.settings.driftMode() });
   }
 
   // ── custom governance patterns (operator regex → boolean fact the enricher sets, policy gates on) ──
@@ -7704,6 +7711,15 @@ function sessionProgress(os: AgentOS, runId: string, now: number): SessionProgre
     if (lastActivityTs == null && classifyActivity(r.type, d)) lastActivityTs = r.ts;
   }
   if (!claims.length && lastActivityTs == null && loopTs == null) return null;
+  // Newest focus-check judgement, by its own indexed lookup: judgements are ~10 min apart, so the 120-row
+  // tail above can easily not reach back to one on a busy run.
+  const driftRow = os.db
+    .prepare("SELECT ts, data FROM audit_events WHERE tenant = ? AND run_id = ? AND type = 'drift.judged' ORDER BY ts DESC LIMIT 1")
+    .get<{ ts: number; data: string }>(os.tenant, runId);
+  const driftData = driftRow ? safeJson(driftRow.data) : null;
+  const drift = driftRow && driftData
+    ? { ts: driftRow.ts, drifting: ['detected', 'escalated', 'persisting'].includes(String(driftData.outcome)), tangent: typeof driftData.tangent === 'string' && driftData.tangent ? driftData.tangent : null }
+    : null;
   const pendingApproval = os.db
     .prepare("SELECT 1 FROM approvals WHERE tenant = ? AND run_id = ? AND status = 'pending' LIMIT 1")
     .get<{ 1: number }>(os.tenant, runId) != null;
@@ -7717,6 +7733,7 @@ function sessionProgress(os: AgentOS, runId: string, now: number): SessionProgre
     loopTs,
     loopCount,
     awaiting: pendingApproval ? 'approval' : pendingQuestion ? 'question' : null,
+    drift,
   });
 }
 /** Resolve the requested inbox scope from `?scope=`. Only owner/admin may see the `all` oversight view;

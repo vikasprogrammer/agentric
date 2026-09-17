@@ -64,6 +64,7 @@ const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (
 const RECOMMENDATIONS_KEY = 'learned_recommendations'; // { open: Recommendation[], dismissed: string[] }
 const GOVERNANCE_KEY = 'governance_thresholds'; // numeric caps the never-tier policy rules read (JSON GovernanceThresholds)
 const HOST_GOV_KEY = 'host_governance_enabled'; // master switch for Phase 2b host-egress governance ('1'|'0')
+const DRIFT_MODE_KEY = 'drift_nudge_mode'; // off | observe | nudge — the rabbit-hole focus check (edge/drift.ts)
 const SEMANTIC_GUARD_KEY = 'semantic_guard_enabled'; // master switch for the prompt-injection semantic guard ('1'|'0')
 const FILE_WRITE_GUARD_KEY = 'file_write_guard';
 const ENRICH_PATTERNS_KEY = 'enrich_patterns'; // operator regex→boolean-fact rules the enricher applies (JSON EnrichPattern[])
@@ -972,6 +973,20 @@ export class SettingsStore {
   setSemanticGuardEnabled(on: boolean, by?: string): boolean {
     this.set(SEMANTIC_GUARD_KEY, on ? '1' : '0', by);
     return on;
+  }
+
+  // ── drift focus check (edge/drift.ts) ──
+  // Default `nudge`: the note is advisory (the agent may ignore it) and the human escalation is one card
+  // per drifting streak, so the loop is safe to run everywhere. `observe` records verdicts without
+  // touching the run — the mode to bake a tenant in; `off` stops judging (and its model spend) entirely.
+  driftMode(): 'off' | 'observe' | 'nudge' {
+    const v = this.getRow(DRIFT_MODE_KEY)?.value;
+    return v === 'off' || v === 'observe' ? v : 'nudge';
+  }
+
+  setDriftMode(mode: 'off' | 'observe' | 'nudge', by?: string): 'off' | 'observe' | 'nudge' {
+    this.set(DRIFT_MODE_KEY, mode, by);
+    return mode;
   }
 
   // ── file-write guard, tier 2 (file-guard.ts) ──
