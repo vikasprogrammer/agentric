@@ -23,6 +23,12 @@ process.env.AGENT_OS_HOME = HOME;
 process.env.AGENT_OS_TENANT = 'testco';
 process.env.AOS_NO_TTYD = '1';
 delete process.env.AGENT_OS_SECRET_KEY;
+// Resume runs the launch credential pre-flight, which reads the box's own ~/.claude. On a box whose
+// default login is expired (a tenant that runs on pooled accounts) that refuses the relaunch and marks the
+// row crashed, so the suite passed on a Mac and failed on every Linux deploy target. An empty config dir
+// is "no credential at all", which fails open — the same isolation headless-resumable-test uses.
+process.env.CLAUDE_CONFIG_DIR = path.join(HOME, 'claude-config');
+fs.mkdirSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true });
 
 let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d ? ' — ' + d : ''}`));
