@@ -1259,7 +1259,7 @@ function migrate(db: Db): void {
   // the console drew a spinner on all of them. Every end path now clears it; this NULLs the ones already
   // latched: anything terminal, plus any turn older than the 2h wedged-turn ceiling. A genuinely
   // in-flight turn (running, started within the window) is untouched, so this is safe on a live box.
-  db.exec("UPDATE term_sessions SET busy_since = NULL WHERE busy_since IS NOT NULL AND (status IN ('done','stopped','crashed') OR busy_since < (CAST(strftime('%s','now') AS INTEGER) * 1000) - 7200000)");
+  db.exec("UPDATE term_sessions SET busy_since = NULL WHERE busy_since IS NOT NULL AND (status IN ('done','stopped','crashed','paused') OR busy_since < (CAST(strftime('%s','now') AS INTEGER) * 1000) - 7200000)");
 
   // Private-to-owners agents: when 1, ONLY the owner role runs/sees the agent (admins excluded, the
   // role/member grants void) — the tightest tier below the owner+admin default. NULL/0 = default floor.
@@ -1346,6 +1346,16 @@ function migrate(db: Db): void {
   // caller swallows instead of a second task for one ticket. NULL for every ordinary task.
   addColumn(db, 'tasks', 'external_key', 'TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external_key ON tasks(tenant, external_key) WHERE external_key IS NOT NULL');
+
+  // PAUSE (status `paused`): a session whose claude was killed to give the box its memory back, with the
+  // conversation left on disk so a deliberate resume brings it back via `claude --resume`. Deliberately a
+  // STATUS rather than a flag over `stopped`: a paused run is not a finished one, and folding it into
+  // `stopped` would have scored it `incomplete` in the outcome roll-up, counted it against the agent's
+  // maturity, and let the 14-day stale-session tidy archive a conversation somebody meant to come back to.
+  // `paused_by` is the member who did it (the console says "paused by …"); `paused_at` is when, and is the
+  // flag every "is this paused" check reads through the status, not through these columns.
+  addColumn(db, 'term_sessions', 'paused_at', 'INTEGER');
+  addColumn(db, 'term_sessions', 'paused_by', 'TEXT');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

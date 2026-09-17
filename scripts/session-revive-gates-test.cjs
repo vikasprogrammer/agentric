@@ -34,7 +34,7 @@ const liftEnded = () => {
   return m[1].replace(/Boolean\(session\) && /, '').replace(/session!/g, 's').replace(/ && !overrideAttach/, '');
 };
 
-const gates = new Function(`${lift('isLive')}\n${lift('canResume')}\n${lift('canGoInteractive')}\nconst ended = (s) => ${liftEnded()};\nreturn { isLive, canResume, canGoInteractive, ended }`)();
+const gates = new Function(`${lift('isLive')}\n${lift('isPaused')}\n${lift('canResume')}\n${lift('canGoInteractive')}\nconst ended = (s) => ${liftEnded()};\nreturn { isLive, isPaused, canResume, canGoInteractive, ended }`)();
 
 /** The session shapes the server actually produces. `forkable` ⇒ a pinned claude_session_id exists. */
 const S = (o) => ({ status: 'done', alive: false, forkable: true, ...o });
@@ -48,6 +48,13 @@ const CASES = [
   ['stopped attended session (has env)',    S({ status: 'stopped', resumable: true }),                  true,   false,    false],
   ['stopped after being claimed (no env)',  S({ status: 'stopped', claimedBy: 'a@b' }),                 false,  true,     true],
   ['crashed attended session (has env)',    S({ status: 'crashed', resumable: true }),                  true,   false,    false],
+  // PAUSED — suspended by a human, not finished. Whatever lane it was on, it is read-only and offers
+  // NEITHER Resume-by-attach (attach.sh holds its stay-paused sentinel) nor Take over (the server refuses
+  // it): its one way back is the dedicated Resume button, which calls /unpause. An attended, resumable
+  // paused session is the case that would otherwise attach to a terminal that never opens.
+  ['paused attended session (has env)',     S({ status: 'paused', resumable: true }),                   false,  false,    true],
+  ['paused unattended run',                 S({ status: 'paused', headless: true, resumable: true }),   false,  false,    true],
+  ['paused resident chat',                  S({ status: 'paused', resumable: true, resident: true }),   false,  false,    true],
 ];
 
 console.log('\n1) each session shape offers exactly what can actually revive it');
@@ -61,7 +68,11 @@ console.log('\n2) the invariants behind the table');
 for (const [name, s] of CASES) {
   check(`${name}: Resume and Take over are never both offered`, !(gates.canResume(s) && gates.canGoInteractive(s)));
   // A dead run with a conversation must have a way back — otherwise the session is a dead end in the UI.
-  if (!gates.isLive(s) && s.forkable)
+  // A PAUSED run is deliberately exempt: it is not a dead end (Resume → /unpause is rendered in the
+  // transcript header) but it must offer neither of THESE two, both of which relaunch behind the
+  // server's back. Asserting the exemption, so a future edit can't quietly hand it one of them.
+  if (gates.isPaused(s)) check(`${name}: neither attach-resume nor take-over`, !gates.canResume(s) && !gates.canGoInteractive(s));
+  else if (!gates.isLive(s) && s.forkable)
     check(`${name}: dead but revivable → one of the two is offered`, gates.canResume(s) || gates.canGoInteractive(s));
   // Never attach to a pane that is gone with nothing to bring it back (the raw tmux error).
   if (!gates.isLive(s) && !s.resumable) check(`${name}: never attached to`, gates.ended(s));

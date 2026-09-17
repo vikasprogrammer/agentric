@@ -30,6 +30,7 @@ function headStatus(s: Session): { cls: string; text: string } {
   if (s.status === 'crashed') return { cls: 'block', text: 'crashed' }
   if (s.outcome === 'failure') return { cls: 'block', text: 'failed' }
   if (s.outcome === 'partial') return { cls: 'wait', text: 'partial' }
+  if (s.status === 'paused') return { cls: 'wait', text: 'paused' }
   return { cls: 'idle', text: s.status === 'stopped' ? 'stopped' : 'done' }
 }
 

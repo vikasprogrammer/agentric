@@ -203,6 +203,15 @@ export class WakeupQueue {
     return this.deliver(agent, opts);
   }
 
+  /** Has a human PAUSED the session that owns this transcript? The resume lane's veto — see its use
+   *  below. Matches on the pinned claude id, which is what `--resume` would reopen; a transcript with no
+   *  paused session (the ordinary case) costs one indexed lookup. */
+  private pausedTranscript(claudeSessionId: string): boolean {
+    return this.db
+      .prepare("SELECT 1 FROM term_sessions WHERE claude_session_id = ? AND status = 'paused' LIMIT 1")
+      .get(claudeSessionId) != null;
+  }
+
   /**
    * Deliver every pending wake-up for ONE agent, coalesced, down the highest-priority reachable lane.
    * Undelivered work stays pending (attempts bumped) — never dropped, never doubled.
@@ -275,6 +284,15 @@ export class WakeupQueue {
     // Lane 3 — nothing this batch may speak into. Resume the transcript in a fresh `poke:` run. One
     // session for ALL pending wake-ups: they were coalesced above, so N completions cost one claude, not N.
     if (doneOnly) return this.dropDone(agentId, pending, live.length ? 'done-no-own-pane' : 'done-cold-caller');
+    // …unless a human PAUSED the conversation this lane would resume. Lanes 1 and 2 can't reach a paused
+    // run (`reachable` refuses it), but this one doesn't type into a session — it starts a fresh claude on
+    // the transcript, which is precisely the pause being undone by a delegate finishing its work. Keep the
+    // wake-up PENDING rather than dropping it: resuming the session is what should deliver it, so the news
+    // is waiting in the queue the moment somebody presses Resume.
+    if (this.pausedTranscript(newest.transcript)) {
+      this.bump(pending);
+      return { ok: false, reason: 'the caller session is paused — queued until it is resumed', queued: true };
+    }
     if (opts.budget !== undefined && opts.budget <= 0) {
       this.bump(pending);
       return { ok: false, reason: 'at the concurrency cap — queued for the next tick', queued: true };

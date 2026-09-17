@@ -94,6 +94,7 @@ export function sessionRow(s: Session, now = Date.now()): SessionRow {
   }
   const outcome = s.outcome
   if (s.status === 'crashed') return { ...base, verdict: 'bad', verText: '✗ crashed' }
+  if (s.status === 'paused') return { ...base, verdict: 'warn', verText: '⏸ paused' }
   if (s.status === 'stopped') return { ...base, verdict: 'warn', verText: '■ stopped' }
   if (outcome === 'failure') return { ...base, verdict: 'bad', verText: '✗ failed' }
   if (outcome === 'partial') return { ...base, verdict: 'warn', verText: '~ partial' }

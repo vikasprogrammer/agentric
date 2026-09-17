@@ -3491,6 +3491,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!message) return sendJson(res, 400, { error: 'message is required' });
     const r = tm.chatSend(id, message, me.id);
     if (r === 'busy') return sendJson(res, 409, { status: 'busy', error: 'the agent is still working on the previous message — resend in a moment' });
+    if (r === 'paused') return sendJson(res, 409, { status: 'paused', error: 'this session is paused — resume it to keep talking' });
     if (r === 'error') return sendJson(res, 409, { error: 'this session could not accept the message' });
     return sendJson(res, 200, { status: 'sent' });
   }
@@ -3639,6 +3640,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const id = attachMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to attach to this session' });
+    // Attaching is what resurrects a session (attach.sh replays its launch env), so a paused one must not
+    // be attachable — the console renders its transcript read-only instead. The stay-paused sentinel
+    // already makes attach.sh refuse; this is the honest error rather than a terminal that opens blank.
+    if (tm.isPaused(id)) return sendJson(res, 409, { error: 'this session is paused — resume it to use its terminal' });
     try {
       const attachUrl = await tm.attachUrl(id);
       return sendJson(res, attachUrl ? 200 : 404, attachUrl ? { url: attachUrl } : { error: 'unknown session' });
@@ -3719,6 +3724,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     return sendJson(res, 200, { ok: tm.stopSession(id, me.email) });
   }
+  // Pause a session: kill its claude (giving the box back its memory) but keep the conversation on disk,
+  // so Resume below brings the SAME transcript back. While paused the session is readable and nothing
+  // else — every wake path refuses it, including the browser terminal (see sharedTerminalAuthz). Same
+  // per-member gate as stop.
+  const pauseMatch = p.match(/^\/api\/sessions\/([\w-]+)\/pause$/);
+  if (method === 'POST' && pauseMatch) {
+    const id = pauseMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    const r = tm.pauseSession(id, me.email);
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
+  // Un-pause: relaunch the agent on the same conversation (`claude --resume`), seeded with no prompt, so
+  // the human lands in a live TUI holding the full transcript. Same per-member gate as pause.
+  const unpauseMatch = p.match(/^\/api\/sessions\/([\w-]+)\/unpause$/);
+  if (method === 'POST' && unpauseMatch) {
+    const id = unpauseMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    const r = tm.resumeSession(id, me.email);
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   // Take over a run: if it's still LIVE, CLAIM its TUI and attach — no kill, no resume, nothing
   // interrupted. If it ENDED/STOPPED as a headless run, RESURRECT it in place (`claude --resume` the same
   // transcript) as a claimed interactive TUI. Either way it's marked sticky so it isn't auto-closed at
@@ -3789,6 +3816,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const id = resumeMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    // A PAUSED session has its own resume (`/unpause`), which relaunches the agent. Lifting the sentinel
+    // here and letting the terminal attach would resurrect it by the back door, leaving the row stamped
+    // `paused` while its claude runs — the one state the whole feature exists to make impossible.
+    if (tm.isPaused(id)) return sendJson(res, 400, { error: 'this session is paused — use resume (unpause) instead' });
     tm.allowResume(id);
     return sendJson(res, 200, { ok: true });
   }
@@ -4370,6 +4401,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const sent = tm.chatSend(existing.sessionId, message, me.id);
       if (sent === 'sent') return sendJson(res, 200, { ok: true, sessionId: existing.sessionId });
       if (sent === 'busy') return sendJson(res, 409, { ok: false, status: 'busy', error: 'the strategist is still working on your last message — resend in a moment' });
+      // A paused conversation is a deliberate act, so — unlike the 'error' fall-through below — do NOT
+      // start a fresh one behind the person's back: say why and let them resume the one they paused.
+      if (sent === 'paused') return sendJson(res, 409, { ok: false, status: 'paused', error: 'this conversation is paused — resume it to keep talking' });
       // 'error' = the row can't take a message and can't be relaunched (a crashed/stopped conversation).
       // Falling through to a NEW conversation is the only non-dead-end: refusing here would leave the room
       // permanently mute with no way for the person to recover it.
@@ -7988,6 +8022,10 @@ function sharedTerminalAuthz(os: AgentOS, tm: TerminalManager, req: http.Incomin
   const arg = new URL(req.url || '/', 'http://localhost').searchParams.get('arg');
   if (!arg) return true; // ttyd asset/probe — no targeted session, so a valid login suffices
   const id = arg.replace(/^aos-/, '');
+  // A PAUSED session is readable, never usable: refuse the WebSocket outright rather than rely on the
+  // stay-paused sentinel alone. This is the enforcement point — a direct ttyd URL (a tab left open, a
+  // pasted link) reaches here without going through /api/sessions/:id/attach.
+  if (tm.isPaused(id)) return false;
   return !!tm.sessionAgent(id) && tm.canOperateSession(id, me);
 }
 // ── hosted-app reverse proxy (/apps/<slug>/…) ──────────────────────────────────
