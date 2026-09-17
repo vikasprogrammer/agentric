@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.445.1] - 2026-09-17
+### Fixed
+- **Agent operating notes brought back in line with the tools agents actually have.** The OS-owned
+  orientation every claude-code agent receives had drifted: the team section still told agents to call
+  `ask` (renamed `ask_human` in v0.399.0), the notes and fleet roster said an unassigned task "just waits
+  for someone to pick it up" (an agent-filed task without `autoDispatch` is a PROPOSAL held for a human),
+  and they pushed delegation as the default when agent→agent hand-offs are the fleet's largest cost.
+  The notes now: treat a denial as a decision (never route around it; `policy_propose`/`host_propose`
+  instead), steer credentials to `secret_request`/`connection_request` rather than chat, name
+  `revise`/`forget`, `session_history`, `check_inbox`, `update` progress, `blockedOn`, and give a
+  delegation ladder (do it yourself → `ask_agent` → `task_create` with `wait` → durable hand-off).
+  `scripts/context-injection-test.cjs` now checks every tool named in the WHOLE assembled prompt (it only
+  read the notes, which is how the stale `ask` survived) and runs in `npm run test:governance` — it had
+  never been wired in.
+
 ## [0.445.0] - 2026-09-17
 ### Added
 - **Edit an automation by talking it through with its agent.** Automations → ⋯ → **Edit with agent…** opens

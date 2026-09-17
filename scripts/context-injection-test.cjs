@@ -45,6 +45,9 @@ async function main() {
   aos.agents.set('peer', { id: 'peer', runtime: 'claude-code', description: 'A peer agent', category: 'ops', dir: path.join(HOME, 'agents/peer') });
   aos.agents.set('tester', { id: 'tester', runtime: 'claude-code', description: 'The agent under test', dir: path.join(HOME, 'agents/tester') });
 
+  // A member so the team roster section renders — its prose names tools too, and is checked below.
+  aos.team.bootstrapOwner('owner@example.com', 'Owner');
+
   const tm = new TerminalManager(aos, 'http://127.0.0.1:0', path.join(HOME, 'tmux.sock'));
   const build = (agent) => tm.buildCompanyMd(agent); // private, but reachable from JS
 
@@ -170,11 +173,13 @@ async function main() {
   {
     const { AGENT_OS_OPERATING_NOTES } = require(path.join(ROOT, 'dist/terminal.js'));
     const { UNATTENDED_TURN_BRIEF } = require(path.join(ROOT, 'dist/edge/background-work.js'));
-    const prose = AGENT_OS_OPERATING_NOTES + '\n' + (UNATTENDED_TURN_BRIEF || '');
+    // `base` is the whole assembled prompt, so the fleet/team sections built inline in buildCompanyMd are
+    // covered too — that is where a stale `ask` survived the v0.399.0 rename.
+    const prose = AGENT_OS_OPERATING_NOTES + '\n' + (UNATTENDED_TURN_BRIEF || '') + '\n' + base;
     // Field names and statuses are also backticked, so only check identifiers that look like tool calls:
     // snake_case, or a known bare-word tool. Anything else is prose and is skipped deliberately.
     const cited = [...new Set((prose.match(/`([a-z][a-z0-9_]{2,})`/g) || []).map((x) => x.slice(1, -1)))]
-      .filter((x) => x.includes('_') || ['recall', 'remember', 'revise', 'forget', 'report', 'update', 'publish', 'notify', 'schedule', 'unschedule', 'stop'].includes(x));
+      .filter((x) => x.includes('_') || ['recall', 'remember', 'revise', 'forget', 'report', 'update', 'ask', 'publish', 'notify', 'schedule', 'unschedule', 'stop'].includes(x));
     const unknown = cited.filter((c) => !alwaysNames.includes(c) && !eNames.includes(c) && !rNames.includes(c));
     assert(unknown.length === 0, 'every tool named in the prompt is actually exposed', unknown.join(', '));
   }
