@@ -1103,6 +1103,12 @@ export interface AutomationProposal {
   rationale?: string
   preview?: string
   createdAt: number
+  /** Set when the proposal EDITS an existing automation ("Edit with agent") instead of creating one —
+   *  approving updates that automation. `before`/`after` are the editable fields; `changes` names the diff. */
+  editOf?: string
+  before?: Partial<ProposedAutomationSpec>
+  after?: Partial<ProposedAutomationSpec>
+  changes?: string[]
 }
 /** An agent-proposed edit to ANOTHER agent's listing / CLAUDE.md, awaiting owner sign-off. `fields` holds
  *  only the changed keys (the delta); `claudeMd`, when present, is the full replacement system prompt. */
@@ -2090,6 +2096,7 @@ export const api = {
   deleteAutomation: (id: string) => call<{ ok: boolean }>('DELETE', '/api/automations/' + id),
   /** Fire an automation once now. `mode` overrides its saved default for this run only (headless =
    *  fire-and-forget, interactive = watch/steer the live TUI); omit to keep the automation's own mode. */
+  editAutomationWithAgent: (id: string, note?: string) => call<{ ok: boolean; id?: string; tmux?: string; error?: string }>('POST', `/api/automations/${id}/edit-with-agent`, note ? { note } : {}),
   runAutomation: (id: string, mode?: 'interactive' | 'headless') => call<{ ok: boolean; sessionId?: string; reason?: string; error?: string }>('POST', `/api/automations/${id}/run`, mode ? { mode } : {}),
   automationProposals: () => call<{ proposals: AutomationProposal[]; error?: string }>('GET', '/api/automations/proposals'),
   approveAutomationProposal: (id: string, runAs?: string) => call<{ ok: boolean; automation?: Automation; error?: string }>('POST', `/api/automations/proposals/${id}/approve`, runAs !== undefined ? { runAs } : {}),
