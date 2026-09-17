@@ -1684,6 +1684,11 @@ export interface AgentManifest extends RuntimeTuning {
    *  automation — this only closes the open `/agentname` router. Use for supervisor/ops personas (e.g. a
    *  `ceo` triage agent) you don't want anyone spawning from a shared comment thread. */
   chatReachable?: boolean;
+  /** Whether the drift focus check (`edge/drift.ts`) judges this agent's runs. Default `true`. Set `false`
+   *  for an agent whose job IS open-ended exploration (an investigator, a researcher), where "not what the
+   *  ask named" is the point rather than a rabbit hole. Advisory only either way — never a governance
+   *  control. */
+  driftCheck?: boolean;
   /** The agent's visual icon. Either a built-in library id (a lucide icon name like `"Bot"`) or a raw
    *  custom `<svg>…</svg>` markup string the user uploaded. Undefined → the console falls back to a
    *  default glyph. Purely cosmetic. Rendered in an `<img>` so inline SVG can't execute scripts. */

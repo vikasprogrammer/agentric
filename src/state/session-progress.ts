@@ -31,7 +31,7 @@
 /** How a run is moving. `blocked` is deliberately NOT a failure state — a run waiting on a human's
  *  approval is behaving correctly, and reporting it as `stuck` would cry wolf on the one signal that
  *  has to stay trustworthy. It is the HUMAN who is holding that run up. */
-export type ProgressVerdict = 'forward' | 'stuck' | 'circling' | 'blocked';
+export type ProgressVerdict = 'forward' | 'stuck' | 'circling' | 'drifting' | 'blocked';
 
 /** No activity in the audit stream for this long ⇒ `stuck`. Also the staleness bound on a claim. */
 export const STALL_MS = 5 * 60_000;
@@ -43,6 +43,9 @@ export const CIRCLE_WINDOW_MS = 10 * 60_000;
 /** Claims needed inside {@link CIRCLE_WINDOW_MS} before a stationary step is called circling. Three, not
  *  two: two updates within one step is ordinary narration, not a loop. */
 export const CIRCLE_MIN_CLAIMS = 3;
+/** A drifting judgement this recent still counts (mirrors edge/drift.ts DRIFT_WINDOW_MS — not imported,
+ *  so this pure module stays dependency-free for the test harness). */
+export const DRIFT_WINDOW_MS = 30 * 60_000;
 
 /** One agent-declared position, parsed from an `update` call. `step`/`total`/`subject` are all optional
  *  — an agent that just posts prose still gets a server-derived verdict, only without a bar. */
@@ -67,6 +70,9 @@ export interface ProgressInputs {
   awaiting: 'approval' | 'question' | null;
   /** Repeat count carried by that newest loop event, for the reason line. */
   loopCount?: number | null;
+  /** The newest drift focus-check judgement (edge/drift.ts), if any. Only a `drifted` outcome inside
+   *  {@link DRIFT_WINDOW_MS} reads as `drifting`; a later clearing judgement supersedes it by being newer. */
+  drift?: { ts: number; drifting: boolean; tangent: string | null } | null;
 }
 
 export interface SessionProgress {
@@ -121,8 +127,11 @@ export function parseClaim(ts: number, note: string, args: Record<string, unknow
  *   1. `blocked` — parked on a person. Never blame the agent for a human's queue.
  *   2. `circling` — the reliability monitor caught a repeat loop, OR the agent has posted several
  *      updates without the step moving. Busy is not the same as advancing.
- *   3. `stuck` — the audit stream has gone quiet.
- *   4. `forward` — everything else.
+ *   3. `drifting` — the independent focus check judged the recent work to be off the ask. Below
+ *      `circling` because a loop is the more concrete, more certain diagnosis; above `stuck`/`forward`
+ *      because busy-on-the-wrong-thing is exactly what those two would otherwise hide.
+ *   4. `stuck` — the audit stream has gone quiet.
+ *   5. `forward` — everything else.
  */
 export function deriveProgress(inp: ProgressInputs): SessionProgress {
   const { now, claims } = inp;
@@ -163,6 +172,9 @@ export function deriveProgress(inp: ProgressInputs): SessionProgress {
   } else if (stationary) {
     verdict = 'circling';
     reason = `${inWindow.length} updates and step is still ${inWindow[0].step}`;
+  } else if (inp.drift?.drifting && now - inp.drift.ts <= DRIFT_WINDOW_MS) {
+    verdict = 'drifting';
+    reason = inp.drift.tangent ? `off the ask — now on ${inp.drift.tangent}` : 'recent work looks off the ask';
   } else if (quietFor != null && quietFor > STALL_MS) {
     verdict = 'stuck';
     reason = `no activity for ${Math.round(quietFor / 60_000)} min`;

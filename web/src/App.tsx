@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -5261,6 +5261,7 @@ const PROGRESS_META: Record<SessionProgress['verdict'], { label: string; bar: st
   forward: { label: 'forward', bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', chip: 'border-emerald-300 bg-emerald-50/60 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400' },
   blocked: { label: 'blocked', bar: 'bg-amber-400', text: 'text-amber-600 dark:text-amber-400', chip: 'border-amber-300 bg-amber-50/60 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400' },
   stuck: { label: 'stuck', bar: 'bg-orange-500', text: 'text-orange-600 dark:text-orange-400', chip: 'border-orange-300 bg-orange-50/60 text-orange-700 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-400' },
+  drifting: { label: 'drifting', bar: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400', chip: 'border-sky-300 bg-sky-50/60 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-400' },
   circling: { label: 'circling', bar: 'bg-violet-500', text: 'text-violet-600 dark:text-violet-400', chip: 'border-violet-300 bg-violet-50/60 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-400' },
 }
 
@@ -18139,6 +18140,8 @@ function GovernanceSettings({ me }: { me: Member }) {
   const [fileGuard, setFileGuard] = useState(false)
   const [fileBusy, setFileBusy] = useState(false)
   const [semBusy, setSemBusy] = useState(false)
+  const [driftMode, setDriftMode] = useState<DriftMode>('nudge')
+  const [driftBusy, setDriftBusy] = useState(false)
   const canEdit = me.role === 'owner' || me.role === 'admin'
   const isOwner = me.role === 'owner'
 
@@ -18146,7 +18149,7 @@ function GovernanceSettings({ me }: { me: Member }) {
     api.governance().then((r) => {
       if (r.error) return
       const v = { moneyCapUsd: r.moneyCapUsd, bulkDeleteCount: r.bulkDeleteCount }
-      setT(v); setSaved(v); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy }); setHostGov(!!r.hostGovernanceEnabled); setSemGuard(!!r.semanticGuardEnabled); setFileGuard(!!r.fileWriteGuardEnabled)
+      setT(v); setSaved(v); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy }); setHostGov(!!r.hostGovernanceEnabled); setSemGuard(!!r.semanticGuardEnabled); setFileGuard(!!r.fileWriteGuardEnabled); if (r.driftMode) setDriftMode(r.driftMode)
     }).catch(() => {})
   }, [])
 
@@ -18166,6 +18169,14 @@ function GovernanceSettings({ me }: { me: Member }) {
     setSemBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     setSemGuard(!!r.semanticGuardEnabled)
+  }
+
+  const saveDriftMode = async (next: DriftMode) => {
+    setDriftBusy(true)
+    const r = await api.saveGovernance({ ...saved, driftMode: next })
+    setDriftBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    if (r.driftMode) setDriftMode(r.driftMode)
   }
 
   const toggleFileGuard = async () => {
@@ -18270,6 +18281,32 @@ function GovernanceSettings({ me }: { me: Member }) {
               </p>
             </span>
           </label>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-2 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-medium">Focus check (rabbit-hole nudge)</span>
+            <select
+              className="rounded-md border bg-background px-2 py-1 text-sm"
+              value={driftMode}
+              disabled={!canEdit || driftBusy}
+              onChange={(e) => saveDriftMode(e.target.value as DriftMode)}
+            >
+              <option value="nudge">Nudge</option>
+              <option value="observe">Observe only</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Once a run has taken ~20 actions, and about every 10 minutes after, a small model (Haiku) compares its recent work
+            against what it was asked to do. If the run looks off the ask, the session shows <strong>drifting</strong> and — in
+            <strong> Nudge</strong> — the agent gets a short check-in suggesting it file the side-finding as a task and return. If it
+            is still off at the next check, an unattended run's owner gets one Inbox card. Advisory only: nothing is ever blocked or
+            stopped. <strong>Observe only</strong> records the verdicts without touching the run. Uses the workspace Anthropic key if
+            set, otherwise the runtime login. An agent can opt out with <span className="font-mono">driftCheck: false</span>.
+          </p>
         </CardContent>
       </Card>
 

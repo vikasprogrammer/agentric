@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.447.0] - 2026-09-17
+### Added
+- **Focus check — a nudge when a session goes down a rabbit hole.** The progress verdicts could only see a
+  run's *shape* (`circling` = the same action repeated, `stuck` = silence), and a rabbit hole has neither:
+  it is busy, varied work on the wrong thing, so it read as `forward`. Now, once a run has taken ~20
+  actions (then every ~20 more, at most every 8 min), Haiku compares its recent work against the ask —
+  the original request as amended by every later human message, each paired with the agent proposal it
+  answered, so a bare "go" / "merge both" counts as approval. The judge runs out of band (the gate never
+  waits on it), and a `drifted` first vote is confirmed by two more (majority of 3, confidence ≥ 0.8)
+  before anything happens. A confirmed drift shows as a new **`drifting`** verdict on the session strip
+  (below `blocked`/`circling`, above `stuck`) and parks an advisory note on the agent's next tool call
+  (allow + `additionalContext`) suggesting it record the side-finding with `task_create` and return. If
+  the next check still says drifted, an unattended run's owner gets ONE Inbox card per streak;
+  interactive runs are never carded. Never blocks or stops anything. Backend: the workspace Anthropic key
+  (pinned to Haiku) when set, else a pooled `claude -p --model claude-haiku-4-5`. Modes in Settings →
+  Governance (`nudge` default · `observe` · `off`), per-agent opt-out `driftCheck: false`, process kill
+  switch `AOS_DRIFT=0`. Audited `drift.judged` (verdict, votes, outcome) / `drift.judge_failed` /
+  `drift.nudged` / `drift.escalated`. Tuned on a replay of 30 long live sessions (90 checkpoints): 2
+  genuine rabbit holes confirmed (one from the held-out half), 0 false positives at the shipped floor —
+  the replay also caught harness injections (`<task-notification>`, skill bodies) being read as human
+  messages, now filtered. Pinned by `scripts/drift-nudge-test.cjs`.
+  **For users:** when an agent wanders off what you asked for, its session now says **drifting** and the agent gets a gentle check-in to note the tangent and get back on track. Unattended runs that keep wandering send you one Inbox card.
+  **For admins:** the focus check can be set to Nudge, Observe only or Off in [Settings → Governance](#/settings/governance).
+
 ## [0.446.1] - 2026-09-17
 ### Fixed
 - **The pause test raced the launcher and blocked the deploy.** `session-pause-test.cjs`'s HTTP section

@@ -1452,6 +1452,9 @@ export interface SecretMeta {
 }
 
 /** Numeric governance caps the never-tier policy rules read ($moneyCapUsd / $bulkDeleteCount). */
+/** The drift focus check's mode (Settings → Governance). */
+export type DriftMode = 'off' | 'observe' | 'nudge'
+
 export interface GovernanceThresholds {
   moneyCapUsd: number
   bulkDeleteCount: number
@@ -1871,7 +1874,7 @@ export interface SessionProgress {
   total: number | null
   pct: number | null
   delta: number | null
-  verdict: 'forward' | 'stuck' | 'circling' | 'blocked'
+  verdict: 'forward' | 'stuck' | 'circling' | 'drifting' | 'blocked'
   reason: string
   note: string | null
   ts: number | null
@@ -2282,8 +2285,8 @@ export const api = {
   cancelRuntimeLogin: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/runtime-accounts/login/${encodeURIComponent(id)}`),
   checkRuntimeAccount: (runtime: string, name: string) => call<{ ok: boolean; error?: string; account?: RuntimeAccount; check?: { ok: boolean | null; note: string } }>('POST', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}/check`),
 
-  governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
-  saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
+  governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean; driftMode?: DriftMode; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
+  saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean; driftMode?: DriftMode }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean; driftMode?: DriftMode } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
 
   // Per-tenant console branding (accent colour + favicon badge).
   branding: () => call<Branding & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/branding'),
