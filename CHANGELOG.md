@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.447.1] - 2026-09-17
+### Fixed
+- **The unattended-run brief no longer tells agents three things that stopped being true.** It said
+  `task_wait` "survives your turn ending" (it blocks inside the turn, ~15 min per call on this lane, and a
+  completion never resumes a caller that has exited), that `ask_human` "keeps your session alive while the
+  card is pending" (on this lane it waits ~2 minutes and ending the run cancels the question — the
+  durable path is `task_update` `blocked` with `blockedOn: "human"`, which carries the ask since v0.444.2),
+  and it pointed at `BashOutput`, now a legacy alias of `TaskOutput`. It also forbade polling loops
+  outright, contradicting the both-lanes waiting brief that prescribes short bounded polls; it now forbids
+  only a loop left running across the turn boundary. Adds that the background-work grace ends at `report`,
+  and that a task filed without `autoDispatch` is a proposal, not a way to continue your own work.
+
 ## [0.447.0] - 2026-09-17
 ### Added
 - **Focus check — a nudge when a session goes down a rabbit hole.** The progress verdicts could only see a
