@@ -233,6 +233,13 @@ console.log('\n\x1b[1m10) end to end over real HTTP — the routes, the gate and
   htm.backend.spawn = (_s, o) => { live.add(o.tmuxName); };
   htm.backend.capturePane = () => '';
   htm.backend.hasClient = () => false;
+  // Neutralise the DEFERRED half of a launch. `launchAgentRuntime` stamps `launching` synchronously and
+  // hands the real work to a setImmediate whose `.catch` stamps the row `crashed` — and that work does far
+  // more than `backend.spawn` (env files, skills, credentials), so on a box where any of it throws the row
+  // flips out from under the assertion below between the `await` and the read. Live: instawp failed
+  // `the row is running again` on exactly that race while expresstech passed, which is the worst shape a
+  // test can have. This section is about the ROUTE and the status transition; the launcher has its own.
+  htm.launchAgentRuntimeNow = async () => {};
 
   const post = (u, cookie) => fetch(base + u, { method: 'POST', headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) }, body: '{}' });
 
@@ -250,7 +257,8 @@ console.log('\n\x1b[1m10) end to end over real HTTP — the routes, the gate and
 
   const paused = await post(`/api/sessions/${sid}/pause`, cookie).then((r) => r.json());
   assert(paused.ok === true, 'an authenticated owner can pause it over HTTP', paused);
-  assert(haos.db.prepare('SELECT status FROM term_sessions WHERE id = ?').get(sid).status === 'paused', 'the row is paused');
+  const statusOf = () => haos.db.prepare('SELECT status FROM term_sessions WHERE id = ?').get(sid).status;
+  assert(statusOf() === 'paused', 'the row is paused', statusOf());
 
   // The browser terminal must be refused while paused — this is the "readable, never usable" half.
   const attach = await fetch(base + `/api/sessions/${sid}/attach`, { headers: { cookie } });
@@ -264,7 +272,7 @@ console.log('\n\x1b[1m10) end to end over real HTTP — the routes, the gate and
 
   const back = await post(`/api/sessions/${sid}/unpause`, cookie).then((r) => r.json());
   assert(back.ok === true, 'unpause succeeds over HTTP', back);
-  assert(haos.db.prepare('SELECT status FROM term_sessions WHERE id = ?').get(sid).status === 'running', 'and the row is running again');
+  assert(statusOf() === 'running', 'and the row is running again', statusOf());
 
   server.close();
   try { registry.stopAll(); } catch { /* best effort */ }

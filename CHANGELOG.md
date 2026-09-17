@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.446.1] - 2026-09-17
+### Fixed
+- **The pause test raced the launcher and blocked the deploy.** `session-pause-test.cjs`'s HTTP section
+  asserted the row was `running` after unpause, but `launchAgentRuntime` hands the real launch to a
+  `setImmediate` whose `.catch` stamps the row `crashed` — and that deferred half does far more than the
+  stubbed `backend.spawn` (env files, skills, credentials). On a box where any of it throws, the status
+  flipped between the `await` and the read: instawp failed the assertion, expresstech passed it, and
+  `make-live.sh` correctly refused to restart anything. The section stubs the deferred launch (it is about
+  the route and the status transition, not the launcher) and both status assertions now report the value
+  they actually found.
+
 ## [0.446.0] - 2026-09-17
 ### Added
 - **Pause a session.** A new session status, `paused`, that is neither live nor finished: pausing kills the
