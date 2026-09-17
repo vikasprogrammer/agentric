@@ -287,7 +287,10 @@ export function deriveRunOutcomes(
     .prepare(
       'SELECT id, agent, status, spawned_by, claude_session_id, rating, outcome, tool_calls, active_ms, created_at, ' +
         'COALESCE(updated_at, created_at) AS ended FROM term_sessions ' +
-        "WHERE created_at >= ? AND created_at < ? AND status != 'running'",
+        // `paused` joins `running` in the exclusion: a paused run has not finished, so scoring it would
+        // stamp a verdict on work a human explicitly intends to come back to — and the only branch it
+        // could land in reads "stopped-midway", which is the opposite of what the status means.
+        "WHERE created_at >= ? AND created_at < ? AND status NOT IN ('running','paused')",
     )
     .all<Row>(since, until);
 

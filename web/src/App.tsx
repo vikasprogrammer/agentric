@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
-import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, CircleDashed, Ban, Copy as CopyIcon } from 'lucide-react'
+import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, CircleDashed, Ban, Pause, Copy as CopyIcon } from 'lucide-react'
 import { GitPullRequest, GitPullRequestClosed, GitMerge, Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -49,6 +49,11 @@ const canApprove = (role: Role, level: 'head' | 'owner'): boolean =>
  *  tmux (`alive` undefined) — when its stored status is still `running`. This is the source of truth
  *  for the green dot: an interactive session that reported `done` but keeps an attachable pane is live. */
 const isLive = (s: Session): boolean => Boolean(s.alive) || s.status === 'running'
+
+/** Suspended by a human: its agent was killed (memory freed), its conversation kept. Readable, never
+ *  usable — Resume is the only affordance the console offers, and the server refuses every other path
+ *  (attach, take over, reload, chat, wake-up) by name, so anything else here would be a dead button. */
+const isPaused = (s: Session): boolean => s.status === 'paused'
 
 /** How long the Sessions/Chat views may hold a full `/api/sessions` payload before rebuilding it. Live
  *  state does NOT wait on this — it refreshes every tick off `/api/sessions/summary` (see the feed poll),
@@ -109,7 +114,7 @@ function mergeSessionRows(prev: Session[], fresh: Session[]): Session[] {
  *
  *  `headless` is deliberately NOT in the dot any more: the hollow ring now means "not busy", and the
  *  unattended/interactive axis has its own marker (ModeBadge / the sidebar's Cpu glyph). */
-type SessionState = 'waiting' | 'working' | 'idle' | 'stopped' | 'crashed' | 'done'
+type SessionState = 'waiting' | 'working' | 'idle' | 'paused' | 'stopped' | 'crashed' | 'done'
 
 /** Resolve a session's state. `waiting` may be forced by the caller — the console unions the
  *  server-authoritative `s.blocked` with open `notification` cards (a runtime permission prompt raises
@@ -117,6 +122,9 @@ type SessionState = 'waiting' | 'working' | 'idle' | 'stopped' | 'crashed' | 'do
 const sessionState = (s: Session, waiting = false): SessionState =>
   waiting || s.blocked ? 'waiting'
     : isLive(s) ? (s.working ? 'working' : 'idle')
+    // `paused` is checked before the terminal states and is deliberately NOT one of them: the run hasn't
+    // finished, it is suspended mid-conversation and one click from being live again.
+    : s.status === 'paused' ? 'paused'
     : s.status === 'stopped' ? 'stopped'
     : s.status === 'crashed' ? 'crashed'
     : 'done' // done (and any unknown legacy value)
@@ -144,7 +152,7 @@ const sessionState = (s: Session, waiting = false): SessionState =>
  *
  *  `toneDark` is the same role on the dark terminal tab strip (bg-neutral-900), where the -600 shades go
  *  muddy. Two tones, one vocabulary — never a second set of words. */
-type StatusRole = 'queued' | 'active' | 'busy' | 'needsHuman' | 'ready' | 'ok' | 'partial' | 'failed' | 'crashed' | 'halted' | 'ended' | 'inactive'
+type StatusRole = 'queued' | 'active' | 'busy' | 'needsHuman' | 'ready' | 'ok' | 'partial' | 'failed' | 'crashed' | 'halted' | 'paused' | 'ended' | 'inactive'
 const ROLE: Record<StatusRole, { icon: LucideIcon; anim: string; tone: string; toneDark: string }> = {
   queued: { icon: Circle, anim: '', tone: 'text-muted-foreground/70', toneDark: 'text-neutral-400' },
   active: { icon: CircleDot, anim: '', tone: 'text-emerald-600', toneDark: 'text-emerald-300' },
@@ -156,6 +164,9 @@ const ROLE: Record<StatusRole, { icon: LucideIcon; anim: string; tone: string; t
   failed: { icon: CircleX, anim: '', tone: 'text-red-600', toneDark: 'text-red-400' },
   crashed: { icon: AlertTriangle, anim: '', tone: 'text-red-600', toneDark: 'text-red-400' },
   halted: { icon: CircleStop, anim: '', tone: 'text-amber-600', toneDark: 'text-amber-400/80' },
+  // Suspended, not halted — the distinction is the whole point of the status, so it gets its own glyph
+  // rather than borrowing `halted`'s stop sign. Sky, because it reads as "waiting on you", not "over".
+  paused: { icon: Pause, anim: '', tone: 'text-sky-600', toneDark: 'text-sky-300' },
   ended: { icon: CircleSmall, anim: '', tone: 'text-muted-foreground/70', toneDark: 'text-neutral-400' },
   inactive: { icon: Ban, anim: '', tone: 'text-muted-foreground/60', toneDark: 'text-neutral-500' },
 }
@@ -171,6 +182,7 @@ const roleChip = (r: StatusRole): string => ({
   failed: 'bg-red-500/15 text-red-600',
   crashed: 'bg-red-500/15 text-red-600',
   halted: 'bg-amber-500/15 text-amber-600',
+  paused: 'bg-sky-500/15 text-sky-600',
   ended: 'bg-muted text-muted-foreground',
   inactive: 'bg-muted text-muted-foreground',
 }[r])
@@ -181,6 +193,7 @@ const STATE_META: Record<SessionState, { label: string; role: StatusRole; icon: 
   waiting: { label: 'needs you', role: 'needsHuman', ...ROLE.needsHuman, dot: 'bg-amber-400 motion-safe:animate-pulse', tip: 'blocked on you — a question or an approval is waiting' },
   working: { label: 'working', role: 'busy', ...ROLE.busy, dot: 'bg-emerald-500 motion-safe:animate-pulse', tip: 'a turn is running right now' },
   idle: { label: 'ready', role: 'ready', ...ROLE.ready, dot: 'border border-emerald-500 bg-emerald-500/20', tip: 'live session, nothing running — the turn finished, your move' },
+  paused: { label: 'paused', role: 'paused', ...ROLE.paused, dot: 'bg-sky-500', tip: 'suspended by a human — the agent was stopped, the conversation is kept; resume to pick it up' },
   stopped: { label: 'stopped', role: 'halted', ...ROLE.halted, dot: 'bg-amber-500', tip: 'halted by a human or the idle reaper' },
   crashed: { label: 'crashed', role: 'crashed', ...ROLE.crashed, dot: 'bg-red-500', tip: 'the pane died without an end signal' },
   done: { label: 'done', role: 'ended', ...ROLE.ended, dot: 'bg-muted-foreground/40', tip: 'the run ended' },
@@ -266,7 +279,8 @@ const verdictOf = (outcome?: string): Verdict | undefined => (outcome ? VERDICT_
  *  so it borrows the live half of the status vocabulary (working / ready / needs you). */
 const resultLabel = (s: Session, waiting = false): string => {
   if (waiting || s.blocked || isLive(s)) return statusLabel(s, waiting)
-  if (s.status === 'crashed' || s.status === 'stopped') return s.status
+  // A paused run has no result — it hasn't finished. Say the status, don't reach for an outcome.
+  if (s.status === 'crashed' || s.status === 'stopped' || s.status === 'paused') return s.status
   if (!s.outcome) return s.status              // not stamped yet — fall back to the process view
   const v = verdictOf(s.outcome)
   return v ? VERDICT_META[v].label : s.outcome // an unmapped value prints as the agent wrote it
@@ -278,6 +292,7 @@ const resultLabel = (s: Session, waiting = false): string => {
 const resultTone = (s: Session, waiting = false): string => {
   if (waiting || s.blocked || isLive(s)) return STATE_META[sessionState(s, waiting)].tone
   if (s.status === 'crashed') return 'text-red-600'
+  if (s.status === 'paused') return STATE_META.paused.tone
   const v = verdictOf(s.outcome)
   if (v && v !== 'none') return VERDICT_META[v].tone
   if (s.status === 'stopped') return 'text-amber-600'
@@ -341,7 +356,7 @@ function SessionInsights({ s, chain = 0, className = '' }: { s: Session; chain?:
  *  session is just "open", not "resume". Attended runs only: an unattended run also carries an env now,
  *  but its human entry point is Take over (which resurrects it AND claims it), not a bare Resume that
  *  would hand it straight back to the turn-end reaper. */
-const canResume = (s: Session): boolean => Boolean(s.resumable) && !s.headless && !isLive(s)
+const canResume = (s: Session): boolean => Boolean(s.resumable) && !s.headless && !isLive(s) && !isPaused(s)
 
 /** Resume a stopped session from the console: lift the server-side stop-block, THEN open/focus its
  *  terminal. A plain stop leaves the block in place so ttyd's silent auto-reconnect can't revive the
@@ -365,7 +380,8 @@ const resumeAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void
  *          aos-…", tmux's own error, seen live on instawp 2026-08-27). `takeoverRun` handles exactly this
  *          case server-side — it resurrects the transcript and writes the env. */
 const canGoInteractive = (s: Session): boolean =>
-  isLive(s)
+  isPaused(s) ? false // paused has exactly one way back, and it is Resume — see isPaused
+  : isLive(s)
     ? Boolean(s.headless) && !s.claimedBy
     : Boolean(s.forkable) && (Boolean(s.headless) || !s.resumable)
 
@@ -410,7 +426,7 @@ const sessionSource = (s: Session): SessionSource => {
 // `chains` is not a lifecycle state — it narrows to sessions that took part in a HAND-OFF (a caller
 // that delegated, or a delegate). It rides in this filter because that's where people already look to
 // cut the list down, and it's resolved in `filtered` (it needs the whole list to know who called whom).
-type SessionStatusFilter = 'all' | 'live' | 'working' | 'blocked' | 'chains' | 'done' | 'stopped' | 'crashed'
+type SessionStatusFilter = 'all' | 'live' | 'working' | 'blocked' | 'chains' | 'done' | 'paused' | 'stopped' | 'crashed'
 const matchesStatus = (s: Session, f: SessionStatusFilter): boolean =>
   f === 'all' || f === 'chains' ? true   // `chains` is applied separately — it needs the whole list
     : f === 'live' ? isLive(s)
@@ -421,7 +437,7 @@ const matchesStatus = (s: Session, f: SessionStatusFilter): boolean =>
 // Filter labels — shared by the dropdown options AND the collapsed trigger (base-ui's SelectValue
 // renders the raw value unless given a formatter, so the two must read from one source).
 const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
-  { all: 'All statuses', live: 'Live', working: 'Working', blocked: 'Needs you', chains: 'Hand-offs', done: 'Done', stopped: 'Stopped', crashed: 'Crashed' }
+  { all: 'All statuses', live: 'Live', working: 'Working', blocked: 'Needs you', chains: 'Hand-offs', done: 'Done', paused: 'Paused', stopped: 'Stopped', crashed: 'Crashed' }
 const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
@@ -459,7 +475,8 @@ const SESSION_SORT_KEYS: SessionSortKey[] = ['created', 'title', 'agent', 'id', 
 const DEFAULT_SORT_KEY: SessionSortKey = 'updated'
 /** Status ordering for the Status-column sort: live → done → stopped → crashed. */
 const statusRank = (s: Session): number =>
-  isLive(s) ? 0 : s.status === 'done' ? 1 : s.status === 'stopped' ? 2 : s.status === 'crashed' ? 3 : 4
+  // Paused sorts directly under the live rows: it is the closest thing to live there is — one click away.
+  isLive(s) ? 0 : s.status === 'paused' ? 1 : s.status === 'done' ? 2 : s.status === 'stopped' ? 3 : s.status === 'crashed' ? 4 : 5
 /** Ascending comparison for a given column; direction is applied by the caller. */
 const compareSessions = (a: Session, b: Session, key: SessionSortKey): number => {
   switch (key) {
@@ -1698,6 +1715,21 @@ function Console({ me }: { me: Member }) {
       else nav('sessions')
     }
   }
+  // Pause: kill the agent (the box gets its memory back) and keep the conversation. Unlike Stop we do NOT
+  // hop away from the tab — the whole point is that the paused session stays open and readable, it just
+  // re-renders as its read-only transcript with a Resume button.
+  const pauseSession = async (id: string) => {
+    const r = await api.pauseSession(id)
+    await reloadSessions()
+    if (!r.ok && r.error) alert(r.error)
+  }
+  // Resume: the server relaunches the agent on the same conversation. Reload the list so the row flips
+  // back to live; the open terminal remounts itself off the fresh status.
+  const unpauseSession = async (id: string) => {
+    const r = await api.unpauseSession(id)
+    await reloadSessions()
+    if (!r.ok && r.error) alert(r.error)
+  }
   // Human verdict on a finished run — feeds the agent maturity score. Clicking the active thumb clears it.
   const rateSession = async (id: string, rating: 'up' | 'down' | null) => {
     await api.rateSession(id, rating)
@@ -2012,7 +2044,7 @@ function Console({ me }: { me: Member }) {
           {route === 'setup' && <SetupPage me={me} step={detail} onStep={(id) => nav('setup', id)} onDone={refreshState} />}
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} sessions={sessions} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
-          {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
+          {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onPause={pauseSession} onUnpause={unpauseSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} doneToday={doneToday} members={members} agents={state?.agents ?? []} maturity={maturity} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} agents={state?.agents ?? []} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'cockpit' && <CockpitPage sessions={sessions} onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
@@ -2023,7 +2055,7 @@ function Console({ me }: { me: Member }) {
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} sessions={sessions} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} agentFilter={detail} />}
           {route === 'feed' && <FeedPage me={me} members={members} sessions={sessions} nav={nav} onOpen={openTerminal} query={urlQuery} setQuery={setUrlQuery} />}
           {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} backTo={backTo} />}
-          {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} backTo={backTo} sessionActions={{ onStop: stopSession, onDelete: deleteSession, onTransfer: transferSession, onRename: renameSession, onAttend: clearAlerts }} />}
+          {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} backTo={backTo} sessionActions={{ onStop: stopSession, onPause: pauseSession, onUnpause: unpauseSession, onDelete: deleteSession, onTransfer: transferSession, onRename: renameSession, onAttend: clearAlerts }} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
           {route === 'insights' && <DreamingSettings me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} permalink={detail} nav={nav} />}
@@ -3150,7 +3182,12 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
   // closed) or a run with no persisted launch env for attach.sh to replay (attaching lands on tmux's raw
   // "can't find session: aos-…"). An attended run WITH an env keeps the normal attach/resume path — that
   // attach is exactly what resurrects it.
-  const ended = Boolean(session) && !isLive(session!) && (Boolean(session!.headless) || !session!.resumable) && !overrideAttach
+  // A PAUSED session is ALWAYS read-only, whatever its lane: the server refuses to attach it (the
+  // WebSocket authz rejects the id and attach.sh holds its stay-paused sentinel), so an attended,
+  // resumable one would otherwise land on a terminal that never opens. Resume is its only way out, and
+  // it is offered right in the transcript header below.
+  const paused = Boolean(session) && isPaused(session!) && !overrideAttach
+  const ended = Boolean(session) && (isPaused(session!) || (!isLive(session!) && (Boolean(session!.headless) || !session!.resumable))) && !overrideAttach
   // A LIVE unattended run can be taken over — attach to its streaming pane (see canGoInteractive). Hidden
   // once claimed (overrideAttach flips it off immediately; the prop's claimedBy follows on the next poll).
   const showTakeover = Boolean(session) && !overrideAttach && canGoInteractive(session!)
@@ -3193,7 +3230,25 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
   // log, then to the reported outcome) rather than attaching to a dead terminal. It is not a dead END,
   // though: if the run can be resurrected (`canGoInteractive`) the transcript header offers it, and taking
   // it over flips `overrideAttach` so this same frame re-attaches to the freshly resumed pane.
-  if (ended && session) return <EndedSession session={session} onTakeOver={showTakeover ? takeOver : undefined} takingOver={takingOver} />
+  // Resume (un-pause): the server relaunches the agent on the same conversation, then `overrideAttach`
+  // + a `nonce` bump remount the frame so it attaches to the freshly-resumed pane.
+  const unpause = async () => {
+    if (!session?.id || takingOver) return
+    setTakingOver(true); setErr('')
+    const r = await api.unpauseSession(session.id)
+    setTakingOver(false)
+    if (!r.ok) { setErr(r.error || 'could not resume this session'); return }
+    setOverrideAttach(true); setNonce((n) => n + 1)
+  }
+  if (ended && session)
+    return (
+      <EndedSession
+        session={session}
+        onTakeOver={paused ? unpause : showTakeover ? takeOver : undefined}
+        takingOver={takingOver}
+        paused={paused}
+      />
+    )
   if (err) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-red-400">⚠ {err}</div>
   if (!wsUrl) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
   return (
@@ -3339,20 +3394,22 @@ function BriefCard({ text, taskId }: { text: string; taskId?: string }) {
  *  back into a live TUI. Server-side `takeoverRun` relaunches `claude --resume` on the same transcript,
  *  claims it for the human, and persists the launch env; the frame then re-attaches to the new pane.
  *  Rendered only when `canGoInteractive` says this run can actually come back (see its note). */
-function ResumeRunButton({ onTakeOver, takingOver }: { onTakeOver: () => void; takingOver?: boolean }) {
+function ResumeRunButton({ onTakeOver, takingOver, paused }: { onTakeOver: () => void; takingOver?: boolean; paused?: boolean }) {
   return (
     <button
       onClick={onTakeOver}
       disabled={takingOver}
       className="flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-sky-500 hover:bg-muted hover:text-sky-400 disabled:opacity-50"
-      title="resume this conversation (claude --resume) and take it over — you land in a live terminal you can type into"
+      title={paused
+        ? 'resume this paused session — the agent restarts on this same conversation, with its full context back'
+        : 'resume this conversation (claude --resume) and take it over — you land in a live terminal you can type into'}
     >
-      <Play className="h-3 w-3" /> {takingOver ? 'resuming…' : 'Resume & take over'}
+      <Play className="h-3 w-3" /> {takingOver ? 'resuming…' : paused ? 'Resume' : 'Resume & take over'}
     </button>
   )
 }
 
-function EndedSession({ session, onTakeOver, takingOver }: { session: Session; onTakeOver?: () => void; takingOver?: boolean }) {
+function EndedSession({ session, onTakeOver, takingOver, paused }: { session: Session; onTakeOver?: () => void; takingOver?: boolean; paused?: boolean }) {
   type Phase = 'loading' | 'timeline' | 'raw-only' | 'report'
   const [phase, setPhase] = useState<Phase>('loading')
   const [turns, setTurns] = useState<ChatTurn[]>([])
@@ -3394,7 +3451,7 @@ function EndedSession({ session, onTakeOver, takingOver }: { session: Session; o
 
   if (phase === 'loading')
     return <div className="flex min-h-0 flex-1 items-center justify-center bg-background text-sm text-muted-foreground"><RefreshCw className="mr-2 h-4 w-4 animate-spin" /> loading transcript…</div>
-  if (phase === 'report') return <RunReport session={session} note={note} onTakeOver={onTakeOver} takingOver={takingOver} />
+  if (phase === 'report') return <RunReport session={session} note={note} onTakeOver={onTakeOver} takingOver={takingOver} paused={paused} />
 
   const canToggle = phase === 'timeline' // a raw-only run has nothing friendlier to switch back to
   const showingRaw = raw || phase === 'raw-only'
@@ -3409,7 +3466,7 @@ function EndedSession({ session, onTakeOver, takingOver }: { session: Session; o
         session={session}
         right={
           <>
-            {onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />}
+            {onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} paused={paused} />}
             {canToggle && (
               <button
                 onClick={() => (showingRaw ? setRaw(false) : void showRaw())}
@@ -3480,10 +3537,10 @@ function EndedTimeline({ sessionId, brief, taskId, turns }: {
  * one-line summary live on the session row, so "what came of it" survives even when "what happened"
  * doesn't. Strictly better than the bare error this replaced, which told the reader nothing at all.
  */
-function RunReport({ session: s, note, onTakeOver, takingOver }: { session: Session; note: string; onTakeOver?: () => void; takingOver?: boolean }) {
+function RunReport({ session: s, note, onTakeOver, takingOver, paused }: { session: Session; note: string; onTakeOver?: () => void; takingOver?: boolean; paused?: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
-      <RunOutcome session={s} right={onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} />} />
+      <RunOutcome session={s} right={onTakeOver && <ResumeRunButton onTakeOver={onTakeOver} takingOver={takingOver} paused={paused} />} />
       <div className="min-h-0 flex-1 overflow-auto px-3 py-4 md:px-6">
         <div className="mx-auto max-w-3xl space-y-2 text-xs text-muted-foreground">
           <p>{s.agent} · {timeAgo(s.updatedAt)} ago</p>
@@ -3846,6 +3903,10 @@ type SessionOps = {
   me: Member
   onOpen: (tmux: string, title: string) => void
   onStop: (id: string) => void
+  /** Suspend the agent, keep the conversation (see {@link isPaused}). */
+  onPause: (id: string) => void
+  /** Bring a paused session back on the same conversation. */
+  onUnpause: (id: string) => void
   onDelete: (id: string, tmux: string) => void
   onTransfer: (id: string, toMemberId: string) => void
   onActivity: (s: Session) => void
@@ -3860,10 +3921,13 @@ type SessionOps = {
  *    account it already had (credentials bind at launch, so plain Reload replays the same one).
  *  - Transfer — hand the run-as to another member (owner/admin or the current owner; the "share" action).
  *  - Fork — branch a new session that inherits this conversation.
+ *  - Pause / Resume — suspend the agent (its claude is killed, so the box gets the memory back) keeping
+ *    the conversation on disk, then bring it back with `claude --resume` and its full context. A paused
+ *    session is readable and nothing else; Stop stays available on one, for "I'm not coming back".
  *  - Stop / Delete — halt or remove the session.
  *  Each item mirrors the gating of its tab-strip/card counterpart. */
 function OperationsMenu({ session, ops, onReload }: { session: Session; ops: SessionOps; onReload: (rotate?: boolean) => void }) {
-  const { members, me, onOpen, onStop, onDelete, onTransfer, onActivity } = ops
+  const { members, me, onOpen, onStop, onPause, onUnpause, onDelete, onTransfer, onActivity } = ops
   const canTransfer = me.role === 'owner' || me.role === 'admin' || session.runAs === me.id
   const transferTargets = canTransfer ? members.filter((m) => m.id !== session.runAs) : []
   return (
@@ -3916,11 +3980,29 @@ function OperationsMenu({ session, ops, onReload }: { session: Session; ops: Ses
           </DropdownMenuItem>
         )}
         {isLive(session) && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => onPause(session.id)}>
+            <Pause className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-500" />
+            <span className="flex flex-col">
+              <span>Pause</span>
+              <span className="text-[10px] text-muted-foreground">stop the agent &amp; free its memory · the conversation is kept, resume any time</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+        {isPaused(session) && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => onUnpause(session.id)}>
+            <Play className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
+            <span className="flex flex-col">
+              <span>Resume</span>
+              <span className="text-[10px] text-muted-foreground">restart the agent on this same conversation · full context restored</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+        {(isLive(session) || isPaused(session)) && (
           <DropdownMenuItem className="gap-2 text-xs" onClick={() => onStop(session.id)}>
             <Square className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
             <span className="flex flex-col">
               <span>Stop</span>
-              <span className="text-[10px] text-muted-foreground">halt this session's shell</span>
+              <span className="text-[10px] text-muted-foreground">halt this session's shell{isPaused(session) ? ' for good — a paused run can still be ended' : ''}</span>
             </span>
           </DropdownMenuItem>
         )}
@@ -4094,6 +4176,9 @@ const nodeState = (n: ChainNode): { label: string; tone: string; icon: LucideIco
   if (nodeLive(n)) return shared(n.working ? 'working' : 'idle', true)
   if (n.duplicateOf) return { label: 'duplicate', tone: 'text-amber-600', icon: CopyIcon, anim: '' }
   if (n.status === 'crashed') return shared('crashed')
+  // Before the outcome lookup: a paused run may carry an outcome from an earlier `report` in the same
+  // conversation, and printing that would claim the run is over when it is suspended mid-flight.
+  if (n.status === 'paused') return shared('paused')
   const v = verdictOf(n.outcome)
   if (v && v !== 'none') return { ...VERDICT_META[v], anim: '' }
   if (n.status === 'stopped') return shared('stopped')
@@ -4316,7 +4401,7 @@ function ChainToggle({ chain, open, onToggle, dark = false }: { chain: SessionCh
 
 /** The App-level session handlers a page must thread in to embed a {@link SessionDetailPane}. They live
  *  on App because they reconcile App's own session list; a page that keeps its own rows wraps them. */
-type SessionActions = Pick<SessionOps, 'onStop' | 'onDelete' | 'onTransfer'> & {
+type SessionActions = Pick<SessionOps, 'onStop' | 'onPause' | 'onUnpause' | 'onDelete' | 'onTransfer'> & {
   onRename: (id: string, title: string) => void
   /** The human interacted with the pane — clear that session's waiting bell. */
   onAttend: (sid: string) => void
@@ -4395,7 +4480,7 @@ function SessionHeading({ title, session, members, onRename, action }: {
 }
 
 function SessionsPage({
-  me, members, sessions, waiting, selected, hiddenTabs, metrics, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onRename, onTransfer, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
+  me, members, sessions, waiting, selected, hiddenTabs, metrics, onOpen, onCloseTab, onActivity, onSpawn, onStop, onPause, onUnpause, onDelete, onRate, onRename, onTransfer, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
   me: Member
   members: Member[]
@@ -4412,6 +4497,8 @@ function SessionsPage({
   onActivity: (sid: string) => void
   onSpawn: () => void
   onStop: (id: string) => void
+  onPause: (id: string) => void
+  onUnpause: (id: string) => void
   onDelete: (id: string, tmux: string) => void
   onRate: (id: string, rating: 'up' | 'down' | null) => void
   onRename: (id: string, title: string) => void
@@ -4716,7 +4803,7 @@ function SessionsPage({
       <SessionDetailPane
         session={openSession}
         tmux={selected.tmux}
-        ops={{ members, me, onOpen, onStop, onDelete, onTransfer }}
+        ops={{ members, me, onOpen, onStop, onPause, onUnpause, onDelete, onTransfer }}
         onAttend={onActivity}
         bar={(chainToggle) => (
           <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
@@ -11210,6 +11297,8 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
   const roomOps: Omit<SessionOps, 'onActivity'> = {
     members, me, onOpen,
     onStop: afterSessionAction(sessionActions.onStop),
+    onPause: afterSessionAction(sessionActions.onPause),
+    onUnpause: afterSessionAction(sessionActions.onUnpause),
     onDelete: afterSessionAction(sessionActions.onDelete),
     onTransfer: afterSessionAction(sessionActions.onTransfer),
   }
@@ -12622,6 +12711,7 @@ function fmtBytes(n: number): string {
  *  `progressed` / `blocked` synonyms — so a run that HAD reported one printed its raw word in grey. */
 function runVerdict(r: TaskRun): { label: string; cls: string; role: StatusRole } {
   if (r.alive) return { label: STATE_META.working.label, cls: STATE_META.working.tone, role: 'busy' }
+  if (r.status === 'paused') return { label: STATE_META.paused.label, cls: STATE_META.paused.tone, role: 'paused' }
   const v = verdictOf((r.outcome || '').toLowerCase())
   if (v && v !== 'none') return { label: VERDICT_META[v].label, cls: VERDICT_META[v].tone, role: v === 'success' ? 'ok' : v === 'partial' ? 'partial' : 'failed' }
   if (r.status === 'crashed') return { label: STATE_META.crashed.label, cls: STATE_META.crashed.tone, role: 'crashed' }

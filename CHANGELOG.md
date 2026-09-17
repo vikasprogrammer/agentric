@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.446.0] - 2026-09-17
+### Added
+- **Pause a session.** A new session status, `paused`, that is neither live nor finished: pausing kills the
+  agent's claude — giving the box back its ~500 MB, its runtime-account slot and its concurrency-cap slot —
+  while leaving the conversation on disk, so Resume relaunches on the SAME transcript with the full context
+  back (`claude --resume`). While paused the session is **readable and nothing else**: its conversation
+  timeline scrolls as usual, and every path that could hand the agent a process back refuses it by name —
+  a chat-thread reply (Slack/Discord/ClickUp/Telegram and DM continuity), a console chat message, a Quick
+  Shortcut inject, Take over, Reload, the browser terminal's WebSocket, and the wake-up resume lane, where
+  a finishing delegate's news stays **queued** for the resume instead of being dropped. A pause is
+  deliberately not an ending — no episode, no completion card, and no roll-up scores it: the outcome
+  verdict skips it, the maturity score counts it as in-flight rather than as a stopped run, and the
+  stale-session tidy won't archive a conversation someone means to come back to. Stop stays available on a
+  paused run, for "I'm not coming back". Refused where it would be a one-way trip (a run with no resumable
+  conversation is told to stop instead). Pinned by `scripts/session-pause-test.cjs`.
+  **For users:** Pause a session from the terminal's **Operations** menu to stop an agent without losing
+  its work — the conversation stays readable, and Resume picks it up exactly where it left off with its
+  full context. [Open Sessions](#/sessions)
 ## [0.445.1] - 2026-09-17
 ### Fixed
 - **Agent operating notes brought back in line with the tools agents actually have.** The OS-owned

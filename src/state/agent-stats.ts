@@ -119,7 +119,11 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
     s.runs.total++;
     if (r.rating === 'up') s.rated.up++;
     else if (r.rating === 'down') s.rated.down++;
-    if (r.status === 'running') s.runs.running++;
+    // `paused` counts as in-flight, not finished. Falling through to `done` (the else) would have fed a
+    // suspended run into the maturity score's success denominator as a completed one, and folding it into
+    // `stopped` would have counted a deliberate pause against the agent — the tier that decides whether it
+    // may edit a teammate unattended.
+    if (r.status === 'running' || r.status === 'paused') s.runs.running++;
     else if (r.status === 'stopped') s.runs.stopped++;
     else if (r.status === 'crashed') s.runs.crashed++;
     else s.runs.done++;

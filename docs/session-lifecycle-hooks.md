@@ -57,7 +57,8 @@ spins on (`Session.working`), because a warm pane outlives the turn it answered,
 
 Set by: `UserPromptSubmit`, a server-side delivery (`chatSend` / inject), a resident spawn.
 Cleared by: `clearTurnBusy`, called from `markTurnIdle` (Stop), `StopFailure`, `SessionEnd`, and every
-terminal status transition (`done` / `stopped` / `crashed`).
+terminal status transition (`done` / `stopped` / `crashed`), plus `paused` (see below), which is not
+terminal but does mean no turn is in flight.
 
 **It used to be a one-way latch.** The clear lived inside `markTurnIdle`'s `resident` branch only, so a
 member's own interactive session returned before reaching it and never cleared — the console drew a
@@ -68,8 +69,8 @@ spinner on finished sessions forever. Live northwind carried the flag on 72 of 5
 that no missed signal can strand a spinner:
 
 1. `busy_since` is set;
-2. the row is not `stopped`/`crashed` (`done` still counts — an agent that calls `report` flips its row
-   mid-turn and keeps working);
+2. the row is not `stopped`/`crashed`/`paused` (`done` still counts — an agent that calls `report` flips
+   its row mid-turn and keeps working);
 3. the runtime is still there (a pane that died mid-turn leaves the flag set);
 4. no turn-END was recorded after the turn started (`last_activity > busy_since`) — this is what heals
    rows latched by an older build, with no migration needed;
@@ -77,6 +78,47 @@ that no missed signal can strand a spinner:
 
 A one-time migration in `src/state/db.ts` also NULLs the already-latched rows (terminal ones, plus any
 turn older than the 2h ceiling); a genuinely in-flight turn is untouched, so it is safe on a live box.
+
+## `paused` — the status that is neither live nor terminal
+
+`TerminalManager.pauseSession` kills a session's claude and stamps the row `paused`. Killing the process
+is the point: it is what frees the ~500 MB of context, the runtime-account slot and the concurrency-cap
+slot (every counter reads `status = 'running'`). The conversation is untouched — claude's transcript is a
+file on disk — so `resumeSession` relaunches with `claude --resume <pinned id>` and the full context is
+back. Pausing is refused unless there is a live pane AND a pinned, resumable conversation; without the
+latter a "pause" would be a one-way stop wearing the wrong word.
+
+It is a STATUS rather than a flag over `stopped` because a paused run has not finished, and three
+roll-ups would otherwise score it as one: `outcome.ts` (which would read it `incomplete` /
+`stopped-midway`), `agent-stats.ts` (where it would count against the maturity tier that decides whether
+an agent may edit a teammate unattended), and the 14-day stale-session tidy (which would archive a
+conversation somebody meant to come back to). All three exclude it.
+
+**The invariant: nothing may hand a paused agent a process back except `resumeSession`.** Two layers
+enforce it, and both are needed:
+
+- `reachable()` refuses a `paused` row, which covers every path that types into a live pane — inject,
+  `deliverToResident`, a pasted file, the wake-up inject lanes.
+- Every path that RESURRECTS checks `status === 'paused'` itself, because those read a false from
+  `reachable()` as "the pane is gone, relaunch it" — the exact opposite of a pause. Those are
+  `reviveResident` (the cold path behind Slack/Discord/ClickUp/Telegram thread continuity and DM
+  continuity), `chatSend`, `takeoverRun`, `takeoverToTerminal`, `reloadSession`, and the wake-up **resume
+  lane** in `wakeups.ts`, where a finishing delegate would otherwise start a fresh claude on the paused
+  transcript. That last one keeps the wake-up **pending** rather than dropping it, so the news is
+  delivered by the resume.
+
+Two more edges outside the manager: `sharedTerminalAuthz` refuses the ttyd WebSocket for a paused session
+(a tab left open or a pasted terminal URL never passes through `/api/sessions/:id/attach`), and the
+generic `/resume` route — which only lifts the stay-stopped sentinel — refuses a paused row, since
+letting the terminal attach would resurrect the agent by the back door and leave the status lying.
+`blockResume` drops the same sentinel a stop does, so ttyd's silent auto-reconnect can't revive it either.
+
+`stopSession` deliberately still works on a paused row: pausing is not a decision to end the run, and
+Stop is how you say "I'm not coming back" — it writes the episode and clears the paused stamp.
+
+Pinned by `scripts/session-pause-test.cjs` (the server half) and `scripts/session-revive-gates-test.cjs`
+(the console half — a paused session offers neither attach-Resume nor Take over, and always renders
+read-only).
 
 ## Testing
 

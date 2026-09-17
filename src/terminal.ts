@@ -265,8 +265,18 @@ You can edit your OWN definition, so keep it current instead of repeating the sa
  *  - `stopped` — a human halted it (`stopSession`).
  *  - `crashed` — the pane died with no end signal at all (kill/OOM/reboot), caught by the liveness sweep.
  * A terminal row can go back to `running` via `markResumed` when the browser reattaches and resumes.
+ *
+ * `paused` is the one state that is NEITHER live nor terminal — a run a human deliberately suspended
+ * ({@link TerminalManager.pauseSession}). Its claude was killed, so the box gets the ~500 MB and the
+ * runtime-account slot back and the agent cannot act; its transcript stays on disk, so
+ * {@link TerminalManager.resumeSession} brings the SAME conversation back with `claude --resume`. It is a
+ * status rather than a flag on `stopped` because a paused run is not a finished one: every roll-up that
+ * scores a `stopped` run (the outcome verdict, the agent's maturity, the stale-session tidy) must leave
+ * a paused one alone, and the reapers — which all enumerate statuses explicitly — must never touch it.
+ * Nothing but {@link TerminalManager.resumeSession} and {@link TerminalManager.stopSession} moves a row
+ * out of it: every wake path (chat continuity, wake-ups, take-over, reload, inject) refuses it by name.
  */
-export type SessionStatus = 'running' | 'done' | 'stopped' | 'crashed';
+export type SessionStatus = 'running' | 'done' | 'stopped' | 'crashed' | 'paused';
 
 /**
  * Every distinct way a session gets initiated, normalized for the console's origin badge. Resolved
@@ -363,6 +373,11 @@ export interface Session {
    *  identity (e.g. a company-identity automation run). Drives the sessions-list Owner filter. */
   runAsLabel?: string;
   createdAt: number;
+  /** When this session was paused, and by whom (member email / principal). Both undefined unless
+   *  `status === 'paused'` — {@link TerminalManager.resumeSession} clears them. Purely for display
+   *  ("paused 2h ago by …"); every behavioural check reads `status`, never these. */
+  pausedAt?: number;
+  pausedBy?: string;
   /** Last time the session's status changed (report/end/stop/resume/crash); = createdAt until the
    *  first transition. Lets the sessions list sort by recent activity, not just creation. */
   updatedAt: number;
@@ -598,6 +613,8 @@ interface SessionRow {
   turns: number | null;
   tool_calls: number | null;
   archived_at?: number | null;
+  paused_at: number | null;
+  paused_by: string | null;
   busy_since: number | null;
   /** Last turn-END (or delivery) stamp. Paired with `busy_since` it says whether the CURRENT turn is
    *  still in flight — see {@link TerminalManager.isWorking}. */
@@ -1168,7 +1185,7 @@ export class TerminalManager {
    */
   private isWorking(r: { id: string; tmux: string; status: string; busy_since: number | null; last_activity: number | null; created_at: number }, alive: Set<string> | null): boolean {
     if (r.busy_since == null) return false;
-    if (r.status === 'stopped' || r.status === 'crashed') return false;
+    if (r.status === 'stopped' || r.status === 'crashed' || r.status === 'paused') return false;
     if (r.last_activity != null && r.last_activity > r.busy_since) return false;
     if (r.busy_since < Date.now() - MID_TURN_MAX_MS) return false;
     if (r.busy_since === r.created_at && r.busy_since < Date.now() - LAUNCH_TURN_GRACE_MS) return false;
@@ -2315,14 +2332,27 @@ export class TerminalManager {
    * saw `done`, skipped the live pane, and spawned `ses_441cec`, which died 28s later — the poke was
    * never seen. So the two were folded into this one; don't reintroduce a status-based variant.
    *
-   * Refuses only a status that means someone ended the run deliberately (`stopped`) or the sweep buried
-   * it (`crashed`) — a pane surviving either is a leftover, not a destination.
+   * Refuses only a status that means someone ended the run deliberately (`stopped`), suspended it
+   * deliberately (`paused`), or the sweep buried it (`crashed`) — a pane surviving any of those is a
+   * leftover, not a destination. `paused` is the load-bearing one for the pause feature: it is what makes
+   * every KEYSTROKE path (inject, chat delivery, a pasted file, a wake-up's inject lanes) refuse the run
+   * without each of them having to know the word. The RESURRECT paths must still check it themselves —
+   * they read a false from here as "it's dead, relaunch it", which is the opposite of what a pause means.
    */
+  /** Is this run suspended by a human? The veto every RESURRECT path owes the pause feature.
+   *  {@link reachable} answers "can I type into it" and a paused run answers no — but a no from there is
+   *  read by `reviveResident`/`chatSend`/`takeoverRun`/`reloadSession` as "the pane is gone, relaunch
+   *  it", which would silently undo the pause. So each of them asks this FIRST. Cheap single-column read;
+   *  callers that already hold the row should compare `status` directly instead. */
+  isPaused(sessionId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM term_sessions WHERE id = ? AND status = 'paused'").get(sessionId) != null;
+  }
+
   reachable(sessionId: string): boolean {
     if (this.launching.has(sessionId)) return true; // scheduled; its pane is imminent
     const r = this.db.prepare('SELECT tmux, status FROM term_sessions WHERE id = ?').get<{ tmux: string; status: string }>(sessionId);
     if (!r) return false;
-    if (r.status === 'stopped' || r.status === 'crashed') return false; // deliberately ended — don't revive by keystroke
+    if (r.status === 'stopped' || r.status === 'crashed' || r.status === 'paused') return false; // deliberately ended/suspended — don't revive by keystroke
     const alive = this.backend.aliveNames();
     if (!alive) return r.status === 'running'; // launcher backend: can't poll the pane, so fall back to the row
     return alive.has(r.tmux);
@@ -2382,7 +2412,7 @@ export class TerminalManager {
     const alive = this.backend.aliveNames();
     for (const r of rows) {
       const live = this.launching.has(r.id) // scheduled; its pane is imminent (mirrors `reachable`)
-        || (r.status !== 'stopped' && r.status !== 'crashed'
+        || (r.status !== 'stopped' && r.status !== 'crashed' && r.status !== 'paused'
           && (alive ? alive.has(r.tmux) : r.status === 'running')); // no poll possible → trust the row
       if (live) out[r.task_id] = { sessionId: r.id, agent: r.agent, since: r.created_at };
     }
@@ -2414,7 +2444,9 @@ export class TerminalManager {
    * A session we just delivered into was stamped `done` by its own `report` but is demonstrably still
    * running — put the row back in step with reality so the console spins on `working` and the crash
    * sweep watches it again. Terminal states set by a human (`stopped`) or the sweep (`crashed`) are
-   * never touched: `reachable` already refuses to deliver into those.
+   * never touched: `reachable` already refuses to deliver into those, and neither is `paused` — the
+   * UPDATE is scoped `AND status = 'done'`, so a paused row cannot be walked back to running by a stray
+   * delivery even if one somehow reached it.
    */
   private restoreRunningAfterDelivery(sessionId: string): void {
     this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ? AND status = 'done'")
@@ -3261,6 +3293,7 @@ export class TerminalManager {
     const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, status FROM term_sessions WHERE id = ?')
       .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; status: string }>(sessionId);
     if (!row || !row.claude_session_id) return false;
+    if (row.status === 'paused') return false;   // suspended by a human — a chat reply must not undo that
     if (this.reachable(sessionId)) return false; // caller should have delivered instead
     const body = (text || '').trim();
     if (!body) return false;
@@ -3300,12 +3333,16 @@ export class TerminalManager {
    *
    * A message typed while a turn is generating is DELIVERED, not refused — claude queues it and reads it
    * at the turn boundary (the same hand-off Slack threads rely on), so 'busy' is no longer returned for
-   * a live pane. Returns 'sent', or 'error' for an unknown / non-resumable session.
+   * a live pane. Returns 'sent', 'paused' when a human has suspended the session (the caller tells them
+   * to resume it), or 'error' for an unknown / non-resumable session.
    */
-  chatSend(sessionId: string, message: string, runAs?: string): 'sent' | 'busy' | 'error' {
-    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, tmux FROM term_sessions WHERE id = ?')
-      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; tmux: string }>(sessionId);
+  chatSend(sessionId: string, message: string, runAs?: string): 'sent' | 'busy' | 'paused' | 'error' {
+    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, tmux, status FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; tmux: string; status: string }>(sessionId);
     if (!row || !row.claude_session_id) return 'error';
+    // Suspended by a human. The pane is gone, so without this the COLD branch below would relaunch the
+    // agent — the message would silently resume the very session someone paused.
+    if (row.status === 'paused') return 'paused';
     const body = (message || '').trim();
     if (!body) return 'error';
     const actingMember = this.resolveActingMember(runAs ?? row.run_as ?? undefined);
@@ -3386,7 +3423,7 @@ export class TerminalManager {
           .get<{ agent: string; claude_session_id: string | null; task: string | null; status: string; tmux: string; run_as: string | null; spawned_by: string | null }>(sessionId);
         if (!row || !row.claude_session_id) return;
         if (row.task !== body) return;                       // a newer message superseded this one
-        if (row.status === 'stopped' || row.status === 'crashed') return; // deliberately torn down meanwhile
+        if (row.status === 'stopped' || row.status === 'crashed' || row.status === 'paused') return; // deliberately torn down/suspended meanwhile
         const after = this.transcriptMark(row.claude_session_id);
         // Anything at all landed → the turn started. (A brand-new transcript counts: before was null.)
         if (after && (!before || after.size > before.size || after.mtime > before.mtime)) return;
@@ -3460,9 +3497,12 @@ export class TerminalManager {
    * resume (a headless run that never got a pinned claude session id — nothing to `--resume`).
    */
   takeoverRun(sessionId: string, by: string): { ok: boolean; error?: string } {
-    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by FROM term_sessions WHERE id = ?')
-      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
+    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, status FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; status: string }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
+    // A paused run reads as "dead with a conversation", which is exactly the shape this resurrects. Say
+    // so instead: resuming is a deliberate act with its own button, not a side effect of taking over.
+    if (row.status === 'paused') return { ok: false, error: 'this session is paused — resume it first' };
     const manifest = this.os.agents.get(row.agent);
     if (!runtimeSupports(manifest?.runtime, 'attachableUnattended') || !manifest?.dir) {
       return { ok: false, error: `this agent's runtime has no attachable session to take over` };
@@ -3504,9 +3544,10 @@ export class TerminalManager {
    * / non-claude-code session.
    */
   takeoverToTerminal(sessionId: string, by: string): { ok: boolean; error?: string } {
-    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by FROM term_sessions WHERE id = ?')
-      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
+    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, status FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; status: string }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
+    if (row.status === 'paused') return { ok: false, error: 'this session is paused — resume it first' };
     const manifest = this.os.agents.get(row.agent);
     // Resurrecting a chat as a warm resident TUI needs the resident-chat capability, not just resume.
     if (!runtimeSupports(manifest?.runtime, 'residentChat') || !manifest?.dir) {
@@ -8596,6 +8637,10 @@ export class TerminalManager {
   markEnded(sessionId: string): void {
     const s = this.db.prepare('SELECT agent, status FROM term_sessions WHERE id = ?').get<{ agent: string; status: string }>(sessionId);
     if (!s) return;
+    // A PAUSED row has no process to have ended. The only way this fires on one is a late signal from the
+    // launcher we just killed, and acting on it would write the run's episode (declaring it over) and drop
+    // its notifications while a human is still planning to come back to it.
+    if (s.status === 'paused') return;
     // A "natural end": the row was still live and the process returned on its own — as opposed to a human
     // `stopSession` (already 'stopped') or a crash the sweep caught ('crashed'). Only a natural end earns
     // the completion-fallback card below, so closing a session yourself doesn't ping you about it.
@@ -8734,7 +8779,12 @@ export class TerminalManager {
     // (an attachable unattended run has no `-p` tee to fall back on). Best-effort; never blocks the stop.
     this.captureTranscript(sessionId, space, r.tmux);
     this.backend.kill(space, r.tmux);
-    if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    // `paused` rides along with `running`: pausing is not a decision to end the run, so "stop" is still
+    // available on a paused session and is how you say "I'm not coming back" — it writes the episode and
+    // clears the paused stamp, which `running` alone would have left on the row forever.
+    if (r.status === 'running' || r.status === 'paused') {
+      this.db.prepare("UPDATE term_sessions SET status = 'stopped', busy_since = NULL, paused_at = NULL, paused_by = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    }
     this.clearNotifications(sessionId);
     // The agent that asked is now dead — no one can answer its open questions or act on its approvals.
     // Cancel both so they leave "Needs you" and become dismissable, rather than hanging forever.
@@ -8758,6 +8808,102 @@ export class TerminalManager {
   }
 
   /**
+   * PAUSE a live session: take the agent's memory away and leave its conversation on disk.
+   *
+   * The mechanics are {@link stopSession}'s — snapshot the pane, kill the tmux shell — and the whole
+   * point is that killing the pane kills the claude process, which is what actually frees the ~500 MB of
+   * context, the runtime-account slot and the concurrency slot (every counter reads `status = 'running'`,
+   * so a paused row stops holding one the moment it flips). The agent cannot act while paused: it has no
+   * process to act with, and every path that could give it one back refuses a `paused` row by name.
+   *
+   * What makes it a PAUSE and not a stop is everything it deliberately does NOT do: no episode is
+   * written (the run is not over, and an episode would tell Dreaming and the consolidator otherwise), no
+   * completion card is posted, and the row lands on `paused` rather than `stopped` so no roll-up scores
+   * it — not the outcome verdict, not the agent's maturity, not the 14-day stale-session tidy.
+   *
+   * It DOES cancel pending questions and approvals, for the same reason `stopSession` does: the process
+   * that raised them is gone, so nobody can deliver an answer to it, and a card left open is a card that
+   * hangs in someone's Inbox forever. A resumed agent asks again — that is the visible cost of pausing a
+   * run mid-question, and it is better than an un-answerable card.
+   *
+   * Refused unless there is a live pane to pause AND a conversation to come back to (a pinned session id
+   * on a runtime that can `--resume`). Without the latter a "pause" would be a one-way stop wearing the
+   * wrong word, so the caller is told to stop it instead.
+   */
+  pauseSession(sessionId: string, by: string): { ok: boolean; error?: string } {
+    const r = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as, claude_session_id FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null; claude_session_id: string | null }>(sessionId);
+    if (!r) return { ok: false, error: 'unknown session' };
+    if (r.status === 'paused') return { ok: true };                       // idempotent
+    // Liveness is the PANE, not the row (`reachable`'s whole lesson): a run that called `report` reads
+    // `done` with a very-much-alive claude holding hundreds of MB, and that is exactly a session worth
+    // pausing. A row with no pane has nothing to pause — there is no memory left to take away.
+    if (!this.reachable(sessionId)) return { ok: false, error: 'this session has no live agent to pause' };
+    if (!r.claude_session_id || !runtimeSupports(this.os.agents.get(r.agent)?.runtime, 'resume')) {
+      return { ok: false, error: 'this run has no resumable conversation — stop it instead (pausing it could not be undone)' };
+    }
+    const space = this.spaceFor(r.run_as ?? r.spawned_by);
+    // Snapshot the pane before it dies so the console's read-only view has the terminal scrollback to
+    // show alongside the transcript — a paused session is meant to be READ while it is paused.
+    this.captureTranscript(sessionId, space, r.tmux);
+    this.backend.kill(space, r.tmux);
+    const now = Date.now();
+    this.db.prepare("UPDATE term_sessions SET status = 'paused', busy_since = NULL, paused_at = ?, paused_by = ?, updated_at = ? WHERE id = ?")
+      .run(now, by, now, sessionId);
+    this.clearNotifications(sessionId);
+    this.cancelPendingQuestions(sessionId, by);
+    this.cancelPendingApprovals(sessionId, by);
+    // A pause must STAY paused. ttyd (disableReconnect=false) re-dials the moment the pane's tmux dies and
+    // re-runs attach.sh, which would `claude --resume` the session straight back to life on a tab someone
+    // left open — the same sentinel `stopSession` drops, cleared only by the deliberate resume below.
+    this.blockResume(sessionId);
+    this.audit(sessionId, by, 'session.paused', { tmux: r.tmux, agent: r.agent });
+    return { ok: true };
+  }
+
+  /**
+   * RESUME a paused session: relaunch the agent on the SAME conversation (`claude --resume <pinned id>`),
+   * seeded with no prompt so the human lands in a steerable TUI holding the full transcript. The context
+   * comes back because it was never in memory to begin with — claude's transcript is a file on disk, and
+   * the pause only ever killed the process reading it.
+   *
+   * Lane on the way back: `resident` is preserved (a warm chat session resumes warm, so the next message
+   * is a warm turn), but an UNATTENDED run comes back ATTENDED and claimed by whoever resumed it —
+   * exactly what {@link takeoverRun} does, and for the same reason. Resuming seeds no prompt, so an
+   * unattended run has nothing to do when it wakes; left `headless` it would be idle-reaped within the
+   * hour, and the human who pressed Resume would watch the session they just brought back disappear. A
+   * claimed run is sticky against every reaper but the long claimed-abandoned janitor, which is the right
+   * ceiling for "a person is looking after this one now".
+   */
+  resumeSession(sessionId: string, by: string): { ok: boolean; error?: string } {
+    const row = this.db.prepare('SELECT agent, secret, status, claude_session_id, run_as, spawned_by, resident, claimed_by FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; status: string; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; resident: number | null; claimed_by: string | null }>(sessionId);
+    if (!row) return { ok: false, error: 'unknown session' };
+    if (row.status !== 'paused') return { ok: false, error: 'this session is not paused' };
+    // Can't happen through `pauseSession` (it refuses a run with no conversation) but a row could have
+    // been migrated or hand-edited — never relaunch a claude with nothing to resume into.
+    if (!row.claude_session_id) return { ok: false, error: 'this run has no conversation to resume' };
+    // Lift the stay-paused sentinel BEFORE relaunching: attach.sh reads it on every (re)connect, and a
+    // resume that left it in place would come up and be refused by its own terminal.
+    this.allowResume(sessionId);
+    const now = Date.now();
+    const resident = row.resident ? 1 : 0;
+    this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 0, claimed_by = COALESCE(claimed_by, ?), claimed_at = COALESCE(claimed_at, ?), paused_at = NULL, paused_by = NULL, last_activity = ?, updated_at = ? WHERE id = ?")
+      .run(by, now, now, now, sessionId);
+    const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
+    const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
+    const hasTelegram = !!this.db.prepare('SELECT 1 FROM telegram_threads WHERE session_id = ?').get(sessionId);
+    this.audit(sessionId, by, 'session.unpaused', { agent: row.agent });
+    this.launchAgentRuntime({
+      id: sessionId, agent: row.agent, task: '', secret: row.secret ?? randomBytes(24).toString('hex'),
+      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup, hasTelegram,
+      headless: false, resident: !!resident, resume: true, claudeSessionId: row.claude_session_id,
+    });
+    return { ok: true };
+  }
+
+  /**
    * Restart a resumable session's agent process IN PLACE, keeping its conversation. Kills the live pane
    * and leaves the session resurrectable (no stop-marker) so the next terminal (re)attach relaunches it
    * via `claude --resume <same claude id>` — the way to pick up a newly-connected MCP server (MCP servers
@@ -8777,6 +8923,8 @@ export class TerminalManager {
   reloadSession(sessionId: string, by: string, opts?: { rotate?: boolean }): { ok: boolean; error?: string; account?: string; note?: string } {
     const r = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!r) return { ok: false, error: 'unknown session' };
+    // A reload is a relaunch, so it would resurrect a paused run. Resume is the one way back.
+    if (r.status === 'paused') return { ok: false, error: 'this session is paused — resume it first' };
     // Reload only works for a resurrectable session — one whose persisted launch env attach.sh can
     // `claude --resume` from. A headless run (no env) has nothing to restart into.
     if (!this.os.paths || !fs.existsSync(path.join(this.os.paths.connectors, `session-${sessionId}.env`))) {
@@ -9525,7 +9673,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined, pausedAt: r.paused_at ?? undefined, pausedBy: r.paused_by ?? undefined };
 }
 
 /** One task on a `task.proposed` card. Title/assignee are snapshots from filing; status is hydrated live. */

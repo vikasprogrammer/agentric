@@ -398,7 +398,9 @@ export interface Session {
   title: string
   task: string
   tmux: string
-  status: 'running' | 'done' | 'stopped' | 'crashed'
+  /** `paused` is the one value that is neither live nor finished: a human suspended the run, its agent
+   *  was killed (freeing its memory) and its conversation is on disk waiting for `unpauseSession`. */
+  status: 'running' | 'done' | 'stopped' | 'crashed' | 'paused'
   /** True when the tmux pane is alive now, regardless of the stored lifecycle `status` (an interactive
    *  session that reported `done` keeps a live pane). Undefined when the server couldn't poll tmux. */
   alive?: boolean
@@ -408,6 +410,9 @@ export interface Session {
   /** True when this session can be resurrected in place via `claude --resume` on re-open (interactive
    *  session with a persisted launch env). Headless runs are never resumable. */
   resumable?: boolean
+  /** When the session was paused, and by whom. Both set only while `status === 'paused'`. */
+  pausedAt?: number
+  pausedBy?: string
   /** True when this session can be FORKED — branched into a new independent session that inherits its
    *  full conversation (`claude --resume <parent> --fork-session`). Requires a claude-code runtime and a
    *  persisted conversation. Unlike `resumable`, a finished/headless run is forkable too. */
@@ -1969,6 +1974,12 @@ export const api = {
   messagesFeed: (etag: string | null, scope: 'mine' | 'all' = 'mine') => callFeed<Msg[]>(`/api/messages${scope === 'all' ? '?scope=all' : ''}`, etag),
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
+  /** Pause: kill the agent (freeing its memory) and keep the conversation on disk. The session stays
+   *  readable and nothing else until `unpauseSession`. */
+  pauseSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/pause`),
+  /** Resume a paused session: relaunch the agent on the SAME conversation (`claude --resume`), with the
+   *  full transcript restored and no new prompt — you land in a live terminal. */
+  unpauseSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/unpause`),
   /** Restart a session's agent process in place (keeps the transcript, resumes the same claude id) so a
    *  newly-connected MCP server is picked up. The terminal must remount right after to re-attach.
    *  `rotate` brings it back on a different runtime account (the usage-limit escape hatch); the
