@@ -7179,7 +7179,7 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
   } else if (m.type === 'automation.proposed') {
     Icon = Zap; iconCls = 'text-violet-600'; highlight = m.status === 'open'
     const resolved = m.status === 'approved' ? 'approved' : m.status === 'rejected' ? 'rejected' : ''
-    verb = 'proposed an automation'; detail = m.body
+    verb = (m.args as { edit?: boolean } | undefined)?.edit === true ? 'proposed an automation edit' : 'proposed an automation'; detail = m.body
     badge = resolved
       ? <ResolutionChip status={m.status} word={resolved} />
       : <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Automations</Badge>
@@ -13066,8 +13066,8 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
           <Card key={pr.id} className="border-amber-200">
             <CardContent className="space-y-2 p-3">
               <div className="flex flex-wrap items-center gap-1.5">
-                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{partsOf(pr).length > 1 ? `workflow · ${partsOf(pr).length}` : pr.spec.type}</Badge>
-                <span className="text-sm font-medium">{pr.workflow || pr.spec.name}</span>
+                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{pr.editOf ? `edit · ${pr.spec.type}` : partsOf(pr).length > 1 ? `workflow · ${partsOf(pr).length}` : pr.spec.type}</Badge>
+                <span className="text-sm font-medium">{pr.workflow || (pr.editOf ? (pr.before?.name || pr.spec.name) : pr.spec.name)}</span>
                 <span className="text-[11px] text-muted-foreground">
                   {partsOf(pr).length > 1
                     ? <>runs <span className="font-mono">{[...new Set(partsOf(pr).map((sp) => agentName(sp.agentId)))].join(', ')}</span></>
@@ -13078,6 +13078,16 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
                   set before pressing one button. */}
               {pr.preview && <div className="whitespace-pre-wrap rounded bg-muted/50 px-2 py-1 font-mono text-[11px]">{pr.preview}</div>}
               {partsOf(pr).length > 1 && <div className="text-[11px] text-muted-foreground">Approving creates all {partsOf(pr).length} — or none, if any part fails.</div>}
+              {/* An edit's task prompt is the one change a one-line preview can't show — put both versions side by side. */}
+              {pr.editOf && pr.changes?.includes('task') && (
+                <details className="text-[11px]">
+                  <summary className="cursor-pointer text-muted-foreground">Compare task prompt</summary>
+                  <div className="mt-1 grid gap-2 sm:grid-cols-2">
+                    <div><div className="mb-0.5 text-muted-foreground">Before</div><pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 font-mono">{pr.before?.task}</pre></div>
+                    <div><div className="mb-0.5 text-muted-foreground">After</div><pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 font-mono">{pr.after?.task}</pre></div>
+                  </div>
+                </details>
+              )}
               {pr.rationale && <p className="text-[11px] italic text-muted-foreground">“{pr.rationale}”</p>}
               <div className="flex flex-wrap items-center gap-2">
                 <label className="text-[11px] text-muted-foreground" title="The fired session acts as this member, so their personal connectors (e.g. their own Composio Gmail) are injected. Company identity = shared company account only.">Run as</label>
@@ -13090,7 +13100,7 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
                 </Select>
               </div>
               <div className="flex items-center gap-2">
-                <Button size="sm" disabled={!!busy} onClick={() => approve(pr)}>Approve &amp; enable</Button>
+                <Button size="sm" disabled={!!busy} onClick={() => approve(pr)}>{pr.editOf ? 'Approve edit' : <>Approve &amp; enable</>}</Button>
                 <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => reject(pr.id)}>Reject</Button>
                 {hint && busy === '' && <span className="text-[11px] text-amber-600">{hint}</span>}
               </div>
@@ -13115,6 +13125,8 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
   const [hint, setHint] = useState('')
   const [openRuns, setOpenRuns] = useState<string | null>(null) // automation id whose Runs list is expanded
   const [runPrompt, setRunPrompt] = useState<Automation | null>(null) // "Run now" asks headless vs interactive first
+  const [agentEdit, setAgentEdit] = useState<Automation | null>(null) // "Edit with agent" — optional note, then a session
+  const [agentEditNote, setAgentEditNote] = useState('')
   const [showForm, setShowForm] = useState(false) // the New-automation form is collapsed until requested
   const [editId, setEditId] = useState<string | null>(null) // when set, the form edits this automation instead of creating
   const formRef = useRef<HTMLDivElement>(null) // the create/edit form — scroll it into view when it opens (Edit sits below the fold)
@@ -13211,6 +13223,17 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
     }
   }
 
+  // "Edit with agent": spawn an interactive session with the automation's own agent, briefed with its current
+  // config + recent runs. The agent can only PROPOSE the change — it lands in the proposals panel above.
+  const editWithAgent = async (a: Automation) => {
+    setBusy(a.id); setHint('')
+    const r = await api.editAutomationWithAgent(a.id, agentEditNote.trim() || undefined)
+    setBusy('')
+    if (!r.ok || !r.tmux) return setHint('⚠ ' + (r.error || 'failed'))
+    setAgentEdit(null); setAgentEditNote('')
+    onOpen(r.tmux, `${a.agentId} · edit ${a.name}`)
+  }
+
   if (!items) return <div className="text-sm text-muted-foreground">Loading…</div>
 
   // When arriving from an agent's "N Automations" shortcut, scope the list to just that agent.
@@ -13253,6 +13276,23 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
               </div>
               <div className="mt-0.5 text-xs text-muted-foreground">Runs unattended in an attachable terminal; progress lands in the Inbox and it closes when the task completes. “Take over” a live run anytime from Sessions.</div>
             </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!agentEdit} onOpenChange={(o) => { if (!o) { setAgentEdit(null); setAgentEditNote('') } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><Wand2 className="h-4 w-4" /> Edit “{agentEdit?.name}” with {agentEdit?.agentId}</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Opens a session with the agent, briefed with this automation’s current setup and recent runs. Talk through the
+            change; the agent proposes it, and nothing changes until it’s approved here.
+          </p>
+          <Textarea value={agentEditNote} onChange={(e) => setAgentEditNote(e.target.value)} rows={3}
+            placeholder="What should change? (optional — e.g. “run at 8am instead, and skip weekends”)" className="text-sm" />
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => { setAgentEdit(null); setAgentEditNote('') }}>Cancel</Button>
+            <Button size="sm" disabled={!agentEdit || busy === agentEdit.id} onClick={() => agentEdit && editWithAgent(agentEdit)}>
+              <Wand2 className="mr-1 h-3.5 w-3.5" />Start session
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -13492,6 +13532,11 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                           <DropdownMenuItem onClick={() => startEdit(a)}>
                             <Pencil className="h-4 w-4" />Edit…
                           </DropdownMenuItem>
+                          {isAdmin && a.type !== 'once' && (
+                            <DropdownMenuItem onClick={() => setAgentEdit(a)}>
+                              <Wand2 className="h-4 w-4" />Edit with agent…
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem variant="destructive" onClick={() => remove(a)}>
                             <Trash2 className="h-4 w-4" />Delete

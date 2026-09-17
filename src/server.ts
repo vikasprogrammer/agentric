@@ -36,6 +36,7 @@ const LIST_CLIP = 240;
 import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
+import { automationEditBase, buildAutomationEditBrief, planAutomationEdit, EDITABLE_TYPES } from './edge/automation-edit';
 import { chooseAgent } from './edge/router';
 import { recordCapabilityGap } from './edge/capability-gap';
 import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
@@ -945,6 +946,24 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const agent = tm.sessionAgent(session);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    // `editOf` = an EDIT to an existing automation (the "Edit with agent" lane): only the fields the agent
+    // sent change, merged over the live automation and validated now, so a proposal that could not be
+    // applied is refused here rather than at approve time.
+    if (b.editOf != null && String(b.editOf).trim()) {
+      const target = autos.get(String(b.editOf).trim());
+      if (!target) return sendJson(res, 404, { ok: false, error: `no automation "${String(b.editOf).trim()}" — check the id` });
+      const str = (v: unknown) => (v != null ? String(v) : undefined);
+      const plan = planAutomationEdit(target, {
+        name: str(b.name), schedule: str(b.schedule), filter: str(b.filter), task: str(b.task), runAs: str(b.runAs),
+        mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
+      }, (ref) => os.team.resolveMemberRef(ref)?.id, (id) => os.team.getMember(id)?.name || os.team.getMember(id)?.email || id);
+      if ('error' in plan) return sendJson(res, 400, { ok: false, error: plan.error });
+      const out = tm.postAutomationEditProposal(session, agent, {
+        editOf: target.id, agentId: target.agentId, type: target.type as ProposedAutomation['type'], base: automationEditBase(target),
+        before: { ...plan.before }, after: plan.after, changes: plan.changes, preview: plan.preview,
+      }, b.rationale != null ? String(b.rationale) : undefined);
+      return sendJson(res, out.ok ? 200 : 400, { ...out, edit: true });
+    }
     const spec = {
       agentId: b.agentId != null ? String(b.agentId) : '',
       name: String(b.name || ''),
@@ -2946,6 +2965,32 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         runAs = m.id;
       }
     }
+    // An EDIT proposal updates the automation it names instead of creating one. It is held to the same
+    // ownership rule as a console edit (owner, or the member who created it), and refuses if the
+    // automation changed since the agent proposed against it — applying its full-field snapshot then
+    // would silently revert whatever the human changed in between.
+    if (card.editOf) {
+      const target = autos.get(card.editOf);
+      if (!target) return sendJson(res, 409, { error: 'the automation this edit targets no longer exists — reject the proposal' });
+      if (!canManageAuto(me, target)) return sendJson(res, 403, { error: 'you can only approve edits to automations you created' });
+      if (card.base && card.base !== automationEditBase(target)) {
+        return sendJson(res, 409, { error: 'the automation was changed after this edit was proposed — reject it and ask the agent again against the current version' });
+      }
+      const after = (card.after ?? {}) as { name?: string; mode?: 'headless' | 'interactive'; schedule?: string; filter?: string; task?: string };
+      try {
+        const updated = autos.update(target.id, {
+          name: after.name, mode: after.mode, task: after.task,
+          ...(target.type === 'cron' ? { schedule: after.schedule } : { filter: after.filter ?? '' }),
+          runAs: runAs ?? null,
+        });
+        if (!updated) return sendJson(res, 409, { error: 'the automation this edit targets no longer exists' });
+        tm.setAutomationProposalStatus(autoPropApprove[1], 'approved');
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.edit.approved', data: { by: me.email, agent: card.agent, id: target.id, name: updated.name, changes: card.changes ?? [], runAs: runAs ?? null } });
+        return sendJson(res, 200, { ok: true, edited: true, automation: automationView(updated, req, true), automations: [automationView(updated, req, true)] });
+      } catch (e) {
+        return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
     // A workflow proposal carries several automations and is approved as a UNIT: a part that `add`
     // rejects (a bad cron, an agent deleted since the proposal was made) rolls the earlier parts back, so
     // the approver never ends up with half a function running and no record of which half. The proposal
@@ -3099,6 +3144,33 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const mode = b.mode === 'headless' ? 'headless' : b.mode === 'interactive' ? 'interactive' : undefined;
     const r = autos.fire(a, { guard: false, mode }); // explicit human action — no pile-up guard
     return sendJson(res, 200, r);
+  }
+  // "Edit with agent": open an interactive session with the automation's OWN agent, briefed with its current
+  // configuration and recent runs, to talk through a change. The session can only PROPOSE the edit
+  // (`automation_propose({ editOf })`) — nothing changes until an owner/admin approves the card. Gated like
+  // the console's Edit (owner/admin who may manage it) plus canRun, since it spawns that agent.
+  const autoEditAgent = p.match(/^\/api\/automations\/([\w-]+)\/edit-with-agent$/);
+  if (method === 'POST' && autoEditAgent) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const a = autos.get(autoEditAgent[1]);
+    if (!a) return sendJson(res, 404, { error: 'not found' });
+    if (!canManageAuto(me, a)) return sendJson(res, 403, { error: 'you can only edit automations you created' });
+    if (!EDITABLE_TYPES.includes(a.type)) return sendJson(res, 400, { error: `a ${a.type} automation can't be edited` });
+    if (!os.agents.has(a.agentId)) return sendJson(res, 400, { error: `this automation's agent "${a.agentId}" no longer exists` });
+    if (!os.team.canRun(me, a.agentId)) return sendJson(res, 403, { error: `you are not assigned to run "${a.agentId}"` });
+    const b = await readBody(req);
+    const label = (id: string) => os.team.getMember(id)?.name || os.team.getMember(id)?.email || id;
+    const runs = tm.listRunsFor(`automation:${a.id}`, me)
+      .sort((x, y) => y.createdAt - x.createdAt)
+      .slice(0, 5)
+      .map((r) => ({ title: r.title, status: r.outcome && r.outcome !== 'unknown' ? `${r.status}/${r.outcome}` : r.status, createdAt: r.createdAt, summary: r.summary ? clipText(r.summary, 160) : undefined }));
+    const brief = buildAutomationEditBrief(a, {
+      memberName: me.name || me.email, runAsLabel: a.runAs ? label(a.runAs) : 'company identity', runs,
+      note: b.note != null ? String(b.note) : undefined, canApprove: true,
+    });
+    const s = tm.createSession(a.agentId, `Edit automation — ${a.name}`, brief, me.id);
+    os.audit.append({ ts: Date.now(), runId: s.id, tenant: os.tenant, principal: me.email, type: 'automation.edit.session', data: { id: a.id, name: a.name, agent: a.agentId, session: s.id } });
+    return sendJson(res, 200, { ok: true, id: s.id, tmux: s.tmux });
   }
   const autoRuns = p.match(/^\/api\/automations\/([\w-]+)\/runs$/);
   if (method === 'GET' && autoRuns) {

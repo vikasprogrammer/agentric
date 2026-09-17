@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.445.0] - 2026-09-17
+### Added
+- **Edit an automation by talking it through with its agent.** Automations → ⋯ → **Edit with agent…** opens
+  an interactive session with the agent the automation runs, briefed with the automation's current
+  trigger, mode, run-as identity, full task prompt and its last five runs (plus an optional note on what
+  should change). The agent can't write the automation: `automation_propose` gained an `editOf` lane that
+  carries only the changed fields, validates them against the live automation when proposed, and lands as
+  an **edit card** in the Automations proposals panel (before → after per field, a side-by-side view for a
+  rewritten task prompt). Approving updates that automation under the same ownership rule as the Edit form,
+  and refuses if someone changed it after the proposal was made — so the agent's snapshot never silently
+  reverts a human's edit. Pinned by `scripts/automation-edit-proposal-test.cjs`.
+  **For admins:** On any automation, choose **Edit with agent…** to describe a change in plain words — the agent drafts it and you approve the edit before anything changes. [Open Automations](#/automations)
+
 ## [0.444.2] - 2026-09-16
 ### Fixed
 - **A blocked task now carries the actual question, and you can answer it with a number.** v0.444.0 made

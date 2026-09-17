@@ -798,6 +798,26 @@ export interface ProposedAutomation {
   runAs?: string;
 }
 
+/** The extra fields an `automation.proposed` card carries when it is an EDIT of an existing automation
+ *  (see {@link TerminalManager.postAutomationEditProposal}); all absent on a create proposal. */
+export interface AutomationEditFields {
+  editOf?: string;
+  base?: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  changes?: string[];
+}
+function editFieldsOf(a: Record<string, unknown>): AutomationEditFields {
+  if (a.edit !== true || typeof a.editOf !== 'string') return {};
+  return {
+    editOf: a.editOf,
+    base: typeof a.base === 'string' ? a.base : undefined,
+    before: a.before && typeof a.before === 'object' ? (a.before as Record<string, unknown>) : undefined,
+    after: a.after && typeof a.after === 'object' ? (a.after as Record<string, unknown>) : undefined,
+    changes: Array.isArray(a.changes) ? a.changes.map(String) : undefined,
+  };
+}
+
 /** What the session-event notifier sink receives when one of a member's own sessions changes state — it
  *  began (a delegated/unattended run), started waiting on them, finished, or crashed. The registry DMs the
  *  run's owner (its `run_as`, else the console member who spawned it) on Slack/Discord IF that member opted
@@ -7552,6 +7572,33 @@ export class TerminalManager {
     return { ok: true, preview };
   }
 
+  /**
+   * An agent proposes an EDIT to an existing automation (the "Edit with agent" lane). The server has
+   * already merged + validated the change against the live automation (`planAutomationEdit`); this only
+   * posts the review card. The card also carries `specs: [after]` so every existing reader of
+   * `automation.proposed` keeps parsing it; `editOf` is what tells the approve route to UPDATE instead of
+   * create, and `base` pins the automation as it was, so a human edit made meanwhile refuses approval.
+   */
+  postAutomationEditProposal(sessionId: string, agent: string, edit: { editOf: string; agentId: string; type: ProposedAutomation['type'] | 'telegram' | 'clickup'; base: string; before: Record<string, unknown>; after: { name: string; task: string; mode: 'headless' | 'interactive'; schedule?: string; filter?: string; runAs?: string }; changes: string[]; preview: string }, rationale?: string): { ok: boolean; preview?: string; error?: string } {
+    const open = this.db.prepare(`SELECT id, args FROM messages WHERE type = 'automation.proposed' AND status = 'open' AND agent = ?`).all<{ id: string; args: string | null }>(agent);
+    if (open.length >= 10) return { ok: false, error: 'you already have 10 open automation proposals awaiting review — wait for a human to act on them first' };
+    const afterKey = JSON.stringify(edit.after);
+    if (open.some((o) => {
+      try { const a = JSON.parse(o.args || '{}') as { editOf?: string; after?: unknown }; return a.editOf === edit.editOf && JSON.stringify(a.after) === afterKey; } catch { return false; }
+    })) return { ok: false, error: 'an identical edit to this automation from you is already awaiting review' };
+    const spec = { agentId: edit.agentId, type: edit.type, ...edit.after } as ProposedAutomation;
+    const name = String(edit.before.name ?? edit.after.name);
+    this.postReviewCard({
+      type: 'automation.proposed', sessionId, agent,
+      title: `Automation edit proposed — ${name}`,
+      body: (rationale?.trim() || `${agent} proposes changing the "${name}" automation.`) + `\n\n${edit.preview}`,
+      args: { edit: true, editOf: edit.editOf, base: edit.base, before: edit.before, after: edit.after, changes: edit.changes, specs: [spec], spec, preview: edit.preview, ...(rationale ? { rationale } : {}) },
+      summary: rationale?.trim() || `${agent} proposes changing the "${name}" automation (${edit.changes.join(', ')}).`,
+    });
+    this.audit(sessionId, agent, 'automation.edit.proposed', { automation: edit.editOf, name, changes: edit.changes });
+    return { ok: true, preview: edit.preview };
+  }
+
   /** Validate + normalise ONE proposed automation, returning its stored shape and its preview line. */
   private validateProposedAutomation(agent: string, spec: ProposedAutomation): { clean: ProposedAutomation; preview: string } | { error: string } {
     const agentId = (spec.agentId || agent).trim();
@@ -7591,19 +7638,19 @@ export class TerminalManager {
 
   /** The proposed-automation review card by id (its specs + status) — for the approve/reject routes.
    *  `spec` stays on the return as the FIRST part, so single-automation callers read unchanged. */
-  automationProposalCard(id: string): { agent: string; spec: ProposedAutomation; specs: ProposedAutomation[]; workflow?: string; rationale?: string; preview?: string; status: string } | undefined {
+  automationProposalCard(id: string): { agent: string; spec: ProposedAutomation; specs: ProposedAutomation[]; workflow?: string; rationale?: string; preview?: string; status: string } & AutomationEditFields | undefined {
     const row = this.db.prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'automation.proposed'`).get<{ agent: string; args: string | null; status: string }>(id);
     if (!row) return undefined;
     let a: Record<string, unknown> = {};
     try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
     const specs = this.proposalSpecs(a);
     if (!specs.length) return undefined;
-    return { agent: row.agent, spec: specs[0], specs, workflow: a.workflow ? String(a.workflow) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
+    return { agent: row.agent, spec: specs[0], specs, workflow: a.workflow ? String(a.workflow) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status, ...editFieldsOf(a) };
   }
   setAutomationProposalStatus(id: string, status: 'approved' | 'rejected'): void {
     this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'automation.proposed'`).run(status, id);
   }
-  openAutomationProposals(): { id: string; agent: string; spec: ProposedAutomation; specs: ProposedAutomation[]; workflow?: string; rationale?: string; preview?: string; createdAt: number }[] {
+  openAutomationProposals(): ({ id: string; agent: string; spec: ProposedAutomation; specs: ProposedAutomation[]; workflow?: string; rationale?: string; preview?: string; createdAt: number } & AutomationEditFields)[] {
     return this.db
       .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'automation.proposed' AND status = 'open' ORDER BY created_at DESC`)
       .all<{ id: string; agent: string; args: string | null; created_at: number }>()
@@ -7611,7 +7658,7 @@ export class TerminalManager {
         let a: Record<string, unknown> = {};
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
         const specs = this.proposalSpecs(a);
-        return { id: r.id, agent: r.agent, spec: specs[0], specs, workflow: a.workflow ? String(a.workflow) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
+        return { id: r.id, agent: r.agent, spec: specs[0], specs, workflow: a.workflow ? String(a.workflow) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at, ...editFieldsOf(a) };
       })
       .filter((p) => !!p.spec);
   }

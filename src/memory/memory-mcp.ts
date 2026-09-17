@@ -779,7 +779,11 @@ const TOOLS = [
       'If the task needs a specific human\'s OWN connected tools (e.g. THEIR Composio Gmail, their ClickUp), ' +
       'those are injected only when the run acts AS that member — so set `runAs` to them (a member id or ' +
       'email; use `directory_lookup` if unsure). Otherwise the scheduled run silently won\'t have those ' +
-      'tools. The approver sees whose credentials will be used and can change it.',
+      'tools. The approver sees whose credentials will be used and can change it. ' +
+      'EDITING AN EXISTING AUTOMATION: pass `editOf` (its id) and ONLY the fields that change — name, ' +
+      'schedule (cron), filter (event triggers), mode, runAs ("" = company identity) or task (replaces the ' +
+      'WHOLE prompt, so send the full revised text). The trigger type and agent can\'t be changed by an edit. ' +
+      'Same governance: the edit is a draft on a review card and the automation is untouched until approved.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -792,9 +796,10 @@ const TOOLS = [
         agentId: { type: 'string', description: 'Which agent the automation runs. Defaults to you (the proposing agent).' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'headless (unattended, default for event triggers) or interactive.' },
         runAs: { type: 'string', description: 'Optional member (id or email) the fired session should ACT AS, so THEIR personal connectors — e.g. their own Composio Gmail — are injected. Omit to run as the company identity (shared connectors only). Suggest this whenever the task uses a person\'s personal apps.' },
-        rationale: { type: 'string', description: 'Why this automation is worth running — the approver reads this to decide.' },
+        rationale: { type: 'string', description: 'Why this automation is worth running (or, for an edit, why the change) — the approver reads this to decide.' },
+        editOf: { type: 'string', description: 'The id of an EXISTING automation to edit instead of creating a new one. Send only the fields that change; name and task are then optional.' },
       },
-      required: ['name', 'task'],
+      required: [],
     },
   },
   {
@@ -2167,7 +2172,9 @@ async function workflowPropose(args: Record<string, unknown>): Promise<string> {
 async function automationPropose(args: Record<string, unknown>): Promise<string> {
   const name = String(args.name ?? '').trim();
   const task = String(args.task ?? '').trim();
-  if (!name || !task) return 'automation_propose needs a name and a task (the prompt the automation runs).';
+  const editOf = String(args.editOf ?? '').trim();
+  if (editOf) return automationProposeEdit(editOf, args);
+  if (!name || !task) return 'automation_propose needs a name and a task (the prompt the automation runs) — or `editOf` to change an existing automation.';
   const res = await fetch(AOS_URL + '/api/agent/automation/propose', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
@@ -2186,6 +2193,22 @@ async function automationPropose(args: Record<string, unknown>): Promise<string>
   return d.ok
     ? `Automation proposed${d.preview ? ` (${d.preview})` : ''} — it's a DRAFT in the owner/admin inbox for review. It is NOT created and will never fire until a human approves it.`
     : `Could not propose the automation: ${d.error ?? 'unknown error'}`;
+}
+
+/** The edit lane of `automation_propose`: fields are forwarded only when the agent SENT them (an empty
+ *  string is meaningful — `runAs: ""` clears back to company identity), so omission means "keep". */
+async function automationProposeEdit(editOf: string, args: Record<string, unknown>): Promise<string> {
+  const body: Record<string, unknown> = { session: SESSION, agent: AGENT, editOf };
+  for (const k of ['name', 'task', 'schedule', 'filter', 'mode', 'runAs', 'rationale']) if (args[k] !== undefined && args[k] !== null) body[k] = String(args[k]);
+  const res = await fetch(AOS_URL + '/api/agent/automation/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const d = (await res.json()) as { ok?: boolean; preview?: string; error?: string };
+  return d.ok
+    ? `Edit proposed for automation ${editOf}:\n${d.preview ?? ''}\n\nIt's a DRAFT on a review card in Automations — the automation is unchanged until an owner/admin approves it.`
+    : `Could not propose the edit: ${d.error ?? 'unknown error'}`;
 }
 
 async function hostPropose(args: Record<string, unknown>): Promise<string> {
