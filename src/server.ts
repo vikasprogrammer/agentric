@@ -6664,6 +6664,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (method === 'DELETE') {
       appSup?.kill(slug, 'deleted');
       os.apps.remove(slug);
+      tm.resolveAppCards(slug, 'rejected'); // the app is gone — its review card can never be acted on
       if ((app.domains ?? []).length) currentRegistry?.invalidateAppDomains();
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.deleted', data: { app: slug, by: me.email } });
       return sendJson(res, 200, { ok: true });
@@ -6743,6 +6744,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const published = action === 'publish';
     os.apps.setPublished(slug, published);
     if (!published) appSup?.kill(slug, 'unpublished');
+    // Publishing IS the card's ask ("review its code + capabilities and publish it"), so close the review
+    // card here — the console acts on the app, never on the card, and without this it sits in Needs you
+    // forever. Unpublishing deliberately does NOT close one: an agent's edit to a live app unpublishes it
+    // and raises a re-review card, and that card is still waiting.
+    if (published) tm.resolveAppCards(slug, 'approved');
     // Publish state gates which domains are live (only published apps route by Host) → refresh the index.
     if ((os.apps.get(slug)?.domains ?? []).length) currentRegistry?.invalidateAppDomains();
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: published ? 'app.published' : 'app.unpublished', data: { app: slug, by: me.email } });

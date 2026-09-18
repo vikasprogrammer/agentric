@@ -1069,6 +1069,7 @@ export class TerminalManager {
     this.refreshTranscriptRoots();
     this.sweepLaunchMarkers();
     this.sweepStaleSkillProposals();
+    this.sweepStaleAppProposals();
   }
 
   /** One-shot boot heal for review cards left open by the pre-v0.404.1 skills routes, which resolved the
@@ -1100,6 +1101,33 @@ export class TerminalManager {
         upd.run(status, r.id); healed++;
       }
       if (healed) this.audit('-', 'system', 'skill.proposals.healed', { count: healed });
+    } catch { /* advisory — never block boot on a heal */ }
+  }
+
+  /** The same one-shot boot heal for 'app.proposed' cards, which had the identical bug: the Apps routes
+   *  published/deleted the APP but never closed its card, so a review finished weeks ago still reads
+   *  "awaiting review" in Needs you (live: five on one tenant, the oldest two months old). Re-derives
+   *  each open card from the apps store — published reads as approved, gone as rejected — and leaves a
+   *  card whose app is still sitting there unpublished alone, because that one IS genuinely pending. */
+  private sweepStaleAppProposals(): void {
+    try {
+      const rows = this.db
+        .prepare(`SELECT id, args FROM messages WHERE type = 'app.proposed' AND status = 'open'`)
+        .all<{ id: string; args: string | null }>();
+      if (!rows.length) return;
+      const upd = this.db.prepare(`UPDATE messages SET status = ? WHERE id = ?`);
+      let healed = 0;
+      for (const r of rows) {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { continue; }
+        const slug = String(a.slug ?? '');
+        if (!slug) continue;
+        const app = this.os.apps.get(slug);
+        const status = !app ? 'rejected' : app.published ? 'approved' : undefined;
+        if (!status) continue;
+        upd.run(status, r.id); healed++;
+      }
+      if (healed) this.audit('-', 'system', 'app.proposals.healed', { count: healed });
     } catch { /* advisory — never block boot on a heal */ }
   }
 
@@ -7365,6 +7393,25 @@ export class TerminalManager {
       try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate a corrupt payload */ }
       if (String(a.skill ?? '') !== skill) continue;
       if ((a.edit === true ? 'edit' : 'new') !== lane) continue;
+      upd.run(status, r.id); closed++;
+    }
+    return closed;
+  }
+
+  /** Mark the open 'app.proposed' review card(s) for a hosted app resolved once a human acted on it —
+   *  published it (the card's whole ask) or deleted it. Found by payload (`args.slug`) for the same
+   *  reason as {@link resolveSkillProposals}: the Apps console acts on the APP, never on the card.
+   *  Returns how many cards were closed. */
+  resolveAppCards(slug: string, status: 'approved' | 'rejected'): number {
+    const rows = this.db
+      .prepare(`SELECT id, args FROM messages WHERE type = 'app.proposed' AND status = 'open'`)
+      .all<{ id: string; args: string | null }>();
+    const upd = this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'app.proposed'`);
+    let closed = 0;
+    for (const r of rows) {
+      let a: Record<string, unknown> = {};
+      try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate a corrupt payload */ }
+      if (String(a.slug ?? '') !== slug) continue;
       upd.run(status, r.id); closed++;
     }
     return closed;
