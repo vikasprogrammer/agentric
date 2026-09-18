@@ -180,7 +180,10 @@ async function main() {
     // snake_case, or a known bare-word tool. Anything else is prose and is skipped deliberately.
     const cited = [...new Set((prose.match(/`([a-z][a-z0-9_]{2,})`/g) || []).map((x) => x.slice(1, -1)))]
       .filter((x) => x.includes('_') || ['recall', 'remember', 'revise', 'forget', 'report', 'update', 'ask', 'publish', 'notify', 'schedule', 'unschedule', 'stop'].includes(x));
-    const unknown = cited.filter((c) => !alwaysNames.includes(c) && !eNames.includes(c) && !rNames.includes(c));
+    // Backticked snake_case that is a harness TOOL FIELD, not an OS tool. Kept explicit (and short) so
+    // the scanner stays strict: a typo'd tool name must still fail here.
+    const FIELDS = ['timeout_ms', 'run_in_background', 'blocked_on', 'claude_session_id'];
+    const unknown = cited.filter((c) => !alwaysNames.includes(c) && !eNames.includes(c) && !rNames.includes(c) && !FIELDS.includes(c));
     assert(unknown.length === 0, 'every tool named in the prompt is actually exposed', unknown.join(', '));
   }
 
