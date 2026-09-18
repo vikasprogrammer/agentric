@@ -27,20 +27,24 @@ const check = (name, cond) => { if (cond) pass++; else failures.push(name); };
 const B = String(WAITING_BRIEF || '');
 
 check('the brief exists and is substantial', B.length > 800);
-check('names the ~2 minute Bash kill', /2 minutes?/.test(B) && /kill/i.test(B));
-check('names sleep 240 as the concrete loss', /sleep 240/.test(B));
-check('says an until/while loop is not the fix either', /until/.test(B) && /while/.test(B));
-check('names the ~5 minute cache TTL', /5 minutes?/.test(B) && /cach/i.test(B));
-check('explains that one long wait can cost MORE than many short polls', /MORE/.test(B));
-check('gives a concrete upper bound on a single wait', /60-90 seconds|60–90 seconds/.test(B));
-check('shows a bounded early-exit poll, not a bare sleep', /break/.test(B) && /seq 1/.test(B));
-check('tells the agent to do work between polls', /earn its turn/i.test(B));
+check('names the ~2 minute foreground Bash cut-off', /2 minutes?/.test(B) && /(kill|cut off)/i.test(B));
+check('names the harness sleep BLOCK (the rule that replaced the 2-min-loss framing)', /Blocked: sleep/.test(B));
+check('says a sleep-only until/while loop is not the fix either', /until/.test(B) && /while/.test(B));
+// The 5-minute cache TTL was the brief's central claim until v0.447.3 and is FALSE for these runs
+// (measured: ~100% `ephemeral_1h` cache writes across three tenants). Assert it does not come back —
+// an argument from a cliff that isn't there teaches agents to avoid waits that now cost nothing extra.
+check('does NOT argue from a 5-minute prompt-cache TTL', !/5[- ]minute/i.test(B) && !/cache/i.test(B));
+check('names run_in_background as the one-notification wait', /run_in_background/.test(B));
+check('names Monitor as the per-occurrence wait, bounded', /Monitor/.test(B) && /timeout_ms/.test(B));
+check('shows a condition command that EXITS, not a bare sleep', /until grep/.test(B) && /run_in_background: true/.test(B));
+check('tells the agent to do work while it waits', /earn its turn/i.test(B));
 
 // The property most likely to be lost in a later edit: this must not contradict the batching advice
 // that produced the largest measured win.
 check('explicitly does NOT read as "batch less"', /batch less/i.test(B));
 check('reaffirms pushing loops into scripts', /300/.test(B) && /still right|still the largest/i.test(B));
 check('scopes the rule to a SINGLE call, not to batching', /SINGLE/.test(B));
+check('says the wait commands are themselves governed', /governed/.test(B));
 
 // Lane independence: it must not be phrased as an unattended-only rule, and must not duplicate the
 // turn-boundary framing that already misses the interactive case.

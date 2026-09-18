@@ -169,47 +169,55 @@ export function pendingBackgroundWork(transcript: string | undefined): PendingBa
  * legitimate and unavoidable (a CDN rule propagating, a 300-domain sweep, a build) — the question is
  * how, not whether.
  *
- * Both numbers here are enforced by something outside the agent's control, which is why they are
- * stated as limits rather than advice:
+ * The limits here are enforced by the harness, not by taste, which is why they are stated as rules:
  *
- *   - A `Bash` tool call is killed at ~2 minutes. A `sleep 240` does not wait 4 minutes; it loses the
- *     whole call. Measured: cost a watchdog run 120 s for nothing, and the agent's workaround was an
- *     `until` loop, which dodges the timeout while keeping every second of the wall clock.
- *   - Prompt caching has a ~5-minute TTL. A single wait past it forces a full re-write of the run's
- *     context. Measured across three watchdog runs: consolidating into one 600 s wait cut tool calls
- *     40 -> 29 and RAISED cost $8.37 -> $11.83, with cache_write tripling 0.27M -> 0.73M. Wall clock
- *     did not improve either (862.7 s -> 892.5 s).
+ *   - A foreground `sleep` is REFUSED by the Bash tool ("Blocked: sleep N followed by …"), whose own
+ *     message adds "Do not chain shorter sleeps to work around this block" and points at
+ *     `run_in_background` / `Monitor`. Fleet transcripts show agents hitting that block repeatedly
+ *     while this brief was still telling them to poll with `sleep 5`.
+ *   - A foreground `Bash` call ends at ~2 minutes — killed on older builds, auto-backgrounded on newer
+ *     ones. Both shapes appear in live transcripts.
  *
- * That second measurement is the reason this brief exists and the reason it has to be explicit. "Fewer
- * turns is cheaper" is true right up to the cache TTL and false past it, and an agent optimising turn
- * count in good faith will sail straight through the crossover. Telling it to poll without telling it
- * why reads as a contradiction of the batching advice it was already given.
+ * HISTORY, so the old argument is not reinstated from memory: until v0.447.3 this brief's central claim
+ * was a ~5-minute prompt-cache TTL, with a measurement behind it (one 600 s wait cut tool calls 40 -> 29
+ * yet RAISED cost $8.37 -> $11.83, cache_write 0.27M -> 0.73M). That premise no longer holds for these
+ * runs: cache writes are now essentially all 1-hour entries — instapods 8,793 `ephemeral_1h` vs 0
+ * `ephemeral_5m` over ~8.8k responses, expresstech ~20k vs 12, instawp all 1h — so a wait of a few
+ * minutes no longer re-writes the context at full price, and an argument built on the 5-minute cliff was
+ * telling agents something false. The reason not to idle is now the harness limits above plus the plain
+ * opportunity cost of a turn spent sleeping. If a future release changes the TTL again, re-measure from
+ * `ephemeral_*_input_tokens` in the transcripts rather than restating either number.
  */
 export const WAITING_BRIEF =
-  '# Waiting: short polls, never one long sleep\n\n' +
+  '# Waiting: hand the wait to the harness, never to a sleep\n\n' +
   'Some work genuinely takes minutes and is not yours to speed up — a rule propagating to an edge, a ' +
-  'sweep over hundreds of hosts, a build. Waiting for it is fine. Waiting for it in ONE long call is ' +
-  'not, and two hard limits decide that for you:\n\n' +
-  '- **A `Bash` call is killed at about 2 minutes.** `sleep 240` does not wait four minutes — it loses ' +
-  'the entire call and everything after it in that command. An `until`/`while` loop evades the kill but ' +
-  'keeps the full wall clock, so it is not the fix either.\n' +
-  '- **Prompt caching expires after about 5 minutes.** One wait longer than that re-writes your whole ' +
-  'context at full price. This is why a single 10-minute wait can cost MORE than twenty short polls ' +
-  'despite being far fewer turns.\n\n' +
-  '**So: no single wait longer than ~60-90 seconds.** Start the slow thing in the background, then poll ' +
-  'in short bounded steps that exit as soon as it is done:\n\n' +
+  'sweep over hundreds of hosts, a build, CI. Waiting for it is fine. Waiting for it by sitting in a ' +
+  '`Bash` call is not, and the harness enforces that for you:\n\n' +
+  '- **A foreground `sleep` is BLOCKED.** The tool refuses it (`Blocked: sleep …`) and says so in the ' +
+  'same words this note does: do not chain shorter sleeps to get around it. A `while`/`until` loop that ' +
+  'only sleeps is the same idling with extra steps.\n' +
+  '- **A foreground `Bash` call is cut off at about 2 minutes** — killed, or moved to the background ' +
+  'mid-way. Either way the wait is not where your work should be.\n\n' +
+  '**The two supported ways to wait**, both of which let you keep working (or stop) while it runs:\n\n' +
+  '- **One notification, when a condition comes true** — `Bash` with `run_in_background: true` and a ' +
+  'command that EXITS once it holds. You are told when it exits, and `TaskOutput` reads what it printed. ' +
+  'No trailing `&`.\n' +
   '```bash\n' +
-  'long-running-thing & \n' +
-  '# ...then, once per turn:\n' +
-  'for i in $(seq 1 12); do [ -f "$DONE_SENTINEL" ] && break; sleep 5; done\n' +
-  '```\n\n' +
-  '**Make each poll earn its turn.** A poll that only sleeps converts model time into wall time and ' +
-  'saves nothing. Read partial results, write the rows that are ready, update the sheet or the ticket, ' +
-  'check the log for the failure you can already act on. If a run of yours is mostly `sleep`, the work ' +
-  'was serialised behind a wait that did not need to block it.\n\n' +
+  '# run_in_background: true\n' +
+  'until grep -q "Ready in" dev.log; do sleep 0.5; done\n' +
+  '```\n' +
+  '- **One notification per occurrence** (each new CI check, each ERROR line) — `Monitor`, with a ' +
+  'bounded `timeout_ms` and a filter that matches the FAILURE signatures too, not just the happy path: ' +
+  'a monitor that greps only for success is silent through a crash, and silence reads as "still ' +
+  'running". Re-arm it if it expires while you still care. Both of these run real commands, so they are ' +
+  'governed like any other shell call.\n\n' +
+  '**Make each wait earn its turn.** A poll that only sleeps converts model time into wall time and ' +
+  'saves nothing. While the slow thing runs, read partial results, write the rows that are ready, update ' +
+  'the sheet or the ticket, act on the failure already in the log. If a run of yours is mostly waiting, ' +
+  'the work was serialised behind something that did not need to block it.\n\n' +
   '**Do not read this as "batch less".** Pushing a loop over 300 items into one script instead of 300 ' +
-  'turns is still right, and still the largest win available. The rule is narrower: do not let any ' +
-  'SINGLE call sit idle past the limits above. Batch the work; poll the wait.';
+  'turns is still right, and still the largest win available. The rule is narrower: no SINGLE call sits ' +
+  'idle waiting. Batch the work; let the harness watch the wait.';
 
 export const UNATTENDED_TURN_BRIEF =
   '# This run ends when your turn ends\n\n' +

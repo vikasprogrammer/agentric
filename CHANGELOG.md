@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.448.2] - 2026-09-18
+### Fixed
+- **The waiting note no longer teaches a pattern the harness blocks.** It told every agent to wait by
+  polling with `sleep 5` in a bounded loop, and argued for it from a ~5-minute prompt-cache TTL. Both
+  premises are gone: claude-code now REFUSES a foreground `sleep` (`Blocked: sleep …`, adding "do not
+  chain shorter sleeps to work around this block") and cache writes on these runs are essentially all
+  1-hour entries (measured: instapods 8,793 `ephemeral_1h` vs 0 `ephemeral_5m`; expresstech ~20k vs 12),
+  so the "one long wait costs more than twenty short polls" argument no longer holds. The note now points
+  at the two supported waits — `Bash` with `run_in_background: true` on a command that exits when the
+  condition holds (read with `TaskOutput`), and `Monitor` with a bounded `timeout_ms` and a filter that
+  also matches failures — and keeps what still stands: the ~2-minute foreground cut-off, "make each wait
+  earn its turn", and "this is not an argument to batch less". The old TTL reasoning is recorded in the
+  source comment so it is not reinstated from memory.
+
 ## [0.448.1] - 2026-09-18
 ### Fixed
 - **`Monitor` was an ungoverned shell.** claude-code's `Monitor` tool runs an arbitrary shell command
