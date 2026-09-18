@@ -99,6 +99,15 @@ export function claudeAuthEvidence(
    *  unassertable there and would only ever be exercised in CI. */
   probes: { configDir?: string; keychain?: () => boolean } = {},
 ): { status: 'done' | 'todo' | 'unknown'; detail: string } {
+  // Cursor-first boxes: honour agent login / CURSOR_API_KEY before the Claude-only probes.
+  if ((process.env.CURSOR_API_KEY || '').trim()) {
+    return { status: 'done', detail: 'CURSOR_API_KEY is set in the server environment' };
+  }
+  try {
+    const r = spawnSync('agent', ['status'], { timeout: 5000, stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, PATH: `${process.env.HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}` } });
+    if (r.status === 0) return { status: 'done', detail: 'Cursor Agent is signed in on this box (`agent status`)' };
+  } catch { /* not on PATH */ }
+
   const pool = agentOs.runtimeAccounts.list().filter((a) => a.runtime === 'claude-code' && a.enabled && a.kind === 'oauth' && a.checkOk !== false);
   if (pool.length) return { status: 'done', detail: `${pool.length} account${pool.length === 1 ? '' : 's'} in the rotation pool (${pool.map((a) => a.name).join(', ')})` };
 
@@ -107,11 +116,11 @@ export function claudeAuthEvidence(
 
   const keychain = probes.keychain ?? (() => process.platform === 'darwin' && keychainHasClaude());
   if (keychain()) {
-    return { status: 'done', detail: 'this box is signed in (macOS Keychain — “Claude Code-credentials”)' };
+    return { status: 'done', detail: 'this box is signed in (macOS Keychain)' };
   }
 
   if ((process.env.ANTHROPIC_API_KEY || '').trim()) {
-    return { status: 'unknown', detail: 'ANTHROPIC_API_KEY is set in the server environment — usage-billed, and the interactive TUI may still ask for a subscription login' };
+    return { status: 'unknown', detail: 'ANTHROPIC_API_KEY is set in the server environment — usage-billed path' };
   }
 
   return { status: 'todo', detail: 'no credential found — sessions will hang on the runtime’s login screen' };
@@ -213,7 +222,7 @@ export function buildSetupStatus(agentOs: AgentOS, inputs: SetupInputs): SetupSt
     {
       id: 'claude',
       title: 'Connect a coding runtime',
-      why: 'Agents are Claude Code / Codex sessions. Without a credential a spawned session sits on the login screen and never runs.',
+      why: 'Agents need an authenticated coding CLI (Cursor Agent on this box). Without a credential a spawned session sits on the login screen and never runs.',
       required: true,
       status: claude.status,
       detail: claude.detail,

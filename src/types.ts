@@ -1290,7 +1290,7 @@ export interface RuntimeTuning {
 
 /** Every runtime an agent manifest may declare. `mock` is the in-process demo adapter (no CLI, no
  *  tmux); the others are real coding CLIs. */
-export type RuntimeId = 'mock' | 'claude-code' | 'codex' | 'opencode';
+export type RuntimeId = 'mock' | 'claude-code' | 'codex' | 'opencode' | 'cursor';
 /** The runtimes that spawn a real CLI in a governed tmux pane — everything except `mock`. */
 export type CodingRuntimeId = Exclude<RuntimeId, 'mock'>;
 
@@ -1544,12 +1544,58 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
       steerOnAllow: false,
     },
   },
+  cursor: {
+    id: 'cursor',
+    label: 'Cursor Agent',
+    bin: 'agent',
+    install: ['agent', 'update'],
+    launchScript: 'cursor-launch.sh',
+    // Cursor's project hooks (`.cursor/hooks.json`) speak allow/deny over JSON stdin/stdout — see
+    // terminal/cursor-gate-hook.sh. Wired to beforeShellExecution + beforeMCPExecution + preToolUse.
+    gateHook: 'cursor-gate-hook.sh',
+    // CURSOR_API_KEY is the usage/API path; interactive `agent login` stores session state under
+    // ~/.cursor (no relocatable config-dir var is documented, so rotation by credential-dir is limited).
+    credentialEnv: { configDirVar: 'CURSOR_CONFIG_DIR', apiKeyVar: 'CURSOR_API_KEY', configDirFile: 'cli-config.json' },
+    liveCredentialKinds: ['oauth', 'apikey'],
+    guidedLogin: false,
+    suggestedModels: ['auto', 'composer-2.5', 'gpt-5'],
+    // Reject ids that are clearly another runtime's wire format.
+    foreignModel: /^opencode\//i,
+    capabilities: {
+      // `agent --resume <chatId>` / `agent create-chat`; we don't pin the id up front.
+      pinnedSessionId: false, resume: true, fork: false,
+      // Unattended lane is `agent -p` (print) — exits at turn end, not an attachable TUI.
+      attachableUnattended: false, residentChat: false,
+      transcript: false, nativeSkills: false, nativeSubagents: false,
+      statusLine: false, permissionMode: false, outputStyle: false,
+      // beforeShellExecution / beforeMCPExecution / preToolUse(Write|…) → Agentric /api/gate.
+      fileWriteGate: true, mcpGate: true,
+      // Cursor permission hooks have no additionalContext-on-allow equivalent.
+      steerOnAllow: false,
+    },
+  },
 };
 
 /** Is this a real CLI-backed agent (as opposed to the `mock` demo adapter)? This is what almost every
  *  former `runtime === 'claude-code'` check actually meant. */
 export function isCodingRuntime(runtime: RuntimeId | undefined): runtime is CodingRuntimeId {
-  return runtime === 'claude-code' || runtime === 'codex' || runtime === 'opencode';
+  return runtime === 'claude-code' || runtime === 'codex' || runtime === 'opencode' || runtime === 'cursor';
+}
+
+/**
+ * Coding runtimes offered in the console / installable on this box.
+ * Set `AOS_VISIBLE_RUNTIMES=cursor` (comma-separated ids) to hide the rest from pickers + setup.
+ * Unset → every declared coding runtime. Adapters stay in the binary for fork/upstream compatibility.
+ */
+export function visibleCodingRuntimes(): CodingRuntimeId[] {
+  const raw = (process.env.AOS_VISIBLE_RUNTIMES || '').trim();
+  if (!raw) return Object.keys(CODING_RUNTIMES) as CodingRuntimeId[];
+  const wanted = new Set(raw.split(',').map((s) => s.trim()).filter(Boolean));
+  return (Object.keys(CODING_RUNTIMES) as CodingRuntimeId[]).filter((id) => wanted.has(id));
+}
+
+export function isVisibleCodingRuntime(runtime: RuntimeId | undefined): runtime is CodingRuntimeId {
+  return isCodingRuntime(runtime) && visibleCodingRuntimes().includes(runtime);
 }
 
 /** The spec for a runtime, or undefined for `mock`/unknown. */

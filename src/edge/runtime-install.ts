@@ -17,7 +17,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { accessSync, constants, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { CODING_RUNTIMES, CodingRuntimeId, RuntimeId, isCodingRuntime } from '../types';
+import { CODING_RUNTIMES, CodingRuntimeId, RuntimeId, isCodingRuntime, visibleCodingRuntimes } from '../types';
 
 export interface RuntimePresence {
   id: CodingRuntimeId;
@@ -80,15 +80,19 @@ function probe(bin: string): { installed: boolean; version?: string } {
   return { installed: true, version: line || undefined };
 }
 
-/** Presence of every declared coding runtime, for `GET /api/runtimes` and the setup wizard. */
+/** Presence of every visible coding runtime, for `GET /api/runtimes` and the setup wizard.
+ *  Honours `AOS_VISIBLE_RUNTIMES` so a Cursor-only box never offers Claude/opencode in the picker. */
 export function runtimePresence(): RuntimePresence[] {
-  return Object.values(CODING_RUNTIMES).map((spec) => ({
-    id: spec.id,
-    label: spec.label,
-    bin: spec.bin,
-    install: spec.install.join(' '),
-    ...probe(spec.bin),
-  }));
+  return visibleCodingRuntimes().map((id) => {
+    const spec = CODING_RUNTIMES[id];
+    return {
+      id: spec.id,
+      label: spec.label,
+      bin: spec.bin,
+      install: spec.install.join(' '),
+      ...probe(spec.bin),
+    };
+  });
 }
 
 export interface InstallResult {

@@ -3050,6 +3050,10 @@ export class TerminalManager {
       // a portable scale, and permission-mode has no analogue (Agentric is the sole authority via the
       // generated config's `permission: allow`), so neither is forwarded.
       if (tuning.model) env.OPENCODE_MODEL = tuning.model;
+    } else if (runtime === 'cursor') {
+      // Cursor Agent: `agent --model <id>`. Permission-mode / effort / output-style have no portable
+      // CLI equivalents here — Agentric hooks are the authority.
+      if (tuning.model) env.CURSOR_MODEL = tuning.model;
     } else {
       if (tuning.model) env.CLAUDE_MODEL = tuning.model;
       if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;

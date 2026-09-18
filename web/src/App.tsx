@@ -710,7 +710,7 @@ function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
   // codex agent was badged 'mock' — a real agent labelled as the demo adapter.
   const label = runtime === 'claude-code' ? 'claude' : (runtime || 'mock')
   return (
-    <Badge variant={runtime === 'claude-code' ? 'default' : isCodingRuntime(runtime) ? 'outline' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
+    <Badge variant={runtime === 'cursor' ? 'default' : isCodingRuntime(runtime) ? 'outline' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
       {label}
     </Badge>
   )
@@ -2754,12 +2754,12 @@ function AgentsPage({
               <Share2 className="h-4 w-4" />
             </Button>
           )}
-          {canEdit && agent.runtime === 'claude-code' && (
-            <Button render={<a href={navHref('agent', agent.id)} />} size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={onNavClick(() => onEdit(agent.id))} title="agent settings — runtime tuning, starter prompts, CLAUDE.md">
+          {canEdit && isCodingRuntime(agent.runtime) && (
+            <Button render={<a href={navHref('agent', agent.id)} />} size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={onNavClick(() => onEdit(agent.id))} title="agent settings — runtime tuning, starter prompts, system prompt">
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
           )}
-          {canEdit && agent.runtime === 'claude-code' && (
+          {canEdit && isCodingRuntime(agent.runtime) && (
             <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={() => onDuplicate(agent.id)} title="duplicate agent — deep-copy its definition under a new id (fresh, no history carried over)">
               <Copy className="h-4 w-4" />
             </Button>
@@ -3177,6 +3177,16 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
     return n >= TERM_FONT_MIN && n <= TERM_FONT_MAX ? n : 14
   })
   useEffect(() => { localStorage.setItem('aos_terminal_font', String(fontSize)) }, [fontSize])
+  // Cursor TUI paints its own “→ Add a follow-up” (no CLI switch to hide it). We add FollowUpComposer
+  // below for a real typeable box; do not mask the pane — overlays clip mid-line and hide status.
+  const [cursorRuntime, setCursorRuntime] = useState(false)
+  useEffect(() => {
+    if (!session?.agent) { setCursorRuntime(false); return }
+    let alive = true
+    api.agentConfig(session.agent).then((r) => { if (alive) setCursorRuntime(r.runtime === 'cursor') })
+      .catch(() => { if (alive) setCursorRuntime(false) })
+    return () => { alive = false }
+  }, [session?.agent])
   // Show the captured transcript instead of attaching whenever there is no live pane AND nothing would
   // bring one back: an unattended run (reaped at turn-end — attaching would resurrect what the reaper just
   // closed) or a run with no persisted launch env for attach.sh to replay (attaching lands on tmux's raw
@@ -3267,6 +3277,93 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
         popoutHref={standalone ? undefined : popoutHref}>
         <Xterm key={nonce} wsUrl={wsUrl} fontSize={fontSize} copyOnSelect />
       </ImageDropZone>
+      {cursorRuntime && session?.id && (
+        <FollowUpComposer
+          sessionId={session.id}
+          attachable={Boolean(isLive(session) || overrideAttach)}
+        />
+      )}
+    </div>
+  )
+}
+
+/** Cursor-only compose bar. Cursor's TUI shows “→ Add a follow-up” without reliable focus; this box
+ *  injects follow-ups via the same path as Shortcuts. */
+function FollowUpComposer({ sessionId, attachable }: { sessionId: string; attachable: boolean }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const [focused, setFocused] = useState(false)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    if (!attachable) return
+    const t = window.setTimeout(() => inputRef.current?.focus(), 120)
+    return () => clearTimeout(t)
+  }, [attachable, sessionId])
+
+  const send = async () => {
+    const body = text.trim()
+    if (!body || busy) return
+    if (!attachable) { setNote('Session is not live — reopen it first'); return }
+    setBusy(true); setNote(null)
+    const r = await api.injectToSession(sessionId, body)
+    setBusy(false)
+    if (r.ok) { setText(''); setNote('Sent'); inputRef.current?.focus() }
+    else setNote(r.error || 'Could not send')
+  }
+  useEffect(() => {
+    if (!note) return
+    const t = setTimeout(() => setNote(null), 2500)
+    return () => clearTimeout(t)
+  }, [note])
+
+  const rows = text.includes('\n') || text.length > 90 ? 3 : 1
+  return (
+    <div className="shrink-0 border-t border-neutral-800 bg-neutral-950 px-3 py-2.5">
+      <div
+        role="group"
+        onClick={() => inputRef.current?.focus()}
+        className={`flex cursor-text items-start gap-2 rounded-lg border px-3 py-2.5 transition-shadow ${
+          !attachable
+            ? 'border-neutral-800 bg-neutral-900/40'
+            : focused
+              ? 'border-emerald-500/70 bg-neutral-900 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]'
+              : 'border-neutral-600 bg-neutral-900 hover:border-neutral-500'
+        }`}
+      >
+        <span className={`mt-0.5 select-none font-mono text-sm ${attachable ? 'text-emerald-400' : 'text-neutral-600'}`} aria-hidden>
+          →
+        </span>
+        <textarea
+          ref={inputRef}
+          value={text}
+          rows={rows}
+          onChange={(e) => setText(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() }
+          }}
+          disabled={!attachable || busy}
+          placeholder={attachable ? 'Type here · Enter to send' : 'Reopen the session to type here'}
+          className="min-h-[1.4rem] max-h-28 w-full flex-1 resize-none bg-transparent font-mono text-[13px] leading-5 text-neutral-100 caret-emerald-400 placeholder:text-neutral-500 focus:outline-none disabled:cursor-not-allowed"
+          aria-label="Follow-up message"
+        />
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); void send() }}
+          disabled={!attachable || busy || !text.trim()}
+          title="Send (Enter)"
+          className="mt-[-2px] inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-emerald-500 px-2.5 text-xs font-semibold text-neutral-950 hover:bg-emerald-400 disabled:bg-neutral-800 disabled:text-neutral-500"
+        >
+          {busy ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+          Send
+        </button>
+      </div>
+      {note && (
+        <p className={`mt-1.5 text-[11px] ${note === 'Sent' ? 'text-emerald-400' : 'text-red-400'}`}>{note}</p>
+      )}
     </div>
   )
 }
@@ -5777,7 +5874,7 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
 }) {
   // Chattable agents = claude-code runtime the member is allowed to run. Chat sessions = ones this
   // surface (or the chat router) spawned, newest first.
-  const chatAgents = useMemo(() => agents.filter((a) => a.runtime === 'claude-code'), [agents])
+  const chatAgents = useMemo(() => agents.filter((a) => isCodingRuntime(a.runtime)), [agents])
   const chats = useMemo(
     () => sessions.filter((s) => s.sourceKind === 'chat' && !s.system).sort((a, b) => b.updatedAt - a.updatedAt),
     [sessions],
@@ -6825,7 +6922,7 @@ function ProposedTaskItem({ t, members, agents, busy, onDecide }: { t: ProposedT
   const due = t.dueAt && pending ? proposalDue(t.dueAt) : null
   const long = (t.body?.length ?? 0) > 180 || (t.body?.split('\n').length ?? 0) > 2 || !!t.criteria
   // Only a claude-code agent can be dispatched from a task, so those are the agents offered — same list as the board.
-  const runnable = agents.filter((a) => a.runtime === 'claude-code')
+  const runnable = agents.filter((a) => isCodingRuntime(a.runtime))
   const toAgent = (t.assignee ?? '').startsWith('agent:')
   return (
     <li className={`rounded-md border px-2.5 py-2 text-xs ${pending ? 'border-violet-200 bg-background' : 'border-transparent bg-transparent'}`}>
@@ -6953,7 +7050,7 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
     const assignee = a.assignee ?? null
     const agentId = assignee?.startsWith('agent:') ? assignee.slice('agent:'.length) : ''
     const onHuman = a.blockedOn === 'human'
-    const runnable = agents.filter((ag) => ag.runtime === 'claude-code')
+    const runnable = agents.filter((ag) => isCodingRuntime(ag.runtime))
     const act = async (next: 'todo' | 'cancelled', run = false, pick?: string) => {
       setBusy(true); setHint('')
       const note = pick ?? answer.trim()
@@ -11040,7 +11137,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
   const [confirmDel, setConfirmDel] = useState(false)
 
   const isAdmin = me.role === 'owner' || me.role === 'admin'
-  const chatAgents = agents.filter((a) => a.runtime === 'claude-code')
+  const chatAgents = agents.filter((a) => isCodingRuntime(a.runtime))
   const nameOf = (id?: string) => principalLabel(id, members)
   // Assignee glyph: an AGENT shows its OWN icon (from the manifest); a member shows their avatar (or
   // their initial when they haven't uploaded one); anyone/anything else (system, automation, unknown
@@ -13113,7 +13210,7 @@ function triggerIcon(type: Automation['type']): LucideIcon {
  *  new filtered type can't be wired into the UI and silently dropped on save (webhook was, for a while). */
 const FILTER_TYPES: Automation['type'][] = ['composio', 'slack', 'discord', 'telegram', 'webhook', 'clickup']
 /** Sentinel for "remove the stored signing secret" — distinguishable from '' (leave it alone). */
-const CLEAR_SECRET = ' clear'
+const CLEAR_SECRET = '\0clear'
 
 function triggerSummary(a: Automation): string {
   switch (a.type) {
@@ -14713,7 +14810,7 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
         <div className="space-y-1">
           <label className="text-xs font-medium">Sub-agents it can spawn</label>
           {(() => {
-            const teammates = agents.filter((a) => a.runtime === 'claude-code' && a.id !== agentId)
+            const teammates = agents.filter((a) => isCodingRuntime(a.runtime) && a.id !== agentId)
             if (!teammates.length) return <p className="text-[11px] text-muted-foreground">No other claude-code agents to delegate to yet.</p>
             const toggle = (id: string) => setSubagents((cur) => cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id])
             return (
@@ -15080,7 +15177,7 @@ function SkillsPage() {
   const load = () => api.skills().then(setResp).catch(() => setResp({ enabled: false, skills: [] }))
   useEffect(() => {
     load(); loadRequests()
-    api.state().then((s) => setAgents(s.agents.filter((a) => a.runtime === 'claude-code').map((a) => a.id))).catch(() => {})
+    api.state().then((s) => setAgents(s.agents.filter((a) => isCodingRuntime(a.runtime)).map((a) => a.id))).catch(() => {})
   }, [])
 
   // Drag-and-drop / file-picker install: upload each dropped .zip, then refresh the library.

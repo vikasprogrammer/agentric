@@ -189,7 +189,7 @@ export interface AgentInfo {
   description: string
   /** Organisational grouping label (e.g. "Engineering", "Marketing"); undefined = uncategorised. */
   category?: string
-  runtime: 'mock' | 'claude-code'
+  runtime: 'mock' | 'claude-code' | 'codex' | 'opencode' | 'cursor'
   /** True when the agent lives under the data home (user-created) and can be deleted. */
   deletable?: boolean
   /** True for an agent Agentric ships and provisions itself (a department generalist, the

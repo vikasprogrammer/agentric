@@ -86,7 +86,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, Task, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, GoalMetric, riskClassForLevel } from './types';
+import { isCodingRuntime, isVisibleCodingRuntime, visibleCodingRuntimes, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, Task, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, GoalMetric, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -4768,11 +4768,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const claudeMd = String(b.claudeMd ?? '');
     // model/effort are per-agent overrides — each optional (omit → inherit the workspace default at
     // launch). Validate effort against the CLI's value set.
-    // The runtime an agent is BORN on. Defaults to claude-code (what every agent got before the picker
-    // existed), but it has to be settable here: it used to be hardcoded, so a Codex/opencode agent could
-    // only be made by creating a Claude one and switching it afterwards.
-    const runtime = (b.runtime === undefined || b.runtime === '') ? 'claude-code' : String(b.runtime) as RuntimeId;
-    if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `runtime must be one of: ${Object.keys(CODING_RUNTIMES).join(', ')}` });
+    // The runtime an agent is BORN on. Defaults to the first visible coding runtime (see
+    // AOS_VISIBLE_RUNTIMES), else claude-code for upstream compatibility.
+    const defaultRuntime = (visibleCodingRuntimes()[0] ?? 'claude-code') as RuntimeId;
+    const runtime = (b.runtime === undefined || b.runtime === '') ? defaultRuntime : String(b.runtime) as RuntimeId;
+    if (!isVisibleCodingRuntime(runtime)) {
+      const allowed = visibleCodingRuntimes().join(', ') || Object.keys(CODING_RUNTIMES).join(', ');
+      return sendJson(res, 400, { error: `runtime must be one of: ${allowed}` });
+    }
     // Validate the tuning AGAINST that runtime, so a model belonging to another CLI is refused at
     // creation rather than at the first launch (`opus` on Codex, a bare `claude-*` on opencode, …).
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b, runtime);
@@ -5048,11 +5051,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // picker can offer to INSTALL a runtime this box lacks, instead of saving a choice whose every
       // session would park on "the 'x' CLI is not on PATH".
       const present = new Map(runtimePresence().map((r) => [r.id, r]));
-      const runtimes = Object.values(CODING_RUNTIMES).map((r) => ({
-        id: r.id, label: r.label, suggestedModels: r.suggestedModels, capabilities: r.capabilities,
-        bin: r.bin, install: r.install.join(' '),
-        installed: present.get(r.id)?.installed ?? false, version: present.get(r.id)?.version,
-      }));
+      const runtimes = visibleCodingRuntimes().map((id) => {
+        const r = CODING_RUNTIMES[id];
+        return {
+          id: r.id, label: r.label, suggestedModels: r.suggestedModels, capabilities: r.capabilities,
+          bin: r.bin, install: r.install.join(' '),
+          installed: present.get(r.id)?.installed ?? false, version: present.get(r.id)?.version,
+        };
+      });
       return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, outputStyle: ag.outputStyle, outputStyles: os.outputStyles.names(), examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, skills: ag.skills ?? [], tools: ag.tools ?? [], usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
@@ -5062,8 +5068,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     let runtime: RuntimeId = ag.runtime;
     if ('runtime' in b) {
       const want = String(b.runtime ?? '') as RuntimeId;
-      if (!isCodingRuntime(want)) {
-        return sendJson(res, 400, { error: `runtime must be one of: ${Object.keys(CODING_RUNTIMES).join(', ')}` });
+      if (!isVisibleCodingRuntime(want)) {
+        const allowed = visibleCodingRuntimes().join(', ') || Object.keys(CODING_RUNTIMES).join(', ');
+        return sendJson(res, 400, { error: `runtime must be one of: ${allowed}` });
       }
       runtime = want;
     }
@@ -5397,12 +5404,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const accounts = os.runtimeAccounts.list();
     // `liveCredentialKinds` rides along so the console offers only kinds that actually launch, and badges any
     // pre-existing row of a kind that doesn't (added before the launcher knew the difference) as never-used.
-    const runtimes = Object.values(CODING_RUNTIMES).map((s) => ({
-      id: s.id, label: s.label, credentialEnv: s.credentialEnv, liveCredentialKinds: s.liveCredentialKinds,
-      // Whether the console can produce a credential dir itself on THIS box (the flag is per-runtime,
-      // but uid isolation rules it out per-deployment), so the UI offers the guided path only when it works.
-      guidedLogin: tm.logins.supported(s.id).ok,
-    }));
+    const runtimes = visibleCodingRuntimes().map((id) => {
+      const s = CODING_RUNTIMES[id];
+      return {
+        id: s.id, label: s.label, credentialEnv: s.credentialEnv, liveCredentialKinds: s.liveCredentialKinds,
+        // Whether the console can produce a credential dir itself on THIS box (the flag is per-runtime,
+        // but uid isolation rules it out per-deployment), so the UI offers the guided path only when it works.
+        guidedLogin: tm.logins.supported(s.id).ok,
+      };
+    });
     return sendJson(res, 200, { accounts, runtimes, logins: tm.logins.list(), refreshing });
   }
   // ── runtime presence + install ──────────────────────────────────────────────────────────────────
