@@ -473,6 +473,9 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   const reaper = setInterval(() => registry.forEach((rt) => {
     try { requestMetrics.phase('reaper:idleSpaces', () => rt.tm.reapIdleSpaces()); } catch { /* never let the sweep crash */ }
     try { requestMetrics.phase('reaper:idleSessions', () => rt.tm.reapIdleSessions()); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
+    // The inverse of the reaper: runs parked because every runtime account was rate-limited, launched as
+    // soon as one resets. Same 60s cadence, because a limit reset is only ever known to the minute.
+    try { requestMetrics.phase('reaper:capacityQueue', () => rt.tm.retryCapacityQueue()); } catch { /* a parked launch must never crash the sweep */ }
   }), 60_000);
   reaper.unref?.();
   // Process janitor: reap ttyd/tmux left behind pointing at tmux sockets that no longer exist, plus agent
@@ -3644,6 +3647,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // be attachable — the console renders its transcript read-only instead. The stay-paused sentinel
     // already makes attach.sh refuse; this is the honest error rather than a terminal that opens blank.
     if (tm.isPaused(id)) return sendJson(res, 409, { error: 'this session is paused — resume it to use its terminal' });
+    // Same shape, different reason: a queued run has no pane yet because it hasn't launched. Attaching
+    // would run attach.sh against a session that was deliberately not started, so say so instead.
+    if (tm.isQueuedForCapacity(id)) return sendJson(res, 409, { error: 'this session has not started yet — every runtime account is rate-limited; it starts on its own when one resets' });
     try {
       const attachUrl = await tm.attachUrl(id);
       return sendJson(res, attachUrl ? 200 : 404, attachUrl ? { url: attachUrl } : { error: 'unknown session' });

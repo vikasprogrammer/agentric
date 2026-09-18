@@ -398,9 +398,11 @@ export interface Session {
   title: string
   task: string
   tmux: string
-  /** `paused` is the one value that is neither live nor finished: a human suspended the run, its agent
-   *  was killed (freeing its memory) and its conversation is on disk waiting for `unpauseSession`. */
-  status: 'running' | 'done' | 'stopped' | 'crashed' | 'paused'
+  /** Two values are neither live nor finished. `paused`: a human suspended the run, its agent was killed
+   *  (freeing its memory) and its conversation is on disk waiting for `unpauseSession`. `queued`: the run
+   *  has not started at all — every runtime account was rate-limited at launch, so the server parked it and
+   *  launches it itself once one resets. */
+  status: 'running' | 'done' | 'stopped' | 'crashed' | 'paused' | 'queued'
   /** True when the tmux pane is alive now, regardless of the stored lifecycle `status` (an interactive
    *  session that reported `done` keeps a live pane). Undefined when the server couldn't poll tmux. */
   alive?: boolean

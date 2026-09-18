@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.448.0] - 2026-09-18
+### Added
+- **A run that only lacks a free account now waits for one instead of crashing.** When every runtime
+  account is rate-limited, rotation falls through to the box's own login — which on most boxes has never
+  been used and holds no tokens — so the launch pre-flight refused the run and reported it as a crashed
+  session. Live instawp: 21 of its last 22 `crashed` sessions were this, each card telling an admin to
+  re-login a credential that was not the problem, while the accounts that were reset themselves within the
+  hour. A temporary exhaustion now parks the run as **queued** (a new session status, with its own dot and
+  filter in Sessions), and the 60s sweep launches it by itself the moment an account frees up. A pool with
+  no reset time to wait for — empty, or all disabled — still refuses as before, and a wait past 6 hours
+  gives up with the original credential reason, so a weekly cap can't hide a run forever. Pinned by
+  `scripts/capacity-queue-test.cjs`.
+  **For admins:** A session that can't start because every Claude account is at its rate limit now says
+  "queued" and starts on its own when one resets, instead of showing up as a crash. [Open Sessions](#/sessions)
+
+### Fixed
+- **A credential record with no tokens no longer reports "expired on 1970-01-01".** `expiresAt: 0` is what
+  a record with neither an access nor a refresh token stores, not a date; every card and admin alert about
+  the box default on instawp rendered it as an expiry that never happened. It now reads "holds no usable
+  login — its credential record carries neither an access token nor a refresh token".
 ## [0.447.2] - 2026-09-18
 ### Fixed
 - **An app review card no longer outlives the review.** The Apps console acts on the app, never on the

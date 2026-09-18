@@ -2382,6 +2382,12 @@ export class TerminalManager {
     return this.db.prepare("SELECT 1 FROM term_sessions WHERE id = ? AND status = 'paused'").get(sessionId) != null;
   }
 
+  /** Parked at launch because every runtime account was rate-limited — no pane, no transcript, nothing to
+   *  attach to. The server launches it itself when an account resets (see {@link retryCapacityQueue}). */
+  isQueuedForCapacity(sessionId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM term_sessions WHERE id = ? AND status = 'queued'").get(sessionId) != null;
+  }
+
   reachable(sessionId: string): boolean {
     if (this.launching.has(sessionId)) return true; // scheduled; its pane is imminent
     const r = this.db.prepare('SELECT tmux, status FROM term_sessions WHERE id = ?').get<{ tmux: string; status: string }>(sessionId);
@@ -4186,20 +4192,45 @@ export class TerminalManager {
   private lastCredentialAlertAt = 0;
   private static readonly CREDENTIAL_ALERT_COOLDOWN_MS = 30 * 60_000;
 
-  /** Launch pre-flight for the run's credentials. True = proceed. False = the launch was REFUSED and the
-   *  session has already been marked crashed and explained to its owner; the caller must return.
+  /** Launch pre-flight for the run's credentials. True = proceed. False = the launch did NOT happen and
+   *  the session has already been queued (temporary) or marked crashed and explained to its owner
+   *  (permanent); the caller must return.
    *
    *  Fails CLOSED, unlike every other credential path here, because the alternative isn't a degraded run —
    *  it's a run that cannot authenticate at all. Falling through to the box default (the fail-open move
    *  everywhere else) does not help either: on macOS the box default reads through the SAME locked
-   *  keychain. */
-  private assertCredentialsUsable(env: Record<string, string>, o: { id: string; agent: string }, runtime: CodingRuntimeId): boolean {
+   *  keychain.
+   *
+   *  But "closed" is not the same as "failed". A pool whose accounts are all at their rate limit is a
+   *  capacity condition with a KNOWN reset time, and the box default we then fall through to is, on most
+   *  boxes, a login nobody has used since install. Crashing there reports an outage that is really a
+   *  queue: live instawp, 2026-09-17 — 21 of its last 22 `crashed` sessions were this, each card telling
+   *  an admin to re-login a credential that was not the problem, while the accounts that WERE the problem
+   *  reset themselves within the hour. So a temporary exhaustion parks the run instead (see
+   *  {@link queueForCapacity}); only a credential that no clock will fix still crashes. */
+  private assertCredentialsUsable(env: Record<string, string>, o: LaunchSpec, runtime: CodingRuntimeId): boolean {
     let blocked: CredentialBlock | null = null;
     try { blocked = preflightCredential(runtime, env); }
     catch { return true; }                              // a probe that can't run must never block a launch
     if (!blocked) return true;
+    // Only when rotation had somewhere to go and every stop is parked WITH a reset time. A pool that is
+    // empty, all-disabled, or parked with no recorded reset gives no moment to retry at, so it is not a
+    // queue — it is the refusal it always was.
+    const pool = this.poolCapacity(runtime);
+    if (pool && pool.until > Date.now()) return this.queueForCapacity(o, runtime, pool, blocked);
     this.refuseForCredential(o.id, o.agent, runtime, blocked);
     return false;
+  }
+
+  /** Is this runtime's pool exhausted-but-recovering — every enabled account rate-limited, with a reset
+   *  time to wait for? Null when rotation is inert (no pool), something is available, or nothing carries a
+   *  reset. Shared by the launch pre-flight and the queue's retry so the two agree on what "exhausted" is. */
+  private poolCapacity(runtime: CodingRuntimeId): { until: number; accounts: number } | null {
+    try {
+      const all = this.os.runtimeAccounts.allLimited(runtime);
+      if (!all.limited || !all.until) return null;
+      return { until: all.until, accounts: this.os.runtimeAccounts.enabledCount(runtime) };
+    } catch { return null; }
   }
 
   /**
@@ -4230,9 +4261,19 @@ export class TerminalManager {
    *  reply and the audit, so an operator never has to reconcile two accounts of the same refusal. */
   private static credentialBlockWhy(runtime: CodingRuntimeId, b: CredentialBlock): string {
     const label = CODING_RUNTIMES[runtime].label;
-    return b.reason === 'keychain_locked'
-      ? `the macOS login keychain is locked, so ${label} cannot read the credential for ${b.dir} — this run would start, authenticate as nobody and end with no work done`
-      : `the login in ${b.dir} expired on ${new Date(b.expiredAt).toISOString().slice(0, 16).replace('T', ' ')} UTC and has no refresh token left, so ${label} would start, get "Login expired · Please run /login" on its first call and end with no work done`;
+    if (b.reason === 'keychain_locked') {
+      return `the macOS login keychain is locked, so ${label} cannot read the credential for ${b.dir} — this run would start, authenticate as nobody and end with no work done`;
+    }
+    return `${TerminalManager.expiryPhrase(b.expiredAt, b.dir)}, so ${label} would start, get "Login expired · Please run /login" on its first call and end with no work done`;
+  }
+
+  /** How a dead credential reads in one clause. `expiresAt: 0` is not a date — it is what a record with no
+   *  token in it stores, and rendering it as one produced "expired on 1970-01-01 00:00 UTC" on every card
+   *  the instawp box raised, which sends an admin looking for an expiry event that never happened. */
+  private static expiryPhrase(expiredAt: number, dir: string): string {
+    return expiredAt > 0
+      ? `the login in ${dir} expired on ${new Date(expiredAt).toISOString().slice(0, 16).replace('T', ' ')} UTC and has no refresh token left`
+      : `${dir} holds no usable login — its credential record carries neither an access token nor a refresh token`;
   }
 
   /** Record a refused run: audit, crash the row, tell its owner, badge the pool account, alert admins.
@@ -4276,10 +4317,116 @@ export class TerminalManager {
         topic: 'credentials-expired',
         type: 'notification',
         title: `Agent runs are blocked — the ${label} login has expired`,
-        body: `The login in ${b.dir} expired on ${new Date(b.expiredAt).toISOString().slice(0, 16).replace('T', ' ')} UTC and carries no refresh token, so every session started with it would get "Login expired · Please run /login" on its first call. Runs are being refused rather than started and left to fail silently.\n\nSign that credential in again on the box:\n\n    CLAUDE_CONFIG_DIR=${b.dir} claude /login\n\nOr add a working account under Settings → Runtime → Runtime accounts, which is what sessions rotate onto when the box default is unusable.`,
+        body: `${TerminalManager.expiryPhrase(b.expiredAt, b.dir).replace(/^the login/, 'The login')}, so every session started with it would get "Login expired · Please run /login" on its first call. Runs are being refused rather than started and left to fail silently.\n\nSign that credential in again on the box:\n\n    CLAUDE_CONFIG_DIR=${b.dir} claude /login\n\nOr add a working account under Settings → Runtime → Runtime accounts, which is what sessions rotate onto when the box default is unusable.`,
         audience: { kind: 'admins' },
       });
     } catch { /* the audit line above is the durable record */ }
+  }
+
+  /**
+   * ── THE CAPACITY QUEUE ─────────────────────────────────────────────────────────────────────────
+   *
+   * A run that only lacks a free account is not a failed run; it is an early one. Park it here, retry it
+   * from the 60s sweep, and launch it the moment rotation can serve it.
+   *
+   * Deliberately IN MEMORY. A queued entry is a launch that has not started — no pane, no transcript, no
+   * cost — so the cheapest correct behaviour across a restart is to forget it and tell its owner, which
+   * is exactly what {@link retryCapacityQueue} does for any `queued` row it no longer holds a spec for.
+   * Persisting the spec would buy a launch that survives a deploy at the price of a second source of
+   * truth for what a session's environment was, and the environment (secrets, mints, member identity) is
+   * rebuilt at launch anyway.
+   *
+   * The ceiling matters more than the retry. A five-hour session window resets within the hour; a WEEKLY
+   * quota does not, and a run silently waiting out six days is the same silence as a crash with better
+   * manners. Past {@link CAPACITY_QUEUE_MAX_MS} the wait is given up on and the run crashes with the
+   * credential reason it originally had, so the failure is late but never invisible.
+   */
+  private readonly capacityQueue = new Map<string, { spec: LaunchSpec; runtime: CodingRuntimeId; queuedAt: number; until: number; blocked: CredentialBlock }>();
+
+  /** How long a run may wait for an account before the wait itself is treated as the failure. */
+  private static readonly CAPACITY_QUEUE_MAX_MS = 6 * 60 * 60_000;
+
+  /** Park a launch until an account frees up. Always returns false — the caller's launch does not proceed. */
+  private queueForCapacity(o: LaunchSpec, runtime: CodingRuntimeId, pool: { until: number; accounts: number }, blocked: CredentialBlock): boolean {
+    const now = Date.now();
+    this.capacityQueue.set(o.id, { spec: o, runtime, queuedAt: now, until: pool.until, blocked });
+    this.db.prepare("UPDATE term_sessions SET status = 'queued', busy_since = NULL, updated_at = ? WHERE id = ?").run(now, o.id);
+    this.audit(o.id, o.agent, 'session.launch.queued', { runtime, reason: 'every account is rate-limited', accounts: pool.accounts, until: pool.until, dir: blocked.dir });
+    const label = CODING_RUNTIMES[runtime].label;
+    this.addMessage({
+      type: 'notification', sessionId: o.id, agent: o.agent, status: 'open',
+      title: `Waiting for capacity — ${o.agent}`,
+      body: `All ${pool.accounts} ${label} ${pool.accounts === 1 ? 'account is' : 'accounts are'} at their rate limit, so this run has not started yet. It starts on its own once the first one resets${TerminalManager.resetPhrase(pool.until, now)}. Nothing has been lost — no turn ran and nothing was billed.`,
+      audienceKind: 'sessionOwner', audienceId: o.id,
+    });
+    return false;
+  }
+
+  /** " at 14:14 UTC (in about 40 min)" — the two halves an operator actually wants: when, and how long. */
+  private static resetPhrase(until: number, now: number): string {
+    const mins = Math.max(0, Math.round((until - now) / 60_000));
+    const when = new Date(until).toISOString().slice(11, 16);
+    const howLong = mins < 60 ? `in about ${mins} min` : `in about ${Math.round(mins / 60)}h`;
+    return ` at ${when} UTC (${howLong})`;
+  }
+
+  /**
+   * Retry every parked launch. Run from the process-wide 60s sweep (server.ts), never throws.
+   *
+   * Three outcomes per entry: the session is no longer waiting (stopped by a human, or the row is gone) →
+   * drop it; capacity is back → launch it; the ceiling passed → crash it with its original reason. Plus a
+   * fourth for the rows this process does not own: a `queued` row with no spec in memory is a launch its
+   * server restarted out from under, which can only be reported, not resumed.
+   */
+  retryCapacityQueue(): void {
+    const now = Date.now();
+    try {
+      for (const [id, q] of [...this.capacityQueue]) {
+        const row = this.db.prepare('SELECT status, agent FROM term_sessions WHERE id = ?').get<{ status: string; agent: string }>(id);
+        if (!row || row.status !== 'queued') { this.capacityQueue.delete(id); continue; }
+        if (now - q.queuedAt >= TerminalManager.CAPACITY_QUEUE_MAX_MS) {
+          this.capacityQueue.delete(id);
+          this.audit(id, q.spec.agent, 'session.launch.queue.expired', { runtime: q.runtime, waitedMs: now - q.queuedAt });
+          this.refuseForCredential(id, q.spec.agent, q.runtime, q.blocked);
+          continue;
+        }
+        // Still exhausted → keep waiting. `poolCapacity` re-reads the pool (recover() un-parks accounts
+        // whose reset has passed), so this is the same question the pre-flight asked, asked again.
+        if (this.poolCapacity(q.runtime)) continue;
+        this.capacityQueue.delete(id);
+        this.audit(id, q.spec.agent, 'session.launch.dequeued', { runtime: q.runtime, waitedMs: now - q.queuedAt });
+        this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'").run(now, id);
+        this.resolveQueuedCard(id);
+        this.launchAgentRuntime(q.spec);
+      }
+      this.expireOrphanedQueued(now);
+    } catch { /* a queue that can't be swept must never break the sweep */ }
+  }
+
+  /** `queued` rows this process has no spec for — a restart during the wait. Reported, not resumed: the
+   *  owner is told the run never started, rather than left with a row that will wait forever. */
+  private expireOrphanedQueued(now: number): void {
+    const rows = this.db.prepare("SELECT id, agent FROM term_sessions WHERE status = 'queued'").all<{ id: string; agent: string }>();
+    for (const r of rows) {
+      if (this.capacityQueue.has(r.id)) continue;
+      this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(now, r.id);
+      this.audit(r.id, r.agent, 'session.launch.queue.orphaned', { reason: 'the server restarted while this run was waiting for a runtime account' });
+      this.resolveQueuedCard(r.id);
+      this.addMessage({
+        type: 'completed', sessionId: r.id, agent: r.agent, status: 'open', outcome: 'crashed',
+        title: `Did not start — ${r.agent}`,
+        body: 'This run was waiting for a rate-limited runtime account to reset when the server restarted, so it never started. Nothing ran and nothing was billed — start it again when you want it.',
+        audienceKind: 'sessionOwner', audienceId: r.id,
+      });
+    }
+  }
+
+  /** Close the "waiting for capacity" card once the wait is over, either way — it is a status, and a
+   *  status that outlives the thing it described is just noise in an inbox. */
+  private resolveQueuedCard(sessionId: string): void {
+    try {
+      this.db.prepare("UPDATE messages SET status = 'resolved' WHERE session_id = ? AND type = 'notification' AND status = 'open' AND title LIKE 'Waiting for capacity%'").run(sessionId);
+    } catch { /* advisory */ }
   }
 
   /** Select a rotation-pool account for this runtime and point the session's credentials at it, via the
@@ -8894,8 +9041,11 @@ export class TerminalManager {
     // `paused` rides along with `running`: pausing is not a decision to end the run, so "stop" is still
     // available on a paused session and is how you say "I'm not coming back" — it writes the episode and
     // clears the paused stamp, which `running` alone would have left on the row forever.
-    if (r.status === 'running' || r.status === 'paused') {
+    // `queued` rides along too: a run parked for capacity has no pane to kill, but "stop" is how a human
+    // says they are no longer waiting. The status flip is what the retry sweep reads to drop the entry.
+    if (r.status === 'running' || r.status === 'paused' || r.status === 'queued') {
       this.db.prepare("UPDATE term_sessions SET status = 'stopped', busy_since = NULL, paused_at = NULL, paused_by = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+      if (r.status === 'queued') { this.capacityQueue.delete(sessionId); this.resolveQueuedCard(sessionId); }
     }
     this.clearNotifications(sessionId);
     // The agent that asked is now dead — no one can answer its open questions or act on its approvals.
