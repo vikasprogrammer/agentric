@@ -101,6 +101,23 @@ esac
 # names diverge fails loudly at the `*)` arm rather than silently allowing.
 case "$TOOL" in
   Bash|shell|local_shell|exec_command|unified_exec) CAP="shell.exec" ;;
+  # `Monitor` (claude-code) runs a shell command too — it streams a long-running script's stdout as
+  # events. Its `tool_input.command` has the SAME shape as Bash's, so routing it here gives the enricher
+  # the identical facts (ssh/curl host egress, destructive flags) with no change on the server. It was
+  # missing from BOTH this table and the launcher's hook matcher until v0.448.1, so every Monitor call
+  # was ungoverned: live transcripts show agents using it to `until ssh -i ~/.ssh/<key> root@<host> …`
+  # and to write files, with no policy check, no approval and no audit row. This is the same class as the
+  # cross-session-messaging channel in CLAUDE.md — a new release adds a tool that reaches outside the
+  # session, and an allow-by-default `*)` arm lets it through. Re-diff on every claude upgrade.
+  Monitor)
+    # The `ws` form opens a WebSocket instead of running a command, so there is no command to classify
+    # and no host fact the enricher can compute from it. Refuse it rather than pass an empty command to
+    # the gate (which would classify as a bare, factless shell.exec and read as allowed): the governed
+    # way to reach a socket is a Bash command, which is gated on its text.
+    if printf '%s' "$INPUT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{let i={};try{i=JSON.parse(d||"{}")}catch(e){};process.exit(!i.command && i.ws ? 0 : 1)})' 2>/dev/null; then
+      emit deny "Agentric: Monitor's WebSocket form (ws) is not governed — the gate can only classify a shell command. Use Monitor with a \`command\` (e.g. a websocat/curl poll), which is gated like any Bash call."
+    fi
+    CAP="shell.exec" ;;
   # File writes go through the gateway too (the enricher decides inside-vs-outside the agent's folder
   # from the path in tool_input). The hook stays dumb transport — it only names the capability.
   # `apply_patch` is Codex's editor tool and DOES fire PreToolUse (verified), so writes are gated there
