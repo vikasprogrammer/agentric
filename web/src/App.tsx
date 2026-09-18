@@ -114,7 +114,7 @@ function mergeSessionRows(prev: Session[], fresh: Session[]): Session[] {
  *
  *  `headless` is deliberately NOT in the dot any more: the hollow ring now means "not busy", and the
  *  unattended/interactive axis has its own marker (ModeBadge / the sidebar's Cpu glyph). */
-type SessionState = 'waiting' | 'working' | 'idle' | 'paused' | 'stopped' | 'crashed' | 'done'
+type SessionState = 'waiting' | 'working' | 'idle' | 'queued' | 'paused' | 'stopped' | 'crashed' | 'done'
 
 /** Resolve a session's state. `waiting` may be forced by the caller — the console unions the
  *  server-authoritative `s.blocked` with open `notification` cards (a runtime permission prompt raises
@@ -122,8 +122,10 @@ type SessionState = 'waiting' | 'working' | 'idle' | 'paused' | 'stopped' | 'cra
 const sessionState = (s: Session, waiting = false): SessionState =>
   waiting || s.blocked ? 'waiting'
     : isLive(s) ? (s.working ? 'working' : 'idle')
-    // `paused` is checked before the terminal states and is deliberately NOT one of them: the run hasn't
-    // finished, it is suspended mid-conversation and one click from being live again.
+    // `queued` and `paused` are both checked before the terminal states and are deliberately NOT ones:
+    // a queued run has not started yet (every runtime account is rate-limited — it launches itself when
+    // one resets), and a paused one is suspended mid-conversation, one click from being live again.
+    : s.status === 'queued' ? 'queued'
     : s.status === 'paused' ? 'paused'
     : s.status === 'stopped' ? 'stopped'
     : s.status === 'crashed' ? 'crashed'
@@ -193,6 +195,7 @@ const STATE_META: Record<SessionState, { label: string; role: StatusRole; icon: 
   waiting: { label: 'needs you', role: 'needsHuman', ...ROLE.needsHuman, dot: 'bg-amber-400 motion-safe:animate-pulse', tip: 'blocked on you — a question or an approval is waiting' },
   working: { label: 'working', role: 'busy', ...ROLE.busy, dot: 'bg-emerald-500 motion-safe:animate-pulse', tip: 'a turn is running right now' },
   idle: { label: 'ready', role: 'ready', ...ROLE.ready, dot: 'border border-emerald-500 bg-emerald-500/20', tip: 'live session, nothing running — the turn finished, your move' },
+  queued: { label: 'queued', role: 'queued', ...ROLE.queued, dot: 'bg-muted-foreground/40', tip: 'waiting for a runtime account — every one is rate-limited; this run starts itself when the first resets' },
   paused: { label: 'paused', role: 'paused', ...ROLE.paused, dot: 'bg-sky-500', tip: 'suspended by a human — the agent was stopped, the conversation is kept; resume to pick it up' },
   stopped: { label: 'stopped', role: 'halted', ...ROLE.halted, dot: 'bg-amber-500', tip: 'halted by a human or the idle reaper' },
   crashed: { label: 'crashed', role: 'crashed', ...ROLE.crashed, dot: 'bg-red-500', tip: 'the pane died without an end signal' },
@@ -280,7 +283,7 @@ const verdictOf = (outcome?: string): Verdict | undefined => (outcome ? VERDICT_
 const resultLabel = (s: Session, waiting = false): string => {
   if (waiting || s.blocked || isLive(s)) return statusLabel(s, waiting)
   // A paused run has no result — it hasn't finished. Say the status, don't reach for an outcome.
-  if (s.status === 'crashed' || s.status === 'stopped' || s.status === 'paused') return s.status
+  if (s.status === 'crashed' || s.status === 'stopped' || s.status === 'paused' || s.status === 'queued') return s.status
   if (!s.outcome) return s.status              // not stamped yet — fall back to the process view
   const v = verdictOf(s.outcome)
   return v ? VERDICT_META[v].label : s.outcome // an unmapped value prints as the agent wrote it
@@ -292,6 +295,7 @@ const resultLabel = (s: Session, waiting = false): string => {
 const resultTone = (s: Session, waiting = false): string => {
   if (waiting || s.blocked || isLive(s)) return STATE_META[sessionState(s, waiting)].tone
   if (s.status === 'crashed') return 'text-red-600'
+  if (s.status === 'queued') return STATE_META.queued.tone
   if (s.status === 'paused') return STATE_META.paused.tone
   const v = verdictOf(s.outcome)
   if (v && v !== 'none') return VERDICT_META[v].tone
@@ -426,7 +430,7 @@ const sessionSource = (s: Session): SessionSource => {
 // `chains` is not a lifecycle state — it narrows to sessions that took part in a HAND-OFF (a caller
 // that delegated, or a delegate). It rides in this filter because that's where people already look to
 // cut the list down, and it's resolved in `filtered` (it needs the whole list to know who called whom).
-type SessionStatusFilter = 'all' | 'live' | 'working' | 'blocked' | 'chains' | 'done' | 'paused' | 'stopped' | 'crashed'
+type SessionStatusFilter = 'all' | 'live' | 'working' | 'blocked' | 'chains' | 'done' | 'queued' | 'paused' | 'stopped' | 'crashed'
 const matchesStatus = (s: Session, f: SessionStatusFilter): boolean =>
   f === 'all' || f === 'chains' ? true   // `chains` is applied separately — it needs the whole list
     : f === 'live' ? isLive(s)
@@ -437,7 +441,7 @@ const matchesStatus = (s: Session, f: SessionStatusFilter): boolean =>
 // Filter labels — shared by the dropdown options AND the collapsed trigger (base-ui's SelectValue
 // renders the raw value unless given a formatter, so the two must read from one source).
 const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
-  { all: 'All statuses', live: 'Live', working: 'Working', blocked: 'Needs you', chains: 'Hand-offs', done: 'Done', paused: 'Paused', stopped: 'Stopped', crashed: 'Crashed' }
+  { all: 'All statuses', live: 'Live', working: 'Working', blocked: 'Needs you', chains: 'Hand-offs', done: 'Done', queued: 'Queued', paused: 'Paused', stopped: 'Stopped', crashed: 'Crashed' }
 const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
@@ -4176,6 +4180,8 @@ const nodeState = (n: ChainNode): { label: string; tone: string; icon: LucideIco
   if (nodeLive(n)) return shared(n.working ? 'working' : 'idle', true)
   if (n.duplicateOf) return { label: 'duplicate', tone: 'text-amber-600', icon: CopyIcon, anim: '' }
   if (n.status === 'crashed') return shared('crashed')
+  // A queued run has no outcome to look up — it never started.
+  if (n.status === 'queued') return shared('queued')
   // Before the outcome lookup: a paused run may carry an outcome from an earlier `report` in the same
   // conversation, and printing that would claim the run is over when it is suspended mid-flight.
   if (n.status === 'paused') return shared('paused')
@@ -12713,6 +12719,7 @@ function fmtBytes(n: number): string {
 function runVerdict(r: TaskRun): { label: string; cls: string; role: StatusRole } {
   if (r.alive) return { label: STATE_META.working.label, cls: STATE_META.working.tone, role: 'busy' }
   if (r.status === 'paused') return { label: STATE_META.paused.label, cls: STATE_META.paused.tone, role: 'paused' }
+  if (r.status === 'queued') return { label: STATE_META.queued.label, cls: STATE_META.queued.tone, role: 'queued' }
   const v = verdictOf((r.outcome || '').toLowerCase())
   if (v && v !== 'none') return { label: VERDICT_META[v].label, cls: VERDICT_META[v].tone, role: v === 'success' ? 'ok' : v === 'partial' ? 'partial' : 'failed' }
   if (r.status === 'crashed') return { label: STATE_META.crashed.label, cls: STATE_META.crashed.tone, role: 'crashed' }
