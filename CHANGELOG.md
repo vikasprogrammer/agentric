@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.448.1] - 2026-09-18
+### Fixed
+- **`Monitor` was an ungoverned shell.** claude-code's `Monitor` tool runs an arbitrary shell command
+  (it streams a long-running script's stdout back as events), and it appeared in neither
+  `gate-hook.sh`'s routing table nor the PreToolUse matcher `claude-launch.sh` writes — so it hit the
+  allow-by-default `*)` arm with no policy check, no approval and no audit row. Live transcripts on two
+  tenants show agents using it to `until ssh -i ~/.ssh/<key> root@<host> …`, to write files and to mint
+  tokens, all of it invisible to the gateway. `Monitor` is now matched and routed to `shell.exec`: its
+  `tool_input.command` has the same shape as Bash's, so the enricher computes the identical facts
+  (host egress, destructive flags) with no server change. Its `ws` form carries no command the gate can
+  classify and is refused locally rather than passed on as a factless `shell.exec`.
+  `scripts/gate-tool-coverage-test.cjs` (new, in `test:governance`) drives the real hook against a stub
+  gate and asserts the matcher and the routing table agree — the pairing nothing checked before.
+  **For admins:** Commands an agent runs through `Monitor` (waiting on a build, tailing a log) are now
+  governed exactly like Bash, so a risky one can pause for your approval and all of them show up in
+  Audit.
+
 ## [0.448.0] - 2026-09-18
 ### Added
 - **A run that only lacks a free account now waits for one instead of crashing.** When every runtime

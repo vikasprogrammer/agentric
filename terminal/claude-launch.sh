@@ -243,7 +243,7 @@ $OUTPUT_STYLE_LINE
   },
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Glob|Grep|NotebookRead|mcp__.*", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
+      { "matcher": "Bash|Monitor|Edit|Write|MultiEdit|NotebookEdit|Read|Glob|Grep|NotebookRead|mcp__.*", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
     ],
     "Notification": [
       { "hooks": [ { "type": "command", "command": "bash '$NOTIFY_HOOK'" } ] }
