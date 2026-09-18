@@ -28,6 +28,22 @@ new version heading in the same commit.
   a record with neither an access nor a refresh token stores, not a date; every card and admin alert about
   the box default on instawp rendered it as an expiry that never happened. It now reads "holds no usable
   login — its credential record carries neither an access token nor a refresh token".
+## [0.447.2] - 2026-09-18
+### Fixed
+- **An app review card no longer outlives the review.** The Apps console acts on the app, never on the
+  card, so nothing ever closed an `app.proposed` card: an app published weeks ago still read "awaiting
+  review" in Needs you, with no button to clear it (live: five cards on one tenant, the oldest two months
+  old — the same bug the skills lane fixed in v0.404.1). Publishing an app now closes its card, deleting
+  one closes it too, and a boot sweep heals cards the old routes left behind, re-deriving each from the
+  apps store — published reads as approved, gone as rejected. A card whose app is still sitting
+  unpublished is left open, because that one is genuinely pending; unpublishing doesn't close a card
+  either, since an agent's edit to a live app unpublishes it precisely to ask for a re-review. Every
+  review card also gained a **Dismiss** button — the manual escape hatch for one whose subject was
+  handled outside the console (a per-member hide, exactly what "dismiss all" already did in bulk; the
+  proposal itself stays open on its own page for everyone else).
+  **For users:** Publishing or deleting an app now clears its "awaiting review" card from your Inbox, old
+  stragglers are cleaned up on the next restart, and any review card can be dismissed on the spot.
+  [Open Inbox](#/inbox)
 
 ## [0.447.1] - 2026-09-17
 ### Fixed

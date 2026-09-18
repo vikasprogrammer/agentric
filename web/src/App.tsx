@@ -7067,12 +7067,14 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
           <Button render={<a href={navHref(review.page, review.detail)} />} size="sm" variant={canDecide ? 'ghost' : 'default'} className="h-7 px-2.5 text-xs">
             {canDecide ? 'See the full diff' : `Review in ${review.label}`}
           </Button>
-          {/* An OS notice, not an agent's proposal: there is nothing to approve or reject, so without this
-              a human who has already fixed the problem has no way to clear the card. It also self-heals
-              server-side on the next connection refresh — this is the manual escape hatch. */}
-          {m.type === 'connection.expired' && (
-            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onDismiss(m.id)}>Dismiss</Button>
-          )}
+          {/* Every review card needs a way out. Each one is resolved on its own page, not here, so a card
+              whose subject was already handled elsewhere (or outside the console entirely) would otherwise
+              sit in "Needs you" forever — which is exactly what happened to app/skill proposal cards for
+              months. The routes now close their own cards, and this is the manual escape hatch for the
+              rest. It only hides the card for THIS member (`message_state`); the proposal itself stays
+              open and actionable on its page, and everyone else still sees it. "dismiss all" already
+              cleared these in one blunt sweep — this is the per-card version of the same act. */}
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onDismiss(m.id)}>Dismiss</Button>
           {isAgentEdit && !canDecide && <span className="text-[11px] text-muted-foreground">an owner has to approve this one</span>}
           {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
         </div>
