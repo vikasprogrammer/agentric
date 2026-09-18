@@ -11,6 +11,7 @@
 #   scripts/make-live.sh --dry-run       # show what WOULD deploy, change nothing
 #   scripts/make-live.sh --skip-tests    # skip the governance suite gate
 #   scripts/make-live.sh --force         # discard local changes in a live checkout
+#   scripts/make-live.sh --force-lock    # break another run's lock (see below) and deploy anyway
 #
 # WHICH tenants belong to your box is your deployment's business, not this repo's — it comes from an
 # untracked env file (see below). Either form works:
@@ -54,6 +55,11 @@
 #  - EVERY checkout lands on the SAME commit: $REF is resolved once, up front, and each checkout is
 #    pinned to that sha. Resolving per-checkout raced whoever was merging — a box that fetched a second
 #    later deployed a different commit, and the run still reported success.
+#  - ONE deploy at a time per box (the lock below). Two runs at once share every live checkout, so the
+#    second one's `git reset --hard` lands in the middle of the first one's build: the first then
+#    restarts a service with a binary built from a commit it never resolved, and reports success
+#    against the version it was told to expect. On 2026-09-17 two sessions ran this concurrently and it
+#    was harmless ONLY because both happened to be deploying the same sha — luck, not design.
 set -euo pipefail
 
 ENV_FILE="${AOS_LIVE_ENV:-$HOME/.agentric-live.env}"
@@ -62,15 +68,17 @@ ENV_FILE="${AOS_LIVE_ENV:-$HOME/.agentric-live.env}"
 
 REF="${AOS_LIVE_REF:-origin/main}"
 
-DRY=0; SKIP_TESTS=0; FORCE=0; ONLY=""
+DRY=0; SKIP_TESTS=0; FORCE=0; FORCE_LOCK=0; ONLY=""
+ORIG_ARGS="$*"   # recorded in the lock meta, so a refusal can say what the holder is doing
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)    DRY=1 ;;
     --skip-tests) SKIP_TESTS=1 ;;
     --force)      FORCE=1 ;;
+    --force-lock) FORCE_LOCK=1 ;;
     --only)       shift; ONLY="${1:?--only needs a tenant slug}" ;;
     --only=*)     ONLY="${1#--only=}" ;;
-    -h|--help)    sed -n '2,48p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,62p' "$0"; exit 0 ;;
     *)            echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -79,6 +87,95 @@ done
 say()  { printf '\033[36m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+
+# ── one deploy at a time on this box ─────────────────────────────────────────────
+# Every live checkout is shared by whoever runs this, so two concurrent runs are two `git reset --hard`s
+# racing each other's builds. `mkdir` is the lock because it is atomic on every POSIX filesystem and needs
+# no `flock` (macOS ships none) — the directory IS the mutex, and the meta file inside only explains who
+# holds it.
+#
+# Fail fast rather than queue: a deploy that waits ten minutes and then runs against whatever `main` has
+# become by then is its own surprise. The refusal names the holder and prints the two ways out.
+#
+# Staleness is a live PID plus a ceiling. `kill -0` catches the common case (a run that was Ctrl-C'd or
+# whose terminal died), and the age ceiling catches the rest — a wedged run, or the PID being reused by
+# something else. No deploy has ever taken an hour, so a lock older than the ceiling is debris.
+#
+# Scope: this guards one BOX. Two different machines deploying to the same REMOTE tenant still race; that
+# needs a lock on the remote side and is not what bit us.
+LOCK="${AOS_LIVE_LOCK:-$HOME/.agentric-live.lock}"
+LOCK_MAX_AGE="${AOS_LIVE_LOCK_MAX_AGE:-7200}"   # seconds; 0 disables the ceiling
+LOCK_HELD=0                                      # 1 once WE own it — the loser must never release it
+
+# Seconds since the lock dir was created, or 0 when that can't be read.
+#
+# BSD and GNU `stat` do not merely differ in FORMAT, they disagree on what `-f` MEANS: on BSD it
+# introduces the format string, on GNU it is `--file-system` and `%m` is read as another FILE operand.
+# So on Linux the BSD attempt prints a filesystem dump beginning `File: "…"` to stdout and THEN fails —
+# and chaining the two with `||` inside one `$(…)` captures that dump along with the GNU answer. The
+# multi-line result reached `$(( … ))`, which evaluated `File` as a variable and, under `set -u`, killed
+# the script mid-lock with `File: unbound variable`. Caught by CI, invisible on the macOS box.
+#
+# So: try each separately, and accept a candidate only if it is all digits. That also makes any other
+# userland surprise degrade to "age unknown" instead of a crash.
+lock_age() {
+  local t=""
+  t="$(stat -f %m "$LOCK" 2>/dev/null || true)"                                   # BSD/macOS
+  case "$t" in ''|*[!0-9]*) t="$(stat -c %Y "$LOCK" 2>/dev/null || true)" ;; esac  # GNU/Linux
+  case "$t" in ''|*[!0-9]*) echo 0; return ;; esac
+  echo $(( $(date +%s) - t ))
+}
+
+release_lock() { [ "$LOCK_HELD" = 1 ] && rm -rf "$LOCK"; LOCK_HELD=0; }
+# ONE exit trap for the whole script — the scratch-state dir below is created later, so cleanup has to
+# tolerate it not existing yet.
+cleanup() { [ -n "${STATE:-}" ] && rm -rf "$STATE"; release_lock; return 0; }
+
+acquire_lock() {
+  local age holder pid started
+  if mkdir "$LOCK" 2>/dev/null; then
+    LOCK_HELD=1
+    printf 'pid=%s\nuser=%s\nstarted=%s\nargs=%s\n' "$$" "${USER:-?}@$(hostname -s 2>/dev/null || echo '?')" "$(date '+%Y-%m-%d %H:%M:%S')" "${ORIG_ARGS:-}" > "$LOCK/meta" 2>/dev/null || true
+    return 0
+  fi
+  # Held. Decide whether the holder is real before refusing — a lock nothing can release is worse than
+  # no lock at all.
+  #
+  # Read the meta into a variable FIRST rather than sed-ing the file per field. Under `set -euo pipefail`
+  # a `sed missing-file | head` pipeline exits non-zero, which killed the script outright — silently, with
+  # the lock still in place. The one case that reaches it is an interrupted writer (dir created, meta not
+  # yet written), i.e. precisely the debris this branch exists to clear.
+  local meta=""
+  if [ -r "$LOCK/meta" ]; then meta="$(cat "$LOCK/meta" 2>/dev/null || true)"; fi
+  pid="$(printf '%s\n' "$meta" | sed -n 's/^pid=//p' | head -1)"
+  started="$(printf '%s\n' "$meta" | sed -n 's/^started=//p' | head -1)"
+  holder="$(printf '%s\n' "$meta" | sed -n 's/^user=//p' | head -1)"
+  age="$(lock_age)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null \
+     && { [ "$LOCK_MAX_AGE" = 0 ] || [ "$age" -lt "$LOCK_MAX_AGE" ]; }; then
+    [ "$FORCE_LOCK" = 1 ] || fail "another deploy is already running on this box (pid $pid, ${holder:-?}, started ${started:-?}).
+  Deploys share every live checkout, so running two at once can restart a service on a half-synced build.
+  Wait for it to finish, or — if you are certain it is dead — re-run with --force-lock."
+    warn "--force-lock: breaking the lock held by pid $pid (${holder:-?}, started ${started:-?})"
+  else
+    # Nobody home: a dead PID, a lock past the ceiling, or a meta we could not read at all.
+    warn "clearing a stale deploy lock at $LOCK (pid ${pid:-unknown}, age ${age}s) — no live holder"
+  fi
+  rm -rf "$LOCK"
+  mkdir "$LOCK" 2>/dev/null || fail "could not take the deploy lock at $LOCK"
+  LOCK_HELD=1
+  printf 'pid=%s\nuser=%s\nstarted=%s\nargs=%s\n' "$$" "${USER:-?}@$(hostname -s 2>/dev/null || echo '?')" "$(date '+%Y-%m-%d %H:%M:%S')" "${ORIG_ARGS:-}" > "$LOCK/meta" 2>/dev/null || true
+}
+
+trap cleanup EXIT
+if [ "$DRY" = 1 ]; then
+  # A dry run changes nothing, so it is never the thing that corrupts a checkout — refusing it would only
+  # take away the tool you reach for to find out what the other run is doing. Say the deploy is in flight
+  # (its report will be read against a moving checkout) and carry on.
+  [ -d "$LOCK" ] && warn "note: a deploy is in progress on this box — this dry run reads checkouts it is moving"
+else
+  acquire_lock
+fi
 
 # ── the target list ──────────────────────────────────────────────────────────────
 # Normalised to one `tenant:checkout:port:label` line per tenant, so everything below iterates over a
@@ -148,8 +245,7 @@ fi
 
 # Per-checkout scratch state (bash 3.2 on macOS has no associative arrays): one file per checkout,
 # named after its path, holding the commit it was on before the sync — that's what a rollback needs.
-STATE="$(mktemp -d)"
-trap 'rm -rf "$STATE"' EXIT
+STATE="$(mktemp -d)"   # cleaned up by the `cleanup` EXIT trap installed with the deploy lock above
 key_for() { printf '%s' "$1" | tr -c 'A-Za-z0-9' '_'; }
 
 log_for() {  # tenant → its server.log (AOS_LIVE_LOG only names the single-tenant one)

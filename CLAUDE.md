@@ -92,7 +92,13 @@ terminal in a test". Leftovers show as `ttyd … attach.sh /tmp/aos-*-test-*/tmu
   untracked `~/.agentric-live.env`) — a second tenant on the box silently keeping old code because the
   script only kicked one launchd label was a real recurring bug. All builds run BEFORE any restart, so a
   bad commit leaves every server untouched; `--only <tenant>` narrows it, `--dry-run` shows what would
-  deploy. The manual
+  deploy. It also takes a **box-wide lock** (`~/.agentric-live.lock`): two concurrent runs share every
+  live checkout, so the second one's `git reset --hard` lands inside the first one's build and the first
+  restarts a service on a binary it never resolved — while reporting success, because it verifies
+  `/health` against the version it *expected*. Two sessions did exactly this on 2026-09-17 and got away
+  with it only because both were on the same sha. A second run now fails fast naming the holder; a dead
+  or ancient lock clears itself, and `--force-lock` breaks one deliberately. `--dry-run`/`--help` are
+  never blocked. The manual
   equivalent is `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`; logs at
   `~/agent-os-data/northwind/server.log`; load/unload with `launchctl load -w|unload <plist>`.)
 - **Agent-facing MCP tools (`src/memory/memory-mcp.ts` — `recall`/`remember`/`revise`/`forget`, the

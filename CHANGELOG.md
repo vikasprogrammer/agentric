@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.448.4] - 2026-09-18
+### Fixed
+- **`make-live.sh` takes a lock: one deploy at a time per box.** Every live checkout is shared by whoever
+  runs the deploy, so two concurrent runs are two `git reset --hard`s racing each other's builds — the
+  second moves a checkout out from under the first one's `npm run build`, and the first then restarts a
+  service with a binary built from a commit it never resolved, reporting success because it verifies
+  `/health` against the version it was *told* to expect. On 2026-09-17 two sessions ran this concurrently
+  against all four tenants; it was harmless only because both happened to be deploying the same sha.
+  The lock is an atomic `mkdir` (no `flock`, which macOS doesn't ship) holding a meta file, and a second
+  run fails fast naming the holder's pid, user and start time rather than queueing behind it. A lock that
+  can't be released would be worse than none, so: a dead holder is cleared automatically, one past an age
+  ceiling (`AOS_LIVE_LOCK_MAX_AGE`, default 2h) is cleared even with a live pid, an unreadable meta is
+  cleared, `--force-lock` breaks one on purpose, and the loser never deletes the winner's lock.
+  `--dry-run` and `--help` still work while a deploy is in flight (a dry run warns that it is reading
+  checkouts another run is moving). Pinned by `scripts/make-live-lock-test.cjs`.
+  ⚠ BSD and GNU `stat` disagree on what `-f` MEANS (format string vs `--file-system`), so chaining the
+  two with `||` inside one `$(…)` captured GNU's `File: "…"` dump alongside the answer — the multi-line
+  result reached `$(( … ))`, which under `set -u` killed the script mid-lock with `File: unbound
+  variable`. Green on macOS, dead on every Linux box; caught by CI and fixed by validating each
+  candidate is all digits.
+  **For admins:** Two deploys can no longer run at once on the same box — the second is refused with the
+  first one's pid, rather than silently corrupting its build.
+
 ## [0.448.2] - 2026-09-18
 ### Fixed
 - **The waiting note no longer teaches a pattern the harness blocks.** It told every agent to wait by
