@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.448.5] - 2026-09-22
+### Fixed
+- **Two synchronous paths could freeze a whole tenant's server.** Both hit globex on 2026-09-22: `/health`
+  dead, listen backlog full, no DB write for two hours. (1) Every `tmux` call in `LocalSessionBackend` is a
+  `spawnSync`, and one `send-keys -l` (a task-reconcile poke-back) waited 1h55m on a tmux server reply that
+  never came, holding every request, gate check and scheduler tick behind it. All tmux calls now time out
+  after 5s (SIGKILL). A timed-out call reads as "unknown / not delivered", which every caller already
+  handles. (2) Memory maintenance's `planConsolidation` normalised content inside its inner loop (n²/2
+  regex passes). After the unblock, one agent's 5.2k vector-less memories pinned the process at 100% CPU for
+  ~5 minutes. Content is now normalised once and exact duplicates come from a map, so a group with no
+  vectors is linear: 13.8s → 65ms at that size, with identical merge plans. `maintain` also yields between
+  groups. Pinned by `scripts/event-loop-freeze-test.cjs`.
+
 ## [0.448.4] - 2026-09-18
 ### Fixed
 - **`make-live.sh` takes a lock: one deploy at a time per box.** Every live checkout is shared by whoever

@@ -231,6 +231,9 @@ export class SqliteMemoryProvider implements MemoryProvider {
         });
       }
       for (const [key, arr] of groups) {
+        // Yield between groups: a vector-carrying group is still an O(n²) cosine scan, and one agent's
+        // plan must not hold every other request behind it for the whole sweep.
+        await new Promise<void>((r) => setImmediate(r));
         const [gTenant, gAgent] = key.split('\0');
         for (const op of planConsolidation(arr, opts.dedupeThreshold)) {
           this.db.prepare('UPDATE memories SET importance = ?, recall_count = ? WHERE id = ?')
