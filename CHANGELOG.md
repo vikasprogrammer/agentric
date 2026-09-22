@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.448.6] - 2026-09-22
+### Fixed
+- **An agent's git commands can no longer reach the Agentric checkout.** An agent's folder usually isn't a
+  repo, so git walks up, and where the data home sits inside the product checkout it lands in agent-os
+  itself. On globex an engineer run did `cd <a work dir that no longer existed>` followed, unchained, by
+  `git remote set-url origin …client-app` + `git reset --hard`. The cd failed, and the product's own source
+  was replaced by another repo (`terminal/` gone, so every later session crashed on launch, for 80 minutes).
+  Every launch now exports `GIT_CEILING_DIRECTORIES` = the agents folder. Repos inside an agent's folder
+  are unaffected. Pinned by `scripts/git-ceiling-test.cjs`.
+
 ## [0.448.5] - 2026-09-22
 ### Fixed
 - **Two synchronous paths could freeze a whole tenant's server.** Both hit globex on 2026-09-22: `/health`
