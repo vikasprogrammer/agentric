@@ -93,19 +93,33 @@ export function planConsolidation(rows: ConsolidateRow[], dedupeThreshold?: numb
   const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
   const sorted = [...rows].sort((a, b) =>
     (b.importance ?? 0.5) - (a.importance ?? 0.5) || b.recallCount - a.recallCount || b.ts - a.ts);
+  // Normalise ONCE per row. This used to run inside the inner loop — n²/2 regex passes over ~1KB bodies —
+  // and since the whole plan is synchronous it held the server's event loop: globex 2026-09-22, one agent
+  // with 5.2k vector-less memories pinned the process at 100% CPU for ~5 minutes (every request dead).
+  // Exact duplicates now come from a content→indices map, so a group with no vectors is O(n); the pairwise
+  // scan runs only where a near-dup comparison is actually possible.
+  const normed = sorted.map((r) => norm(r.content));
+  const byContent = new Map<string, number[]>();
+  normed.forEach((c, i) => { const a = byContent.get(c); if (a) a.push(i); else byContent.set(c, [i]); });
+  const nearOn = dedupeThreshold != null;
   const taken = new Set<string>();
   const ops: MergeOp[] = [];
   for (let i = 0; i < sorted.length; i++) {
     const anchor = sorted[i];
     if (taken.has(anchor.id)) continue;
-    const aContent = norm(anchor.content);
     const dups: ConsolidateRow[] = [];
-    for (let j = i + 1; j < sorted.length; j++) {
-      const cand = sorted[j];
-      if (taken.has(cand.id)) continue;
-      const exact = norm(cand.content) === aContent;
-      const near = dedupeThreshold != null && !!anchor.vec && !!cand.vec && cosine(anchor.vec, cand.vec) >= dedupeThreshold;
-      if (exact || near) { dups.push(cand); taken.add(cand.id); }
+    const exactIdx = new Set((byContent.get(normed[i]) ?? []).filter((j) => j > i));
+    if (nearOn && anchor.vec) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        const cand = sorted[j];
+        if (taken.has(cand.id)) continue;
+        if (exactIdx.has(j) || (!!cand.vec && cosine(anchor.vec, cand.vec) >= dedupeThreshold!)) { dups.push(cand); taken.add(cand.id); }
+      }
+    } else {
+      for (const j of exactIdx) {
+        const cand = sorted[j];
+        if (!taken.has(cand.id)) { dups.push(cand); taken.add(cand.id); }
+      }
     }
     if (dups.length) {
       taken.add(anchor.id);

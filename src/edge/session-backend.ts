@@ -100,6 +100,15 @@ const SUBMIT_ATTEMPTS = 2;
  *  Invalidated eagerly on spawn/kill, so this bounds only how stale an UNCHANGED-by-us world may read. */
 const ALIVE_POLL_TTL_MS = 1_000;
 
+/** Every synchronous tmux call is bounded. They answer in single-digit ms, but `spawnSync` holds the
+ *  whole single-threaded server until the child exits, and a tmux client can wait forever on a server
+ *  reply that never comes: globex 2026-09-22, one `send-keys -l` (a task-reconcile poke-back) sat in
+ *  `poll` for 1h55m while every request, gate check and scheduler tick queued behind it (listen backlog
+ *  full, `/health` dead, no DB write for two hours). A timed-out call reports `error` — which every
+ *  caller already reads as "unknown / not delivered" — instead of freezing the process. SIGKILL because
+ *  the stuck client is in a blocking poll and a polite signal buys nothing. */
+const TMUX_SYNC = { timeout: 5_000, killSignal: 'SIGKILL' as const };
+
 /** Block this thread for `ms`. The backend contract is synchronous, and the settle has to happen BETWEEN
  *  two tmux calls, so there is nowhere to await. Bounded by PASTE_SETTLE_MS × SUBMIT_ATTEMPTS (~1s). */
 function sleepSync(ms: number): void {
@@ -159,12 +168,12 @@ export class LocalSessionBackend implements SessionBackend {
                        ['set', '-g', 'mode-style', 'bg=#2563eb,fg=#ffffff'],
                        ['bind', '-T', 'copy-mode', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-selection-no-clear'],
                        ['bind', '-T', 'copy-mode-vi', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-selection-no-clear']]) {
-      spawnSync('tmux', ['-S', this.tmuxSocket, ...opt], { stdio: 'ignore' });
+      spawnSync('tmux', ['-S', this.tmuxSocket, ...opt], { ...TMUX_SYNC, stdio: 'ignore' });
     }
   }
 
   kill(_space: string, tmuxName: string): void {
-    spawnSync('tmux', ['-S', this.tmuxSocket, 'kill-session', '-t', tmuxName], { stdio: 'ignore' });
+    spawnSync('tmux', ['-S', this.tmuxSocket, 'kill-session', '-t', tmuxName], { ...TMUX_SYNC, stdio: 'ignore' });
     this.alivePoll = undefined; // we just changed the world — the next reader must see it
   }
 
@@ -191,12 +200,12 @@ export class LocalSessionBackend implements SessionBackend {
   injectText(_space: string, tmuxName: string, text: string, submit: boolean, _verify = true, enterPresses = SUBMIT_ATTEMPTS): boolean {
     // `-l` = literal: send the bytes as typed, not as tmux key names (a path could contain `;`, `-`,
     // etc.). Submit is a SEPARATE send-keys with the `Enter` key name so it's interpreted as a return.
-    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, '-l', text], { stdio: 'ignore' });
+    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, '-l', text], { ...TMUX_SYNC, stdio: 'ignore' });
     if (r.status !== 0) return false;
     if (!submit) return true;
     for (let attempt = 1; attempt <= Math.max(1, enterPresses); attempt++) {
       sleepSync(PASTE_SETTLE_MS * attempt);   // let the paste finish assembling before the Enter lands
-      spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, 'Enter'], { stdio: 'ignore' });
+      spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, 'Enter'], { ...TMUX_SYNC, stdio: 'ignore' });
     }
     return true;
   }
@@ -226,7 +235,7 @@ export class LocalSessionBackend implements SessionBackend {
   }
 
   private pollAliveNames(): Set<string> | null {
-    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-sessions', '-F', '#S'], { encoding: 'utf8' });
+    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-sessions', '-F', '#S'], { ...TMUX_SYNC, encoding: 'utf8' });
     // Distinguish "couldn't run the poll" from "tmux answered, no sessions". A transient spawn
     // failure (EAGAIN/ENOMEM/EMFILE under fork/memory pressure) sets r.error; treat that as UNKNOWN
     // (null) so the caller does NOT reap — otherwise one hiccup flips every live session to idle and,
@@ -241,7 +250,7 @@ export class LocalSessionBackend implements SessionBackend {
     // One tmux call maps every live pane to its root PID; one `ps` snapshot gives the whole process
     // table. We then sum RSS over each pane's subtree (the shell → node/claude → MCP children).
     // `-Ao pid=,ppid=,rss=` is portable across BSD (macOS) and GNU (Linux) ps; RSS is KiB on both.
-    const panes = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-panes', '-a', '-F', '#{session_name} #{pane_pid}'], { encoding: 'utf8' });
+    const panes = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-panes', '-a', '-F', '#{session_name} #{pane_pid}'], { ...TMUX_SYNC, encoding: 'utf8' });
     if (panes.error) return null;                 // couldn't poll tmux → unknown
     if (panes.status !== 0) return new Map();      // no server / no sessions → nothing to measure
     const ps = spawnSync('ps', ['-Ao', 'pid=,ppid=,rss='], { encoding: 'utf8' });
@@ -285,7 +294,7 @@ export class LocalSessionBackend implements SessionBackend {
 
   hasClient(_space: string, tmuxName: string): boolean | null {
     // `list-clients -t <session>` prints one line per attached ttyd/xterm client; empty → nobody watching.
-    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-clients', '-t', tmuxName, '-F', '#{client_name}'], { encoding: 'utf8' });
+    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-clients', '-t', tmuxName, '-F', '#{client_name}'], { ...TMUX_SYNC, encoding: 'utf8' });
     if (r.error) return null;              // couldn't poll → unknown (don't reap on a hiccup)
     if (r.status !== 0) return false;      // no such session / no server → nothing attached
     return (r.stdout || '').split('\n').some(Boolean);
@@ -293,7 +302,7 @@ export class LocalSessionBackend implements SessionBackend {
 
   capturePane(_space: string, tmuxName: string): string | null {
     // -p: print to stdout; -J: join wrapped lines; -S -: from the start of the scrollback history.
-    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'capture-pane', '-p', '-J', '-S', '-', '-t', tmuxName], { encoding: 'utf8' });
+    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'capture-pane', '-p', '-J', '-S', '-', '-t', tmuxName], { ...TMUX_SYNC, encoding: 'utf8' });
     if (r.error || r.status !== 0) return null;
     return r.stdout || '';
   }
