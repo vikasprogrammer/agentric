@@ -3066,6 +3066,14 @@ export class TerminalManager {
     // thread follow-ups are delivered by send-keys (see deliverToResident / reviveResident).
     if (o.resident) env.RESIDENT = '1';
     env.AGENT_DIR = manifest.dir;
+    // Fence git discovery at the agents folder. An agent's folder usually isn't a repo, so git walks UP —
+    // and where the data home sits inside the product checkout it lands in agent-os itself. globex
+    // 2026-09-22: an engineer run did `cd <a work dir that no longer existed>` then, unchained,
+    // `git remote set-url origin …client-app` + `git reset --hard origin/<branch>`. The cd failed, git
+    // resolved to the agent-os checkout, and the product's own source was replaced by another repo:
+    // `terminal/` gone, so every session launched afterwards crashed. Repos INSIDE the agent's folder
+    // (clones, worktrees, its own `git init`) are below the ceiling and unaffected.
+    try { env.GIT_CEILING_DIRECTORIES = fs.realpathSync(path.dirname(manifest.dir)); } catch { /* no dir → no walk to fence */ }
     env.HOOK = this.gateHookFor(runtime);
     // Tells the shared gate hook which tool→capability routing table to use.
     env.AOS_RUNTIME = runtime;
