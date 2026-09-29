@@ -31,11 +31,27 @@ import * as path from 'node:path';
 import { ApprovalLevel, EnrichPattern, Role, canApprove } from '../types';
 import { computeHostFacts, type HostGrant } from './host-match';
 import { screenInjection } from './semantic-guard';
+import type { ScriptBody } from './script-bodies';
 
 const DESTRUCTIVE: RegExp[] = [
   /\bdrop\s+(database|table|schema)\b/i,
   /\btruncate\b/i,
   /\bdelete\s+from\b(?![\s\S]*\bwhere\b)/i, // DELETE FROM ... with no WHERE → whole-table wipe
+  /\bmkfs\b/i,
+  /\bdd\s+(if|of)=/i,
+  /\bterraform\s+destroy\b/i,
+  /\bkubectl\s+delete\b/i,
+  /\bgit\s+push\s+(--force|-f)\b/i,
+];
+// What a script BODY an agent runs may contribute (script-bodies.ts). Deliberately narrower than a typed
+// command: the unambiguous destructive ops only. Two built-in heuristics are left out because they over-
+// fired on a week of real globex traffic (1,700+ flips, 2026-09-29): the `rm -rf` path check can't
+// resolve the `rm -rf "$tmp"` cleanup every script ends with, and the RISKY_SHELL keywords
+// (`delete`/`prod`/`deploy`) are everywhere in a multi-purpose tool script. A bare `truncate` is also
+// out — in code it's `Str::truncate()`, `truncate -s 0 log` — only `TRUNCATE TABLE` counts.
+const SCRIPT_DESTRUCTIVE: RegExp[] = [
+  /\bdrop\s+(database|table|schema)\b/i,
+  /\btruncate\s+table\b/i,
   /\bmkfs\b/i,
   /\bdd\s+(if|of)=/i,
   /\bterraform\s+destroy\b/i,
@@ -298,6 +314,9 @@ export function applyPatchTargets(command: string): string[] {
 /**
  * Compute governance facts and return a NEW args object (original + facts). Pure; no I/O.
  * `args` is what the gate received: `{ tool?, input?, command?, ...callerFacts }`.
+ * `scripts` are the bodies of script files a shell command EXECUTES (`bash x.sh`, `./x.sh`), read by the
+ * caller via `readExecutedScripts` — classified like typed commands, so writing an action into a file and
+ * running it can't launder it past the gate (script-bodies.ts). Shell only; ignored otherwise.
  * `orgDomains` are the workspace's internal email domains (lowercased, no `@`) — passed in by the
  * caller (no I/O here) so an email send can be judged internal (own domain) vs external.
  */
@@ -308,6 +327,7 @@ export function enrichArgs(
   workdir?: string,
   patterns: EnrichPattern[] = [],
   hostGrants?: HostGrant[] | null,
+  scripts: ScriptBody[] = [],
 ): Record<string, unknown> {
   const tool = typeof args.tool === 'string' ? args.tool : '';
   const input = (args.input && typeof args.input === 'object' ? args.input : args) as Record<string, unknown>;
@@ -328,8 +348,10 @@ export function enrichArgs(
   const isShell = capability === 'shell.exec';
   // Intent-match on the command with DATA payloads stripped (PR bodies, commit messages, file heredocs):
   // a `--body "…npm run build…"` or `grep "delete from"` must not read as an executed build/DELETE.
-  const sanitizedCommand = isShell ? sanitizeForIntent(command) : command;
-  const classifyText = isShell ? sanitizedCommand : haystack;
+  // A script the command runs is classified as if its body had been typed on the command line.
+  const scriptText = isShell && scripts.length ? scripts.map((sc) => sanitizeForIntent(sc.body)).join('\n') : '';
+  const commandIntent = isShell ? sanitizeForIntent(command) : command;
+  const classifyText = isShell ? commandIntent : haystack;
 
   let destructive = args.destructive === true;
   if (!destructive && !isFileWrite) {
@@ -337,12 +359,13 @@ export function enrichArgs(
     // `rm -rf` is destructive only when a target is a real system/absolute path (or unresolvable) — a
     // scratch/tmp/relative delete is routine agent work, not an irreversible world effect.
     const dangerousRm = RM_RF.test(classifyText) && !rmTargetsAllSafe(classifyText, workdir);
-    destructive = otherDestructive || dangerousRm;
+    const scriptDestructive = !!scriptText && SCRIPT_DESTRUCTIVE.some((re) => re.test(scriptText));
+    destructive = otherDestructive || dangerousRm || scriptDestructive;
   }
 
   let risky = args.risky === true || destructive;
   if (!risky && !isFileWrite) {
-    if (isShell) risky = RISKY_SHELL.test(sanitizedCommand);
+    if (isShell) risky = RISKY_SHELL.test(commandIntent);
     else if (capability.startsWith('connector')) risky = !!tool && MUTATION_TOOL.test(tool);
   }
 
@@ -451,6 +474,7 @@ export function enrichArgs(
   else if (injectionUncertain) facts.injectionUncertain = true;
   if (hostFacts) Object.assign(facts, hostFacts);
   if (outsideWorkdir !== undefined) facts.outsideWorkdir = outsideWorkdir;
+  if (isShell && scripts.length) facts.scriptsInspected = scripts.map((sc) => sc.path);
   if (writeTargets) facts.writeTargets = writeTargets;
   if (amountUsd !== undefined) facts.amountUsd = amountUsd;
   if (deleteCount !== undefined) facts.deleteCount = deleteCount;
@@ -467,7 +491,15 @@ export function enrichArgs(
   // For a shell command, match the SANITIZED text (same payload-stripping as the built-in scan) so a
   // custom `prodBuild`/`serverReboot` rule can't be tripped by a PR body / commit message that merely
   // MENTIONS the trigger — only by an executed command.
-  const patternHaystack = isShell ? `${tool}\n${sanitizedCommand}` : `${tool}\n${haystack}`;
+  //
+  // Script bodies are matched LINE BY LINE, not as one blob. Operator patterns are free-form, and the
+  // multi-condition idiom `(?=[\s\S]*A)(?=[\s\S]*B)` is unanchored, so the engine retries it from every
+  // start position — quadratic in the text length. On a 30 KB script that is ~0.3 s per pattern, spent
+  // synchronously inside the gate (measured on globex, 2026-09-29). Per line it's negligible; the cost is
+  // that a pattern needing two conditions on DIFFERENT lines of a script won't fire (the command line
+  // itself is still matched whole, as before).
+  const patternHaystack = isShell ? `${tool}\n${commandIntent}` : `${tool}\n${haystack}`;
+  const scriptLines = scriptText ? scriptText.split('\n').filter((l) => l.trim()) : [];
   for (const p of patterns) {
     if (!p || typeof p.pattern !== 'string' || typeof p.fact !== 'string' || !p.fact) continue;
     const scope = p.scope ?? 'any';
@@ -484,7 +516,7 @@ export function enrichArgs(
     }
     // Match the TOOL NAME too (a connector's `STRIPE_REFUND` / `delete_site` is the action itself), not
     // just the command + input values. Harmless for shell, where `tool` is 'Bash'.
-    if (re.test(patternHaystack)) facts[p.fact] = true;
+    if (re.test(patternHaystack) || scriptLines.some((l) => re.test(l))) facts[p.fact] = true;
   }
 
   return facts;
