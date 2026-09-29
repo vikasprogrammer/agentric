@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.448.7] - 2026-09-29
+### Fixed
+- **The gate now reads the scripts an agent runs, not just the command that runs them.** On globex a
+  billing agent wrote its Stripe teardown (card detach, subscription cancel, customer delete) into a
+  `.sh` file and ran `bash <file>`. The gate classified `bash <file>` as a harmless shell call, so two
+  live customer accounts lost their card or Stripe customer with no human involved — the same calls typed
+  directly would have hit the tenant's guardrail. When a shell call executes a file (`bash x.sh`,
+  `./x.sh`, `php x.php`, `python3 x.py`, `source x`, `bash -c "…"`, after a `cd`) that was changed during
+  this run or in the last 24 h, its body is now checked against the workspace's custom governance
+  patterns (line by line) and the unambiguous destructive ops (DROP/TRUNCATE TABLE, mkfs, dd, terraform
+  destroy, kubectl delete, force-push), following scripts it runs in turn. The audit row lists
+  `scriptsInspected`. Scoped that narrowly on purpose: replaying a week of globex traffic, the broad
+  version flipped 1,754 decisions (every tool script's `rm -rf "$tmp"` cleanup, stable tools' own help
+  text), the shipped one flips 5. Bounded (8 files, 128 KB each / 384 KB total, 3 levels; comment lines,
+  syntax checks like `php -l`, missing and binary files skipped) and linear-time — an unanchored
+  `(?=[\s\S]*…)` pattern over a 30 KB blob had cost 0.6 s of blocked event loop per call. Pinned by
+  `scripts/script-body-gate-test.cjs`. Text matching, not a sandbox: keep write credentials away from
+  agents that should only read.
+  **For admins:** a custom governance rule that blocks a command now also blocks it when an agent writes that command into a script and runs the script.
+
 ## [0.448.6] - 2026-09-22
 ### Fixed
 - **An agent's git commands can no longer reach the Agentric checkout.** An agent's folder usually isn't a

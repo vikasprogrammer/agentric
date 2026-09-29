@@ -23,7 +23,8 @@ import { listConnectedAccounts } from './connectors/composio';
 import { activeToolkits, resolveIdentities } from './connectors/composio-identity';
 import { exclusionFor } from './connectors/composio-claims';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
-import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
+import { enrichArgs, autoClearsApproval, redactSecrets, commandText } from './governance/enricher';
+import { readExecutedScripts, freshSince, type ScriptBody } from './governance/script-bodies';
 import { isolateClaudeConfig } from './edge/config-isolation';
 import { resolveCapability } from './capabilities/normalize';
 import { unwrapComposioEnvelope } from './capabilities/composio-envelope';
@@ -5740,6 +5741,19 @@ export class TerminalManager {
     return { ok: true };
   }
 
+  /** The script files a shell call EXECUTES (`bash x.sh`, `./x.sh`), read so the enricher classifies
+   *  their bodies too — an action written to a file and then run is otherwise invisible to the gate
+   *  (script-bodies.ts). Resolved from the agent's folder, where every session starts; only scripts
+   *  changed during this run or in the last 24 h are read. */
+  private scriptsRun(sessionId: string, capability: string, args: Record<string, unknown>, agentDir: string | undefined): ScriptBody[] {
+    if (capability !== 'shell.exec' || !agentDir) return [];
+    const input = (args.input && typeof args.input === 'object' ? args.input : args) as Record<string, unknown>;
+    const command = commandText(args.command) || commandText(input.command);
+    if (!command) return [];
+    const started = this.db.prepare('SELECT created_at FROM term_sessions WHERE id = ?').get<{ created_at: number }>(sessionId)?.created_at;
+    return readExecutedScripts(command, agentDir, freshSince(started));
+  }
+
   /** The gate. Same policy brain as the console — allow flows, ask → inbox approval (auto-cleared for
    *  an attended approver), never → deny. Args are enriched into facts first (the single classifier). */
   gate(sessionId: string, agent: string, capability: string, rawArgs: Record<string, unknown>, reasoning: string, subagent?: { type?: string; id?: string }): GateResult {
@@ -5775,7 +5789,8 @@ export class TerminalManager {
       rawArgs = envelope.args;
       capability = envelope.capability;
     }
-    const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns(), hostGrants);
+    const agentDir = this.os.agents.get(agent)?.dir;
+    const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), agentDir, this.os.settings.enrichPatterns(), hostGrants, this.scriptsRun(sessionId, capability, rawArgs, agentDir));
     // An outbound email is its own governed capability: reclassify so the policy gates it by recipient
     // (internal → green, external → yellow) instead of the generic connector-mutation tier.
     if (args.emailSend === true) {
@@ -6085,7 +6100,8 @@ export class TerminalManager {
     // classifies the same canonical capability the live gate will.
     const unwrapped = unwrapComposioEnvelope(capability, args, this.emailOrgDomains());
     if (unwrapped) { args = unwrapped.args; capability = unwrapped.capability; }
-    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
+    const agentDir = this.os.agents.get(agent)?.dir;
+    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), agentDir, this.os.settings.enrichPatterns(), undefined, this.scriptsRun(sessionId, capability, args, agentDir));
     const cap = enriched.emailSend === true
       ? 'email.send'
       : resolveCapability(capability, typeof enriched.tool === 'string' ? enriched.tool : undefined);
