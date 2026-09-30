@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.449.0] - 2026-09-30
+### Added
+- **Pin agents to the top of the Agents list.** Each member can pin the agents they use most; pinned
+  agents lift out of their category into a leading "Pinned" group (in pin order), in both the gallery
+  and list views, and become the default selection on a bare `#/agents` when you have no last-used
+  agent. Toggle from the hover pin on any row/card or the pin button in the agent's composer header.
+  Stored per member in `member_prefs.agentPins` (beside `navPins`), shipped on `/api/auth/me`, saved via
+  `PUT /api/me/agent-pins`. Display-only — pinning grants nothing.
+  **For users:** You can now pin your go-to agents so they always sit at the top of the Agents list. [Open Agents](#/agents)
+
 ## [0.448.7] - 2026-09-29
 ### Fixed
 - **The gate now reads the scripts an agent runs, not just the command that runs them.** On globex a

@@ -114,6 +114,25 @@ export function sanitizeNavPins(input: unknown): string[] | null {
 }
 
 /**
+ * Which agents a member has pinned to the top of their Agents list — a per-member preference stored in
+ * `member_prefs` beside `navPins`. Values are agent ids in the member's chosen order; the server only
+ * validates shape (short, deduped strings) and never prunes ids of agents that were since deleted or
+ * unshared — the console simply skips an id it can't see, so a re-shared agent comes back pinned.
+ * Personal display state only: pinning grants nothing.
+ */
+export function sanitizeAgentPins(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const v of input) {
+    if (typeof v !== 'string') continue;
+    const s = v.trim();
+    if (s && s.length <= 128 && !out.includes(s)) out.push(s);
+    if (out.length >= 100) break;
+  }
+  return out;
+}
+
+/**
  * A member-defined prompt shortcut — a named canned prompt they can fire into a live terminal session
  * with one click (the console's Quick Shortcuts strip). Purely a personal convenience stored in
  * `member_prefs`; the text is injected into the running claude exactly as if the human typed it, so

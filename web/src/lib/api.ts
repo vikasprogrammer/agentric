@@ -12,6 +12,9 @@ export interface Member {
    *  /api/auth/me for `me`, never populated for other members. `null`/absent → apply the default layout;
    *  `[]` → the member explicitly pinned nothing. */
   navPins?: string[] | null
+  /** Agent ids this member pinned to the top of their Agents list, in pin order. Client-only, like
+   *  `navPins`: delivered on /api/auth/me for `me`. */
+  agentPins?: string[]
 }
 /** A member-defined canned prompt fired into a live session from the Quick Shortcuts strip. */
 export interface PromptShortcut {
@@ -1926,7 +1929,7 @@ export const api = {
     const body = await res.json()
     // navPins ships beside `member` on this payload — fold it onto the member so the sidebar has the
     // pinned layout at first paint without a second request.
-    return { ...(body.member as Member), navPins: body.navPins ?? null }
+    return { ...(body.member as Member), navPins: body.navPins ?? null, agentPins: body.agentPins ?? [] }
   },
   logout: () => call<{ ok: boolean }>('POST', '/api/auth/logout'),
   /** Self-service recovery: ask the server to send a fresh sign-in link. Always resolves ok (neutral
@@ -2071,6 +2074,8 @@ export const api = {
   saveMyContext: (context: string) => call<{ context: string }>('PUT', '/api/me/context', { context }),
   /** Persist this member's pinned sidebar nav (the keys promoted to Main). Returns the resolved list. */
   saveNavPins: (pinned: string[]) => call<{ pinned: string[] }>('PUT', '/api/me/nav', { pinned }),
+  /** Persist this member's pinned agents (floated to the top of the Agents list), in order. */
+  saveAgentPins: (pinned: string[]) => call<{ pinned: string[] }>('PUT', '/api/me/agent-pins', { pinned }),
   /** This member's saved Quick Shortcuts (canned prompts for a live terminal session). */
   promptShortcuts: () => call<{ shortcuts: PromptShortcut[] }>('GET', '/api/me/shortcuts'),
   savePromptShortcuts: (shortcuts: PromptShortcut[]) => call<{ shortcuts: PromptShortcut[] }>('PUT', '/api/me/shortcuts', { shortcuts }),
