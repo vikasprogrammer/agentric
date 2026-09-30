@@ -696,9 +696,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const headers: Record<string, string> = { 'content-type': 'application/json; charset=utf-8' };
     if (sid) headers['set-cookie'] = sessionCookie(sid);
     res.writeHead(200, headers);
-    // navPins rides along on the auth payload (not a separate fetch) so the sidebar's pinned layout is
+    // navPins + agentPins ride along on the auth payload (not a separate fetch) so the sidebar's pinned layout is
     // known at first shell paint — no flash of the default nav before a follow-up request lands.
-    res.end(JSON.stringify({ member: m, navPins: os.team.navPins(m.id) }));
+    res.end(JSON.stringify({ member: m, navPins: os.team.navPins(m.id), agentPins: os.team.agentPins(m.id) }));
     return;
   }
   // Per-tenant console branding (accent colour + favicon badge). PUBLIC + display-only (no secrets):
@@ -3885,6 +3885,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'PUT' && p === '/api/me/nav') {
     const b = await readBody(req);
     return sendJson(res, 200, { pinned: os.team.setNavPins(me.id, (b as { pinned?: unknown }).pinned) });
+  }
+
+  // This member's pinned agents (floated to the top of their Agents list). Per person, not admin-gated;
+  // display-only — pinning an agent you can't run grants nothing. Initial value ships on /api/auth/me.
+  if (method === 'PUT' && p === '/api/me/agent-pins') {
+    const b = await readBody(req);
+    return sendJson(res, 200, { pinned: os.team.setAgentPins(me.id, (b as { pinned?: unknown }).pinned) });
   }
 
   // Dismiss the whole Activity feed at once (soft hide). Leaves action-required items (pending

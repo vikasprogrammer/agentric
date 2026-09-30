@@ -10,7 +10,7 @@
 import { randomBytes } from 'crypto';
 import { newId } from '../id';
 import { Db } from '../state/db';
-import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove, NotificationPrefs, sanitizeNotificationPrefs, sanitizeNavPins, PromptShortcut, sanitizePromptShortcuts } from '../types';
+import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove, NotificationPrefs, sanitizeNotificationPrefs, sanitizeNavPins, sanitizeAgentPins, PromptShortcut, sanitizePromptShortcuts } from '../types';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // magic links valid for 7 days
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // login cookie valid for 30 days
@@ -120,6 +120,20 @@ export class TeamStore {
   setNavPins(memberId: string, pins: unknown): string[] {
     const clean = sanitizeNavPins(pins) ?? [];
     this.writeRawPrefs(memberId, { ...this.rawPrefs(memberId), navPins: clean });
+    return clean;
+  }
+
+  /** The agents this member pinned to the top of their Agents list, in pin order ([] when never set).
+   *  See `sanitizeAgentPins`. */
+  agentPins(memberId: string): string[] {
+    return sanitizeAgentPins(this.rawPrefs(memberId).agentPins);
+  }
+
+  /** Persist the member's pinned agents (sanitized, deduped, order kept), preserving sibling prefs in
+   *  the same blob. Returns the resolved list. */
+  setAgentPins(memberId: string, pins: unknown): string[] {
+    const clean = sanitizeAgentPins(pins);
+    this.writeRawPrefs(memberId, { ...this.rawPrefs(memberId), agentPins: clean });
     return clean;
   }
 

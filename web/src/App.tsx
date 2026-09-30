@@ -689,6 +689,26 @@ type AgentsView = 'grid' | 'split'
 
 /** Bucket agents by their category label for the grouped picker. Uncategorised agents fall into a
  *  trailing "Uncategorized" group; named categories sort alphabetically, each group keeping list order. */
+/** Header of the Agents list's leading group — the member's pinned agents, lifted out of their categories. */
+const PINNED_GROUP = 'Pinned'
+
+/** Hover pin toggle overlaid on an agent row/card. A sibling of the row's link (never nested inside it),
+ *  so clicking it doesn't navigate. Hover-only: the "Pinned" group header already shows the state. */
+function AgentPinButton({ pinned, label, onToggle, className = '' }: { pinned: boolean; label: string; onToggle: () => void; className?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggle() }}
+      className={`absolute rounded p-1 transition-opacity hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 opacity-0 ${pinned ? 'text-primary' : 'text-muted-foreground'} ${className}`}
+      title={pinned ? 'Unpin — return it to its category' : 'Pin to the top of your agent list'}
+      aria-label={pinned ? `Unpin ${label}` : `Pin ${label}`}
+      aria-pressed={pinned}
+    >
+      {pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+    </button>
+  )
+}
+
 function groupByCategory(agents: AgentInfo[]): [string, AgentInfo[]][] {
   const UNCATEGORIZED = 'Uncategorized'
   const buckets = new Map<string, AgentInfo[]>()
@@ -2602,6 +2622,15 @@ function AgentsPage({
   const [view, setView] = useState<AgentsView>(() => (localStorage.getItem(AGENTS_VIEW_KEY) === 'grid' ? 'grid' : 'split'))
   const setViewPersist = (v: AgentsView) => { setView(v); localStorage.setItem(AGENTS_VIEW_KEY, v) }
   const [query, setQuery] = useState('')
+  // Per-member pinned agents — floated into a "Pinned" group above the categories, in pin order.
+  // Seeded from /api/auth/me; toggled optimistically and saved (a failed save rolls back).
+  const [pins, setPins] = useState<string[]>(() => me.agentPins ?? [])
+  const togglePin = (id: string) => {
+    const prev = pins
+    const next = pins.includes(id) ? pins.filter((x) => x !== id) : [...pins, id]
+    setPins(next)
+    api.saveAgentPins(next).then((r) => setPins(r.pinned)).catch(() => setPins(prev))
+  }
   // Fleet-wide maturity, keyed by agent id — the trust-at-a-glance signal on each agent chip.
   const [maturity, setMaturity] = useState<Record<string, AgentStats>>({})
   useEffect(() => {
@@ -2647,11 +2676,12 @@ function AgentsPage({
   }, [selected])
 
   // The chosen agent is driven by the URL (`#/agents/<id>`) so a refresh keeps it. When the URL names
-  // no agent (a bare `#/agents`), fall back to the last one you used (remembered across visits) then
-  // the first in the list — without rewriting the URL, so the default doesn't spam history.
+  // no agent (a bare `#/agents`), fall back to the last one you used (remembered across visits), then
+  // your first pinned agent, then the first in the list — without rewriting the URL, so the default doesn't spam history.
   const has = (id: string) => agents.some((a) => a.id === id)
   const lastUsed = localStorage.getItem(LAST_AGENT_KEY)
-  const agentId = has(selected) ? selected : (lastUsed && has(lastUsed) ? lastUsed : (agents[0]?.id ?? ''))
+  const firstPinned = pins.find(has)
+  const agentId = has(selected) ? selected : (lastUsed && has(lastUsed) ? lastUsed : (firstPinned ?? agents[0]?.id ?? ''))
   const agent = agents.find((a) => a.id === agentId)
   const pick = (id: string) => { localStorage.setItem(LAST_AGENT_KEY, id); onSelect(id) }
 
@@ -2719,7 +2749,13 @@ function AgentsPage({
   const filtered = q
     ? agents.filter((a) => a.id.toLowerCase().includes(q) || (a.description ?? '').toLowerCase().includes(q) || (a.category ?? '').toLowerCase().includes(q))
     : agents
-  const groups = groupByCategory(filtered)
+  // Pinned agents lift out of their category into a leading "Pinned" group (pin order); an id for an
+  // agent that's gone or no longer shared with you is simply skipped.
+  const pinnedList = pins.map((id) => filtered.find((a) => a.id === id)).filter((a): a is AgentInfo => !!a)
+  const groups: [string, AgentInfo[]][] = [
+    ...(pinnedList.length ? [[PINNED_GROUP, pinnedList] as [string, AgentInfo[]]] : []),
+    ...groupByCategory(filtered.filter((a) => !pins.includes(a.id))),
+  ]
 
   // The task composer for the selected agent — shared by both layouts (the gallery puts it below the
   // cards; the split view puts it in the right pane). Its per-agent Edit/Delete actions live here.
@@ -2733,6 +2769,9 @@ function AgentsPage({
         <RuntimeBadge runtime={agent.runtime} />
         {agent.builtIn && <BuiltInBadge />}
         <div className="ml-auto flex items-center gap-1">
+          <Button size="icon" variant="ghost" className={'h-8 w-8 shrink-0 ' + (pins.includes(agent.id) ? 'text-primary' : 'text-muted-foreground')} onClick={() => togglePin(agent.id)} title={pins.includes(agent.id) ? 'unpin — return it to its category' : 'pin to the top of your agent list'} aria-pressed={pins.includes(agent.id)}>
+            {pins.includes(agent.id) ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+          </Button>
           {(proposalCounts[agent.id] ?? 0) > 0 && (
             <Button
               render={<a href={navHref('agent', agent.id)} />}
@@ -2850,12 +2889,13 @@ function AgentsPage({
           {groups.length === 0 && <p className="text-sm text-muted-foreground">No agents match “{query}”.</p>}
           {groups.map(([cat, list]) => (
             <div key={cat} className="space-y-1.5">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{cat}</div>
+              <div className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{cat === PINNED_GROUP && <Pin className="h-3 w-3" />}{cat}</div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {list.map((a) => {
                   const active = a.id === agentId
                   return (
-                    <a key={a.id} href={navHref('agents', a.id)} onClick={onNavClick(() => pick(a.id))} className={'flex flex-col gap-1.5 rounded-lg border p-3 text-left text-foreground no-underline transition hover:border-primary/40 hover:bg-muted/40 ' + (active ? 'border-primary bg-primary/5 ring-1 ring-primary' : '')}>
+                    <div key={a.id} className="group relative">
+                    <a href={navHref('agents', a.id)} onClick={onNavClick(() => pick(a.id))} className={'flex h-full flex-col gap-1.5 rounded-lg border p-3 pr-8 text-left text-foreground no-underline transition hover:border-primary/40 hover:bg-muted/40 ' + (active ? 'border-primary bg-primary/5 ring-1 ring-primary' : '')}>
                       <span className="flex items-center gap-1.5">
                         <AgentIcon icon={a.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="truncate text-sm font-medium">{a.id}</span>
@@ -2869,6 +2909,8 @@ function AgentsPage({
                       </span>
                       {a.description && <span className="line-clamp-2 text-[11px] text-muted-foreground">{a.description}</span>}
                     </a>
+                    <AgentPinButton pinned={pins.includes(a.id)} label={a.id} onToggle={() => togglePin(a.id)} className="right-1.5 top-1.5" />
+                    </div>
                   )
                 })}
               </div>
@@ -2885,11 +2927,12 @@ function AgentsPage({
             {groups.length === 0 && <p className="px-1 text-sm text-muted-foreground">No matches.</p>}
             {groups.map(([cat, list]) => (
               <div key={cat} className="space-y-0.5">
-                <div className="px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{cat}</div>
+                <div className="flex items-center gap-1 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{cat === PINNED_GROUP && <Pin className="h-3 w-3" />}{cat}</div>
                 {list.map((a) => {
                   const active = a.id === agentId
                   return (
-                    <a key={a.id} href={navHref('agents', a.id)} onClick={onNavClick(() => pick(a.id))} title={a.description} className={'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm no-underline transition ' + (active ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}>
+                    <div key={a.id} className="group relative">
+                    <a href={navHref('agents', a.id)} onClick={onNavClick(() => pick(a.id))} title={a.description} className={'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm no-underline transition ' + (active ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}>
                       <AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0" />
                       <span className="truncate">{a.id}</span>
                       <span className="ml-auto flex shrink-0 items-center gap-1">
@@ -2899,6 +2942,8 @@ function AgentsPage({
                         {a.builtIn && <BuiltInBadge />}
                       </span>
                     </a>
+                    <AgentPinButton pinned={pins.includes(a.id)} label={a.id} onToggle={() => togglePin(a.id)} className="right-1 top-1/2 -translate-y-1/2 bg-background" />
+                    </div>
                   )
                 })}
               </div>
