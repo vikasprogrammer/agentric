@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.449.1] - 2026-10-02
+### Fixed
+- **A signed-out runtime account is skipped by rotation instead of failing every other run.** When a
+  pool account's login expired with no refresh token, `pick()` kept handing it out least-recently-used and
+  the launch pre-flight refused each run it landed on — instapods logged 53 refused runs in a week with a
+  healthy account idle beside it, and re-raised "Agent runs are blocked" every 30 minutes. Rotation now
+  probes each candidate's credential (`pickUsableAccount`) and walks past a dead one to the next account,
+  for launches, reload-rotation and the summarizer alike. The skip is audited
+  (`runtime.account.skipped`), badged on the account, and raises one admin card per account; the account
+  is NOT disabled, so signing it back in returns it to rotation and retires the card with no other step.
+  The login-blocked cards also now link to Settings → Runtime instead of Settings → Updates.
+  **For admins:** A runtime account whose login has expired no longer breaks every other agent run — it's skipped until you sign it back in, and you get one notice naming it. [Open Settings](#/settings/runtime)
+
 ## [0.449.0] - 2026-09-30
 ### Added
 - **Pin agents to the top of the Agents list.** Each member can pin the agents they use most; pinned

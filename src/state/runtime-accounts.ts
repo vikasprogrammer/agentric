@@ -229,7 +229,7 @@ export class RuntimeAccountStore {
    *  available — and stamp its last_used_at. Returns null when there are NO usable accounts for the runtime
    *  (caller → box default) or every enabled one is currently limited (caller → box default for a member
    *  launch; the scheduler defers cron). Auto-recovers accounts whose limit has lapsed first. */
-  pick(runtime: CodingRuntimeId, now: number = Date.now(), opts?: { kinds?: RuntimeAccountKind[]; exclude?: string }): RuntimeAccount | null {
+  pick(runtime: CodingRuntimeId, now: number = Date.now(), opts?: { kinds?: RuntimeAccountKind[]; exclude?: string | string[] }): RuntimeAccount | null {
     this.recover(now);
     // The kind filter is ALWAYS on: a runtime's `liveCredentialKinds` are the only ones its launch lane
     // actually authenticates with (a claude `token` account, e.g., is silently ignored by the interactive
@@ -242,9 +242,12 @@ export class RuntimeAccountStore {
     // "another account" must not hand back the one that just hit its limit. LRU ordering alone doesn't
     // guarantee that — the current account is only last in line while others exist, and with a pool of
     // one it would come straight back. Excluding it by name turns that case into an honest null.
-    const excludeClause = opts?.exclude ? ' AND name != ?' : '';
+    // A list is how the launcher walks PAST an account it has just found signed out (see
+    // `TerminalManager.pickUsableAccount`): each skipped name joins the exclusion and the next LRU comes up.
+    const excluded = opts?.exclude == null ? [] : Array.isArray(opts.exclude) ? opts.exclude : [opts.exclude];
+    const excludeClause = excluded.length ? ` AND name NOT IN (${excluded.map(() => '?').join(',')})` : '';
     const r = this.db.prepare(`SELECT * FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'available'${kindClause}${excludeClause} ORDER BY last_used_at IS NOT NULL, last_used_at ASC LIMIT 1`)
-      .get<Row>(runtime, ...kinds, ...(opts?.exclude ? [opts.exclude] : []));
+      .get<Row>(runtime, ...kinds, ...excluded);
     if (!r) return null;
     this.db.prepare('UPDATE runtime_accounts SET last_used_at = ? WHERE runtime = ? AND name = ?').run(now, runtime, r.name);
     return toAccount({ ...r, last_used_at: now });
