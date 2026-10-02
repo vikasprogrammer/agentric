@@ -22,7 +22,7 @@ import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type Mi
 import { listConnectedAccounts } from './connectors/composio';
 import { activeToolkits, resolveIdentities } from './connectors/composio-identity';
 import { exclusionFor } from './connectors/composio-claims';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, RuntimeAccountKind, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets, commandText } from './governance/enricher';
 import { readExecutedScripts, freshSince, type ScriptBody } from './governance/script-bodies';
 import { isolateClaudeConfig } from './edge/config-isolation';
@@ -130,7 +130,7 @@ import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
 import { guidanceStale } from './edge/dreaming';
 import { GithubIdentity } from './edge/github-identity';
-import { credentialDirHasLogin, preflightCredential, readConfigDirToken, configDirCanRefresh, checkClaudeToken } from './edge/runtime-account-check';
+import { credentialDirHasLogin, credentialReadiness, preflightCredential, readConfigDirToken, configDirCanRefresh, checkClaudeToken } from './edge/runtime-account-check';
 
 /** What a credential pre-flight refuses on — the two states in which a launch is certain to authenticate
  *  as nobody. Mirrors `preflightCredential`'s return so the refusal path has one shape to switch on. */
@@ -4328,6 +4328,9 @@ export class TerminalManager {
         title: `Agent runs are blocked — the ${label} login has expired`,
         body: `${TerminalManager.expiryPhrase(b.expiredAt, b.dir).replace(/^the login/, 'The login')}, so every session started with it would get "Login expired · Please run /login" on its first call. Runs are being refused rather than started and left to fail silently.\n\nSign that credential in again on the box:\n\n    CLAUDE_CONFIG_DIR=${b.dir} claude /login\n\nOr add a working account under Settings → Runtime → Runtime accounts, which is what sessions rotate onto when the box default is unusable.`,
         audience: { kind: 'admins' },
+        // Without this the card's DM falls back to postSystemCard's default ("Review it on Settings →
+        // Updates"), sending an admin to the self-update page for a login problem.
+        link: { page: 'settings', detail: 'runtime', label: 'Settings → Runtime' },
       });
     } catch { /* the audit line above is the durable record */ }
   }
@@ -4455,7 +4458,7 @@ export class TerminalManager {
       // Discord/Slack chat), it outlives the access window of a static injected `token`, which carries no
       // refresh token into the process — claude can't renew it in place and hits "OAuth access token has
       // expired" → /login mid-chat. Credential dirs refresh themselves, and an api key doesn't expire.
-      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), resident ? { kinds: ['oauth', 'apikey'] } : undefined);
+      const acct = this.pickUsableAccount(runtime, resident ? { kinds: ['oauth', 'apikey'] } : {}, sessionId, agent);
       if (!acct) {
         // Distinguish "no pool" (inert by design, silent) from "a pool exists but nothing in it is usable
         // here" — the latter looks like working rotation in the console while every run quietly lands on the
@@ -4480,6 +4483,79 @@ export class TerminalManager {
       this.db.prepare('UPDATE term_sessions SET runtime_account = ? WHERE id = ?').run(acct.name, sessionId);
       this.audit(sessionId, agent, 'runtime.account.selected', { runtime, account: acct.name, kind: acct.kind, via: resolved.varName });
     } catch { /* rotation must never break a launch — fall through to the box default */ }
+  }
+
+  /**
+   * `pick()`, minus any credential-dir account whose login is DEAD — expired with no refresh token left.
+   *
+   * Why this exists — instapods, 2026-09-26 → 10-02: the `tools2-new` account's refresh token expired and
+   * Claude Code wiped the Keychain record down to `expiresAt: 0`. Nothing took the account out of rotation:
+   * `pick()` only knows `enabled` and `status`, and the launch pre-flight that DID see the dead login
+   * refused the run rather than moving on. With two accounts handed out least-recently-used, every other
+   * launch landed on the corpse — 53 refused runs in a week, each one re-raising "Agent runs are blocked"
+   * while the healthy account sat idle half the time.
+   *
+   * So the question the pre-flight asks of the CHOSEN account is now asked of each CANDIDATE, and a dead
+   * one is skipped (badged, audited, admins told once) and the next account is tried. Deliberately NOT
+   * persisted as `enabled = 0`: the probe is a Keychain/file read, so the moment someone signs the account
+   * back in it is picked again with no second step for them to forget. Only `expired` is skipped — a locked
+   * keychain is box-wide (every dir reads through it), so walking the pool would only find the same wall;
+   * the pre-flight refuses that one as before. When everything is dead this returns null and the launch
+   * falls back to the box default exactly as an empty pool does, where the pre-flight still guards.
+   */
+  private pickUsableAccount(runtime: CodingRuntimeId, opts: { kinds?: RuntimeAccountKind[]; exclude?: string[] }, sessionId: string, agent: string): RuntimeAccount | null {
+    const exclude = [...(opts.exclude ?? [])];
+    for (let i = 0; i < 32; i++) {             // bounded: each lap removes one account, and a pool is small
+      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), { ...(opts.kinds ? { kinds: opts.kinds } : {}), ...(exclude.length ? { exclude } : {}) });
+      if (!acct) return null;
+      if (acct.kind !== 'oauth' || !acct.configDir) return acct;
+      let state: ReturnType<typeof credentialReadiness>;
+      try { state = credentialReadiness(runtime, acct.configDir); } catch { return acct; }
+      if (state.ok || state.reason !== 'expired') {
+        if (state.ok) this.clearSignedOutAlert(runtime, acct.name);
+        return acct;
+      }
+      exclude.push(acct.name);
+      this.audit(sessionId, agent, 'runtime.account.skipped', { runtime, account: acct.name, dir: acct.configDir, reason: 'login expired with no refresh token', expiredAt: state.expiredAt });
+      try { this.os.runtimeAccounts.recordCheck(runtime, acct.name, { ok: false, note: 'signed out — the stored login expired and has no refresh token; skipped by rotation until someone signs it in again' }); }
+      catch { /* badging is a nicety */ }
+      this.alertAccountSignedOut(runtime, acct, state.expiredAt);
+    }
+    return null;
+  }
+
+  /** Accounts we've told admins are signed out, keyed `<runtime>:<name>` → when. One card per account per
+   *  cooldown — the skip itself is silent to the run, so this is the only place a human hears about it. */
+  private signedOutAlertAt = new Map<string, number>();
+  private static readonly SIGNED_OUT_ALERT_COOLDOWN_MS = 12 * 60 * 60_000;
+
+  private alertAccountSignedOut(runtime: CodingRuntimeId, acct: RuntimeAccount, expiredAt: number): void {
+    const key = `${runtime}:${acct.name}`;
+    const now = Date.now();
+    if (now - (this.signedOutAlertAt.get(key) ?? 0) < TerminalManager.SIGNED_OUT_ALERT_COOLDOWN_MS) return;
+    this.signedOutAlertAt.set(key, now);
+    const label = CODING_RUNTIMES[runtime].label;
+    const topic = `runtime-account-signed-out:${runtime}:${acct.name}`;
+    try {
+      this.closeSystemCards(topic);
+      const healthy = this.os.runtimeAccounts.enabledCount(runtime) - 1;
+      this.postSystemCard({
+        topic,
+        type: 'notification',
+        title: `Runtime account "${acct.name}" is signed out — rotation is skipping it`,
+        body: `${TerminalManager.expiryPhrase(expiredAt, acct.configDir!).replace(/^the login/, 'The login')}. Sessions are no longer sent to it${healthy > 0 ? ' — they run on the other accounts in the pool, which now carry its share of the load' : ''}.\n\nSign it in again on the box (from the Mac's own desktop session — an ssh shell cannot read the login Keychain):\n\n    CLAUDE_CONFIG_DIR=${acct.configDir} ${runtime === 'claude-code' ? 'claude /login' : label + ' login'}\n\nRotation picks it up again automatically once it is signed in. Or remove it under Settings → Runtime → Runtime accounts.`,
+        audience: { kind: 'admins' },
+        link: { page: 'settings', detail: 'runtime', label: 'Settings → Runtime' },
+      });
+    } catch { /* the audit line is the durable record */ }
+  }
+
+  /** The account is readable again (someone signed it back in) — retire its signed-out card. */
+  private clearSignedOutAlert(runtime: CodingRuntimeId, name: string): void {
+    const key = `${runtime}:${name}`;
+    if (!this.signedOutAlertAt.has(key)) return;
+    this.signedOutAlertAt.delete(key);
+    try { this.closeSystemCards(`runtime-account-signed-out:${runtime}:${name}`); } catch { /* advisory */ }
   }
 
   /** Turn a selected pool account into the env vars that authenticate a launch under it, or null when it
@@ -4534,7 +4610,7 @@ export class TerminalManager {
       // through, which is exactly what we want here. The extra narrowing drops a static `token` on
       // runtimes that do accept one: it carries no refresh token, and a summarizer that trips "OAuth
       // access token has expired" is the same silent degradation this method exists to end.
-      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), { kinds: ['oauth', 'apikey'] });
+      const acct = this.pickUsableAccount(runtime, { kinds: ['oauth', 'apikey'] }, '-', 'summarizer');
       if (!acct) return null;
       const resolved = this.credentialEnvFor(acct, runtime, '-', 'summarizer');
       if (!resolved) return null;
@@ -9260,7 +9336,7 @@ export class TerminalManager {
       if (this.os.runtimeAccounts.enabledCount(runtime) === 0) return { note: 'no runtime-account pool configured — reloaded on the box default' };
       // Same narrowing a resident session gets: a reloaded session is long-lived by definition, and a
       // static `token` carries no refresh token into the process, so it would hit /login mid-conversation.
-      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), { kinds: ['oauth', 'apikey'], exclude: row.runtime_account ?? undefined });
+      const acct = this.pickUsableAccount(runtime, { kinds: ['oauth', 'apikey'], exclude: row.runtime_account ? [row.runtime_account] : [] }, sessionId, agent);
       if (!acct) {
         const all = this.os.runtimeAccounts.allLimited(runtime);
         return { note: all.limited ? 'every other account is at its limit — reloaded on the current one' : 'no other account available — reloaded on the current one' };
