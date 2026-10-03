@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.450.1] - 2026-10-03
+### Fixed
+- **An interactive cron no longer stops firing because its last run is still open.** An interactive run
+  keeps its TUI after it finishes, and the scheduler's pile-up guard read "pane alive" as "still running",
+  so every later occurrence was skipped — silently, with no audit — until someone closed the tab (the
+  console said as much: "this cron won't re-fire while its last run is live"). The next occurrence now
+  closes the previous run when nobody is using it (`TerminalManager.supersedeIdleRun`: detached, unclaimed,
+  no turn in flight, nothing waiting on a person) — episode written, audited `automation.superseded` +
+  `session.reaped` `reason: superseded` — and skips only while it is genuinely in use. A skip is now
+  audited once per occurrence (`automation.skipped`, with the reason). Pinned by
+  `scripts/cron-supersede-test.cjs`.
+  **For users:** Interactive scheduled automations now run on every occurrence — the new run closes the previous one if you've left it idle, and only waits while you're still using it.
+
 ## [0.450.0] - 2026-10-03
 ### Added
 - **Login-expiry warnings for Claude Code credentials.** Every `claude login` has a fixed refresh-token
