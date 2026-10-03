@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.450.0] - 2026-10-03
+### Added
+- **Login-expiry warnings for Claude Code credentials.** Every `claude login` has a fixed refresh-token
+  lifetime (`refreshTokenExpiresAt`) that use does not extend — the expresstech box default died at its
+  date while running 6–30 sessions a day, and was found only by the refusal card after runs had stopped.
+  An hourly, spawn-free sweep (`src/edge/login-expiry.ts`, off the scheduler tick) now reads that date for
+  the box default and every enabled credential-dir pool account and raises one admin card per login as it
+  approaches — re-raised only on entering a nearer band (7 → 3 → 1 day → expired), superseding the last,
+  guarded by the `runtime.login.expiring` audit trail so a restart never re-alarms. Signing the login in
+  again closes the card (`runtime.login.renewed`). A login Claude Code has already wiped is left to the
+  launch path's own signed-out/blocked card. Settings → Runtime shows "login expires in N days" per
+  account and for the box default (`GET /api/runtime-accounts` → `loginExpiresAt`, `boxDefault`).
+  The "signed out" card's Keychain hint now only appears on macOS.
+  **For admins:** You'll now get a heads-up a week before a Claude Code login expires, and Settings → Runtime shows when each one runs out — so you can sign in again before agent runs stop. [Open Settings](#/settings/runtime)
+
 ## [0.449.1] - 2026-10-02
 ### Fixed
 - **A signed-out runtime account is skipped by rotation instead of failing every other run.** When a

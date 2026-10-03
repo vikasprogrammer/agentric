@@ -20,6 +20,7 @@ import { inboxFileName, TerminalManager } from '../terminal';
 import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDispatchBlock, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
 import { reviewGoals } from './goal-review';
+import { reviewLoginExpiry } from './login-expiry';
 import { recordCapabilityGap } from './capability-gap';
 import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
@@ -2331,6 +2332,7 @@ export class Automations {
     this.sweepStuckGoals(now);
     this.sweepCompletedGoals();
     this.sweepGoalMetrics(now);
+    this.sweepLoginExpiry(now);
     this.sweepExpiredShares(now);
     // Re-nudge stale human-in-the-loop prompts (approvals/questions blocking an agent) so a missed ask
     // doesn't strand the run forever. Wrapped so a bad row can't take down the scheduler.
@@ -2410,6 +2412,18 @@ export class Automations {
     catch { /* never let the metric review take down the automation scheduler */ }
   }
   private lastMetricReview = 0;
+
+  /**
+   * Warn admins before a Claude Code login reaches the end of its fixed refresh-token lifetime — see
+   * `src/edge/login-expiry.ts`. Hourly: an expiry measured in days cannot change band between ticks.
+   */
+  private sweepLoginExpiry(now: Date): void {
+    if (now.getTime() - this.lastLoginExpiryReview < GOAL_REVIEW_INTERVAL_MS) return;
+    this.lastLoginExpiryReview = now.getTime();
+    try { reviewLoginExpiry(this.os, this.tm, now.getTime()); }
+    catch { /* never let the login review take down the automation scheduler */ }
+  }
+  private lastLoginExpiryReview = 0;
 
   private sweepCompletedGoals(): void {
     try {

@@ -43,7 +43,8 @@ import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerAsk } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
-import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, keychainHasLogin, RuntimeCheckResult } from './edge/runtime-account-check';
+import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, keychainHasLogin, defaultClaudeDir, RuntimeCheckResult } from './edge/runtime-account-check';
+import { loginExpiry } from './edge/login-expiry';
 import { refreshStaleUsage } from './edge/runtime-account-usage';
 import { runtimePresence, installRuntime } from './edge/runtime-install';
 import { ClickupIngress } from './edge/clickup-ingress';
@@ -5407,7 +5408,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // forget: `accounts` below is the pre-probe reading, and `refreshing` tells the console to re-read once
     // the probes land (see src/edge/runtime-account-usage.ts).
     const { refreshing } = refreshStaleUsage(os);
-    const accounts = os.runtimeAccounts.list();
+    // Each credential-dir login's fixed refresh-token expiry, so the table can say "login expires in N
+    // days" before the login dies rather than after (see src/edge/login-expiry.ts). Box default included:
+    // on a box with no pool it is the only login there is.
+    const expiryOf = (dir?: string) => { try { return dir ? loginExpiry(dir) : undefined; } catch { return undefined; } };
+    const accounts = os.runtimeAccounts.list().map((a) => {
+      const e = a.kind === 'oauth' && a.runtime === 'claude-code' ? expiryOf(a.configDir) : undefined;
+      return e ? { ...a, loginExpiresAt: e.refreshExpiresAt, loginDead: e.dead } : a;
+    });
+    const boxDir = defaultClaudeDir();
+    const boxExp = expiryOf(boxDir);
+    const boxDefault = { dir: boxDir, loginExpiresAt: boxExp?.refreshExpiresAt, loginDead: boxExp?.dead };
     // `liveCredentialKinds` rides along so the console offers only kinds that actually launch, and badges any
     // pre-existing row of a kind that doesn't (added before the launcher knew the difference) as never-used.
     const runtimes = Object.values(CODING_RUNTIMES).map((s) => ({
@@ -5416,7 +5427,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // but uid isolation rules it out per-deployment), so the UI offers the guided path only when it works.
       guidedLogin: tm.logins.supported(s.id).ok,
     }));
-    return sendJson(res, 200, { accounts, runtimes, logins: tm.logins.list(), refreshing });
+    return sendJson(res, 200, { accounts, runtimes, logins: tm.logins.list(), refreshing, boxDefault });
   }
   // ── runtime presence + install ──────────────────────────────────────────────────────────────────
   // Which coding CLIs this box actually HAS. Read by Settings → Runtimes and by the agent runtime
