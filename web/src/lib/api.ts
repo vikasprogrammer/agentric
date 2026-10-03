@@ -142,6 +142,10 @@ export interface RuntimeAccount {
   checkOk?: boolean
   checkNote?: string
   usage?: RuntimeUsage
+  /** When this login's refresh token stops working (fixed at sign-in — use doesn't extend it). */
+  loginExpiresAt?: number
+  /** The login can no longer renew itself — it must be signed in again. */
+  loginDead?: boolean
 }
 export interface RuntimeSpecInfo {
   id: string
@@ -185,7 +189,7 @@ export interface RuntimePickerInfo {
 /** Presence of every coding runtime on this box (Settings → Runtimes). */
 export interface RuntimePresence { id: string; label: string; bin: string; installed: boolean; version?: string; install: string }
 
-export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; logins?: RuntimeLogin[]; refreshing?: string[]; error?: string }
+export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; logins?: RuntimeLogin[]; refreshing?: string[]; boxDefault?: { dir: string; loginExpiresAt?: number; loginDead?: boolean }; error?: string }
 
 export interface AgentInfo {
   id: string

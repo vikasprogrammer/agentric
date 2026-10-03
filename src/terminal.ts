@@ -4543,7 +4543,7 @@ export class TerminalManager {
         topic,
         type: 'notification',
         title: `Runtime account "${acct.name}" is signed out — rotation is skipping it`,
-        body: `${TerminalManager.expiryPhrase(expiredAt, acct.configDir!).replace(/^the login/, 'The login')}. Sessions are no longer sent to it${healthy > 0 ? ' — they run on the other accounts in the pool, which now carry its share of the load' : ''}.\n\nSign it in again on the box (from the Mac's own desktop session — an ssh shell cannot read the login Keychain):\n\n    CLAUDE_CONFIG_DIR=${acct.configDir} ${runtime === 'claude-code' ? 'claude /login' : label + ' login'}\n\nRotation picks it up again automatically once it is signed in. Or remove it under Settings → Runtime → Runtime accounts.`,
+        body: `${TerminalManager.expiryPhrase(expiredAt, acct.configDir!).replace(/^the login/, 'The login')}. Sessions are no longer sent to it${healthy > 0 ? ' — they run on the other accounts in the pool, which now carry its share of the load' : ''}.\n\nSign it in again on the box${process.platform === 'darwin' ? " (from the Mac's own desktop session — an ssh shell cannot read the login Keychain)" : ''}:\n\n    CLAUDE_CONFIG_DIR=${acct.configDir} ${runtime === 'claude-code' ? 'claude /login' : label + ' login'}\n\nRotation picks it up again automatically once it is signed in. Or remove it under Settings → Runtime → Runtime accounts.`,
         audience: { kind: 'admins' },
         link: { page: 'settings', detail: 'runtime', label: 'Settings → Runtime' },
       });

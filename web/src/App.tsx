@@ -19025,6 +19025,17 @@ function ConcurrencySettings({ me }: { me: Member }) {
 /** Per-account usage cell: the weekly (7d) + session (5h) windows as compact "wk 13% / 5h 33%" lines, each
  *  coloured by pressure (amber ≥80%, red ≥100%) with the reset time on hover. Falls back to the last check
  *  note (e.g. "could not verify") or a dash when there's no usage snapshot. */
+/** "login expires in N days" for a credential-dir login — the fixed refresh-token lifetime, which use
+ *  does not extend. Amber inside a week, red once it can no longer renew; quiet otherwise. */
+function LoginExpiryNote({ at, dead }: { at?: number; dead?: boolean }) {
+  if (!at && !dead) return null
+  const days = at ? (at - Date.now()) / 86_400_000 : 0
+  const when = at ? new Date(at).toLocaleString() : ''
+  if (dead || days <= 0) return <div className="mt-0.5 text-[11px] text-red-600 dark:text-red-400" title={when ? `expired ${when}` : undefined}>login expired — sign in again</div>
+  const label = days < 1 ? `login expires in ${Math.max(1, Math.round(days * 24))}h` : `login expires in ${Math.floor(days)}d`
+  return <div className={`mt-0.5 text-[11px] ${days <= 7 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`} title={`${when} — Claude Code logins have a fixed lifetime; sign in again before then`}>{label}</div>
+}
+
 function runtimeUsageCell(a: RuntimeAccount, refreshing = false) {
   const u = a.usage
   const win = (label: string, w?: { usedPct?: number; resetsAt?: number }) => {
@@ -19230,6 +19241,12 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
             No accounts configured — rotation is inert; every session uses the box's default credentials.
           </div>
         )}
+        {resp?.boxDefault && (resp.boxDefault.loginExpiresAt || resp.boxDefault.loginDead) && (
+          <div className="text-xs text-muted-foreground">
+            Box default login <span className="font-mono">{resp.boxDefault.dir}</span>
+            <LoginExpiryNote at={resp.boxDefault.loginExpiresAt} dead={resp.boxDefault.loginDead} />
+          </div>
+        )}
         {resp && resp.accounts.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -19258,6 +19275,7 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
                         : a.status === 'limited'
                         ? <Badge variant="outline" className="border-amber-500/40 text-amber-600 dark:text-amber-400">limited{a.limitedUntil ? ` · resets ${new Date(a.limitedUntil).toLocaleString()}` : ''}</Badge>
                         : <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">available</Badge>}
+                      <LoginExpiryNote at={a.loginExpiresAt} dead={a.loginDead} />
                     </td>
                     <td className="py-1.5 pr-3">{runtimeUsageCell(a, refreshingKeys.includes(`${a.runtime}/${a.name}`))}</td>
                     <td className="py-1.5 pr-3 text-muted-foreground">{a.lastUsedAt ? new Date(a.lastUsedAt).toLocaleString() : '—'}</td>
