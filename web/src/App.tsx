@@ -13645,7 +13645,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                     </span>
                   </div>
                   {a.type === 'cron' && a.mode === 'interactive' && (
-                    <div className="mt-1 flex items-start gap-1 text-[11px] text-amber-600"><AlertTriangle className="mt-px h-3 w-3 shrink-0" />Interactive runs stay open — this cron won't re-fire while its last run is live.</div>
+                    <div className="mt-1 flex items-start gap-1 text-[11px] text-amber-600"><AlertTriangle className="mt-px h-3 w-3 shrink-0" />Interactive runs stay open after they finish. Each fire closes the last run if it's idle, but skips while someone is attached, it's mid-turn, or it's waiting on an answer.</div>
                   )}
                   <div className="mt-1 truncate text-xs text-muted-foreground/80">{a.task}</div>
                   {a.hookUrl && <div className="mt-2 max-w-xl"><CopyLink link={a.hookUrl} /></div>}

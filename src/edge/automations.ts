@@ -160,7 +160,8 @@ export function recentCronOccurrence(spec: CronSpec, from: Date, windowMin: numb
  *     to idle, the pile-up guard releases). The unattended-correct default: no TUI, so the
  *     upstream interactive-scroll issues don't apply and cron re-fires cleanly.
  *   - `interactive` — a normal attachable claude TUI that stays open until closed. Good for
- *     automations you want to babysit, but a cron trigger won't re-fire while it's still running.
+ *     automations you want to babysit. The next cron occurrence closes the previous run if it's idle
+ *     (`TerminalManager.supersedeIdleRun`) and skips only while it's attached/claimed/mid-turn/blocked.
  */
 export type ExecMode = 'interactive' | 'headless';
 
@@ -522,6 +523,8 @@ export function derivedConcurrencyCap(totalBytes = os.totalmem()): number {
 export class Automations {
   private readonly db: Db;
   private timer?: NodeJS.Timeout;
+  /** automation id → the cron occurrence (ms) whose pile-up skip was already audited — one event per occurrence, not per tick. */
+  private readonly skipNoted = new Map<string, number>();
 
   constructor(
     private readonly os: AgentOS,
@@ -768,7 +771,15 @@ export class Automations {
    */
   fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; telegram?: { chat: string; messageThreadId?: string; messageId: string }; clickup?: { taskId: string; commentId: string }; resumeClaudeId?: string } = { guard: true }): FireResult {
     if (opts.guard && a.lastSessionId && this.tm.reachable(a.lastSessionId)) {
-      return { ok: false, reason: 'previous session still running' };
+      // An INTERACTIVE run keeps its pane after it finishes, so "pane alive" alone used to skip every
+      // later occurrence until someone closed the tab. Close the previous run when nobody is using it;
+      // skip only when it is genuinely in use (attached, claimed, mid-turn, or waiting on a person).
+      const prev = this.tm.supersedeIdleRun(a.lastSessionId);
+      if (prev !== 'superseded' && prev !== 'gone') return { ok: false, reason: `previous session still running (${prev})` };
+      this.os.audit.append({
+        ts: Date.now(), runId: a.lastSessionId, tenant: this.os.tenant, principal: `automation:${a.id}`,
+        type: 'automation.superseded', data: { automation: a.id, name: a.name, agent: a.agentId, previous: a.lastSessionId },
+      });
     }
     // Don't spawn a scheduled/triggered run into an exhausted quota — it would just hit the usage limit and
     // zombie. Defer (retry a later tick, firing once an account's limit resets). A human "Run now"
@@ -2313,6 +2324,15 @@ export class Automations {
       // identity — its personal Composio/connectors are injected instead of the company-only fallback.
       const r = this.fire(a, { guard: true, runAs: a.runAs });
       if (r.ok) running++;
+      // A skipped occurrence is retried every tick through the catch-up window and then dropped — which
+      // used to leave no trace at all. Record it once per occurrence so "why didn't my cron run" has an answer.
+      else if (r.reason?.startsWith('previous session still running') && this.skipNoted.get(a.id) !== due) {
+        this.skipNoted.set(a.id, due);
+        this.os.audit.append({
+          ts: Date.now(), runId: a.lastSessionId ?? '-', tenant: this.os.tenant, principal: 'scheduler',
+          type: 'automation.skipped', data: { automation: a.id, name: a.name, agent: a.agentId, due, reason: r.reason },
+        });
+      }
     }
     // Settled blocks first: a task whose blockers all finished is dispatchable work, and returning it to
     // `todo` before the drain means it goes out in THIS tick rather than waiting a whole minute more.

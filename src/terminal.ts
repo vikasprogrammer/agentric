@@ -2389,6 +2389,38 @@ export class TerminalManager {
     return this.db.prepare("SELECT 1 FROM term_sessions WHERE id = ? AND status = 'queued'").get(sessionId) != null;
   }
 
+  /**
+   * The next cron occurrence of an INTERACTIVE automation is due while its previous run is still live —
+   * close that run if nobody is using it, so the cron fires instead of skipping.
+   *
+   * An interactive run keeps its TUI after it finishes, by design, and the scheduler's pile-up guard reads
+   * "pane alive" as "still running". So the previous occurrence's idle pane silently swallowed the next
+   * one (the console even warned "this cron won't re-fire while its last run is live"). A pane nobody is
+   * attached to, with no turn in flight, no question/approval waiting on a person and no claim is a
+   * finished run that happens to still be open — the cron's own cadence is the instruction to replace it.
+   * Anything else is real use and keeps the skip: someone attached or claimed it, it is mid-turn, or it is
+   * waiting on an answer (the idle janitor's blocked ceiling decides when that wait is abandoned, not this).
+   *
+   * Returns why it did NOT supersede, or 'superseded' after tearing the run down (episode written, any
+   * dangling card cancelled — the same teardown every unattended reap uses).
+   */
+  supersedeIdleRun(sessionId: string): 'superseded' | 'gone' | 'unattended' | 'claimed' | 'working' | 'blocked' | 'attached' {
+    if (this.launching.has(sessionId)) return 'working';
+    const r = this.db.prepare('SELECT id, tmux, status, headless, claimed_by, run_as, spawned_by, busy_since, last_activity, created_at FROM term_sessions WHERE id = ?')
+      .get<{ id: string; tmux: string; status: string; headless: number | null; claimed_by: string | null; run_as: string | null; spawned_by: string | null; busy_since: number | null; last_activity: number | null; created_at: number }>(sessionId);
+    if (!r) return 'gone';
+    if (r.headless) return 'unattended'; // an unattended run ends itself at turn-end; a live one is working
+    if (r.claimed_by) return 'claimed';
+    const alive = this.backend.aliveNames();
+    if (this.isWorking(r, alive)) return 'working';
+    if (this.hasPendingHumanBlock(sessionId)) return 'blocked';
+    const space = this.spaceFor(r.run_as ?? r.spawned_by);
+    // `null` = can't tell: treat as attached rather than cut someone off mid-read.
+    if (this.backend.hasClient(space, r.tmux) !== false) return 'attached';
+    this.teardownUnattended(sessionId, space, r.tmux, 'superseded');
+    return 'superseded';
+  }
+
   reachable(sessionId: string): boolean {
     if (this.launching.has(sessionId)) return true; // scheduled; its pane is imminent
     const r = this.db.prepare('SELECT tmux, status FROM term_sessions WHERE id = ?').get<{ tmux: string; status: string }>(sessionId);
