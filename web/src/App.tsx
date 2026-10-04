@@ -6133,11 +6133,43 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
   )
 }
 
+// ── An agent's question (`ask`) can carry extras on its args, read the SAME way by both surfaces that
+//    render one (the chat-thread reply below and the Inbox card in ActionItem): one-click `options`,
+//    `multi` to pick several of them, and a `defaultAnswer`/`expiresAt` pair saying what the agent does
+//    on its own if nobody answers in time. Parsed in one place so the two cards can't drift apart. ──
+type QuestionOpts = { options: string[]; multi: boolean; defaultAnswer?: string; expiresAt?: number }
+
+function questionOpts(m: Msg): QuestionOpts {
+  const a = (m.args ?? {}) as { options?: string[]; multi?: boolean; defaultAnswer?: string; expiresAt?: number }
+  return {
+    options: Array.isArray(a.options) ? a.options.filter(Boolean) : [],
+    multi: a.multi === true,
+    defaultAnswer: a.defaultAnswer,
+    expiresAt: typeof a.expiresAt === 'number' && a.expiresAt > 0 ? a.expiresAt : undefined,
+  }
+}
+
+/** A multi-select answer is ONE string — the picked options comma-joined, in the order shown. */
+const joinPicked = (picked: string[], options: string[]): string => options.filter((o) => picked.includes(o)).join(', ')
+
+const togglePicked = (picked: string[], o: string): string[] => (picked.includes(o) ? picked.filter((p) => p !== o) : [...picked, o])
+
+/** "No answer by <local date+time> → <what the agent will do>", or null when there's no deadline (or it
+ *  already passed — a stale countdown on an expired question would promise something that can't happen).
+ *  `toLocaleString()` is the file's idiom for an absolute timestamp. */
+function questionFallbackNote(q: QuestionOpts): string | null {
+  if (!q.expiresAt || q.expiresAt <= Date.now()) return null
+  return `No answer by ${new Date(q.expiresAt).toLocaleString()} → ${q.defaultAnswer?.trim() || "I'll skip it"}`
+}
+
 /** Inline reply box for an agent's question, inside the chat thread. */
 function QuestionReply({ m }: { m: Msg }) {
   const [answer, setAnswer] = useState('')
   const [sent, setSent] = useState('')
-  const options = (m.args as { options?: string[] } | undefined)?.options?.filter(Boolean) ?? []
+  const [picked, setPicked] = useState<string[]>([])
+  const q = questionOpts(m)
+  const options = q.options
+  const fallbackNote = questionFallbackNote(q)
   const submit = (text: string) => { if (text.trim() && m.questionId) { api.answerQuestion(m.questionId, text.trim()); setSent(text.trim()) } }
   if (sent) return <div className="text-sm text-muted-foreground">You answered: <span className="font-medium text-foreground">{sent}</span></div>
   return (
@@ -6149,7 +6181,20 @@ function QuestionReply({ m }: { m: Msg }) {
           <div className="whitespace-pre-wrap text-muted-foreground">{m.body || m.title}</div>
         </div>
       </div>
-      {options.length > 0 ? (
+      {options.length > 0 && q.multi ? (
+        // Multi-select: each option toggles, and ONE Send posts them comma-joined as a single answer.
+        <div className="mt-2 flex flex-wrap items-center gap-2" role="group" aria-label="Pick one or more answers">
+          {options.map((o, i) => {
+            const on = picked.includes(o)
+            return (
+              <Button key={i} size="sm" variant={on ? 'default' : 'outline'} aria-pressed={on} onClick={() => setPicked((p) => togglePicked(p, o))}>{o}</Button>
+            )
+          })}
+          <Button size="sm" disabled={picked.length === 0} onClick={() => submit(joinPicked(picked, options))}>
+            Send{picked.length > 0 ? ` ${picked.length}` : ''}
+          </Button>
+        </div>
+      ) : options.length > 0 ? (
         <div className="mt-2 flex flex-wrap gap-2">
           {options.map((o, i) => (
             <Button key={i} size="sm" variant="outline" onClick={() => submit(o)}>{o}</Button>
@@ -6161,6 +6206,7 @@ function QuestionReply({ m }: { m: Msg }) {
           <Button size="sm" disabled={!answer.trim()} onClick={() => submit(answer)}>Reply</Button>
         </div>
       )}
+      {fallbackNote && <div className="mt-1.5 text-xs text-muted-foreground">{fallbackNote}</div>}
     </>
   )
 }
@@ -6944,6 +6990,9 @@ const REVIEW_ICON: Record<string, LucideIcon> = {
 function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me: Member; members: Member[]; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void; onDismiss: (id: string) => void }) {
   const [busy, setBusy] = useState(false)
   const [answer, setAnswer] = useState('')
+  // Multi-select question picks. Declared up here with the other hooks because the card branches into an
+  // early return per message type below, and a hook inside one of those branches would break call order.
+  const [picked, setPicked] = useState<string[]>([])
   const [hint, setHint] = useState('')
   const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
   const time = <span className="shrink-0 pt-0.5 text-[11px] tabular-nums text-muted-foreground">{timeAgo(m.createdAt)}</span>
@@ -7211,7 +7260,9 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
   }
 
   // ── Question (pending) ──
-  const qOptions = (m.args as { options?: string[] } | undefined)?.options?.filter(Boolean) ?? []
+  const q = questionOpts(m)
+  const qOptions = q.options
+  const qFallbackNote = questionFallbackNote(q)
   const answerWith = async (text: string) => { if (!text.trim()) return; setBusy(true); const r = await api.answerQuestion(m.questionId!, text.trim()); if (r.error) setBusy(false) }
   const send = () => answerWith(answer)
   // Dismiss without answering: cancels the question so it leaves "Needs you" (and unblocks a live agent's `ask`).
@@ -7228,12 +7279,28 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
         {time}
       </div>
       {qOptions.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {qOptions.map((o, i) => (
-            <Button key={i} size="sm" variant="outline" className="h-8 text-xs" disabled={busy} onClick={() => answerWith(o)}>{o}</Button>
-          ))}
-        </div>
+        q.multi ? (
+          // Multi-select: each option toggles, and ONE Send posts them comma-joined as a single answer.
+          <div className="mt-2 flex flex-wrap items-center gap-1.5" role="group" aria-label="Pick one or more answers">
+            {qOptions.map((o, i) => {
+              const on = picked.includes(o)
+              return (
+                <Button key={i} size="sm" variant={on ? 'default' : 'outline'} aria-pressed={on} className="h-8 text-xs" disabled={busy} onClick={() => setPicked((p) => togglePicked(p, o))}>{o}</Button>
+              )
+            })}
+            <Button size="sm" className="h-8 px-2.5 text-xs" disabled={busy || picked.length === 0} onClick={() => answerWith(joinPicked(picked, qOptions))}>
+              <Send className="mr-1 h-3.5 w-3.5" />Send{picked.length > 0 ? ` ${picked.length}` : ''}
+            </Button>
+          </div>
+        ) : (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {qOptions.map((o, i) => (
+              <Button key={i} size="sm" variant="outline" className="h-8 text-xs" disabled={busy} onClick={() => answerWith(o)}>{o}</Button>
+            ))}
+          </div>
+        )
       )}
+      {qFallbackNote && <div className="mt-1.5 text-xs text-muted-foreground">{qFallbackNote}</div>}
       <div className="mt-2 flex gap-1.5">
         <Input value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder={qOptions.length > 0 ? '…or type a different answer' : 'Type your answer — the agent is waiting…'} className="h-8 text-sm" />
         <Button size="sm" className="h-8 px-2.5 text-xs" disabled={busy || !answer.trim()} onClick={send}><Send className="mr-1 h-3.5 w-3.5" />Reply</Button>

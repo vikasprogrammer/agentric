@@ -755,6 +755,34 @@ export interface QuestionNotice {
   options?: string[];
 }
 
+/** The optional durability a question can carry (`ask` → {@link TerminalManager.askQuestion}). Any of
+ *  these makes the question OUTLIVE its run: it is kept pending when the session ends, resolved to
+ *  `defaultAnswer` once `expiresAt` passes, and its answer is delivered through the wake queue. */
+export interface AskDurability {
+  /** The human may pick SEVERAL of the options (kind `many`); the answer comes back comma-joined. */
+  multi?: boolean;
+  /** What applies if nobody answers by `expiresAt`. Without one, an expired question is just cancelled. */
+  defaultAnswer?: string;
+  /** Epoch ms. The sweep resolves the question at this point — bounded by the caller, not here. */
+  expiresAt?: number;
+  /** The goal this decision belongs to, so a stalled goal can show what it is waiting on. */
+  goalId?: string;
+}
+
+/** What the question-deliverer sink receives when an answer lands for a run that is no longer live — a
+ *  late human answer, or the sweep applying a default. The registry hands it to the WAKE QUEUE, which
+ *  owns the "how do I reach this agent" decision (inject into a live pane, else resume the transcript).
+ *  `defaulted` separates "a person decided" from "the deadline decided", which the agent must be told. */
+export interface QuestionAnswerNotice {
+  questionId: string;
+  sessionId: string;
+  agent: string;
+  prompt: string;
+  answer: string;
+  by: string;
+  defaulted?: boolean;
+}
+
 /** What the member-notifier sink receives when an agent deliberately notifies a specific teammate via
  *  the `notify` tool — the explicit "this task needs someone else to know" escape hatch from the
  *  session-owner-scoped default. `to` is the resolved member id; the registry DMs them out-of-band. */
@@ -970,6 +998,10 @@ export class TerminalManager {
    *  a blocking `ask` pings the run-as member out-of-band instead of sitting unseen. */
   private questionNotifier?: (notice: QuestionNotice) => void;
   setQuestionNotifier(fn: (notice: QuestionNotice) => void): void { this.questionNotifier = fn; }
+  /** Where a late (or defaulted) answer goes when the asking run has already finished — see
+   *  {@link QuestionAnswerNotice}. Unset in tests/demo: the answer is still recorded, just not delivered. */
+  private questionDeliverer?: (notice: QuestionAnswerNotice) => void;
+  setQuestionDeliverer(fn: (notice: QuestionAnswerNotice) => void): void { this.questionDeliverer = fn; }
 
   /**
    * Re-nudge stale human-in-the-loop prompts: an approval or `ask` question that has sat pending past
@@ -7070,23 +7102,35 @@ export class TerminalManager {
    * "ask a teammate for info / a confirmation" channel — and both the inbox card and the DM target them,
    * and {@link canViewQuestion} grants them the answer. Returns `{ error }` when `to` matches no member.
    */
-  askQuestion(sessionId: string, agent: string, prompt: string, to?: string, options?: string[]): { id?: string; error?: string; to?: string } {
+  askQuestion(sessionId: string, agent: string, prompt: string, to?: string, options?: string[], durable?: AskDurability): { id?: string; error?: string; to?: string } {
     let target: Member | undefined;
     if (to && to.trim()) {
       target = this.resolveMember(to);
       if (!target) return { error: `no teammate matches "${to}"` };
     }
     const id = newId('question');
+    const kind = durable?.multi ? 'many' : (options?.length ? 'one' : 'text');
     this.db
-      .prepare('INSERT INTO questions (id, run_id, tenant, agent, prompt, status, audience_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, sessionId, this.os.tenant, agent, prompt, 'pending', target?.id ?? null, Date.now());
+      .prepare('INSERT INTO questions (id, run_id, tenant, agent, prompt, status, audience_id, created_at, kind, options, default_answer, expires_at, goal_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, sessionId, this.os.tenant, agent, prompt, 'pending', target?.id ?? null, Date.now(),
+        kind, options?.length ? JSON.stringify(options) : null,
+        durable?.defaultAnswer ?? null, durable?.expiresAt ?? null, durable?.goalId ?? null);
     // Card audience: the addressed teammate when `to` is set, else the session operator.
     const audienceKind = target ? 'member' : 'sessionOwner';
     const audienceId = target ? target.id : sessionId;
     // Multiple-choice options (if any) ride along in the message args → the card renders one-click buttons.
     const cleanOptions = options?.map((o) => o.trim()).filter(Boolean).slice(0, 8);
-    this.addMessage({ type: 'question', sessionId, agent, title: `Question — ${agent}`, body: prompt, status: 'pending', questionId: id, audienceKind, audienceId, ...(cleanOptions?.length ? { args: { options: cleanOptions } } : {}) });
-    this.audit(sessionId, agent, 'question.asked', { questionId: id, prompt, ...(target ? { to: target.id } : {}) });
+    // `multi` / `defaultAnswer` / `expiresAt` ride the card args beside the options: the console renders
+    // multi-select chips and the "no answer by X → Y" line off these.
+    const cardArgs = {
+      ...(cleanOptions?.length ? { options: cleanOptions } : {}),
+      ...(durable?.multi ? { multi: true } : {}),
+      ...(durable?.defaultAnswer ? { defaultAnswer: durable.defaultAnswer } : {}),
+      ...(durable?.expiresAt ? { expiresAt: durable.expiresAt } : {}),
+      ...(durable?.goalId ? { goalId: durable.goalId } : {}),
+    };
+    this.addMessage({ type: 'question', sessionId, agent, title: `Question — ${agent}`, body: prompt, status: 'pending', questionId: id, audienceKind, audienceId, ...(Object.keys(cardArgs).length ? { args: cardArgs } : {}) });
+    this.audit(sessionId, agent, 'question.asked', { questionId: id, prompt, kind, ...(target ? { to: target.id } : {}), ...(durable?.expiresAt ? { expiresAt: durable.expiresAt } : {}), ...(durable?.defaultAnswer ? { hasDefault: true } : {}), ...(durable?.goalId ? { goalId: durable.goalId } : {}) });
     // Out-of-band ping (like approvals): DM the person the run acts for — or the addressed teammate — so a
     // blocking `ask` doesn't sit unseen in the console. And if the run was triggered from chat, mirror the
     // question into that thread. Both best-effort, off the hot path.
@@ -7097,11 +7141,52 @@ export class TerminalManager {
 
   /** A human answers a pending question (from the inbox). */
   answerQuestion(id: string, answer: string, by: string): boolean {
-    const q = this.db.prepare('SELECT run_id, agent, status FROM questions WHERE id = ?').get<{ run_id: string; agent: string; status: string }>(id);
+    const q = this.db
+      .prepare('SELECT run_id, agent, status, prompt FROM questions WHERE id = ?')
+      .get<{ run_id: string; agent: string; status: string; prompt: string }>(id);
     if (!q || q.status !== 'pending') return false;
     this.db.prepare('UPDATE questions SET status = ?, answer = ?, answered_by = ?, answered_at = ? WHERE id = ?').run('answered', answer, by, Date.now(), id);
     this.audit(q.run_id, by, 'question.answered', { questionId: id });
+    // A live asker is polling `/api/ask/:id` and picks this up by itself. A FINISHED one cannot, so the
+    // answer goes through the wake queue — the one place that decides how to reach an agent (inject into a
+    // live pane, else resume the transcript). Without this a durable question could be answered into
+    // nothing, which is the old bug with extra steps.
+    // `reachable` (is the pane there) rather than the row's status — the lesson from the four poke-lane
+    // bugs in edge/wakeups.ts: status is not liveness.
+    if (!this.reachable(q.run_id)) {
+      try { this.questionDeliverer?.({ questionId: id, sessionId: q.run_id, agent: q.agent, prompt: q.prompt, answer, by }); }
+      catch { /* delivery is advisory — the answer is recorded either way */ }
+    }
     return true;
+  }
+
+  /**
+   * Resolve every question whose deadline has passed: to its DEFAULT when it has one, else cancelled.
+   * Called from the scheduler tick. Deterministic and spawn-free; a defaulted answer is delivered to the
+   * agent exactly like a human's (through {@link questionDeliverer}), so the run that asked learns what
+   * was decided for it rather than silently assuming.
+   */
+  sweepExpiredQuestions(now = Date.now()): Array<{ id: string; outcome: 'defaulted' | 'expired' }> {
+    const due = this.db
+      .prepare("SELECT id, run_id, agent, prompt, default_answer FROM questions WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?")
+      .all<{ id: string; run_id: string; agent: string; prompt: string; default_answer: string | null }>(now);
+    const out: Array<{ id: string; outcome: 'defaulted' | 'expired' }> = [];
+    for (const q of due) {
+      if (q.default_answer) {
+        this.db.prepare("UPDATE questions SET status = 'answered', answer = ?, answered_by = 'system:default', answered_at = ? WHERE id = ?").run(q.default_answer, now, q.id);
+        this.audit(q.run_id, 'system', 'question.defaulted', { questionId: q.id, answer: q.default_answer });
+        out.push({ id: q.id, outcome: 'defaulted' });
+        try { this.questionDeliverer?.({ questionId: q.id, sessionId: q.run_id, agent: q.agent, prompt: q.prompt, answer: q.default_answer, by: 'system:default', defaulted: true }); }
+        catch { /* advisory */ }
+      } else {
+        this.db.prepare("UPDATE questions SET status = 'cancelled', answered_by = 'system:expired', answered_at = ? WHERE id = ?").run(now, q.id);
+        this.audit(q.run_id, 'system', 'question.expired', { questionId: q.id });
+        out.push({ id: q.id, outcome: 'expired' });
+      }
+      // Either way the card stops asking: it leaves "Needs you" and becomes a dismissable Activity row.
+      try { this.db.prepare("UPDATE messages SET status = 'cancelled' WHERE question_id = ? AND status IN ('pending','open')").run(q.id); } catch { /* advisory */ }
+    }
+    return out;
   }
 
   /** Bind a pending question to a Slack/Discord DM recipient, so a reply in that DM can answer it (the
@@ -7304,9 +7389,19 @@ export class TerminalManager {
    * `cancelled` Activity rows instead of live prompts that can never be resolved. Returns how many flipped.
    */
   private cancelPendingQuestions(sessionId: string, by: string): number {
-    const pending = this.db.prepare("SELECT id, prompt FROM questions WHERE run_id = ? AND status = 'pending'").all<{ id: string; prompt: string }>(sessionId);
+    const all = this.db
+      .prepare("SELECT id, prompt, expires_at, default_answer FROM questions WHERE run_id = ? AND status = 'pending'")
+      .all<{ id: string; prompt: string; expires_at: number | null; default_answer: string | null }>(sessionId);
+    // A question that carries a DEADLINE or a DEFAULT outlives its run: the whole point of those fields is
+    // that the decision is still live after the asker has gone (the sweep resolves it, a late answer is
+    // delivered through the wake queue). Cancelling those was the bug — an unattended run dies ~5 minutes
+    // after asking, so every slower human answered a card that was already dead.
+    const carried = all.filter((q) => q.expires_at !== null || q.default_answer !== null);
+    const pending = all.filter((q) => q.expires_at === null && q.default_answer === null);
+    for (const q of carried) this.audit(sessionId, by, 'question.carried', { questionId: q.id, expiresAt: q.expires_at ?? null, hasDefault: q.default_answer !== null });
     if (!pending.length) return 0;
-    this.db.prepare("UPDATE questions SET status = 'cancelled', answered_by = ?, answered_at = ? WHERE run_id = ? AND status = 'pending'").run(by, Date.now(), sessionId);
+    const marks = pending.map(() => '?').join(',');
+    this.db.prepare(`UPDATE questions SET status = 'cancelled', answered_by = ?, answered_at = ? WHERE id IN (${marks})`).run(by, Date.now(), ...pending.map((q) => q.id));
     for (const q of pending) this.audit(sessionId, by, 'question.cancelled', { questionId: q.id, reason: 'session ended' });
     // If the run ALSO parked a task blocked on a human, the question it died with was that block's real
     // ask — file it on the task, so the decision outlives the run that raised it. The task is the durable

@@ -33,6 +33,9 @@ import { deriveProgress, parseClaim, ProgressClaim, SessionProgress } from './st
  * was 1.27 MB (887 KB of it task `body`) — ~3 MB of prose per console load that nothing displayed.
  */
 const LIST_CLIP = 240;
+/** A human-answerable deadline on an `ask`: at least an hour, at most a week (see POST /api/ask). */
+const ASK_DEADLINE_MIN_H = 1;
+const ASK_DEADLINE_MAX_H = 168;
 import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
@@ -1414,8 +1417,27 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const options = Array.isArray(b.options)
       ? (b.options as unknown[]).map((o) => String(o).trim()).filter(Boolean).slice(0, 8)
       : undefined;
-    const out = tm.askQuestion(session, agent, question, to, options?.length ? options : undefined);
-    return sendJson(res, out.error ? 400 : 200, out);
+    // Durability (see AskDurability): a deadline and/or a default make the question outlive this run.
+    // The window is BOUNDED here, the one place every caller passes through: under an hour is not a
+    // deadline a human can meet, and a question that can sit for a month is not a decision anyone is
+    // waiting on. A default with no deadline gets the ceiling — "it defaults eventually" is a promise
+    // with no date.
+    const multi = b.multi === true;
+    const defaultAnswer = typeof b.default === 'string' && b.default.trim() ? b.default.trim().slice(0, 400) : undefined;
+    const hours = Number(b.deadlineHours);
+    const deadlineHours = Number.isFinite(hours) && hours > 0 ? Math.min(Math.max(hours, ASK_DEADLINE_MIN_H), ASK_DEADLINE_MAX_H) : undefined;
+    const expiresAt = deadlineHours !== undefined ? Date.now() + deadlineHours * 3_600_000
+      : defaultAnswer ? Date.now() + ASK_DEADLINE_MAX_H * 3_600_000 : undefined;
+    // A multi-pick question with no options is a text box with extra words — refuse rather than mislead.
+    if (multi && !options?.length) return sendJson(res, 400, { error: 'multi needs options to choose from' });
+    if (defaultAnswer && options?.length && !options.includes(defaultAnswer)) {
+      return sendJson(res, 400, { error: `default "${defaultAnswer}" must be one of the options` });
+    }
+    const goalId = typeof b.goal === 'string' && b.goal.trim() ? b.goal.trim() : undefined;
+    if (goalId && !os.goals.get(goalId)) return sendJson(res, 400, { error: `no goal "${goalId}"` });
+    const out = tm.askQuestion(session, agent, question, to, options?.length ? options : undefined,
+      (multi || defaultAnswer || expiresAt || goalId) ? { multi, defaultAnswer, expiresAt, goalId } : undefined);
+    return sendJson(res, out.error ? 400 : 200, { ...out, ...(expiresAt ? { expiresAt } : {}), ...(defaultAnswer ? { default: defaultAnswer } : {}) });
   }
   const askMatch = p.match(/^\/api\/ask\/([\w-]+)$/);
   if (method === 'GET' && askMatch) return sendJson(res, 200, tm.questionStatus(askMatch[1]));

@@ -2352,6 +2352,7 @@ export class Automations {
     this.sweepStuckGoals(now);
     this.sweepCompletedGoals();
     this.sweepGoalMetrics(now);
+    this.sweepExpiredQuestions(now);
     this.sweepLoginExpiry(now);
     this.sweepExpiredShares(now);
     // Re-nudge stale human-in-the-loop prompts (approvals/questions blocking an agent) so a missed ask
@@ -2372,6 +2373,19 @@ export class Automations {
     } catch {
       // never let the share-expiry sweep take down the automation scheduler
     }
+  }
+
+  /**
+   * Resolve every durable question whose deadline has passed — to its default, or cancelled when it has
+   * none (see `TerminalManager.sweepExpiredQuestions`). Spawn-free arithmetic; the answer reaches the
+   * agent through the wake queue like a human's would. Wrapped so a bad row never kills the tick.
+   */
+  private sweepExpiredQuestions(now: Date): void {
+    try {
+      for (const r of this.tm.sweepExpiredQuestions(now.getTime())) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'system', type: 'question.swept', data: { questionId: r.id, outcome: r.outcome } });
+      }
+    } catch { /* never let a question sweep take down the scheduler */ }
   }
 
   /**

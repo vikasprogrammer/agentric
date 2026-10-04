@@ -568,7 +568,11 @@ const TOOLS = [
       "answer. Prefer this over guessing. By default it goes to the operator you're working for. Set `to` (a " +
       "teammate's name or email) to ask a SPECIFIC other person instead — e.g. confirm a detail with the " +
       'account owner, or get info only they have. Same blocking behaviour; their reply comes back to you. ' +
-      '(To ask another AGENT instead of a person, use ask_agent.)',
+      '(To ask another AGENT instead of a person, use ask_agent.) ' +
+      'A pending question normally dies with your run, so for anything you can proceed on alone give it a ' +
+      '`default` (and optionally `deadline_hours`): the question then OUTLIVES this run, the human can still ' +
+      'answer it hours later, and the default is applied and delivered to you if they never do. Ask once with ' +
+      'a default rather than re-asking the same thing every run.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -576,6 +580,10 @@ const TOOLS = [
         question: { type: 'string', description: 'A specific, self-contained question.' },
         to: { type: 'string', description: 'Optional. A teammate to ask instead of the operator — their name or email (e.g. "Alex Rivera" or "alex@acme.com"). Omit to ask the human who owns this run.' },
         options: { type: 'array', items: { type: 'string' }, description: 'Optional. A short list of choices for a multiple-choice question — they render as one-click buttons in the human\'s Inbox/Chat, and their reply is the option they pick. Use this instead of a native picker when the answer is one of a few known choices (e.g. ["Ship it", "Hold", "Let me look first"]); omit for an open question.' },
+        multi: { type: 'boolean', description: 'Optional. Lets the human pick SEVERAL of the options (checkboxes + Save instead of one-click buttons); the answer comes back comma-joined. Needs `options`.' },
+        default: { type: 'string', description: 'Optional. What should happen if nobody answers — it must be one of `options` when you give options. Setting it makes the question SURVIVE the end of this run: it stays in the human\'s Inbox, and when the deadline passes this answer is applied for you and delivered to you on a later run. Use it for anything you can sensibly proceed on alone.' },
+        deadline_hours: { type: 'number', description: 'Optional. Hours until `default` applies (1–168, clamped). Omit with a `default` and you get a week. A question with a default or a deadline outlives this run — so prefer it over re-asking next run.' },
+        goal: { type: 'string', description: 'Optional. The goal id this decision belongs to, so a stalled goal can show what it is waiting on.' },
       },
       required: ['question'],
     },
@@ -1790,12 +1798,18 @@ async function ask(args: Record<string, unknown>): Promise<string> {
   const options = Array.isArray(args.options)
     ? args.options.map((o) => String(o).trim()).filter(Boolean).slice(0, 8)
     : undefined;
+  // Durable ask: a `default` (and optional deadline) keeps the question alive past this run — the server
+  // bounds the window and applies the default when it passes. See AskDurability in src/terminal.ts.
+  const multi = args.multi === true;
+  const dflt = typeof args.default === 'string' && args.default.trim() ? args.default.trim() : undefined;
+  const deadlineHours = Number.isFinite(Number(args.deadline_hours)) && Number(args.deadline_hours) > 0 ? Number(args.deadline_hours) : undefined;
+  const goal = typeof args.goal === 'string' && args.goal.trim() ? args.goal.trim() : undefined;
   const res = await fetch(AOS_URL + '/api/ask', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, agent: AGENT, question, to: to || undefined, options: options?.length ? options : undefined }),
+    body: JSON.stringify({ session: SESSION, agent: AGENT, question, to: to || undefined, options: options?.length ? options : undefined, ...(multi ? { multi: true } : {}), ...(dflt ? { default: dflt } : {}), ...(deadlineHours ? { deadlineHours } : {}), ...(goal ? { goal } : {}) }),
   });
-  const posted = (await res.json()) as { id?: string; error?: string; to?: string };
+  const posted = (await res.json()) as { id?: string; error?: string; to?: string; expiresAt?: number; default?: string };
   if (posted.error) return `Could not ask: ${posted.error}`;
   const id = posted.id;
   if (!id) return 'Could not post the question.';
@@ -1808,13 +1822,26 @@ async function ask(args: Record<string, unknown>): Promise<string> {
   // (return stop-cleanly guidance rather than hang or guess). NOTE: a pending question also keeps the
   // pane alive server-side (markTurnIdle won't reap a run blocked on a person), so parking here is what
   // lets the pane finally close.
-  const maxPolls = UNATTENDED ? Math.max(1, Math.ceil(UNATTENDED_ASK_WAIT_S / 2)) : 1800;
+  // A DURABLE question (one carrying a default/deadline) does not need to be waited out: it stays in the
+  // Inbox after this run ends, a late answer is delivered to the agent through the wake queue, and the
+  // default applies if nobody replies. So block only briefly in case a human is right there, then park —
+  // holding a pane open for an hour to wait on a question that can no longer be lost is pure cost.
+  const durable = !!(posted.default || posted.expiresAt);
+  const maxPolls = durable ? 15 : (UNATTENDED ? Math.max(1, Math.ceil(UNATTENDED_ASK_WAIT_S / 2)) : 1800);
   for (let i = 0; i < maxPolls; i++) {
     await sleep(2000);
     const r = await fetch(`${AOS_URL}/api/ask/${id}`);
     const d = (await r.json()) as { status?: string; answer?: string };
     if (d.status === 'answered') return d.answer || `(${who} gave no answer)`;
     if (d.status === 'cancelled') return `${who} dismissed this question without answering. Proceed using your best judgement, or ask again if you are still blocked.`;
+  }
+  if (durable) {
+    const when = posted.expiresAt ? new Date(posted.expiresAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'the deadline';
+    return `No answer yet — and you do not need to wait. This question OUTLIVES this run: it stays in ${who === 'the operator' ? "the operator's" : `${who}'s`} ` +
+      `Inbox, they have been notified, and if nobody answers by ${when} the default ` +
+      `${posted.default ? `("${posted.default}") ` : ''}is applied for you. Either way the answer reaches you on a later run, ` +
+      'so you will be told what was decided. Carry on with the rest of your work now, or `report` and end the run — ' +
+      'do NOT re-ask this question next run, and do NOT guess at a risky or irreversible action in the meantime.';
   }
   if (UNATTENDED) {
     return `Nobody answered in the ${UNATTENDED_ASK_WAIT_S}s window on this unattended run (automation/cron/task). ` +

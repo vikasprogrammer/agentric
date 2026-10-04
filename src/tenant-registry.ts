@@ -308,6 +308,27 @@ export class TenantRegistry {
     // re-binds the reply-to-decide DM. One reminder per item (durable marker); off the tenant registry
     // because it needs the TerminalManager that owns the questions table + the approval notice path.
     autos.setStalePromptSweeper((now) => { tm.escalateStalePrompts(now); });
+    // A question answered (or defaulted) AFTER its run finished has nowhere to land on its own, so it
+    // goes through the WAKE QUEUE — the single place that decides how to reach an agent (inject into a
+    // live pane, else resume the transcript). This is what makes a durable `ask` worth having: the human
+    // can answer an hour later and the agent is actually told. A run with no pinned transcript can't be
+    // resumed, so the queue refuses it and the answer stays readable via `check_inbox`.
+    tm.setQuestionDeliverer((n) => {
+      const row = os.db
+        .prepare('SELECT claude_session_id AS transcript, run_as AS runAs FROM term_sessions WHERE id = ?')
+        .get<{ transcript: string | null; runAs: string | null }>(n.sessionId);
+      if (!row?.transcript) return;
+      const who = n.defaulted ? 'nobody answered, so the default applied' : `answered by ${n.by}`;
+      autos.wakeups.enqueue({
+        agent: n.agent,
+        source: `question:${n.questionId}`,
+        transcript: row.transcript,
+        runAs: row.runAs ?? undefined,
+        title: 'Answer to your question',
+        message: `Your question has been answered (${who}).\n\nQ: ${n.prompt}\nA: ${n.answer}\n\n`
+          + 'Pick the work back up from here — this is the decision you were waiting on.',
+      });
+    });
     // Task lifecycle → Inbox: a create/assign/status change lands an audience-addressed inbox card for
     // the right human (assignee/owner) — routed via resolveRecipients — and DMs them. Fires for EVERY
     // mutation path (console, agent MCP, dispatcher) because the sink lives on the store, not the routes.

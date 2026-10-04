@@ -1225,6 +1225,17 @@ function migrate(db: Db): void {
   addColumn(db, 'approvals', 'escalated_at', 'INTEGER');       // when the stale-approval reminder fired
   addColumn(db, 'questions', 'escalated_at', 'INTEGER');       // when the stale-question reminder fired
 
+  // A question that OUTLIVES its run (docs/inbox-plan.md → durable asks). Until these, every pending
+  // question died with the session that raised it (~5 min on an unattended run), so a human who answered
+  // an hour later was answering a cancelled card. A question carrying a deadline or a default is kept
+  // pending across the run end, resolved to its default when it expires, and delivered to the agent
+  // through the wake queue when it is answered late.
+  addColumn(db, 'questions', 'kind', 'TEXT');            // yes_no | one | many | number | text (default: text)
+  addColumn(db, 'questions', 'options', 'TEXT');         // JSON string[] — the choices, previously card-args only
+  addColumn(db, 'questions', 'default_answer', 'TEXT');  // what applies if nobody answers by expires_at
+  addColumn(db, 'questions', 'expires_at', 'INTEGER');   // when the default applies (NULL = no deadline)
+  addColumn(db, 'questions', 'goal_id', 'TEXT');         // the goal this decision belongs to, if any
+
   // The Claude Code OUTPUT STYLE the run LAUNCHED with ('Default' | 'Concise' | a library style),
   // stamped from the `session.tuning` audit alongside model/effort. It is the join key adoption groups
   // on — without it on the row, "which agents ran which style" needs a JSON scan of the audit stream per
