@@ -8,6 +8,11 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.451.0] - 2026-10-04
+### Added
+- **Goal heartbeat: a stalled goal now says why it stalled and what to do.** When a measured goal goes `unmeasured`, `src/edge/goal-heartbeat.ts` diagnoses the runner behind its readings from that agent's own sessions and triggers — an expired runtime credential refusing every launch, a parked/taken-over session making the scheduler skip each cycle, launches crashing before turn one, no enabled trigger left, or runs completing without ever calling `goal_measure` — and the review card leads with that fault instead of "nobody is measuring this", carries the fix, and re-cards when the CAUSE changes even though the verdict has not. Diagnosis is read-only arithmetic (no spawning, no repair), claims a cause only on unambiguous evidence, and the cause + evidence counts land in the `goal.reviewed` audit row. Found by the instapods growth trial, where the existing symptom card fired twice, was DM'd both times, and changed nothing while the loop sat dead for nine days across three unrelated mechanical faults. Pinned by `scripts/goal-heartbeat-test.cjs`.
+  **For users:** If a goal with a metric stops being measured, the alert now names the actual reason — an expired login, a session someone left open, a crashing agent — and tells you the one thing to fix. [Open Goals](#/goals)
+
 ## [0.450.1] - 2026-10-03
 ### Fixed
 - **An interactive cron no longer stops firing because its last run is still open.** An interactive run

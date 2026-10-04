@@ -20,6 +20,7 @@
 import type { AgentOS } from '../kernel';
 import type { TerminalManager } from '../terminal';
 import type { Goal, GoalMetricStatus } from '../types';
+import { heartbeat, heartbeatLines, heartbeatTitle, type Heartbeat } from './goal-heartbeat';
 
 /** Verdicts worth a human's attention. `measuring` and `new` are the quiet, healthy states. */
 const ACTIONABLE = new Set<GoalMetricStatus['verdict']>(['flat', 'regressing', 'unmeasured', 'achieved']);
@@ -29,7 +30,7 @@ function fmt(v: number): string {
 }
 
 /** The card's headline + body for one verdict. Written as what the reader should DO, not as a status. */
-function compose(goal: Goal, st: GoalMetricStatus): { title: string; body: string } {
+function compose(goal: Goal, st: GoalMetricStatus, hb?: Heartbeat): { title: string; body: string } {
   const m = st.metric;
   const unit = m.unit ? ` ${m.unit}` : '';
   const now = st.latest ? `${fmt(st.latest.value)}${unit}` : '—';
@@ -37,15 +38,21 @@ function compose(goal: Goal, st: GoalMetricStatus): { title: string; body: strin
   const since = st.moved !== undefined ? `${st.moved >= 0 ? '+' : ''}${fmt(st.moved)}${unit} since the first reading` : 'no movement to compare';
 
   switch (st.verdict) {
-    case 'unmeasured':
+    case 'unmeasured': {
+      // The heartbeat (goal-heartbeat.ts) turns this from a symptom into an instruction: it names the
+      // mechanical reason the runner stopped and what the owner does about it. When it can't tell, the
+      // original symptom wording stands — a confident wrong cause is worse than no cause.
+      const why = hb ? heartbeatLines(hb) : '';
+      const body = st.latest
+        ? `${m.name} was last measured ${st.staleDays} days ago at ${now}; a reading was due every ${m.everyDays}.\n\n`
+          + `Until it is measured again, nothing can say whether the work under this goal is working.`
+        : `This goal has a metric (${m.name}) but no reading has ever been taken, and one was due ${m.everyDays} days after it was set.\n\n`
+          + `A goal with an unmeasured metric is judged on activity alone — which is what having a metric was meant to fix.`;
       return {
-        title: `Nobody is measuring "${goal.title}"`,
-        body: st.latest
-          ? `${m.name} was last measured ${st.staleDays} days ago at ${now}; a reading was due every ${m.everyDays}.\n\n`
-            + `Until it is measured again, nothing can say whether the work under this goal is working. Take a reading, or have an agent post one with \`goal_measure\`.`
-          : `This goal has a metric (${m.name}) but no reading has ever been taken, and one was due ${m.everyDays} days after it was set.\n\n`
-            + `A goal with an unmeasured metric is judged on activity alone — which is what having a metric was meant to fix.`,
+        title: (hb && heartbeatTitle(goal, hb)) || `Nobody is measuring "${goal.title}"`,
+        body: why ? `${body}\n\n${why}` : `${body}\n\nTake a reading, or have an agent post one with \`goal_measure\`.`,
       };
+    }
     case 'flat':
       return {
         title: `"${goal.title}" is not moving`,
@@ -69,13 +76,18 @@ function compose(goal: Goal, st: GoalMetricStatus): { title: string; body: strin
   }
 }
 
-/** The verdict this goal was last carded with, from the audit trail (the once-guard). */
-function lastVerdict(os: AgentOS, goalId: string): string | undefined {
+/** The verdict + cause this goal was last carded with, from the audit trail (the once-guard). A stall
+ *  whose CAUSE changes (expired login → parked session) re-cards: the verdict is the same but the fix
+ *  is not, and the owner acted on the old one. */
+function lastCarded(os: AgentOS, goalId: string): string | undefined {
   const row = os.db
     .prepare("SELECT data FROM audit_events WHERE tenant = ? AND type = 'goal.reviewed' AND data LIKE ? ORDER BY ts DESC, id DESC LIMIT 1")
     .get<{ data: string }>(os.tenant, `%"goalId":"${goalId}"%`);
   if (!row) return undefined;
-  try { return String((JSON.parse(row.data) as { verdict?: unknown }).verdict ?? ''); } catch { return undefined; }
+  try {
+    const d = JSON.parse(row.data) as { verdict?: unknown; cause?: unknown };
+    return `${String(d.verdict ?? '')}${d.cause ? `:${String(d.cause)}` : ''}`;
+  } catch { return undefined; }
 }
 
 export interface ReviewOutcome {
@@ -83,6 +95,8 @@ export interface ReviewOutcome {
   title: string;
   verdict: GoalMetricStatus['verdict'];
   carded: boolean;
+  /** Why the runner stopped, when the verdict is `unmeasured` (see goal-heartbeat.ts). */
+  cause?: Heartbeat['cause'];
 }
 
 /**
@@ -97,11 +111,15 @@ export function reviewGoals(os: AgentOS, tm: TerminalManager, now = Date.now()):
     if (!st) continue;
     const verdict = st.verdict;
     let carded = false;
-    // Re-card only when the verdict CHANGES. A goal that recovers and lapses again is worth saying twice;
-    // a goal that has been flat since last month is not.
-    if (ACTIONABLE.has(verdict) && lastVerdict(os, goal.id) !== verdict) {
+    // Only a stall needs diagnosing, and the query is a couple of indexed reads, so it stays off the
+    // path of every healthy goal.
+    const hb = verdict === 'unmeasured' ? heartbeat(os, goal, now) : undefined;
+    const key = `${verdict}${hb ? `:${hb.cause}` : ''}`;
+    // Re-card only when the verdict (or a stall's cause) CHANGES. A goal that recovers and lapses again
+    // is worth saying twice; a goal that has been flat since last month is not.
+    if (ACTIONABLE.has(verdict) && lastCarded(os, goal.id) !== key) {
       try {
-        const { title, body } = compose(goal, st);
+        const { title, body } = compose(goal, st, hb);
         const id = tm.postSystemCard({
           topic: `goal-review-${goal.id}`,
           type: 'notification',
@@ -110,7 +128,7 @@ export function reviewGoals(os: AgentOS, tm: TerminalManager, now = Date.now()):
           // The person accountable for the goal, falling back to the admins when nobody owns it — an
           // unowned failing goal is precisely the one that needs someone told.
           audience: goal.owner ? { kind: 'member', id: goal.owner } : { kind: 'admins' },
-          args: { goalId: goal.id, verdict, value: st.latest?.value, readings: st.readings },
+          args: { goalId: goal.id, verdict, value: st.latest?.value, readings: st.readings, ...(hb ? { cause: hb.cause, runner: hb.runner } : {}) },
           link: { page: 'goals', detail: goal.id, label: 'Goals' },
         });
         tm.closeSystemCards(`goal-review-${goal.id}`, 'cancelled', id);
@@ -118,10 +136,10 @@ export function reviewGoals(os: AgentOS, tm: TerminalManager, now = Date.now()):
       } catch { /* a card is a convenience; the audit row below is the record */ }
       os.audit.append({
         ts: now, runId: '-', tenant: os.tenant, principal: 'system', type: 'goal.reviewed',
-        data: { goalId: goal.id, title: goal.title, verdict, value: st.latest?.value ?? null, readings: st.readings, moved: st.moved ?? null },
+        data: { goalId: goal.id, title: goal.title, verdict, value: st.latest?.value ?? null, readings: st.readings, moved: st.moved ?? null, ...(hb ? { cause: hb.cause, runner: hb.runner ?? null, evidence: hb.evidence } : {}) },
       });
     }
-    out.push({ goalId: goal.id, title: goal.title, verdict, carded });
+    out.push({ goalId: goal.id, title: goal.title, verdict, carded, ...(hb ? { cause: hb.cause } : {}) });
   }
   return out;
 }
