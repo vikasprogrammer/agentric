@@ -130,6 +130,34 @@ const HOUR = 3_600_000;
   assert(neverCard && /Nobody is measuring/.test(neverCard.title), 'it keeps the original symptom title', neverCard && neverCard.title);
   assert(neverCard && /goal_measure/.test(neverCard.body), 'and still says how to start measuring', neverCard && neverCard.body.slice(0, 200));
 
+  console.log('\n\x1b[1m6b) Evidence is counted only since the last reading\x1b[0m');
+  // Live trap (2026-09-27): a run that succeeded BEFORE the number went stale explained nothing, yet it
+  // out-voted two fresh refusals and the cause came back `unknown`.
+  const mixed = mkGoal('Stale after a good run');
+  read(mixed, 'runner-mixed', 9, 55);
+  trigger('runner-mixed');
+  session('runner-mixed', { status: 'done', hoursAgo: 14 * 24, turns: 5 });   // older than the reading
+  session('runner-mixed', { status: 'crashed', hoursAgo: 40, refused: 'credential expired: no refresh token left' });
+  session('runner-mixed', { status: 'crashed', hoursAgo: 16, refused: 'credential expired: no refresh token left' });
+  const hbMixed = heartbeat(aos, aos.goals.get(mixed.id), NOW);
+  assert(hbMixed.cause === 'credential', 'the pre-stall success does not out-vote fresh refusals', hbMixed);
+  assert(hbMixed.evidence.ok === 0, 'and it is not counted as evidence at all', hbMixed.evidence);
+
+  console.log('\n\x1b[1m6c) A trigger that silently stopped firing\x1b[0m');
+  // The scheduler's pile-up guard skips a cycle and records NOTHING — no session, no failure — which is
+  // how three days of the live stall left no trace at all. The honest reading is "it is not firing".
+  const skipped = mkGoal('Trigger not firing');
+  read(skipped, 'runner-skipped', 6, 56);
+  const auId = trigger('runner-skipped');
+  aos.db.prepare('UPDATE automations SET last_fired_at = ? WHERE id = ?').run(NOW - 6 * DAY, auId);
+  const hbSkipped = heartbeat(aos, aos.goals.get(skipped.id), NOW);
+  assert(hbSkipped.cause === 'not-firing', 'cause is not-firing', hbSkipped);
+  assert(/6 days/.test(hbSkipped.detail), 'it says how long it has been quiet', hbSkipped.detail);
+  assert(/still alive/.test(hbSkipped.fix), 'and points at the live-session cause', hbSkipped.fix);
+  reviewGoals(aos, tm, NOW);
+  const skippedCard = openCard(skipped.id);
+  assert(skippedCard && /no enabled trigger|Nobody is measuring/.test(skippedCard.title) === false, 'the title is not the symptom wording', skippedCard && skippedCard.title);
+
   console.log('\n\x1b[1m7) The cause is part of the once-guard\x1b[0m');
   const before = cardsFor(cred.id).length;
   reviewGoals(aos, tm, NOW + HOUR);
