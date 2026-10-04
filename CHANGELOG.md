@@ -8,6 +8,10 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.451.1] - 2026-10-04
+### Fixed
+- **Goal heartbeat: diagnose on the evidence that belongs to the stall.** Counting every session in the lookback let a run that succeeded *before* the number went stale out-vote two fresh refusals, so a dead runtime credential came back `unknown`; evidence is now counted only since the last reading we have. The diagnosis is also bounded by `now` (a `goal_measure` reading may carry an explicit `at`, and a future-dated row made the stall look measured), which is what makes it replayable against a past moment — replaying the live instapods stall is how both ordering bugs surfaced. New `not-firing` cause for the shape the scheduler's pile-up guard leaves behind: an enabled trigger that has stopped firing with no run even attempted, which records neither a session nor a failure.
+
 ## [0.451.0] - 2026-10-04
 ### Added
 - **Goal heartbeat: a stalled goal now says why it stalled and what to do.** When a measured goal goes `unmeasured`, `src/edge/goal-heartbeat.ts` diagnoses the runner behind its readings from that agent's own sessions and triggers — an expired runtime credential refusing every launch, a parked/taken-over session making the scheduler skip each cycle, launches crashing before turn one, no enabled trigger left, or runs completing without ever calling `goal_measure` — and the review card leads with that fault instead of "nobody is measuring this", carries the fix, and re-cards when the CAUSE changes even though the verdict has not. Diagnosis is read-only arithmetic (no spawning, no repair), claims a cause only on unambiguous evidence, and the cause + evidence counts land in the `goal.reviewed` audit row. Found by the instapods growth trial, where the existing symptom card fired twice, was DM'd both times, and changed nothing while the loop sat dead for nine days across three unrelated mechanical faults. Pinned by `scripts/goal-heartbeat-test.cjs`.

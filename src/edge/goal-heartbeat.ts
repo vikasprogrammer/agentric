@@ -28,6 +28,8 @@ const DAY = 86_400_000;
 
 /** How far back to look for the runner's sessions. Beyond this a goal is a cold case, not a stall. */
 const LOOKBACK_DAYS = 14;
+/** An enabled trigger that has not fired in this long is not firing, whatever its schedule says. */
+const TRIGGER_STALE_DAYS = 2;
 /** A claimed/alive session older than this is parked, not working — the pile-up guard's blind spot. */
 const PARKED_HOURS = 6;
 
@@ -40,6 +42,8 @@ export type HeartbeatCause =
   | 'blocked'
   /** The runner has no enabled trigger left, so nothing is due to run at all. */
   | 'no-trigger'
+  /** A trigger is enabled but has stopped firing, and no run was even attempted. */
+  | 'not-firing'
   /** Runs are completing fine — the agent simply isn't recording a reading. */
   | 'not-reporting'
   /** Nothing has tried to run and nothing explains why. */
@@ -84,9 +88,12 @@ function refusalReason(os: AgentOS, sessionId: string): string | undefined {
  * asks once the metric itself says `unmeasured`.
  */
 export function heartbeat(os: AgentOS, goal: Goal, now = Date.now()): Heartbeat {
+  // Everything below is bounded by `now`: a reading may be recorded with an explicit `at` (goal_measure
+  // takes one), so a future-dated row must not make the stall look measured — and bounding makes the
+  // diagnosis replayable against a past moment, which is how its first two ordering bugs were found.
   const lastReading = os.db
-    .prepare('SELECT at FROM goal_readings WHERE goal_id = ? ORDER BY at DESC LIMIT 1')
-    .get<{ at: number }>(goal.id)?.at;
+    .prepare('SELECT at FROM goal_readings WHERE goal_id = ? AND at <= ? ORDER BY at DESC LIMIT 1')
+    .get<{ at: number }>(goal.id, now)?.at;
   const runner = runnerOf(os, goal.id);
   const evidence: Heartbeat['evidence'] = { refused: 0, crashed: 0, ok: 0, lastReadingAt: lastReading };
 
@@ -98,11 +105,14 @@ export function heartbeat(os: AgentOS, goal: Goal, now = Date.now()): Heartbeat 
     };
   }
 
-  const since = now - LOOKBACK_DAYS * DAY;
+  // Count evidence only since the last reading we HAVE: that is the window the stall lives in. A run
+  // that succeeded before the number went stale explains nothing, and letting it count was enough to
+  // hide a real credential failure behind a healthy run five days older (live, 2026-09-27).
+  const since = Math.max(now - LOOKBACK_DAYS * DAY, lastReading ?? 0);
   const rows = os.db
     // `term_sessions` carries no tenant column — the DB file IS the tenant boundary.
-    .prepare('SELECT id, status, claimed_by, created_at, updated_at, turns FROM term_sessions WHERE agent = ? AND created_at >= ? ORDER BY created_at DESC')
-    .all<SessionRow>(runner, since);
+    .prepare('SELECT id, status, claimed_by, created_at, updated_at, turns FROM term_sessions WHERE agent = ? AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC')
+    .all<SessionRow>(runner, since, now);
   evidence.lastRunAt = rows[0]?.created_at;
 
   // A session still alive (or paused) and long past any plausible turn is the pile-up guard's blind
@@ -140,9 +150,10 @@ export function heartbeat(os: AgentOS, goal: Goal, now = Date.now()): Heartbeat 
       fix: `Open the newest ${runner} session and read its pane — a launch that dies before turn one is environment, not prompt.`,
     };
   }
-  const triggers = os.db
-    .prepare('SELECT COUNT(*) AS n FROM automations WHERE agent_id = ? AND enabled = 1')
-    .get<{ n: number }>(runner)?.n ?? 0;
+  const trig = os.db
+    .prepare('SELECT COUNT(*) AS n, MAX(COALESCE(MIN(last_fired_at, ?), 0)) AS fired FROM automations WHERE agent_id = ? AND enabled = 1')
+    .get<{ n: number; fired: number }>(now, runner);
+  const triggers = trig?.n ?? 0;
   if (!triggers) {
     return {
       runner, cause: 'no-trigger', evidence,
@@ -157,11 +168,22 @@ export function heartbeat(os: AgentOS, goal: Goal, now = Date.now()): Heartbeat 
       fix: `Tell ${runner} to call \`goal_measure\` on goal ${goal.id} every run — the work is happening, the measurement is not.`,
     };
   }
+  // Nothing even tried to run, yet a trigger is enabled and overdue. This is the shape the scheduler's
+  // pile-up guard leaves behind: it skips a cycle and records nothing, so the DB shows neither a run nor
+  // a failure. Deliberately phrased as "stopped firing" — the heartbeat can see THAT, not always why.
   if (!rows.length) {
+    const quietDays = trig?.fired ? Math.floor((now - trig.fired) / DAY) : undefined;
+    if (quietDays === undefined || quietDays >= TRIGGER_STALE_DAYS) {
+      return {
+        runner, cause: 'not-firing', evidence,
+        detail: `${runner}'s trigger is enabled but has not fired ${quietDays === undefined ? 'at all' : `in ${quietDays} days`}, and no run has been attempted since the last reading.`,
+        fix: `Check for one of ${runner}'s sessions still alive (a live or taken-over session makes the scheduler skip each cycle), then confirm its schedule is due.`,
+      };
+    }
     return {
       runner, cause: 'silent', evidence,
-      detail: `${runner} has not started a single run in ${LOOKBACK_DAYS} days, and its trigger is enabled.`,
-      fix: `Check the scheduler is running and that ${runner}'s trigger is due (Automations → its schedule).`,
+      detail: `${runner} has not started a run since the last reading, though its trigger fired recently.`,
+      fix: `Check the newest ${runner} session and whether its schedule is due (Automations → its schedule).`,
     };
   }
   return {
@@ -184,6 +206,7 @@ export function heartbeatTitle(goal: Goal, hb: Heartbeat): string | undefined {
     case 'blocked': return `"${goal.title}" stopped: a parked session is blocking ${hb.runner}`;
     case 'crashing': return `"${goal.title}" stopped: ${hb.runner} is crashing at launch`;
     case 'no-trigger': return `"${goal.title}" stopped: ${hb.runner} has no enabled trigger`;
+    case 'not-firing': return `"${goal.title}" stopped: ${hb.runner}'s trigger is not firing`;
     case 'not-reporting': return `"${goal.title}" is running but not recording its number`;
     default: return undefined; // 'silent' / 'unknown' keep the review's own symptom title
   }
