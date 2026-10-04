@@ -20,6 +20,7 @@ import { inboxFileName, TerminalManager } from '../terminal';
 import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDispatchBlock, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
 import { reviewGoals } from './goal-review';
+import { reviewBets } from './bet-review';
 import { reviewLoginExpiry } from './login-expiry';
 import { recordCapabilityGap } from './capability-gap';
 import { classifyIntent, SOCIAL_REPLY } from './intent';
@@ -2353,6 +2354,7 @@ export class Automations {
     this.sweepCompletedGoals();
     this.sweepGoalMetrics(now);
     this.sweepExpiredQuestions(now);
+    this.sweepBets(now);
     this.sweepLoginExpiry(now);
     this.sweepExpiredShares(now);
     // Re-nudge stale human-in-the-loop prompts (approvals/questions blocking an agent) so a missed ask
@@ -2373,6 +2375,36 @@ export class Automations {
     } catch {
       // never let the share-expiry sweep take down the automation scheduler
     }
+  }
+
+  /**
+   * Judge every bet whose window has closed (`edge/bet-review.ts`) and wake the agent that ran it so it
+   * writes the lesson and picks kept/killed. Spawn-free: the arithmetic is arithmetic, and the wake-up
+   * only resumes an agent that already has a transcript — nobody is spawned to be told a verdict.
+   */
+  private sweepBets(now: Date): void {
+    try {
+      for (const r of reviewBets(this.os, this.tm, now.getTime())) {
+        const who = r.judgement.bet.createdBy;
+        if (!who.startsWith('agent:')) continue; // a human's bet is judged on the card alone
+        const agent = who.slice('agent:'.length);
+        const row = this.db
+          .prepare("SELECT claude_session_id AS transcript, run_as AS runAs FROM term_sessions WHERE agent = ? AND claude_session_id IS NOT NULL ORDER BY created_at DESC LIMIT 1")
+          .get<{ transcript: string | null; runAs: string | null }>(agent);
+        if (!row?.transcript) continue;
+        this.wakeups.enqueue({
+          agent,
+          source: `bet:${r.betId}`,
+          transcript: row.transcript,
+          runAs: row.runAs ?? undefined,
+          title: `Bet judged: ${r.judgement.bet.title}`,
+          message: `Your bet "${r.judgement.bet.title}" reached the end of its ${r.judgement.bet.windowDays}-day window and has been judged on its own assets.\n\n`
+            + `Verdict: ${r.verdict}. ${r.judgement.note}\n\n`
+            + 'Close the loop: write the lesson and set the bet to kept / expanded / killed with `bet_update`. '
+            + 'You cannot change the measured numbers — only what we do about them.',
+        });
+      }
+    } catch { /* never let a bet sweep take down the scheduler */ }
   }
 
   /**

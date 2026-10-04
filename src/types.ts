@@ -1146,6 +1146,72 @@ export interface GoalMetric {
   everyDays: number;
 }
 
+/* ── Bets ─────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** A bet's lifecycle. `judging` is the server's doing (its window closed and the arithmetic ran); the
+ *  three terminal states are a judgement someone — agent or human — commits to in words. */
+export type BetState = 'proposed' | 'waiting' | 'running' | 'judging' | 'kept' | 'expanded' | 'killed';
+export const BET_STATES: readonly BetState[] = ['proposed', 'waiting', 'running', 'judging', 'kept', 'expanded', 'killed'];
+/** Live states hold a slot against the per-goal cap: work is either queued behind a human or underway. */
+export const BET_LIVE_STATES: readonly BetState[] = ['proposed', 'waiting', 'running', 'judging'];
+
+/** The ARITHMETIC verdict, computed from the bet's own assets at window end. Deliberately separate from
+ *  `state`: `met`/`short`/`no_signal` is what the numbers say, kept/killed is what someone decided. */
+export type BetVerdict = 'met' | 'short' | 'no_signal';
+
+/**
+ * One falsifiable attempt at a goal's number.
+ *
+ * `expectedLift` and `baseline` are in the goal metric's own unit, so a verdict needs no unit mapping:
+ * lift = (the assets' measured total) − baseline, compared against what the bet predicted.
+ */
+export interface Bet {
+  id: string;
+  tenant: string;
+  goalId: string;
+  title: string;
+  hypothesis: string;
+  lever?: string;
+  state: BetState;
+  expectedLift?: number;
+  windowDays: number;
+  baseline?: number;
+  observedLift?: number;
+  verdict?: BetVerdict;
+  verdictNote?: string;
+  lesson?: string;
+  startedAt?: number;
+  /** When the window closes and the judging sweep fires — `startedAt + windowDays`. */
+  judgeAt?: number;
+  judgedAt?: number;
+  /** The bet this one expands, when a kept bet was doubled down on. */
+  parentId?: string;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Something a bet put into the world, with the number it earns. Lift is measured here, never on the
+ *  goal — that is what stops two concurrent bets claiming the same movement. */
+export interface BetAsset {
+  id: string;
+  betId: string;
+  taskId?: string;
+  kind: 'page' | 'post' | 'listing' | 'link' | 'other';
+  url: string;
+  state: 'live' | 'removed' | 'redirected';
+  /** 1 / 0 / undefined = never checked. A bet whose assets are all unindexed has no signal, not a loss. */
+  indexed?: boolean;
+  /** What this asset earns in the goal metric's unit (clicks/day, signups, …). */
+  value?: number;
+  /** The upstream number that explains `value` (impressions, views) — context, never the verdict. */
+  secondary?: number;
+  position?: number;
+  measuredAt?: number;
+  publishedAt?: number;
+  createdAt: number;
+}
+
 /** One measured value of a goal's metric. Append-only: a wrong reading is corrected by taking another,
  *  never by editing history — a number someone can quietly rewrite is worth less than no number. */
 export interface GoalReading {
