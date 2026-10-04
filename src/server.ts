@@ -90,7 +90,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, Task, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, GoalMetric, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, Task, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, GoalMetric, BetState, BET_STATES, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -2258,6 +2258,127 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'goal.measured', data: { goalId: goal.id, metric: goal.metric.name, value } });
     const st = os.goals.metricStatus(goal.id);
     return sendJson(res, 200, { ok: true, reading, verdict: st?.verdict, metric: goal.metric.name, target: goal.metric.target ?? null });
+  }
+
+  // ── bets: an agent's falsifiable attempts at a goal's number (src/state/bets.ts) ────────────────
+  // Loopback, session-secret gated, auto-apply + audited like tasks/KB. The ONE thing an agent cannot
+  // do through here is set its own verdict: `observed_lift`/`verdict` are written only by the judging
+  // sweep, so a bet's number is never the opinion of the agent that ran it.
+  if (method === 'POST' && p === '/api/agent/bets/propose') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const goal = os.goals.get(String(b.goalId || ''));
+    if (!goal) return sendJson(res, 404, { error: 'goal not found' });
+    try {
+      const bet = os.bets.create({
+        tenant: os.tenant, goalId: goal.id, title: String(b.title || ''),
+        hypothesis: b.hypothesis != null ? String(b.hypothesis) : undefined,
+        lever: b.lever != null ? String(b.lever) : undefined,
+        expectedLift: b.expectedLift !== undefined ? Number(b.expectedLift) : undefined,
+        windowDays: b.windowDays !== undefined ? Number(b.windowDays) : undefined,
+        baseline: b.baseline !== undefined ? Number(b.baseline) : undefined,
+        parentId: b.parentId != null ? String(b.parentId) : undefined,
+        createdBy: `agent:${agent}`,
+        start: b.start !== false,
+      });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'bet.created', data: { betId: bet.id, goalId: goal.id, title: bet.title, expectedLift: bet.expectedLift ?? null, windowDays: bet.windowDays, state: bet.state } });
+      return sendJson(res, 200, { ok: true, bet });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  if (method === 'POST' && p === '/api/agent/bets/list') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const bets = os.bets.list(os.tenant, {
+      goalId: b.goalId != null ? String(b.goalId) : undefined,
+      state: b.state != null ? String(b.state) as BetState | 'live' : undefined,
+      limit: b.limit !== undefined ? Number(b.limit) : undefined,
+    });
+    // Assets ride along: "how is my bet doing" is one call, not one per bet.
+    return sendJson(res, 200, { bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })) });
+  }
+  if (method === 'POST' && p === '/api/agent/bets/update') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const before = os.bets.get(String(b.betId || ''));
+    if (!before) return sendJson(res, 404, { error: 'bet not found' });
+    const state = b.state != null ? String(b.state) as BetState : undefined;
+    if (state && !BET_STATES.includes(state)) return sendJson(res, 400, { error: `state must be one of: ${BET_STATES.join(', ')}` });
+    // A terminal verdict has to come with the lesson. The whole point of the object is that the next bet
+    // is chosen from what the last one taught; "killed" with no reason teaches nothing.
+    if ((state === 'kept' || state === 'killed' || state === 'expanded') && !String(b.lesson || before.lesson || '').trim()) {
+      return sendJson(res, 400, { error: `set a lesson when you ${state} a bet — one sentence on what it taught` });
+    }
+    const bet = os.bets.update(before.id, {
+      state,
+      lesson: b.lesson != null ? String(b.lesson) : undefined,
+      hypothesis: b.hypothesis != null ? String(b.hypothesis) : undefined,
+      expectedLift: b.expectedLift !== undefined ? Number(b.expectedLift) : undefined,
+      baseline: b.baseline !== undefined ? Number(b.baseline) : undefined,
+      windowDays: b.windowDays !== undefined ? Number(b.windowDays) : undefined,
+      by: `agent:${agent}`,
+    });
+    os.audit.append({
+      ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'bet.updated',
+      // Both numbers in one row: what the arithmetic said, and what the agent decided about it. A kill on
+      // a `met` bet (or a keep on a `short` one) is allowed and VISIBLE rather than impossible.
+      data: { betId: before.id, from: before.state, to: bet?.state ?? before.state, verdict: before.verdict ?? null, observedLift: before.observedLift ?? null, lesson: !!(b.lesson ?? before.lesson) },
+    });
+    return sendJson(res, 200, { ok: true, bet });
+  }
+  if (method === 'POST' && p === '/api/agent/bets/asset') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    try {
+      const asset = os.bets.addAsset(os.tenant, {
+        betId: String(b.betId || ''), url: String(b.url || ''),
+        kind: b.kind != null ? String(b.kind) as 'page' | 'post' | 'listing' | 'link' | 'other' : undefined,
+        taskId: b.taskId != null ? String(b.taskId) : undefined,
+      });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'bet.asset.recorded', data: { betId: asset.betId, assetId: asset.id, url: asset.url, kind: asset.kind } });
+      return sendJson(res, 200, { ok: true, asset });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  if (method === 'POST' && p === '/api/agent/bets/measure') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const betId = String(b.betId || '');
+    if (!os.bets.get(betId)) return sendJson(res, 404, { error: 'bet not found' });
+    const asset = os.bets.measureAsset(betId, String(b.url || ''), {
+      value: b.value !== undefined ? Number(b.value) : undefined,
+      secondary: b.secondary !== undefined ? Number(b.secondary) : undefined,
+      position: b.position !== undefined ? Number(b.position) : undefined,
+      indexed: b.indexed !== undefined ? b.indexed === true : undefined,
+      state: b.state != null ? String(b.state) as 'live' | 'removed' | 'redirected' : undefined,
+    });
+    if (!asset) return sendJson(res, 404, { error: `no asset with that url on bet ${betId} — record it first` });
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'bet.asset.measured', data: { betId, assetId: asset.id, value: asset.value ?? null, indexed: asset.indexed ?? null } });
+    return sendJson(res, 200, { ok: true, asset });
+  }
+
+  // Console read side: the bets for a goal (the board in docs/bets-plan.md §UI). Member-gated like the
+  // rest of /api/*; the write side above is the agent's loopback lane.
+  if (method === 'GET' && p === '/api/bets') {
+    const goalId = url.searchParams.get('goal') || undefined;
+    const bets = os.bets.list(os.tenant, { goalId, limit: 200 });
+    return sendJson(res, 200, { bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })), counts: os.bets.counts(os.tenant, goalId) });
   }
 
   // agent proposes a new goal — drafts a NOT-YET-ACTIVE goal (status 'draft') + posts a 'goal.proposed'

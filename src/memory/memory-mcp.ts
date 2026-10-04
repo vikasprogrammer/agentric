@@ -1338,6 +1338,119 @@ const TOOLS = [
     },
   },
   {
+    name: 'bet_propose',
+    description:
+      "Open a BET on a goal — one falsifiable attempt at moving its number, with a window and a prediction. " +
+      'A goal says where to get to and a task says what to do; a bet is the thing that can be shown to have ' +
+      "WORKED or not. Use it whenever you are about to do work meant to move a goal's metric: state the " +
+      '`hypothesis` in one sentence, the `expectedLift` you predict in the metric\'s own units, the ' +
+      '`baseline` those things earn TODAY (0 for something new), and a `windowDays` long enough for the ' +
+      'effect to show (7-60). Then record what you ship with `asset_record` and its numbers with ' +
+      '`asset_measure`. At the end of the window the server computes the verdict FROM YOUR ASSETS — you ' +
+      'cannot grade your own bet, which is what makes a kept bet worth anything. Max 4 live bets per goal.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        goalId: { type: 'string', description: 'The goal this bet is trying to move (from `goal_list`).' },
+        title: { type: 'string', description: 'Short name for the bet, e.g. "Uptime Kuma peer comparisons".' },
+        hypothesis: { type: 'string', description: 'One sentence: why this should move the number.' },
+        lever: { type: 'string', description: 'Optional. The kind of attempt — "comparison pages", "indexing fix", "tool page", "outreach"…' },
+        expectedLift: { type: 'number', description: "What you predict the bet's own assets will add, in the metric's units. Half of it is the bar for a `met` verdict, so predict honestly rather than safely." },
+        baseline: { type: 'number', description: 'What those assets earn before the bet starts (0 for new ones). Lift is measured against this, not against the whole goal.' },
+        windowDays: { type: 'number', description: 'How long before it is judged (7-60, clamped). Pick the time the effect actually needs.' },
+        parentId: { type: 'string', description: 'Optional. The bet this one expands, when you are doubling down on something that worked.' },
+        start: { type: 'boolean', description: 'Optional. false leaves it `proposed` for a human to green-light instead of starting the clock now.' },
+      },
+      required: ['goalId', 'title'],
+    },
+  },
+  {
+    name: 'bet_list',
+    description:
+      'List bets and their assets — what you have running, what each one has shipped, and what it has ' +
+      'measured so far. Read this BEFORE proposing a new bet (slots are capped) and before measuring, so ' +
+      'you measure the assets that belong to a live window. `state` accepts a single state or "live" for ' +
+      'everything not yet judged.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        goalId: { type: 'string', description: 'Optional. Only bets on this goal.' },
+        state: { type: 'string', description: 'Optional. proposed | waiting | running | judging | kept | expanded | killed | live' },
+        limit: { type: 'number', description: 'Optional. Default 50, max 200.' },
+      },
+    },
+  },
+  {
+    name: 'bet_update',
+    description:
+      'Close your loop on a bet: write what it TAUGHT and set its final state (kept / expanded / killed), ' +
+      "or adjust a running bet's hypothesis, baseline, expected lift or window. A terminal state requires a " +
+      '`lesson` — one sentence another run can act on, because the next bet is chosen from these. You may ' +
+      'disagree with the computed verdict (kill a `met` bet, keep a `short` one); the decision and the ' +
+      'arithmetic are both recorded, so say why in the lesson. What you cannot do is change the measured ' +
+      'numbers.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        betId: { type: 'string', description: 'The bet (from `bet_list`).' },
+        state: { type: 'string', description: 'proposed | waiting | running | judging | kept | expanded | killed' },
+        lesson: { type: 'string', description: 'What this bet taught — required when you keep, expand or kill it.' },
+        hypothesis: { type: 'string', description: 'Optional. Refine the hypothesis while it runs.' },
+        expectedLift: { type: 'number', description: 'Optional. Correct the prediction (before the window ends, and say why in the lesson).' },
+        baseline: { type: 'number', description: 'Optional. Correct the baseline the lift is measured against.' },
+        windowDays: { type: 'number', description: 'Optional. Re-length the window; the judge date is re-stamped off the ORIGINAL start, so this cannot postpone judgement forever.' },
+      },
+      required: ['betId'],
+    },
+  },
+  {
+    name: 'asset_record',
+    description:
+      'Record something a bet put into the world — a page, post, listing or link — by its URL. This is the ' +
+      "attribution join: a bet is judged on its own assets' numbers, so an asset you never record cannot " +
+      'count for it, and a bet with no assets is judged `no_signal` rather than failed. Call it as each ' +
+      'thing goes live (idempotent per bet+url, so re-recording is safe), and pass `taskId` when a task ' +
+      'produced it.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        betId: { type: 'string', description: 'The bet this belongs to.' },
+        url: { type: 'string', description: 'The live URL. Verify it actually resolves before recording it.' },
+        kind: { type: 'string', description: 'page | post | listing | link | other. Default page.' },
+        taskId: { type: 'string', description: 'Optional. The task whose work produced it.' },
+      },
+      required: ['betId', 'url'],
+    },
+  },
+  {
+    name: 'asset_measure',
+    description:
+      "Attach this cycle's numbers to one of a bet's assets: `value` is what it earns in the goal metric's " +
+      'units (clicks/day, signups), `secondary` the upstream number that explains it (impressions, views), ' +
+      'plus `position` and whether it is `indexed`. Measure every live asset on every measuring run — the ' +
+      'verdict is computed from exactly these numbers, and an asset with no measurement is treated as ' +
+      'untested, not as zero. Fields you omit are left alone, so a run that only checked indexing says ' +
+      'only that.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        betId: { type: 'string', description: 'The bet the asset belongs to.' },
+        url: { type: 'string', description: 'The asset URL, exactly as recorded.' },
+        value: { type: 'number', description: "What it earns in the metric's own units." },
+        secondary: { type: 'number', description: 'Optional. The upstream number (impressions, views).' },
+        position: { type: 'number', description: 'Optional. Rank, where the channel has one.' },
+        indexed: { type: 'boolean', description: 'Optional. Whether it is indexed/visible yet. All-unindexed assets make the bet `no_signal` instead of a failure.' },
+        state: { type: 'string', description: 'Optional. live | removed | redirected — a removed asset stops counting.' },
+      },
+      required: ['betId', 'url'],
+    },
+  },
+  {
     name: 'goal_propose',
     description:
       'Propose a new company GOAL for a human to review and activate — a strategic objective the fleet ' +
@@ -2789,6 +2902,112 @@ async function goalGet(args: Record<string, unknown>): Promise<string> {
   return `${g.id} · [${g.status}]${g.target ? ` · target: ${g.target}` : ''}${progressLine}\n${consoleLink('goals', g.id)}\n# ${g.title}\n${g.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}${tasksSection}`;
 }
 
+// Bets — a goal's falsifiable attempts (src/state/bets.ts). The agent proposes, ships assets and
+// measures them; the SERVER computes the verdict at window end, which is why none of these can write it.
+async function betPost(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const res = await fetch(AOS_URL + path, {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, agent: AGENT, ...body }),
+  });
+  return (await res.json()) as Record<string, unknown>;
+}
+
+async function betPropose(args: Record<string, unknown>): Promise<string> {
+  const goalId = String(args.goalId ?? '').trim();
+  const title = String(args.title ?? '').trim();
+  if (!goalId) return 'bet_propose needs a goalId (call goal_list to find it).';
+  if (!title) return 'bet_propose needs a title.';
+  const d = await betPost('/api/agent/bets/propose', {
+    goalId, title,
+    hypothesis: args.hypothesis !== undefined ? String(args.hypothesis) : undefined,
+    lever: args.lever !== undefined ? String(args.lever) : undefined,
+    expectedLift: args.expectedLift !== undefined ? Number(args.expectedLift) : undefined,
+    baseline: args.baseline !== undefined ? Number(args.baseline) : undefined,
+    windowDays: args.windowDays !== undefined ? Number(args.windowDays) : undefined,
+    parentId: args.parentId !== undefined ? String(args.parentId) : undefined,
+    start: args.start === false ? false : undefined,
+  });
+  if (!d.ok) return `Could not open the bet: ${String(d.error ?? 'unknown error')}`;
+  const bet = d.bet as { id: string; state: string; windowDays: number; judgeAt?: number; expectedLift?: number };
+  const when = bet.judgeAt ? new Date(bet.judgeAt).toISOString().slice(0, 10) : `${bet.windowDays} days from its start`;
+  return `Bet ${bet.id} is ${bet.state}. It will be judged on ${when} from the assets you record against it`
+    + `${bet.expectedLift !== undefined ? `, against the ${bet.expectedLift} you predicted` : ' (no prediction set, so only the measured movement will be reported)'}.`
+    + ' Record each thing you ship with `asset_record`, and its numbers with `asset_measure` on every measuring run.';
+}
+
+async function betList(args: Record<string, unknown>): Promise<string> {
+  const d = await betPost('/api/agent/bets/list', {
+    goalId: args.goalId !== undefined ? String(args.goalId) : undefined,
+    state: args.state !== undefined ? String(args.state) : undefined,
+    limit: args.limit !== undefined ? Number(args.limit) : undefined,
+  });
+  const bets = (d.bets as Array<Record<string, unknown>>) ?? [];
+  if (!bets.length) return 'No bets match. (A goal with no bets is one nobody is attempting — open one with `bet_propose`.)';
+  return bets.map((b) => {
+    const assets = (b.assets as Array<Record<string, unknown>>) ?? [];
+    const measured = assets.filter((a) => a.value !== undefined);
+    const total = measured.reduce((s, a) => s + Number(a.value ?? 0), 0);
+    const judge = b.judgeAt ? new Date(Number(b.judgeAt)).toISOString().slice(0, 10) : '—';
+    return `${b.id} [${b.state}] ${b.title}\n`
+      + `  hypothesis: ${b.hypothesis || '(none)'}\n`
+      + `  window ${b.windowDays}d, judge on ${judge}; baseline ${b.baseline ?? 0}, expected ${b.expectedLift ?? '(none)'}\n`
+      + `  assets ${assets.length} (${measured.length} measured, total ${+total.toFixed(2)})`
+      + `${b.verdict ? `\n  verdict: ${b.verdict} — ${b.verdictNote ?? ''}` : ''}`
+      + `${b.lesson ? `\n  lesson: ${b.lesson}` : ''}`
+      + `${assets.length ? `\n  ${assets.map((a) => `${a.url} → ${a.value ?? 'unmeasured'}${a.indexed === false ? ' (not indexed)' : ''}`).join('\n  ')}` : ''}`;
+  }).join('\n\n');
+}
+
+async function betUpdate(args: Record<string, unknown>): Promise<string> {
+  const betId = String(args.betId ?? '').trim();
+  if (!betId) return 'bet_update needs a betId (call bet_list).';
+  const d = await betPost('/api/agent/bets/update', {
+    betId,
+    state: args.state !== undefined ? String(args.state) : undefined,
+    lesson: args.lesson !== undefined ? String(args.lesson) : undefined,
+    hypothesis: args.hypothesis !== undefined ? String(args.hypothesis) : undefined,
+    expectedLift: args.expectedLift !== undefined ? Number(args.expectedLift) : undefined,
+    baseline: args.baseline !== undefined ? Number(args.baseline) : undefined,
+    windowDays: args.windowDays !== undefined ? Number(args.windowDays) : undefined,
+  });
+  if (!d.ok) return `Could not update the bet: ${String(d.error ?? 'unknown error')}`;
+  const bet = d.bet as { id: string; state: string; verdict?: string; observedLift?: number };
+  return `Bet ${bet.id} is now ${bet.state}`
+    + `${bet.verdict ? ` (measured verdict: ${bet.verdict}, lift ${bet.observedLift ?? 0} — unchanged by this edit)` : ''}.`;
+}
+
+async function assetRecord(args: Record<string, unknown>): Promise<string> {
+  const betId = String(args.betId ?? '').trim();
+  const url = String(args.url ?? '').trim();
+  if (!betId || !url) return 'asset_record needs a betId and a url.';
+  const d = await betPost('/api/agent/bets/asset', {
+    betId, url,
+    kind: args.kind !== undefined ? String(args.kind) : undefined,
+    taskId: args.taskId !== undefined ? String(args.taskId) : undefined,
+  });
+  if (!d.ok) return `Could not record the asset: ${String(d.error ?? 'unknown error')}`;
+  const a = d.asset as { id: string; url: string };
+  return `Recorded ${a.url} against bet ${betId}. Measure it with \`asset_measure\` on each measuring run — an unmeasured asset counts as untested, not as zero.`;
+}
+
+async function assetMeasure(args: Record<string, unknown>): Promise<string> {
+  const betId = String(args.betId ?? '').trim();
+  const url = String(args.url ?? '').trim();
+  if (!betId || !url) return 'asset_measure needs a betId and the asset url.';
+  const d = await betPost('/api/agent/bets/measure', {
+    betId, url,
+    value: args.value !== undefined ? Number(args.value) : undefined,
+    secondary: args.secondary !== undefined ? Number(args.secondary) : undefined,
+    position: args.position !== undefined ? Number(args.position) : undefined,
+    indexed: args.indexed !== undefined ? args.indexed === true : undefined,
+    state: args.state !== undefined ? String(args.state) : undefined,
+  });
+  if (!d.ok) return `Could not measure the asset: ${String(d.error ?? 'unknown error')}`;
+  const a = d.asset as { url: string; value?: number; indexed?: boolean; position?: number };
+  return `${a.url}: value ${a.value ?? 'unset'}${a.position !== undefined ? `, position ${a.position}` : ''}${a.indexed === false ? ', not indexed yet' : ''}.`;
+}
+
 async function goalMeasure(args: Record<string, unknown>): Promise<string> {
   const goalId = String(args.goalId ?? '').trim();
   const value = Number(args.value);
@@ -3574,6 +3793,11 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'goal_list' ? await goalList(args)
         : name === 'goal_get' ? await goalGet(args)
         : name === 'goal_measure' ? await goalMeasure(args)
+        : name === 'bet_propose' ? await betPropose(args)
+        : name === 'bet_list' ? await betList(args)
+        : name === 'bet_update' ? await betUpdate(args)
+        : name === 'asset_record' ? await assetRecord(args)
+        : name === 'asset_measure' ? await assetMeasure(args)
         : name === 'goal_propose' ? await goalPropose(args)
         : name === 'goal_update' ? await goalUpdate(args)
         : name === 'agent_create' ? await agentCreate(args)

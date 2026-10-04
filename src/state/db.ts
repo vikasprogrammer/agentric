@@ -839,6 +839,63 @@ function migrate(db: Db): void {
     CREATE INDEX IF NOT EXISTS idx_goal_readings ON goal_readings(goal_id, at DESC);
 
     -- FTS5 over title+body+labels for the Goals page search (mirrors tasks_fts exactly).
+    -- ── Bets: the unit between a goal and the work (docs/bets-plan.md) ────────────────────────────
+    -- A goal says WHERE to get to and a task says what to do; neither can answer "did that change
+    -- anything?". A bet is one falsifiable attempt at a goal's number: a hypothesis, the things it put
+    -- into the world (its ASSETS), a window, an expected lift, and — at the end of that window — a
+    -- verdict computed from the assets' own measurements rather than from whole-goal movement. Two bets
+    -- running at once cannot take credit for each other, which whole-metric attribution cannot avoid.
+    --
+    -- Deliberately NOT a task: a task is done when the work is done, a bet is done when the number has
+    -- been judged, usually weeks later. Folding the two broke the task status machine and let the
+    -- dispatcher spawn a session for a bet (see the module header in src/state/bets.ts).
+    CREATE TABLE IF NOT EXISTS bets (
+      id            TEXT PRIMARY KEY,
+      tenant        TEXT NOT NULL,
+      goal_id       TEXT NOT NULL,                 -- the number this bet is trying to move
+      title         TEXT NOT NULL,
+      hypothesis    TEXT NOT NULL DEFAULT '',      -- one sentence: why this should work
+      lever         TEXT,                          -- free text: comparison pages | indexing fix | tool page | …
+      state         TEXT NOT NULL DEFAULT 'proposed', -- proposed | waiting | running | judging | kept | expanded | killed
+      expected_lift REAL,                          -- in the goal metric's own unit, per its interval
+      window_days   INTEGER NOT NULL DEFAULT 21,
+      baseline      REAL,                          -- the assets' own rate before the bet started
+      observed_lift REAL,                          -- computed at judge time from the assets
+      verdict       TEXT,                          -- met | short | no_signal — ARITHMETIC, server-owned
+      verdict_note  TEXT,                          -- how the number was reached (server-composed)
+      lesson        TEXT,                          -- what to carry forward — the agent's/human's words
+      started_at    INTEGER,
+      judge_at      INTEGER,                       -- started_at + window; the sweep fires on this
+      judged_at     INTEGER,
+      parent_id     TEXT,                          -- the bet this one expands (kept → expanded)
+      created_by    TEXT NOT NULL,                 -- member id | 'agent:<id>'
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_bets_goal ON bets(tenant, goal_id, state);
+    CREATE INDEX IF NOT EXISTS idx_bets_due ON bets(state, judge_at);
+
+    -- Everything a bet put into the world, and that asset's own numbers. This is the attribution join:
+    -- lift is measured HERE, never on the goal, so a bet is judged on what it actually shipped.
+    CREATE TABLE IF NOT EXISTS bet_assets (
+      id           TEXT PRIMARY KEY,
+      tenant       TEXT NOT NULL,
+      bet_id       TEXT NOT NULL,
+      task_id      TEXT,                           -- the work that produced it, when there was one
+      kind         TEXT NOT NULL DEFAULT 'page',   -- page | post | listing | link | other
+      url          TEXT NOT NULL,
+      state        TEXT NOT NULL DEFAULT 'live',   -- live | removed | redirected
+      indexed      INTEGER,                        -- 1 / 0 / NULL = not checked
+      value        REAL,                           -- the metric this asset earns (clicks/day, signups, …)
+      secondary    REAL,                           -- the upstream number (impressions, views) — context
+      position     REAL,                           -- rank, where the channel has one
+      measured_at  INTEGER,
+      published_at INTEGER,
+      created_at   INTEGER NOT NULL,
+      UNIQUE (bet_id, url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_bet_assets ON bet_assets(bet_id, state);
+
     CREATE VIRTUAL TABLE IF NOT EXISTS goals_fts USING fts5(
       title, body, labels, content='goals', content_rowid='rowid'
     );
@@ -1235,6 +1292,10 @@ function migrate(db: Db): void {
   addColumn(db, 'questions', 'default_answer', 'TEXT');  // what applies if nobody answers by expires_at
   addColumn(db, 'questions', 'expires_at', 'INTEGER');   // when the default applies (NULL = no deadline)
   addColumn(db, 'questions', 'goal_id', 'TEXT');         // the goal this decision belongs to, if any
+
+  // Which BET this task is work for (src/state/bets.ts). Nullable and inert: a task with no bet behaves
+  // exactly as before, and the bet never spawns anything — only its tasks do.
+  addColumn(db, 'tasks', 'bet_id', 'TEXT');
 
   // The Claude Code OUTPUT STYLE the run LAUNCHED with ('Default' | 'Concise' | a library style),
   // stamped from the `session.tuning` audit alongside model/effort. It is the join key adoption groups

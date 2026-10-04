@@ -42,6 +42,8 @@ export const ID_PREFIX = {
   taskEvent: 'tev', // task event-log entries
   taskAttachment: 'tatt', // task file attachments
   goal: 'goal', // goals
+  bet: 'bet', // bets — one falsifiable attempt at a goal's number (state/bets.ts)
+  asset: 'ast', // what a bet shipped, and the number it earns
   goalEvent: 'gev', // goal event-log entries
   goalReading: 'grd', // measured values of a goal's metric
   agentRevision: 'arev', // agent self-edit revisions

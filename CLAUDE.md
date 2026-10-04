@@ -547,6 +547,23 @@ Key modules:
   assignee on create/assign, owner on blocked/done — via `notifyTaskEvent` → `postTaskCard` +
   `resolveRecipients`/`deliverDM` (agent-assigned & self-actions stay quiet). §9 futures: pool
   auto-assignment, agent-triggered `task_dispatch`, a policy brake on dispatch. See `docs/tasks-plan.md`.
+- `src/state/bets.ts` — the **Bets plane** (`os.bets`): the unit between a goal and the work. A goal says
+  where to get to, a task says what to do; a **bet** is one falsifiable attempt at the goal's NUMBER —
+  hypothesis, `expectedLift`, window (7–60d), and the **assets** it shipped (`bet_assets`: url + the
+  `value` it earns in the goal metric's unit). Lift is `Σ(asset.value) − baseline` measured on the bet's
+  OWN assets, never on the goal — whole-metric attribution cannot separate two concurrent bets, and on
+  the live trial three ran while the goal drifted down for unrelated reasons. **The server owns the
+  number, the agent owns the words:** `judge()` computes `observedLift` + `met|short|no_signal` and those
+  columns are absent from every agent write path; the agent supplies the `lesson` and the kept/expanded/
+  killed call (a terminal state REQUIRES a lesson), and a disagreement with the arithmetic is recorded in
+  `bet.updated` rather than prevented. `no_signal` outranks failure (no assets / no measurements / all
+  unindexed = untested, which is a publishing problem, not evidence). NOT a task — a task POINTS at a bet
+  (`tasks.bet_id`), because a task is done when the work is done and an `auto_dispatch` task would SPAWN.
+  Judged off the scheduler tick by `src/edge/bet-review.ts` (spawn-free, one owner card per bet guarded on
+  the `bet.judged` audit event, then the wake queue tells the agent to write its lesson). Agent tools
+  `bet_propose`/`bet_list`/`bet_update`/`asset_record`/`asset_measure`; read side `GET /api/bets?goal=`.
+  Caps: 4 live bets per goal, 60 assets, and re-lengthening a window re-stamps the judge date off the
+  ORIGINAL start. See `docs/bets-plan.md`.
 - `src/edge/dreaming.ts` — the **self-learning ("Dreaming")** engine: a periodic deterministic pass that
   reflects on recent episodes + outcomes + friction, **compounds** them into `settings: dreaming_state`,
   emits a living KB page + a tenant-shared memory Insight, and **closes the loop** — distilled guidance is

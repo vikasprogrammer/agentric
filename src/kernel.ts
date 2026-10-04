@@ -46,6 +46,7 @@ import { PolicyRevisions } from './state/policy-revisions';
 import { TaskStore } from './state/tasks';
 import { RuntimeAccountStore } from './state/runtime-accounts';
 import { GoalStore } from './state/goals';
+import { BetStore } from './state/bets';
 import { FeedStore } from './state/feed';
 import { VideoJobStore } from './state/video-jobs';
 import { StubIdentity } from './governance/identity';
@@ -110,6 +111,8 @@ export class AgentOS {
   readonly runtimeAccounts: RuntimeAccountStore;
   /** The strategic layer work ladders up to — human-owned goals agents read + propose. See goals-plan.md. */
   readonly goals: GoalStore;
+  /** Bets — the falsifiable attempts at a goal's number, and the assets they are judged on. */
+  readonly bets: BetStore;
   /** The unified activity feed — a read-only UNION view over sessions/approvals/questions. See feed-plan.md. */
   readonly feed: FeedStore;
   /** In-flight async video renders — persisted so a background poller can finish them. See media-integrations-plan.md. */
@@ -179,6 +182,7 @@ export class AgentOS {
     this.runtimeAccounts = new RuntimeAccountStore(this.db);
     // Goals are pure db-only structured state (no attachments/on-disk mirror) → the db alone.
     this.goals = new GoalStore(this.db);
+    this.bets = new BetStore(this.db);
     this.feed = new FeedStore(this.db);
     // In-flight video renders (async) — db-only control state, like tasks/goals.
     this.videoJobs = new VideoJobStore(this.db);
