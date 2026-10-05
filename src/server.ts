@@ -2373,14 +2373,6 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, asset });
   }
 
-  // Console read side: the bets for a goal (the board in docs/bets-plan.md §UI). Member-gated like the
-  // rest of /api/*; the write side above is the agent's loopback lane.
-  if (method === 'GET' && p === '/api/bets') {
-    const goalId = url.searchParams.get('goal') || undefined;
-    const bets = os.bets.list(os.tenant, { goalId, limit: 200 });
-    return sendJson(res, 200, { bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })), counts: os.bets.counts(os.tenant, goalId) });
-  }
-
   // agent proposes a new goal — drafts a NOT-YET-ACTIVE goal (status 'draft') + posts a 'goal.proposed'
   // inbox card for an owner/admin to review and activate. Auto-apply + audited, like skill_propose.
   if (method === 'POST' && p === '/api/goals/propose') {
@@ -4584,6 +4576,56 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (r.spawned) os.audit.append({ ts: Date.now(), runId: r.sessionId ?? '-', tenant: os.tenant, principal: me.email, type: 'goal.plan.requested', data: { goalId: goal.id, autoDispatch } });
     return sendJson(res, r.spawned ? 200 : 409, r.spawned ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason });
   }
+  // ── bets (the board, docs/bets-plan.md §6) — member-gated; the agent's lane is /api/agent/bets/* ──
+  // ⚠ These MUST stay below the `/api/*` auth gate. v0.453.0 shipped the read route above it by
+  // accident, which served every bet (titles, hypotheses, urls) to anyone who could reach the port.
+  if (method === 'GET' && p === '/api/bets') {
+    const goalId = url.searchParams.get('goal') || undefined;
+    const bets = os.bets.list(os.tenant, { goalId, limit: 200 });
+    return sendJson(res, 200, { bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })), counts: os.bets.counts(os.tenant, goalId), canEdit: isAdmin(me) });
+  }
+  // Console WRITE side for bets — owner/admin. The same two things an agent may do (decide + record the
+  // lesson) and nothing more: `observed_lift`/`verdict` stay the sweep's, so the board cannot be used to
+  // talk a number into existence either. `judge` forces the arithmetic early, for a window a human has
+  // already seen enough of.
+  const betMatch = p.match(/^\/api\/bets\/([\w-]+)$/);
+  if (betMatch && method === 'PATCH') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const before = os.bets.get(betMatch[1]);
+    if (!before) return sendJson(res, 404, { error: 'bet not found' });
+    const b = await readBody(req);
+    const state = b.state != null ? String(b.state) as BetState : undefined;
+    if (state && !BET_STATES.includes(state)) return sendJson(res, 400, { error: `state must be one of: ${BET_STATES.join(', ')}` });
+    if ((state === 'kept' || state === 'killed' || state === 'expanded') && !String(b.lesson || before.lesson || '').trim()) {
+      return sendJson(res, 400, { error: `write a lesson when you ${state} a bet — one sentence on what it taught` });
+    }
+    const bet = os.bets.update(before.id, {
+      state,
+      lesson: b.lesson != null ? String(b.lesson) : undefined,
+      hypothesis: b.hypothesis != null ? String(b.hypothesis) : undefined,
+      expectedLift: b.expectedLift !== undefined ? Number(b.expectedLift) : undefined,
+      baseline: b.baseline !== undefined ? Number(b.baseline) : undefined,
+      windowDays: b.windowDays !== undefined ? Number(b.windowDays) : undefined,
+      by: me.id,
+    });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'bet.updated', data: { betId: before.id, from: before.state, to: bet?.state ?? before.state, verdict: before.verdict ?? null, observedLift: before.observedLift ?? null, by: 'human' } });
+    return sendJson(res, 200, { ok: true, bet });
+  }
+  const betJudge = p.match(/^\/api\/bets\/([\w-]+)\/judge$/);
+  if (betJudge && method === 'POST') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const bet = os.bets.get(betJudge[1]);
+    if (!bet) return sendJson(res, 404, { error: 'bet not found' });
+    const j = os.bets.judge(bet.id, Date.now());
+    if (!j) return sendJson(res, 400, { error: `a ${bet.state} bet cannot be judged — only a running one` });
+    os.audit.append({
+      ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'bet.judged',
+      data: { betId: j.bet.id, goalId: j.bet.goalId, title: j.bet.title, verdict: j.verdict, observedLift: j.observedLift, expected: j.expected ?? null, baseline: j.baseline, measured: j.measured, assets: j.assets, windowDays: j.bet.windowDays, early: true, by: me.email },
+    });
+    return sendJson(res, 200, { ok: true, bet: j.bet, verdict: j.verdict, note: j.note, observedLift: j.observedLift });
+  }
+
+
   if (method === 'GET' && p === '/api/goals') {
     const goals = os.goals.list({ tenant: os.tenant, status: (url.searchParams.get('status') as GoalStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
     // Derived progress per goal (from its linked tasks) for the page's progress bars — keyed by id.

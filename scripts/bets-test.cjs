@@ -179,12 +179,36 @@ const DAY = 86_400_000;
   assert(longWin.windowDays === 60, 'a 900-day window is clamped down to 60', longWin.windowDays);
   assert(Math.abs(longWin.judgeAt - (longWin.startedAt + 60 * DAY)) < 5000, 'and the judge date is re-stamped off the ORIGINAL start, not from now', { judgeAt: longWin.judgeAt, startedAt: longWin.startedAt });
 
-  console.log('\n\x1b[1m11) A human can read the board\x1b[0m');
+  console.log('\n\x1b[1m11) A human can read the board — and only a logged-in one\x1b[0m');
+  // v0.453.0 shipped GET /api/bets ABOVE the /api/* auth gate (it was added beside the agent loopback
+  // routes), so every bet was readable with no cookie. The handler was fine; its POSITION was the bug.
+  const anon = await fetch(`${base}/api/bets?goal=${goal.id}`);
+  assert(anon.status === 401, 'no cookie → 401, never the board', anon.status);
+  const anonPatch = await fetch(`${base}/api/bets/${a.bet.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state: 'killed', lesson: 'x' }) });
+  assert(anonPatch.status === 401, 'and no anonymous writes either', anonPatch.status);
   const cookie = `aos_sid=${aos.team.createSession(owner.id)}`;
   const board = await (await fetch(`${base}/api/bets?goal=${goal.id}`, { headers: { cookie } })).json();
   assert(Array.isArray(board.bets) && board.bets.length > 0, 'GET /api/bets lists them', board.bets && board.bets.length);
   assert(board.bets.every((x) => Array.isArray(x.assets)), 'each with its assets');
   assert(board.counts && board.counts.kept === 1, 'and a count per state', board.counts);
+  assert(board.canEdit === true, 'an owner is told they may edit', board.canEdit);
+
+  console.log('\n\x1b[1m12) A human can decide on the board\x1b[0m');
+  // Clear the live slots this test has filled — the cap is real and case 10 left it at the ceiling.
+  for (const b of aos.bets.list(aos.tenant, { goalId: goal.id, state: 'live' })) {
+    aos.bets.update(b.id, { state: 'killed', lesson: 'Test teardown.', by: owner.id });
+  }
+  const g = await propose({ goalId: goal.id, title: 'Human judges this one', expectedLift: 1, baseline: 0, windowDays: 7 });
+  await record({ betId: g.bet.id, url: 'https://x.test/human/' });
+  await measure({ betId: g.bet.id, url: 'https://x.test/human/', value: 0.8, indexed: true });
+  const early = await (await fetch(`${base}/api/bets/${g.bet.id}/judge`, { method: 'POST', headers: { cookie } })).json();
+  assert(early.ok && early.verdict === 'met', 'judge-now runs the arithmetic before the window closes', early);
+  const humanNoLesson = await (await fetch(`${base}/api/bets/${g.bet.id}`, { method: 'PATCH', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ state: 'kept' }) })).json();
+  assert(/lesson/.test(humanNoLesson.error || ''), 'a human needs a lesson too — same rule as the agent', humanNoLesson);
+  const humanKept = await (await fetch(`${base}/api/bets/${g.bet.id}`, { method: 'PATCH', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ state: 'kept', lesson: 'Judged by hand a week early; the pattern is clear enough.' }) })).json();
+  assert(humanKept.ok && humanKept.bet.state === 'kept', 'with one it is kept', humanKept.bet && humanKept.bet.state);
+  const tamper = await (await fetch(`${base}/api/bets/${g.bet.id}`, { method: 'PATCH', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ observedLift: 99, verdict: 'met' }) })).json();
+  assert(tamper.ok && Math.abs(aos.bets.get(g.bet.id).observedLift - 0.8) < 0.001, 'and not even an owner can type a number over the measurement', aos.bets.get(g.bet.id).observedLift);
 
   server.close();
   registry.stopAll?.();
