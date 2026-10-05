@@ -992,6 +992,59 @@ export interface AddGoalReq {
   dueAt?: number
 }
 
+/* ── Bets ─────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** A bet's lifecycle — mirrors `BetState` in src/types.ts. `judging` is the server's doing (the window
+ *  closed and the arithmetic ran); the three terminal states are a judgement someone commits to in words. */
+export type BetState = 'proposed' | 'waiting' | 'running' | 'judging' | 'kept' | 'expanded' | 'killed'
+/** The ARITHMETIC verdict, computed server-side from the bet's own assets. Never writable from here. */
+export type BetVerdict = 'met' | 'short' | 'no_signal'
+/** One falsifiable attempt at a goal's number. `expectedLift`/`baseline` are in the goal metric's own
+ *  unit, so lift = (the assets' measured total) − baseline needs no mapping. */
+export interface Bet {
+  id: string
+  tenant: string
+  goalId: string
+  title: string
+  hypothesis: string
+  lever?: string
+  state: BetState
+  expectedLift?: number
+  windowDays: number
+  baseline?: number
+  /** Server-computed at judging time. Read-only. */
+  observedLift?: number
+  /** Server-computed at judging time. Read-only. */
+  verdict?: BetVerdict
+  verdictNote?: string
+  lesson?: string
+  startedAt?: number
+  /** When the window closes and the judging sweep fires — `startedAt + windowDays`. */
+  judgeAt?: number
+  judgedAt?: number
+  parentId?: string
+  createdBy: string
+  createdAt: number
+  updatedAt: number
+}
+/** Something a bet put into the world, with the number it earns. `value === undefined` is UNMEASURED,
+ *  not zero; `indexed === false` means it was never put in front of anyone. */
+export interface BetAsset {
+  id: string
+  betId: string
+  taskId?: string
+  kind: 'page' | 'post' | 'listing' | 'link' | 'other'
+  url: string
+  state: 'live' | 'removed' | 'redirected'
+  indexed?: boolean
+  value?: number
+  secondary?: number
+  position?: number
+  measuredAt?: number
+  publishedAt?: number
+  createdAt: number
+}
+
 /** A human-legible account of a gated effect, computed server-side (src/governance/briefer.ts) and
  *  carried inside an approval card's `args` as `args.brief`. Mirrors `DecisionBrief` in src/types.ts. */
 export interface Brief {
@@ -2222,6 +2275,14 @@ export const api = {
   commentGoal: (id: string, body: string) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', `/api/goals/${id}/comment`, { body }),
   deleteGoal: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/goals/${id}`),
   planGoal: (id: string, steer?: { guidance?: string; maxTasks?: number; autoDispatch?: boolean }) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/goals/${id}/plan`, steer ?? {}),
+  /** The bets on a goal (or every bet when `goalId` is omitted), each with its assets, plus per-state counts. */
+  bets: (goalId?: string) => call<{ bets: (Bet & { assets: BetAsset[] })[]; counts: Record<string, number>; canEdit: boolean; error?: string }>('GET', '/api/bets' + (goalId ? '?goal=' + encodeURIComponent(goalId) : '')),
+  /** Decide a bet and record what it taught (owner/admin). A terminal state without a lesson is refused —
+   *  `verdict`/`observedLift` are the sweep's and are not writable here. */
+  patchBet: (id: string, b: { state?: BetState; lesson?: string; hypothesis?: string; expectedLift?: number; baseline?: number; windowDays?: number }) =>
+    call<{ ok: boolean; bet?: Bet; error?: string }>('PATCH', `/api/bets/${id}`, b),
+  /** Force the arithmetic early on a `running` bet — the verdict, never the decision (owner/admin). */
+  judgeBet: (id: string) => call<{ ok: boolean; bet?: Bet; verdict?: BetVerdict; note?: string; observedLift?: number; error?: string }>('POST', `/api/bets/${id}/judge`),
   dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; stale?: boolean; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; digest?: DigestConfig; state?: DreamingState; measurement?: Measurement; insights?: Insights; improvements?: ImprovementTile[]; proposals?: string[]; stuckGoals?: StuckGoal[]; troubledAutomations?: TroubledAutomation[]; alertsEnabled?: boolean; error?: string }>('GET', '/api/dreaming'),
   applyRecommendation: (id: string) => call<{ ok: boolean; applied?: unknown; error?: string }>('POST', `/api/dreaming/recommendation/${id}/apply`),
   dismissRecommendation: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/dreaming/recommendation/${id}/dismiss`),
