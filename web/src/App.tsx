@@ -15,7 +15,7 @@ import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode } from '@/lib/api'
-import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
+import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState, type Bet, type BetAsset, type BetState, type BetVerdict } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
 import { createGithubApp } from '@/lib/github-app'
@@ -9632,7 +9632,7 @@ function GoalProgressBar({ p, className = '' }: { p?: GoalProgress; className?: 
   )
 }
 
-type GoalTab = 'tasks' | 'description' | 'activity' | 'chat'
+type GoalTab = 'tasks' | 'bets' | 'description' | 'activity' | 'chat'
 
 /** Why a linked task has no Run button, compressed to fit a row (the full sentence is the `title=`).
  *  Codes, not prose matching, so the label can't drift from the server's refusal. */
@@ -9863,6 +9863,237 @@ const GOAL_VERDICT: Record<GoalMetricStatus['verdict'], { label: string; cls: st
   new:        { label: 'Too early',      cls: 'text-muted-foreground' },
 }
 
+/** The four lanes a human reads the bet machine in. The state machine is finer than the board on purpose:
+ *  `proposed`/`waiting` are both "queued behind a person", and the three terminal states are all "closed".
+ *  "Judged" is the one that earns its own lane — the arithmetic has run and somebody still owes a call. */
+const BET_COLUMNS: { key: string; label: string; states: BetState[]; rail: string; head: string }[] = [
+  { key: 'proposed', label: 'Proposed', states: ['proposed', 'waiting'], rail: 'bg-muted-foreground/40', head: 'text-muted-foreground' },
+  { key: 'running', label: 'Running', states: ['running'], rail: 'bg-emerald-500', head: 'text-emerald-600' },
+  { key: 'judged', label: 'Judged', states: ['judging'], rail: 'bg-amber-500', head: 'text-amber-600' },
+  { key: 'closed', label: 'Closed', states: ['kept', 'expanded', 'killed'], rail: 'bg-muted-foreground/25', head: 'text-muted-foreground' },
+]
+
+/** The ARITHMETIC verdict as a pill, over the shared status-role palette (`roleChip`). `no_signal` is
+ *  deliberately the NEUTRAL tone, not a failure one: "the window closed untested" is not evidence against
+ *  the hypothesis, and painting it red is the most misleading thing this board could do. */
+const BET_VERDICT: Record<BetVerdict, { label: string; role: StatusRole; tip: string }> = {
+  met: { label: 'met', role: 'ok', tip: 'the measured lift reached the prediction' },
+  short: { label: 'short', role: 'partial', tip: 'the bet was tested and the lift fell short of what it predicted' },
+  no_signal: { label: 'no signal', role: 'inactive', tip: 'untested, not failed — nothing shipped, nothing measured, or nothing indexed' },
+}
+
+/** The three closing decisions, in the words the board offers them in. Each one needs a lesson. */
+const BET_CLOSE: { state: BetState; label: string; icon: LucideIcon; variant: 'default' | 'outline' | 'destructive' }[] = [
+  { state: 'kept', label: 'Keep', icon: Check, variant: 'default' },
+  { state: 'expanded', label: 'Expand', icon: Rocket, variant: 'outline' },
+  { state: 'killed', label: 'Kill', icon: X, variant: 'destructive' },
+]
+
+/** The BETS BOARD — every falsifiable attempt at this goal's number, in the four lanes a human acts on.
+ *
+ *  Two things it deliberately does not do. Lift is summed over the bet's OWN assets, never over the goal's
+ *  metric: that is what keeps two concurrent bets separable (docs/bets-plan.md §1). And `verdict` /
+ *  `observedLift` are the server's arithmetic — displayed, never offered as an input. The half a human owns
+ *  is the decision and the lesson, and a terminal state without a lesson is refused server-side, so the
+ *  error that comes back is shown verbatim rather than guessed at here. */
+function BetsBoard({ goalId, onCount }: { goalId: string; onCount?: (n: number) => void }) {
+  const [bets, setBets] = useState<(Bet & { assets: BetAsset[] })[]>([])
+  const [counts, setCounts] = useState<Record<string, number>>({})
+  const [canEdit, setCanEdit] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [busy, setBusy] = useState('')
+  const [lesson, setLesson] = useState<Record<string, string>>({})
+  const [hint, setHint] = useState<Record<string, string>>({})
+
+  const load = useCallback(async () => {
+    const r = await api.bets(goalId)
+    setBets(r.bets ?? []); setCounts(r.counts ?? {}); setCanEdit(!!r.canEdit); setLoaded(true)
+    onCount?.((r.bets ?? []).length)
+  }, [goalId, onCount])
+  useEffect(() => { setLoaded(false); setLesson({}); setHint({}); void load() }, [load])
+
+  const say = (id: string, msg: string) => setHint((h) => ({ ...h, [id]: msg }))
+
+  /** Force the arithmetic early on a running bet — the verdict only; the decision still comes after. */
+  const judge = async (id: string) => {
+    setBusy(id); say(id, '')
+    const r = await api.judgeBet(id)
+    setBusy('')
+    if (!r.ok) return say(id, r.error || 'could not judge this bet')
+    await load()
+  }
+  /** Close a judged bet with the lesson it taught. The server is the one validator — surface its words. */
+  const decide = async (id: string, state: BetState) => {
+    setBusy(id); say(id, '')
+    const r = await api.patchBet(id, { state, lesson: (lesson[id] ?? '').trim() || undefined })
+    setBusy('')
+    if (!r.ok) return say(id, r.error || 'could not record the decision')
+    setLesson((m) => ({ ...m, [id]: '' }))
+    await load()
+  }
+
+  const fmt = (v: number) => (Number.isInteger(v) ? v.toLocaleString() : v.toFixed(2))
+  const signed = (v: number) => (v >= 0 ? '+' : '') + fmt(v)
+  const day = (ms: number) => new Date(ms).toLocaleDateString()
+
+  /** lift = Σ(the assets' measured values) − baseline. An asset with no `value` is UNMEASURED, not zero,
+   *  so a bet with nothing measured has no lift to report at all rather than a misleading `−baseline`. */
+  const liftOf = (b: Bet & { assets: BetAsset[] }) => {
+    const measured = b.assets.filter((a) => a.value != null)
+    if (measured.length === 0) return null
+    return measured.reduce((s, a) => s + (a.value as number), 0) - (b.baseline ?? 0)
+  }
+
+  const card = (b: Bet & { assets: BetAsset[] }) => {
+    const lift = liftOf(b)
+    const v = b.verdict ? BET_VERDICT[b.verdict] : null
+    const elapsed = b.startedAt ? Math.max(1, Math.min(b.windowDays, Math.ceil((Date.now() - b.startedAt) / 86_400_000))) : null
+    const pct = elapsed == null ? 0 : Math.min(100, Math.round((elapsed / Math.max(1, b.windowDays)) * 100))
+    const unindexed = b.assets.filter((a) => a.indexed === false).length
+    const pending = (lesson[b.id] ?? '').trim() || (b.lesson ?? '').trim()
+    return (
+      <div key={b.id} className="space-y-1.5 rounded-md border bg-background p-2.5">
+        <div className="flex items-start gap-1.5">
+          <Target className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 break-words text-xs font-medium leading-snug">{b.title}</span>
+          {v && <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${roleChip(v.role)}`} title={b.verdictNote || v.tip}>{v.label}</span>}
+        </div>
+        {b.lever && <Badge variant="outline" className="px-1 py-0 text-[10px]">{b.lever}</Badge>}
+        {b.hypothesis && <p className="break-words text-[11px] leading-snug text-muted-foreground">{b.hypothesis}</p>}
+
+        {/* The window. A running bet says which day of its own window it is on; a closed one says when the
+            call was made, so "judged three weeks ago" never reads as "still going". */}
+        {b.state === 'running' && elapsed != null ? (
+          <div>
+            <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1"><Timer className="h-3 w-3" />day {elapsed} of {b.windowDays}</span>
+              {b.judgeAt && <span className="tabular-nums">judges {day(b.judgeAt)}</span>}
+            </div>
+            <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        ) : (
+          <div className="text-[10px] text-muted-foreground">
+            <Timer className="mr-1 inline h-3 w-3" />{b.windowDays}d window
+            {b.judgedAt ? ` · judged ${day(b.judgedAt)}` : b.judgeAt ? ` · judges ${day(b.judgeAt)}` : ' · not started'}
+          </div>
+        )}
+
+        {/* Lift so far, on the bet's own assets, against what it predicted. */}
+        <div className="flex flex-wrap items-baseline gap-x-1.5 text-[11px] tabular-nums">
+          <Gauge className="h-3 w-3 shrink-0 self-center text-muted-foreground" />
+          {lift != null ? <span className="font-medium">{signed(lift)}</span> : <span className="text-muted-foreground">lift unmeasured</span>}
+          {b.expectedLift != null && <span className="text-[10px] text-muted-foreground">of {signed(b.expectedLift)} predicted</span>}
+          {b.observedLift != null && <span className="text-[10px] text-muted-foreground">· judged at {signed(b.observedLift)}</span>}
+        </div>
+
+        {/* The assets are the evidence, so they are links, not a count — and an unmeasured or unindexed one
+            says so in words instead of showing a zero somebody would read as a result. */}
+        {b.assets.length > 0 && (
+          <div className="space-y-0.5 border-t pt-1.5">
+            {b.assets.map((a) => (
+              <div key={a.id} className="flex items-center gap-1.5">
+                <a href={a.url} target="_blank" rel="noreferrer" title={a.url}
+                   className="min-w-0 flex-1 truncate text-[11px] text-primary no-underline hover:underline">
+                  {a.url.replace(/^https?:\/\//, '')}
+                </a>
+                {a.indexed === false && <span className="shrink-0 text-[10px] text-amber-600" title="never indexed — never put in front of anyone">unindexed</span>}
+                <span className={`shrink-0 text-[10px] tabular-nums ${a.value != null ? 'text-foreground' : 'text-muted-foreground'}`}>
+                  {a.value != null ? fmt(a.value) : 'unmeasured'}
+                </span>
+              </div>
+            ))}
+            {unindexed === b.assets.length && (
+              <div className="text-[10px] text-amber-600">Nothing indexed — a publishing problem, not evidence against the bet.</div>
+            )}
+          </div>
+        )}
+
+        {b.lesson && (
+          <div className="flex items-start gap-1.5 border-t pt-1.5 text-[11px] text-muted-foreground">
+            <Lightbulb className="mt-0.5 h-3 w-3 shrink-0" /><span className="break-words">{b.lesson}</span>
+          </div>
+        )}
+
+        {canEdit && b.state === 'running' && (
+          <Button size="sm" variant="outline" className="h-6 w-full text-[11px]" disabled={busy === b.id} onClick={() => judge(b.id)}>
+            <Gauge className="mr-1 h-3 w-3" />Judge now
+          </Button>
+        )}
+        {canEdit && b.state === 'judging' && (
+          <div className="space-y-1.5 border-t pt-1.5">
+            <Textarea value={lesson[b.id] ?? ''} onChange={(e) => setLesson((m) => ({ ...m, [b.id]: e.target.value }))}
+                      rows={2} placeholder="What did this teach? One sentence — required to close a bet."
+                      className="min-h-0 text-[11px]" />
+            <div className="flex flex-wrap gap-1">
+              {BET_CLOSE.map((c) => (
+                <Button key={c.state} size="sm" variant={c.variant} className="h-6 flex-1 text-[11px]"
+                        disabled={busy === b.id || !pending} onClick={() => decide(b.id, c.state)}>
+                  <c.icon className="mr-1 h-3 w-3" />{c.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+        {hint[b.id] && <div className="text-[10px] text-destructive">{hint[b.id]}</div>}
+      </div>
+    )
+  }
+
+  if (!loaded) return null
+  // A goal with no bets gets a sentence, not an empty four-column skeleton: four empty lanes read as a
+  // broken board, one line reads as the invitation it is.
+  if (bets.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed p-3">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Bets</div>
+        <p className="mt-1 text-xs text-muted-foreground">No bets have been opened on this goal yet.</p>
+      </div>
+    )
+  }
+
+  return (
+    // Container queries, not viewport ones: this board lives in the goal room's 320px rail, where the
+    // Tasks board's `sm:/lg:` viewport breakpoints would lay four 70px columns on a wide screen. Keyed on
+    // its OWN width it is one stacked column here and in the phone layout, and a real four-lane board the
+    // moment it is given the room.
+    <div className="@container rounded-md border p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Bets</div>
+        <div className="text-[11px] text-muted-foreground">{bets.length} on this goal</div>
+      </div>
+      {/* Lanes size THEMSELVES (auto-fit, 250px floor) rather than snapping to a column count: this board
+          lives in the goal room's main column, which is ~750px on a 1440 laptop — a fixed four-lane grid
+          there gives 170px lanes full of truncated URLs. And an EMPTY lane is not drawn at all: most of the
+          time Proposed and Judged are empty, and two dashed placeholders either side of the real work push
+          Running into a third of the width it could have. The empty ones are named in one line underneath,
+          so nothing silently disappears. */}
+      <div className="mt-2 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(250px,1fr))]">
+        {BET_COLUMNS.filter((col) => bets.some((b) => col.states.includes(b.state))).map((col) => {
+          const inCol = bets.filter((b) => col.states.includes(b.state))
+          const n = col.states.reduce((s, st) => s + (counts[st] ?? 0), 0)
+          return (
+            <div key={col.key} className="min-w-0">
+              <div className="mb-1.5 flex items-center gap-2 px-0.5 text-[11px] uppercase tracking-wider">
+                <span className={`h-[3px] w-5 rounded-full ${col.rail}`} />
+                <span className={`font-medium ${col.head}`}>{col.label}</span>
+                <span className="ml-auto font-mono text-muted-foreground">{n}</span>
+              </div>
+              <div className="space-y-2">{inCol.map(card)}</div>
+            </div>
+          )
+        })}
+      </div>
+      {bets.length > 0 && BET_COLUMNS.some((col) => !bets.some((b) => col.states.includes(b.state))) && (
+        <div className="mt-2 text-[11px] text-muted-foreground">
+          Nothing {BET_COLUMNS.filter((col) => !bets.some((b) => col.states.includes(b.state))).map((c) => c.label.toLowerCase()).join(' or ')}.
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** A goal's METRIC: what number it is judged on, where that number stands, and a way to record the next
  *  reading. Shown in the goal drawer under Target — the caption and the number belong together.
  *
@@ -10035,7 +10266,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   // permalink. Same scheme as the task room, which this page's detail view mirrors.
   const [routeGoalId, routeTab] = (goalId || '').split('/')
   const selId = routeGoalId || null
-  const roomTab: GoalTab = routeTab === 'description' || routeTab === 'activity' || routeTab === 'chat' ? routeTab : 'tasks'
+  const roomTab: GoalTab = routeTab === 'bets' || routeTab === 'description' || routeTab === 'activity' || routeTab === 'chat' ? routeTab : 'tasks'
   const openGoal = (id: string) => nav('goals', id)
   const openGoalTab = (id: string, tab: GoalTab) => nav('goals', tab === 'tasks' ? id : `${id}/${tab}`)
   // Same rule as the task room: back to wherever you opened this goal from (the feed, an inbox card, the
@@ -10047,6 +10278,9 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
   const [runHint, setRunHint] = useState('') // dispatch feedback, kept out of the goal-level `hint`
   const [confirmRunAll, setConfirmRunAll] = useState(false)
+  /** Count for the Bets tab badge — the board reports it up when it loads, so the tab says how many
+   *  attempts this goal has without the room fetching them twice. */
+  const [betCount, setBetCount] = useState(0)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // create form
@@ -10527,6 +10761,9 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
                 {/* Scrolls rather than clips: at phone widths four tabs don't fit the column. */}
                 <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b px-2">
                   {tabBtn('tasks', <><ListChecks className="h-3.5 w-3.5" />Tasks{detail.tasks.length > 0 && <span className="ml-0.5 text-[11px] opacity-70">{detail.tasks.length}</span>}</>)}
+                  {/* Bets sit beside Tasks, in the main column: a four-lane board is unreadable in the
+                      320px rail, and "what are we attempting" is peer to "what are we doing". */}
+                  {tabBtn('bets', <><Target className="h-3.5 w-3.5" />Bets{betCount > 0 && <span className="ml-0.5 text-[11px] opacity-70">{betCount}</span>}</>)}
                   {tabBtn('description', <><FileText className="h-3.5 w-3.5" />Description</>)}
                   {tabBtn('activity', <><HistoryIcon className="h-3.5 w-3.5" />Activity</>)}
                   {/* Chat can file and dispatch this goal's work, so it's offered on the same terms as every
@@ -10535,6 +10772,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
                 </div>
                 <div className="min-h-0 flex-1 overflow-hidden">
                   {roomTab === 'tasks' && tasksTab()}
+                  {roomTab === 'bets' && <div className="h-full overflow-y-auto p-4"><BetsBoard key={g.id} goalId={g.id} onCount={setBetCount} /></div>}
                   {roomTab === 'chat' && (isAdmin
                     ? <GoalChat goalId={g.id} chat={detail.chat} onChanged={() => { void refreshDetail(g.id); void load() }} nav={nav} />
                     : <div className="p-4 text-sm text-muted-foreground">Owner or admin required.</div>)}

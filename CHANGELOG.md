@@ -8,6 +8,11 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.454.0] - 2026-10-05
+### Added
+- **The bets board, on the goal it belongs to.** A goal room gains a **Bets** tab beside Tasks (`BetsBoard` in `web/src/App.tsx`): every attempt at that goal's number, in lanes — Proposed, Running, Judged, Closed. A card carries the hypothesis, the lever, "day N of M" against its window with the judge date, the lift so far measured on the bet's OWN assets against what it predicted, the verdict pill once the arithmetic has run, the lesson, and the assets themselves as links with their value (or "unmeasured" — never a zero somebody would read as a result, and an unindexed asset says so). Owner/admin get **Judge now** on a running bet and Keep / Expand / Kill on a judged one, each requiring the lesson the server also requires. `verdict` and `observedLift` are displayed and never offered as an input, on either lane. Lanes size themselves and an empty lane is not drawn (named in one line underneath instead): the goal room's main column is ~750px on a laptop, where a fixed four-lane grid gives 170px of truncated URLs.
+  **For users:** Open a goal and you can see each bet being made on it — what it predicted, how far into its window it is, which pages it shipped and what they have earned — and keep or kill a judged one with the reason. [Open Goals](#/goals)
+
 ## [0.453.1] - 2026-10-05
 ### Fixed
 - **🔴 `GET /api/bets` was readable with no session.** The route shipped in v0.453.0 was added beside the agent loopback routes, which sit BEFORE the `/api/*` auth gate, so anyone who could reach the port got every bet on the tenant — titles, hypotheses, baselines and asset URLs. The handler was correct; its position in the file was the bug. Moved below the gate beside the other goal routes, with a comment saying why it must stay there, and `scripts/bets-test.cjs` now asserts that an un-cookied read and an un-cookied write both come back 401 — a position bug needs a reachability test, not a handler test. Also adds the human write side the board needs (`PATCH /api/bets/:id`, `POST /api/bets/:id/judge`, owner/admin): a human may decide and record the lesson, and may force the arithmetic early, but cannot type a number over a measurement either.
