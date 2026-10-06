@@ -8,6 +8,10 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.456.1] - 2026-10-06
+### Fixed
+- **"Ready to close" asked the task list instead of the number.** A goal was proposed for closing — and its owner carded that it was finished — as soon as every task filed under it was done, with no reference to its metric. On the instapods clicks goal that put a green "Ready to close" pill directly beside a metric panel reading "59 of 100 · Not moving": the same page contradicting itself, and an Inbox card saying the goal was finished when it was 41 clicks short. Task completion is the weakest evidence a measured goal has, so it no longer gets a vote: `GoalStore.readyToClose` (and therefore the scheduler's completion sweep) now excludes a goal with a metric unless its verdict is `achieved`, and the console derives the same way. A goal with NO metric is unchanged. The quieter fact is still said — a measured goal whose filed work ran out gets a muted "all filed tasks are done, but the number is at X of Y — close it only if the outcome is good enough, or plan the gap", because nobody having planned the rest is worth knowing; it just is not a close. Pinned by `scripts/goal-metric-review-test.cjs`.
+
 ## [0.456.0] - 2026-10-06
 ### Added
 - **The goal's number, with the bets that ran under it.** The Bets tab opens with a chart of the goal's readings against its target, and a rail beneath it on the same x scale showing each bet as the WINDOW it occupied — a bet is a period, not a moment, so the question "which attempt was live while the number did that?" is answerable at a glance. Crosshair snaps to the nearest reading; bar colour carries state and the wrapped key underneath carries identity (never colour alone), which is also what keeps a label from being clipped by the right edge. Deliberately no trend line and no projection: inventing a line nobody measured is the same sin as letting an agent grade its own bet.

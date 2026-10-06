@@ -283,8 +283,15 @@ export class GoalStore {
    * does NOT self-close, because "all the filed tasks are done" is not the same claim as "the outcome was
    * achieved" — the plan may simply have been incomplete. So this is a proposal set: the console flags it
    * and the owner confirms (or plans the gap). Oldest-idle first.
+   *
+   * ⚠ A MEASURED goal is excluded unless its number says `achieved`. Task completion is the weakest
+   * evidence a measured goal has, and offering to close one on it reads as the product contradicting
+   * itself: live on the instapods clicks goal, "Ready to close" sat beside a metric panel reading
+   * "59 of 100 · Not moving", and the same rule had already carded the owner that the goal was finished.
+   * A goal that bothered to say what number it is about is judged on that number — which is the whole
+   * reason `metric` exists (see {@link metricStatus}).
    */
-  readyToClose(tenant: string): Goal[] {
+  readyToClose(tenant: string, now = Date.now()): Goal[] {
     return this.db
       .prepare(
         `SELECT * FROM goals g WHERE g.tenant = ? AND g.status = 'active'
@@ -295,7 +302,8 @@ export class GoalStore {
          ORDER BY g.updated_at ASC`,
       )
       .all<GoalRow>(tenant)
-      .map(toGoal);
+      .map(toGoal)
+      .filter((g) => !g.metric || this.metricStatus(g.id, now)?.verdict === 'achieved');
   }
 
   /**

@@ -126,6 +126,32 @@ const DAY = 86_400_000;
   assert(aos.goals.events(up.id).some((e) => /measured 18000/.test(e.body || '')), 'a reading also lands on the goal timeline, so a measured goal is never reported "stuck"');
 
   server.close();
+  console.log('\n\x1b[1mX) "Ready to close" asks the NUMBER, not the task list\x1b[0m');
+  // Live (instapods clicks goal): every filed task was done, so the room offered "Ready to close" and the
+  // sweep carded the owner that the goal was finished — beside a metric panel reading 59 of 100, "Not
+  // moving". Task completion is the weakest evidence a measured goal has; it does not get a vote.
+  const mkTask = (goalId, status) => {
+    const t = aos.tasks.create({ tenant: aos.tenant, title: `work for ${goalId}`, goalId, createdBy: owner.id, owner: owner.id });
+    if (status !== 'todo') aos.tasks.update(t.id, { status, by: owner.id });
+    return t;
+  };
+  const unmeasuredGoal = mkGoal('Ship the thing');           // no metric at all
+  mkTask(unmeasuredGoal.id, 'done');
+  const measuredGoal = mkGoal('Clicks to 100', { name: 'clicks', unit: '/day', target: 100, baseline: 50, direction: 'up', everyDays: 1 });
+  feed(measuredGoal, [[6, 57], [4, 55], [2, 56], [0, 59]]);  // nowhere near target
+  mkTask(measuredGoal.id, 'done');
+  const reachedGoal = mkGoal('Latency under 200', { name: 'p95', unit: 'ms', target: 200, baseline: 400, direction: 'down', everyDays: 1 });
+  feed(reachedGoal, [[6, 380], [4, 300], [2, 240], [0, 180]]);   // target reached (down is better)
+  mkTask(reachedGoal.id, 'done');
+
+  const ready = aos.goals.readyToClose(aos.tenant, NOW).map((g) => g.id);
+  assert(ready.includes(unmeasuredGoal.id), 'a goal with NO metric still closes on its tasks — unchanged', ready);
+  assert(!ready.includes(measuredGoal.id), 'a measured goal whose number is nowhere near target is NOT offered', { ready, verdict: aos.goals.metricStatus(measuredGoal.id, NOW).verdict });
+  assert(ready.includes(reachedGoal.id), 'a measured goal that reached its target IS offered', ready);
+  // And the sweep that cards the owner reads the same list, so the card stops too.
+  const before = aos.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE session_id = ?").get(`system:goal-ready-${measuredGoal.id}`);
+  assert(!before || before.n === 0, 'no "goal is finished" card for the measured goal', before);
+
   registry.stopAll();
   fs.rmSync(HOME, { recursive: true, force: true });
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m\n`);
