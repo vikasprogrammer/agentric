@@ -4480,8 +4480,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const agentId = (task.assignee || '').startsWith('agent:') ? task.assignee!.slice('agent:'.length) : '';
     if (!agentId) return sendJson(res, 400, { error: 'assign an agent before dispatching' });
     if (!os.team.canRun(me, agentId)) return sendJson(res, 403, { error: `you are not assigned to run "${agentId}"` });
-    const r = autos.dispatchTask(task.id, { guard: false, by: me.email }); // explicit human action — no pile-up guard
-    return sendJson(res, r.ok ? 200 : 409, r.ok ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason });
+    const r = autos.dispatchTask(task.id, { guard: false, by: me.email }); // explicit human action — un-parks `blocked`
+    // Refused because a run is already live (a second click, or the run that raised the block is still up):
+    // hand back THAT session so the console can offer "open it" instead of a dead-end error.
+    const live = r.ok ? undefined : tm.liveTaskRuns([task.id])[task.id];
+    return sendJson(res, r.ok ? 200 : 409, r.ok ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason, ...(live ? { live: true, sessionId: live.sessionId } : {}) });
   }
   // Delete. Owner/admin may remove any task; ANY member may remove a DRAFT of their own — a task they
   // filed that has never been dispatched and no session has ever touched (`isDraftTask`). A never-run

@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.455.0] - 2026-10-06
+### Fixed
+- **"Unblock & run" could put two sessions on one task.** The console's dispatch (`POST /api/tasks/:id/dispatch`, `guard:false`) skipped the one-live-run-per-task check entirely, so a second click on the Inbox card — which stayed enabled until the next feed poll dropped it — spawned a parallel session (live: one instapods task got two sessions two seconds apart), and so did a click while the run that raised the block was still up. `canDispatch` now refuses a live run on EVERY path; what a human still forces past is the `blocked` park and the scheduler's caution (pool, per-agent busy). The route answers a refusal with the live session's id (`live: true, sessionId`), and the card keeps its buttons disabled once an action lands. Pinned by `scripts/unblock-run-dedupe-test.cjs`.
+### Added
+- **A blocked-task card shows whether its session is still running.** The Inbox's "Task blocked — needs you" card is hydrated with the task's current run (`args.run`: session id, alive/ended, status — `TerminalManager.taskRunStates`, one query + one cached liveness poll per feed read, only when such a card is on the page). While that run is live the card offers **Open session** instead of "Unblock & run", since the answer belongs in the session that asked.
+  **For users:** A "Task blocked — needs you" card now says whether the agent's session is still running or has ended, and lets you open it — so you answer in the live session instead of accidentally starting a second one. [Open Inbox](#/inbox)
+
 ## [0.454.0] - 2026-10-05
 ### Added
 - **The bets board, on the goal it belongs to.** A goal room gains a **Bets** tab beside Tasks (`BetsBoard` in `web/src/App.tsx`): every attempt at that goal's number, in lanes — Proposed, Running, Judged, Closed. A card carries the hypothesis, the lever, "day N of M" against its window with the judge date, the lift so far measured on the bet's OWN assets against what it predicted, the verdict pill once the arithmetic has run, the lesson, and the assets themselves as links with their value (or "unmeasured" — never a zero somebody would read as a result, and an unindexed asset says so). Owner/admin get **Judge now** on a running bet and Keep / Expand / Kill on a judged one, each requiring the lesson the server also requires. `verdict` and `observedLift` are displayed and never offered as an input, on either lane. Lanes size themselves and an empty lane is not drawn (named in one line underneath instead): the goal room's main column is ~750px on a laptop, where a fixed four-lane grid gives 170px of truncated URLs.

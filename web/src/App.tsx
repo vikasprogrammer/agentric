@@ -5255,6 +5255,8 @@ type BlockedTaskArgs = {
   taskTitle?: string; taskStatus?: TaskStatus | 'deleted'; assignee?: string; blockedOn?: string; autoDispatch?: boolean
   /** The ask's multiple-choice options, when the agent offered them — one-click unblock. */
   options?: string[]
+  /** The task's current run — is the session that raised the block still up? (`at` = started if alive, else last update.) */
+  run?: { sessionId: string; alive: boolean; status: string; at: number }
 }
 
 /** An agent flagged a progress update as a key milestone / heads-up (carried in `args.important`). */
@@ -7054,16 +7056,22 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
     const agentId = assignee?.startsWith('agent:') ? assignee.slice('agent:'.length) : ''
     const onHuman = a.blockedOn === 'human'
     const runnable = agents.filter((ag) => ag.runtime === 'claude-code')
+    // The run that raised the block. While it's still up, "Unblock & run" would only be refused (one live
+    // run per task) — the answer belongs IN that session, so the card offers it instead.
+    const run = a.run
+    const openRun = (sid: string) => onOpen('aos-' + sid, (agentId || m.agent) + ' · ' + sid)
+    // `busy` stays set once an action lands: the card lingers until the next feed poll drops it, and a
+    // re-enabled "Unblock & run" in that window is exactly how one task got two sessions.
     const act = async (next: 'todo' | 'cancelled', run = false, pick?: string) => {
       setBusy(true); setHint('')
       const note = pick ?? answer.trim()
       const r = await api.patchTask(taskId, { status: next, ...(note ? { note } : {}) })
       if (r.error) { setBusy(false); return setHint('⚠ ' + r.error) }
       setAnswer('')
-      if (next === 'cancelled') { setBusy(false); return setHint('cancelled') }
-      if (!run) { setBusy(false); return setHint('back on the board') }
+      if (next === 'cancelled') return setHint('cancelled')
+      if (!run) return setHint('back on the board')
       const d = await api.dispatchTask(taskId)
-      setBusy(false)
+      if (d.live && d.sessionId) return setHint('unblocked — its session is still running; open it to continue')
       setHint(d.error ? '⚠ unblocked, but ' + d.error : 'unblocked — a session is running it')
     }
     const reassign = async (to: string | null) => {
@@ -7081,6 +7089,15 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
               <Badge variant="outline" className="shrink-0 border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{onHuman ? 'blocked on you' : a.blockedOn === 'agent' ? 'waiting on an agent' : 'blocked'}</Badge>
             </MsgHeading>
             <a href={navHref('tasks', taskId)} className="mt-0.5 block break-words text-xs font-medium text-foreground no-underline hover:underline">{title}</a>
+            {run ? (
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${run.alive ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
+                {run.alive
+                  ? <span>session still running <span className="text-muted-foreground/70">· started {timeAgo(run.at)} ago</span></span>
+                  : <span>session ended <span className="text-muted-foreground/70">· {run.status} {timeAgo(run.at)} ago</span></span>}
+                <button type="button" className="font-mono text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" onClick={() => openRun(run.sessionId)}>{run.sessionId}</button>
+              </div>
+            ) : null}
             {a.reason
               ? <div className="mt-1 whitespace-pre-line break-words text-xs text-muted-foreground"><span className="text-amber-700">why:</span> <InlineLinks text={a.reason} /></div>
               : <div className="mt-1 text-[11px] italic text-muted-foreground/80">The agent left no reason — open the task to see what it was doing.</div>}
@@ -7111,9 +7128,11 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
               className="mt-1.5 w-full resize-y rounded-md border bg-background px-2 py-1.5 text-xs"
             />
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {agentId
-                ? <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} title={`Put it back on the board and dispatch ${agentId} now`} onClick={() => act('todo', true)}><Play className="mr-1 h-3 w-3" />Unblock &amp; run</Button>
-                : null}
+              {run?.alive
+                ? <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} title="The run that raised this block is still up — answer it there instead of starting a second session" onClick={() => openRun(run.sessionId)}><TerminalSquare className="mr-1 h-3 w-3" />Open session</Button>
+                : agentId
+                  ? <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} title={`Put it back on the board and dispatch ${agentId} now`} onClick={() => act('todo', true)}><Play className="mr-1 h-3 w-3" />Unblock &amp; run</Button>
+                  : null}
               <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => act('todo')}><Check className="mr-1 h-3 w-3" />Unblock</Button>
               <Button size="sm" variant="ghost" className="h-7 px-2.5 text-xs text-muted-foreground" disabled={busy} onClick={() => act('cancelled')}>Cancel task</Button>
               {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
