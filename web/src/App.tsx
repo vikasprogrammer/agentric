@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetric, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState, type Bet, type BetAsset, type BetState, type BetVerdict } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -9908,6 +9908,133 @@ const BET_CLOSE: { state: BetState; label: string; icon: LucideIcon; variant: 'd
   { state: 'killed', label: 'Kill', icon: X, variant: 'destructive' },
 ]
 
+/**
+ * The goal's number over time, with the bets that were running under it.
+ *
+ * One series (the readings) against one reference line (the target) — so no legend box: the caption
+ * names it. The bets ride a RAIL under the same x scale rather than as markers on the line, because a
+ * bet is a WINDOW, not a moment: the useful question at a glance is which attempt was live while the
+ * number did what it did, and a dot at its start cannot answer that.
+ *
+ * It deliberately does not draw a trend line or a projection. A projection on seventeen noisy daily
+ * readings would be a confident drawing of something nobody measured (docs/bets-plan.md §3 — the number
+ * is the server's, and inventing one in SVG is the same sin as letting an agent grade itself).
+ */
+function GoalChart({ metric, readings, bets }: { metric: GoalMetric; readings: GoalReading[]; bets: Bet[] }) {
+  const [hover, setHover] = useState<number | null>(null)
+  const pts = [...readings].filter((r) => Number.isFinite(r.value)).sort((a, b) => a.at - b.at)
+  // Bets with a real window; the rail is ordered oldest-first so its numbering reads with the timeline.
+  const rail = bets.filter((b) => b.startedAt).sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))
+  if (pts.length < 2) return null
+
+  const W = 760, H = 210, L = 42, R = 14, T = 14, B = 26
+  const railH = rail.length ? rail.length * 16 + 14 : 0
+  const now = Date.now()
+  const x0 = Math.min(pts[0].at, ...rail.map((b) => b.startedAt ?? Infinity))
+  const x1 = Math.max(now, ...rail.map((b) => b.judgeAt ?? 0))
+  const target = metric.target
+  const top = Math.max(target ?? 0, ...pts.map((p) => p.value)) * 1.08 || 1
+  const X = (t: number) => L + ((t - x0) / Math.max(1, x1 - x0)) * (W - L - R)
+  const Y = (v: number) => T + (1 - v / top) * (H - T - B)
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.at).toFixed(1)} ${Y(p.value).toFixed(1)}`).join(' ')
+  const area = `${line} L${X(pts[pts.length - 1].at).toFixed(1)} ${Y(0).toFixed(1)} L${X(pts[0].at).toFixed(1)} ${Y(0).toFixed(1)} Z`
+  const ticks = [0, 0.5, 1].map((f) => +( (target ?? top) * f ).toFixed(2))
+  const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const unit = metric.unit ? ` ${metric.unit}` : ''
+  const last = pts[pts.length - 1]
+  const hp = hover != null ? pts[hover] : null
+  // Nearest reading to the pointer, in x — a crosshair that snaps to data rather than floating between it.
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const box = e.currentTarget.getBoundingClientRect()
+    const vx = ((e.clientX - box.left) / box.width) * W
+    let best = 0
+    pts.forEach((p, i) => { if (Math.abs(X(p.at) - vx) < Math.abs(X(pts[best].at) - vx)) best = i })
+    setHover(best)
+  }
+
+  return (
+    <div className="rounded-md border p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{metric.name}</div>
+        <div className="text-[11px] text-muted-foreground">
+          <span className="font-medium text-foreground tabular-nums">{last.value}{unit}</span>
+          {target != null && <> of {target}{unit} · {pts.length} readings</>}
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H + railH}`} className="mt-1 w-full" role="img"
+           aria-label={`${metric.name}: ${pts.length} readings from ${day(pts[0].at)} to ${day(last.at)}, latest ${last.value}${unit}${target != null ? `, target ${target}` : ''}`}
+           onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        {/* Grid + y labels. Recessive: the data is the only thing with weight. */}
+        {ticks.map((v) => (
+          <g key={v}>
+            <line x1={L} x2={W - R} y1={Y(v)} y2={Y(v)} className="stroke-border" strokeWidth={1} />
+            <text x={L - 6} y={Y(v) + 3.5} textAnchor="end" className="fill-muted-foreground text-[9px] tabular-nums">{v}</text>
+          </g>
+        ))}
+        {/* The target, named on the line itself rather than in a legend. */}
+        {target != null && target <= top && (
+          <>
+            <line x1={L} x2={W - R} y1={Y(target)} y2={Y(target)} className="stroke-amber-500" strokeWidth={1.5} strokeDasharray="5 4" />
+            <text x={L + 4} y={Y(target) - 5} className="fill-amber-600 text-[9px]">target {target}{unit}</text>
+          </>
+        )}
+        <path d={area} className="fill-emerald-500/10" />
+        <path d={line} fill="none" className="stroke-emerald-500" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+        {pts.map((p, i) => <circle key={p.id ?? i} cx={X(p.at)} cy={Y(p.value)} r={hover === i ? 4 : 2} className="fill-emerald-500" />)}
+        {/* x ends only — a dated label per reading is noise at this density. */}
+        <text x={L} y={H - 8} className="fill-muted-foreground text-[9px]">{day(pts[0].at)}</text>
+        <text x={W - R} y={H - 8} textAnchor="end" className="fill-muted-foreground text-[9px]">{day(x1)}</text>
+
+        {/* Crosshair + tooltip. */}
+        {hp && (
+          <g>
+            <line x1={X(hp.at)} x2={X(hp.at)} y1={T} y2={H - B} className="stroke-foreground/30" strokeWidth={1} />
+            <g transform={`translate(${Math.min(Math.max(X(hp.at) - 52, L), W - R - 104)}, ${Math.max(T, Y(hp.value) - 34)})`}>
+              <rect width={104} height={26} rx={4} className="fill-background stroke-border" strokeWidth={1} />
+              <text x={8} y={16} className="fill-foreground text-[10px] tabular-nums">{day(hp.at)} · {hp.value}{unit}</text>
+            </g>
+          </g>
+        )}
+
+        {/* The bets, as windows on the same x scale. Colour carries state, the number and the title in the
+            board below carry identity — never colour alone. */}
+        {rail.map((b, i) => {
+          const y = H + 6 + i * 16
+          const bx = X(b.startedAt ?? x0)
+          const bw = Math.max(6, X(Math.min(b.judgeAt ?? now, x1)) - bx)
+          const tone = b.state === 'running' ? 'fill-emerald-500/70' : b.state === 'judging' ? 'fill-amber-500/70' : b.verdict === 'met' ? 'fill-emerald-500/40' : 'fill-muted-foreground/35'
+          return (
+            <g key={b.id}>
+              <title>{`${b.title} — ${b.state}${b.verdict ? ` (${b.verdict})` : ''}`}</title>
+              <rect x={bx} y={y} width={bw} height={8} rx={4} className={tone} />
+              <text x={bx + 3} y={y + 7} className="fill-background text-[8px] font-medium">{i + 1}</text>
+            </g>
+          )
+        })}
+      </svg>
+      {/* The rail's key lives in HTML, not in the SVG: a label drawn beside a bar that ends near the right
+          edge gets clipped, and wrapped text is the one thing SVG cannot do for you. */}
+      {rail.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+          {rail.map((b, i) => (
+            <span key={b.id} className="inline-flex items-center gap-1">
+              <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${b.state === 'running' ? 'bg-emerald-500/70' : b.state === 'judging' ? 'bg-amber-500/70' : b.verdict === 'met' ? 'bg-emerald-500/40' : 'bg-muted-foreground/35'}`} />
+              <span className="tabular-nums">{i + 1}</span>
+              <span className="text-foreground/80">{b.title}</span>
+              {b.verdict && <span>· {b.verdict === 'no_signal' ? 'no signal' : b.verdict}</span>}
+            </span>
+          ))}
+        </div>
+      )}
+      {rail.length > 0 && (
+        <div className="mt-1 text-[10px] text-muted-foreground">
+          Bars are each bet's window — when it was live against this number. Lift is measured on the bet's own assets, not on this line.
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** The BETS BOARD — every falsifiable attempt at this goal's number, in the four lanes a human acts on.
  *
  *  Two things it deliberately does not do. Lift is summed over the bet's OWN assets, never over the goal's
@@ -9915,7 +10042,7 @@ const BET_CLOSE: { state: BetState; label: string; icon: LucideIcon; variant: 'd
  *  `observedLift` are the server's arithmetic — displayed, never offered as an input. The half a human owns
  *  is the decision and the lesson, and a terminal state without a lesson is refused server-side, so the
  *  error that comes back is shown verbatim rather than guessed at here. */
-function BetsBoard({ goalId, onCount }: { goalId: string; onCount?: (n: number) => void }) {
+function BetsBoard({ goalId, metric, readings, onCount }: { goalId: string; metric?: GoalMetric; readings?: GoalReading[]; onCount?: (n: number) => void }) {
   const [bets, setBets] = useState<(Bet & { assets: BetAsset[] })[]>([])
   const [counts, setCounts] = useState<Record<string, number>>({})
   const [canEdit, setCanEdit] = useState(false)
@@ -10065,9 +10192,12 @@ function BetsBoard({ goalId, onCount }: { goalId: string; onCount?: (n: number) 
   // broken board, one line reads as the invitation it is.
   if (bets.length === 0) {
     return (
-      <div className="rounded-md border border-dashed p-3">
-        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Bets</div>
-        <p className="mt-1 text-xs text-muted-foreground">No bets have been opened on this goal yet.</p>
+      <div className="space-y-3">
+        {metric && readings && readings.length > 1 && <GoalChart metric={metric} readings={readings} bets={[]} />}
+        <div className="rounded-md border border-dashed p-3">
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Bets</div>
+          <p className="mt-1 text-xs text-muted-foreground">No bets have been opened on this goal yet.</p>
+        </div>
       </div>
     )
   }
@@ -10077,7 +10207,9 @@ function BetsBoard({ goalId, onCount }: { goalId: string; onCount?: (n: number) 
     // Tasks board's `sm:/lg:` viewport breakpoints would lay four 70px columns on a wide screen. Keyed on
     // its OWN width it is one stacked column here and in the phone layout, and a real four-lane board the
     // moment it is given the room.
-    <div className="@container rounded-md border p-3">
+    <div className="@container space-y-3">
+      {metric && readings && readings.length > 1 && <GoalChart metric={metric} readings={readings} bets={bets} />}
+      <div className="rounded-md border p-3">
       <div className="flex items-baseline justify-between gap-2">
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Bets</div>
         <div className="text-[11px] text-muted-foreground">{bets.length} on this goal</div>
@@ -10104,11 +10236,12 @@ function BetsBoard({ goalId, onCount }: { goalId: string; onCount?: (n: number) 
           )
         })}
       </div>
-      {bets.length > 0 && BET_COLUMNS.some((col) => !bets.some((b) => col.states.includes(b.state))) && (
-        <div className="mt-2 text-[11px] text-muted-foreground">
-          Nothing {BET_COLUMNS.filter((col) => !bets.some((b) => col.states.includes(b.state))).map((c) => c.label.toLowerCase()).join(' or ')}.
-        </div>
-      )}
+        {bets.length > 0 && BET_COLUMNS.some((col) => !bets.some((b) => col.states.includes(b.state))) && (
+          <div className="mt-2 text-[11px] text-muted-foreground">
+            Nothing {BET_COLUMNS.filter((col) => !bets.some((b) => col.states.includes(b.state))).map((c) => c.label.toLowerCase()).join(' or ')}.
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -10791,7 +10924,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
                 </div>
                 <div className="min-h-0 flex-1 overflow-hidden">
                   {roomTab === 'tasks' && tasksTab()}
-                  {roomTab === 'bets' && <div className="h-full overflow-y-auto p-4"><BetsBoard key={g.id} goalId={g.id} onCount={setBetCount} /></div>}
+                  {roomTab === 'bets' && <div className="h-full overflow-y-auto p-4"><BetsBoard key={g.id} goalId={g.id} metric={g.metric} readings={detail.readings} onCount={setBetCount} /></div>}
                   {roomTab === 'chat' && (isAdmin
                     ? <GoalChat goalId={g.id} chat={detail.chat} onChanged={() => { void refreshDetail(g.id); void load() }} nav={nav} />
                     : <div className="p-4 text-sm text-muted-foreground">Owner or admin required.</div>)}
