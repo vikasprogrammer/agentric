@@ -2231,7 +2231,7 @@ export const api = {
   addTask: (b: AddTaskReq) => call<{ ok: boolean; task?: Task; error?: string }>('POST', '/api/tasks', b),
   patchTask: (id: string, b: { title?: string; body?: string; status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; goalId?: string | null; criteria?: string | null; dependsOn?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
   commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
-  dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/tasks/${id}/dispatch`),
+  dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string; /** refused: this session is already working the task */ live?: boolean }>('POST', `/api/tasks/${id}/dispatch`),
   /** Accept (→ todo) or dismiss (→ cancelled) agent-proposed tasks: by `ids`, or every task on one Inbox card (`messageId`). */
   decideTaskProposals: (b: { ids?: string[]; messageId?: string; action: 'accept' | 'dismiss' | 'assign'; assignee?: string | null; run?: boolean }) => call<{ ok: boolean; decided?: string[]; denied?: number; dispatched?: Array<{ id: string; sessionId?: string; error?: string }>; error?: string }>('POST', '/api/tasks/proposals/decide', b),
   taskProposalsSetting: () => call<{ enabled: boolean; error?: string }>('GET', '/api/settings/task-proposals'),

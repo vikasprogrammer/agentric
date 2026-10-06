@@ -824,8 +824,8 @@ export class Automations {
    * enforces, so there is exactly one cascade and both callers read it.
    *
    * Pure — no writes, safe to call per row on every render. `guard` mirrors dispatchTask: `true` is the
-   * scheduler's cautious mode (respects a deliberate `blocked` park, the one-live-run pile-up rule, and a
-   * dry runtime pool), `false` is a human forcing it from the console.
+   * scheduler's cautious mode (respects a deliberate `blocked` park and a dry runtime pool), `false` is a
+   * human forcing it from the console. The one-live-run-per-task rule holds in BOTH modes.
    */
   canDispatch(id: string, opts: { guard?: boolean } = {}): { ok: boolean; reason?: string; code?: TaskDispatchBlock } {
     const guard = opts.guard ?? true;
@@ -844,7 +844,14 @@ export class Automations {
     const agentId = (t.assignee || '').startsWith('agent:') ? t.assignee!.slice('agent:'.length) : '';
     if (!agentId) return no('unassigned', 'task has no agent assignee');
     if (!this.os.agents.has(agentId)) return no('unknown-agent', `unknown agent: ${agentId}`);
-    if (guard && t.lastSessionId && this.tm.reachable(t.lastSessionId)) {
+    // One live run per task, on EVERY path — a human's console dispatch included. `guard:false` used to
+    // skip this ("a human forcing it"), which made the Inbox's "Unblock & run" a double-spawn: a second
+    // click two seconds after the first (live: tsk_ad11e51…, two sessions on one task), or a click while
+    // the run that raised the block was still up, each launched a parallel session on the same work. What
+    // a human forces past is the PARK (`blocked`) and the scheduler's caution (pool, per-agent busy) —
+    // never "two agents editing the same branch". The dispatch route answers this with the live session
+    // id so the console can offer it instead.
+    if (t.lastSessionId && this.tm.reachable(t.lastSessionId)) {
       return no('live', 'a session is already working this task');
     }
     // Defer a guarded (scheduler-driven) dispatch when the agent's runtime pool is exhausted — retried next

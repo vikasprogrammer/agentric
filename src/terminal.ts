@@ -2505,21 +2505,36 @@ export class TerminalManager {
    */
   liveTaskRuns(taskIds: string[]): Record<string, { sessionId: string; agent: string; since: number }> {
     const out: Record<string, { sessionId: string; agent: string; since: number }> = {};
+    for (const [id, r] of Object.entries(this.taskRunStates(taskIds))) {
+      if (r.alive) out[id] = { sessionId: r.sessionId, agent: r.agent, since: r.since };
+    }
+    return out;
+  }
+
+  /**
+   * The CURRENT run (`last_session_id`) of each task, live OR ended — {@link liveTaskRuns} without the
+   * filter, plus the row's status. A blocked-task Inbox card shows this, because "Unblock & run" means two
+   * different things depending on it: when the run that raised the block is still up, the answer belongs
+   * IN that session (and the dispatch route refuses a second one); when it has ended, a fresh dispatch is
+   * the way on. Same liveness predicate as the dispatch guard, one query + ONE poll for the whole set.
+   */
+  taskRunStates(taskIds: string[]): Record<string, { sessionId: string; agent: string; since: number; alive: boolean; status: string; updatedAt: number }> {
+    const out: Record<string, { sessionId: string; agent: string; since: number; alive: boolean; status: string; updatedAt: number }> = {};
     const ids = taskIds.filter(Boolean);
     if (!ids.length) return out;
     const rows = this.db
       .prepare(`SELECT t.id AS task_id, s.id AS id, s.agent AS agent, s.tmux AS tmux, s.status AS status,
-                       s.created_at AS created_at
+                       s.created_at AS created_at, s.updated_at AS updated_at
                   FROM tasks t JOIN term_sessions s ON s.id = t.last_session_id
                  WHERE t.id IN (${ids.map(() => '?').join(',')})`)
-      .all<{ task_id: string; id: string; agent: string; tmux: string; status: string; created_at: number }>(...ids);
+      .all<{ task_id: string; id: string; agent: string; tmux: string; status: string; created_at: number; updated_at: number }>(...ids);
     if (!rows.length) return out;
     const alive = this.backend.aliveNames();
     for (const r of rows) {
       const live = this.launching.has(r.id) // scheduled; its pane is imminent (mirrors `reachable`)
         || (r.status !== 'stopped' && r.status !== 'crashed' && r.status !== 'paused'
           && (alive ? alive.has(r.tmux) : r.status === 'running')); // no poll possible → trust the row
-      if (live) out[r.task_id] = { sessionId: r.id, agent: r.agent, since: r.created_at };
+      out[r.task_id] = { sessionId: r.id, agent: r.agent, since: r.created_at, alive: live, status: r.status, updatedAt: r.updated_at };
     }
     return out;
   }
@@ -2780,7 +2795,13 @@ export class TerminalManager {
     // aren't flooded by every session's cards; `all` is the explicit oversight view (owner/admin only —
     // a member's `all` and `mine` are identical since they only ever see their own).
     if (viewer && scope === 'mine') visible = visible.filter((r) => this.isAddressedTo(r, viewer));
-    return visible.map(toMessage).map((m) => (m.type === 'task.proposed' ? this.hydrateTaskProposalCard(m) : m.type === 'task' ? this.hydrateTaskCard(m) : m));
+    const msgs = visible.map(toMessage);
+    // The run behind each BLOCKED-task card, batched (one query + one liveness poll per feed read, and
+    // only when such a card is in the page) — see hydrateTaskCard.
+    const blockedIds = msgs.filter((m) => m.type === 'task' && (m.args as { event?: string } | undefined)?.event === 'blocked')
+      .map((m) => (m.args as { taskId?: string }).taskId ?? '').filter(Boolean);
+    const runs = blockedIds.length ? this.taskRunStates(blockedIds) : {};
+    return msgs.map((m) => (m.type === 'task.proposed' ? this.hydrateTaskProposalCard(m) : m.type === 'task' ? this.hydrateTaskCard(m, runs) : m));
   }
 
   /** Mark one message read for a member (per-member; idempotent upsert). Visibility-guarded like the
@@ -6645,10 +6666,13 @@ export class TerminalManager {
    *  {@link hydrateTaskProposalCard}, and for the same reason: the card is acted on (unblock / reassign /
    *  cancel), so deciding on a snapshot means deciding on whoever the assignee was an hour ago. `status`
    *  also tells the client a `blocked` card has already been resolved elsewhere. */
-  private hydrateTaskCard(m: FeedMessage): FeedMessage {
+  private hydrateTaskCard(m: FeedMessage, runs: ReturnType<TerminalManager['taskRunStates']> = {}): FeedMessage {
     const args = (m.args ?? {}) as { taskId?: string; event?: string; reason?: string };
     if (!args.taskId) return m;
     const live = this.os.tasks.get(args.taskId);
+    // `run` — is the session that raised the block still up? Stamped only for `blocked` cards (the only
+    // ones `runs` was computed for), and only for the task's CURRENT run.
+    const run = runs[args.taskId];
     return {
       ...m,
       args: {
@@ -6658,6 +6682,7 @@ export class TerminalManager {
               taskTitle: live.title, taskStatus: live.status, autoDispatch: live.autoDispatch,
               ...(live.assignee ? { assignee: live.assignee } : {}),
               ...(live.blockedOn ? { blockedOn: live.blockedOn } : {}),
+              ...(run ? { run: { sessionId: run.sessionId, alive: run.alive, status: run.status, at: run.alive ? run.since : run.updatedAt } } : {}),
             }
           : { taskStatus: 'deleted' }),
       },
