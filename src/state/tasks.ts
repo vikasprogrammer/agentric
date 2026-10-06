@@ -68,6 +68,8 @@ export interface TaskNotice {
   kind: 'created' | 'assigned' | 'status';
   by: string;
   detail?: string;
+  /** The comment filed in the SAME update, if any — e.g. the answer typed on a blocked card. */
+  note?: string;
 }
 
 export class TaskStore {
@@ -274,7 +276,7 @@ export class TaskStore {
     // assignee's "assigned to you"), then any status transition (owner's "blocked"/"done"); the edge
     // wiring filters which merit a card + resolves the receiver.
     if (reassigned) this.notify({ task, kind: 'assigned', by: input.by });
-    if (statusChange) this.notify({ task, kind: 'status', by: input.by, detail: statusChange });
+    if (statusChange) this.notify({ task, kind: 'status', by: input.by, detail: statusChange, ...(input.note?.trim() ? { note: input.note.trim() } : {}) });
     return task;
   }
 

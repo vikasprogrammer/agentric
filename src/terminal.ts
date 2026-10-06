@@ -781,6 +781,10 @@ export interface QuestionAnswerNotice {
   answer: string;
   by: string;
   defaulted?: boolean;
+  /** The task this run left BLOCKED, now returned to the board by the answer — deliver by dispatching
+   *  the task (which resumes the same transcript) rather than the wake queue, so the task's one-live-run
+   *  guard sees the run. */
+  taskId?: string;
 }
 
 /** What the member-notifier sink receives when an agent deliberately notifies a specific teammate via
@@ -7172,14 +7176,21 @@ export class TerminalManager {
     if (!q || q.status !== 'pending') return false;
     this.db.prepare('UPDATE questions SET status = ?, answer = ?, answered_by = ?, answered_at = ? WHERE id = ?').run('answered', answer, by, Date.now(), id);
     this.audit(q.run_id, by, 'question.answered', { questionId: id });
+    // An agent that asks and then parks its task `blocked` raises TWO cards for one decision — "needs
+    // your input" and "task blocked — needs you". Answering either must resolve both: here the answer is
+    // filed on the task and the task goes back to the board, which closes its blocked card (the task
+    // notifier → syncTaskBlockedCards). The reverse direction is resolveTaskQuestions.
+    const blocked = this.unblockForAnswer(q.run_id, id, q.prompt, answer, by);
     // A live asker is polling `/api/ask/:id` and picks this up by itself. A FINISHED one cannot, so the
     // answer goes through the wake queue — the one place that decides how to reach an agent (inject into a
     // live pane, else resume the transcript). Without this a durable question could be answered into
     // nothing, which is the old bug with extra steps.
     // `reachable` (is the pane there) rather than the row's status — the lesson from the four poke-lane
     // bugs in edge/wakeups.ts: status is not liveness.
-    if (!this.reachable(q.run_id)) {
-      try { this.questionDeliverer?.({ questionId: id, sessionId: q.run_id, agent: q.agent, prompt: q.prompt, answer, by }); }
+    // A run that went on to park its task `blocked` has stopped waiting on this answer even if its pane is
+    // still up (it is ending its turn) — so that case is delivered too, through the task.
+    if (blocked || !this.reachable(q.run_id)) {
+      try { this.questionDeliverer?.({ questionId: id, sessionId: q.run_id, agent: q.agent, prompt: q.prompt, answer, by, ...(blocked ? { taskId: blocked } : {}) }); }
       catch { /* delivery is advisory — the answer is recorded either way */ }
     }
     return true;
@@ -7201,7 +7212,9 @@ export class TerminalManager {
         this.db.prepare("UPDATE questions SET status = 'answered', answer = ?, answered_by = 'system:default', answered_at = ? WHERE id = ?").run(q.default_answer, now, q.id);
         this.audit(q.run_id, 'system', 'question.defaulted', { questionId: q.id, answer: q.default_answer });
         out.push({ id: q.id, outcome: 'defaulted' });
-        try { this.questionDeliverer?.({ questionId: q.id, sessionId: q.run_id, agent: q.agent, prompt: q.prompt, answer: q.default_answer, by: 'system:default', defaulted: true }); }
+        // A default is a decision too: it unblocks the task the run parked on it, same as a human answer.
+        const blocked = this.unblockForAnswer(q.run_id, q.id, q.prompt, q.default_answer, 'system:default');
+        try { this.questionDeliverer?.({ questionId: q.id, sessionId: q.run_id, agent: q.agent, prompt: q.prompt, answer: q.default_answer, by: 'system:default', defaulted: true, ...(blocked ? { taskId: blocked } : {}) }); }
         catch { /* advisory */ }
       } else {
         this.db.prepare("UPDATE questions SET status = 'cancelled', answered_by = 'system:expired', answered_at = ? WHERE id = ?").run(now, q.id);
@@ -7433,6 +7446,55 @@ export class TerminalManager {
     // channel now (a reply to a blocked task needs no live pane), and without this the human is left
     // holding a cancelled card and a task whose comment says "answer the Inbox question".
     try { this.carryAskToBlockedTask(sessionId, pending[pending.length - 1]); } catch { /* advisory */ }
+    return pending.length;
+  }
+
+  /** File an answer on the task its run left blocked and return that task to the board (closing its
+   *  blocked card via the task notifier). Returns the task id, or undefined when no task is waiting. */
+  private unblockForAnswer(runId: string, questionId: string, prompt: string, answer: string, by: string): string | undefined {
+    const blocked = this.blockedTaskForRun(runId);
+    if (!blocked) return undefined;
+    const member = by.includes('@') ? this.os.team.getMemberByEmail(by) : undefined;
+    const q = prompt.length > 400 ? prompt.slice(0, 400) + '…' : prompt;
+    this.os.tasks.update(blocked.id, { status: 'todo', note: `Answered: ${answer}\n\n(Q: ${q})`, by: member?.id ?? by });
+    this.audit(`task:${blocked.id}`, by, 'task.unblocked.viaQuestion', { id: blocked.id, questionId });
+    return blocked.id;
+  }
+
+  /** The task `runId` worked and left `blocked` — the one an answer to that run's question unblocks. Not a
+   *  park behind unfinished dependencies: that wait is on a machine, and the dependency sweep owns it. */
+  private blockedTaskForRun(runId: string): { id: string } | undefined {
+    const t = this.db
+      .prepare("SELECT id FROM tasks WHERE last_session_id = ? AND status = 'blocked' LIMIT 1")
+      .get<{ id: string }>(runId);
+    return t && !this.os.tasks.unmetDeps(t.id).length ? t : undefined;
+  }
+
+  /**
+   * A task left `blocked` by a HUMAN's hand (the card's Unblock / Unblock & run, the board, a DM reply)
+   * settles the questions its runs left pending — the reverse of the link in {@link answerQuestion}, so
+   * the "needs your input" card leaves the Inbox with the "task blocked" one. With a note, the note IS
+   * the answer (a still-polling `ask` receives it); without one the question is cancelled. Written
+   * straight to the table — not through answerQuestion — so there is no second task update and no
+   * wake-queue delivery: the task's own dispatch is how the agent hears about it.
+   */
+  resolveTaskQuestions(taskId: string, by: string, note?: string): number {
+    const pending = this.db
+      .prepare(`SELECT q.id, q.run_id FROM questions q
+                 WHERE q.status = 'pending'
+                   AND q.run_id IN (SELECT id FROM term_sessions WHERE spawned_by = ?
+                                    UNION SELECT last_session_id FROM tasks WHERE id = ? AND last_session_id IS NOT NULL)`)
+      .all<{ id: string; run_id: string }>(`task:${taskId}`, taskId);
+    const now = Date.now();
+    for (const q of pending) {
+      if (note) {
+        this.db.prepare("UPDATE questions SET status = 'answered', answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(note, by, now, q.id);
+        this.audit(q.run_id, by, 'question.answered', { questionId: q.id, via: 'task' });
+      } else {
+        this.db.prepare("UPDATE questions SET status = 'cancelled', answered_by = ?, answered_at = ? WHERE id = ?").run(by, now, q.id);
+        this.audit(q.run_id, by, 'question.cancelled', { questionId: q.id, reason: 'task unblocked' });
+      }
+    }
     return pending.length;
   }
 

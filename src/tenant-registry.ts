@@ -14,7 +14,7 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice, renderOptions } from './terminal';
+import { TerminalManager, ApprovalNotice, QuestionNotice, QuestionAnswerNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice, renderOptions } from './terminal';
 import { Automations } from './edge/automations';
 import { WAKE_KIND_DONE } from './edge/wakeups';
 import { AppSupervisor } from './edge/app-supervisor';
@@ -33,6 +33,11 @@ import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { ensureNpmBoundary } from './edge/npm-boundary';
 import { TenantRecord, TenantStore } from './state/control';
 import { requestMetrics } from './edge/request-metrics';
+
+/** An answer that unblocks a task is delivered by dispatching it; while the asking run's pane is still
+ *  winding down, retry this often for this long (~5 min) before injecting into the live pane instead. */
+const ANSWER_DISPATCH_RETRY_MS = Number(process.env.AOS_ANSWER_RETRY_MS) || 15_000; // env override: tests only
+const ANSWER_DISPATCH_RETRIES = 20;
 
 export interface TenantRuntime {
   record: TenantRecord;
@@ -314,6 +319,34 @@ export class TenantRegistry {
     // can answer an hour later and the agent is actually told. A run with no pinned transcript can't be
     // resumed, so the queue refuses it and the answer stays readable via `check_inbox`.
     tm.setQuestionDeliverer((n) => {
+      // The answer also unblocked the task this run had parked: deliver it by dispatching THE TASK, which
+      // resumes the same transcript. A wake-queue resume would be a second run the task's one-live-run
+      // guard can't see — and an auto-dispatch tick would then start a third on the same transcript.
+      if (n.taskId) {
+        const who = n.defaulted ? 'nobody answered, so the default applied' : `answered by ${n.by}`;
+        const extra = `Your question was answered (${who}) and the task is back on the board:\n\nQ: ${n.prompt}\nA: ${n.answer}\n\nPick the work back up from here.`;
+        // The asking run usually still holds its pane for a few seconds after parking the task (turn-end
+        // reap), and the one-live-run guard rightly refuses a second session meanwhile. Retry until it is
+        // gone; a pane that never goes (a human attached) gets the answer injected instead.
+        const taskId = n.taskId;
+        let tries = 0;
+        const attempt = (): void => {
+          const t = os.tasks.get(taskId);
+          if (!t || t.status !== 'todo') return; // someone else picked it up / closed it meanwhile
+          const r = autos.dispatchTask(taskId, { guard: false, by: n.by, extra });
+          if (r.ok) return;
+          if (/already working/.test(r.reason ?? '') && ++tries < ANSWER_DISPATCH_RETRIES) {
+            setTimeout(attempt, ANSWER_DISPATCH_RETRY_MS).unref?.();
+            return;
+          }
+          deliverViaWakeup(n);
+        };
+        attempt();
+        return;
+      }
+      deliverViaWakeup(n);
+    });
+    const deliverViaWakeup = (n: QuestionAnswerNotice): void => {
       const row = os.db
         .prepare('SELECT claude_session_id AS transcript, run_as AS runAs FROM term_sessions WHERE id = ?')
         .get<{ transcript: string | null; runAs: string | null }>(n.sessionId);
@@ -328,7 +361,7 @@ export class TenantRegistry {
         message: `Your question has been answered (${who}).\n\nQ: ${n.prompt}\nA: ${n.answer}\n\n`
           + 'Pick the work back up from here — this is the decision you were waiting on.',
       });
-    });
+    };
     // Task lifecycle → Inbox: a create/assign/status change lands an audience-addressed inbox card for
     // the right human (assignee/owner) — routed via resolveRecipients — and DMs them. Fires for EVERY
     // mutation path (console, agent MCP, dispatcher) because the sink lives on the store, not the routes.
@@ -608,6 +641,12 @@ export function wireTaskNotices(
     // A block resolved ANYWHERE (a DM reply, the card's buttons, the board, the settled-deps sweep, the
     // agent itself) closes its "needs you" card — otherwise the Inbox keeps asking for work already done.
     if (notice.kind === 'status') tm.syncTaskBlockedCards(notice.task.id);
+    // …and a block a HUMAN resolved settles the question its run asked alongside it, so "needs your
+    // input" doesn't outlive "task blocked" for the same decision. An agent leaving its own block is not
+    // an answer to its own question.
+    if (notice.kind === 'status' && notice.detail?.startsWith('blocked→') && !notice.by.startsWith('agent:')) {
+      tm.resolveTaskQuestions(notice.task.id, notice.by, notice.note);
+    }
     // Async poke-back: a delegate that closed a `poke_on_done` hand-off wakes the CALLER agent with the
     // outcome, so a fire-and-forget delegation never has to poll.
     maybePokeCaller(autos, os, notice);
