@@ -9635,8 +9635,15 @@ function GoalStatusPill({ status, ready }: { status: GoalStatus; ready?: boolean
 // status, never stored. It stays `active` until a human signs it off: "all the filed work is done" is a
 // weaker claim than "the outcome was achieved" (the plan may simply have been incomplete), and goal state
 // is human-owned. So the UI proposes the close; the owner confirms it or plans the gap.
-const goalComplete = (g: Goal, p?: GoalProgress): boolean =>
+//
+// ⚠ On a MEASURED goal the tasks do not get a vote: the number does. Task completion is the weakest
+// evidence such a goal has, and proposing a close on it put "Ready to close" directly beside a metric
+// panel reading "59 of 100 · Not moving" (live, instapods clicks goal). `taskWorkDone` is kept for the
+// quieter "the filed work ran out" line, which is still worth saying — it is just not a close.
+const taskWorkDone = (g: Goal, p?: GoalProgress): boolean =>
   g.status === 'active' && !!p && p.counted > 0 && p.done === p.counted
+const goalComplete = (g: Goal, p?: GoalProgress, st?: GoalMetricStatus | null): boolean =>
+  taskWorkDone(g, p) && (!g.metric || st?.verdict === 'achieved')
 // Derived-progress meter for a goal (share of its linked tasks that are done). A thin emerald bar +
 // a "done/total tasks" caption; renders nothing when the goal has no linked tasks.
 function GoalProgressBar({ p, className = '' }: { p?: GoalProgress; className?: string }) {
@@ -10411,6 +10418,9 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   const [goals, setGoals] = useState<Goal[] | null>(null)
   const [counts, setCounts] = useState<GoalCounts>({ draft: 0, active: 0, achieved: 0, abandoned: 0 })
   const [progress, setProgress] = useState<Record<string, GoalProgress>>({})
+  /** Per-goal metric verdicts, already on the list payload — the close proposal is derived from these,
+   *  never from task progress alone (see `goalComplete`). */
+  const [metrics, setMetrics] = useState<Record<string, GoalMetricStatus>>({})
   const [q, setQ] = useState('')
   const [fStatus, setFStatus] = useState<GoalStatus | ''>('') // '' = all
   const [autoPlan, setAutoPlan] = useState(false) // scheduler auto-plans stuck goals (owner/admin toggle)
@@ -10472,6 +10482,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
     setGoals(r.goals ?? [])
     if (r.counts) setCounts(r.counts)
     setProgress(r.progress ?? {})
+    setMetrics(r.metrics ?? {})
     if (typeof r.autoPlan === 'boolean') setAutoPlan(r.autoPlan)
   }
   // Owner/admin toggle: let the scheduler auto-draft plans for stuck goals. Optimistic — revert on error.
@@ -10499,7 +10510,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   const visible = goals ?? []
   // Goals finished in fact but still open — the banner's subject. Derived from the list in view (the
   // default "All" filter shows every one; a narrowed filter scopes the call-to-action to what you're on).
-  const ready = visible.filter((g) => goalComplete(g, progress[g.id]))
+  const ready = visible.filter((g) => goalComplete(g, progress[g.id], metrics[g.id]))
 
   const create = async () => {
     setHint('')
@@ -10596,9 +10607,25 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   // sign-off decision. So the detail is a full-page room (the same shape as the task room): the work as
   // the main column, the goal's own state as a sidebar. No modal, and the tab lives in the URL.
 
+  /** The quieter half of the same fact: on a MEASURED goal whose number is not there yet, the filed work
+   *  running out is worth saying — it means nobody has planned the rest — but it is not a close. */
+  const workDoneNote = () => detail && detail.goal.metric && taskWorkDone(detail.goal, detail.progress)
+    && detail.metricStatus?.verdict !== 'achieved' && (
+    <div className="rounded-md border bg-muted/30 p-3 text-[13px] text-muted-foreground">
+      All {detail.progress?.counted} filed task{detail.progress?.counted === 1 ? '' : 's'} are done, but{' '}
+      {detail.goal.metric.name} is at{' '}
+      <span className="font-medium text-foreground tabular-nums">
+        {detail.metricStatus?.latest ? detail.metricStatus.latest.value : '—'}
+        {detail.goal.metric.target != null ? ` of ${detail.goal.metric.target}` : ''}
+      </span>
+      {detail.goal.metric.unit ? ` ${detail.goal.metric.unit}` : ''}. The plan ran out before the number did —
+      close it only if you have decided the outcome is good enough, or plan the gap.
+    </div>
+  )
+
   /** Sign-off box: the goal's work is all done, so put the decision in front of the person rather than
    *  leaving them to find `achieved` in the status dropdown. Rendered at the top of the sidebar. */
-  const signOffBox = () => detail && isAdmin && goalComplete(detail.goal, detail.progress) && (
+  const signOffBox = () => detail && isAdmin && goalComplete(detail.goal, detail.progress, detail.metricStatus) && (
     <div className="space-y-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3">
       <div className="flex items-start gap-2 text-[13px] text-emerald-800 dark:text-emerald-300">
         <Check className="mt-0.5 h-4 w-4 shrink-0" />
@@ -10635,6 +10662,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
     <div className="space-y-3.5">
       {isAdmin && <GoalUpdateProposalsCard goalId={detail.goal.id} members={members} onResolved={() => { load(); refreshDetail(detail.goal.id) }} />}
       {signOffBox()}
+      {workDoneNote()}
       <Field label="Status">
         {isAdmin ? (
           <Select value={detail.goal.status} onValueChange={(v) => v && patch(detail.goal.id, { status: v as GoalStatus })}>
@@ -10879,7 +10907,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   const roomView = () => {
     if (!detail) return null
     const g = detail.goal
-    const ready = goalComplete(g, detail.progress)
+    const ready = goalComplete(g, detail.progress, detail.metricStatus)
     const tabBtn = (id: GoalTab, label: ReactNode) => (
       <a href={navHref('goals', id === 'tasks' ? g.id : `${g.id}/${id}`)} onClick={onNavClick(() => openGoalTab(g.id, id))} className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium no-underline transition-colors ${roomTab === id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</a>
     )
@@ -10949,7 +10977,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   const row = (g: Goal) => {
     const dm = dueMeta(g.dueAt, g.status === 'achieved' || g.status === 'abandoned' ? 'done' : 'todo')
     const p = progress[g.id]
-    const done = goalComplete(g, p)
+    const done = goalComplete(g, p, metrics[g.id])
     // An active goal nobody has filed work under isn't "0%" — it's unplanned. Say so, so the two very
     // different empty states (nothing planned vs. planned-and-finished) don't both read as a bare dash.
     const unplanned = g.status === 'active' && (!p || p.total === 0)
