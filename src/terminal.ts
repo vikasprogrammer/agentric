@@ -3915,8 +3915,15 @@ export class TerminalManager {
       // ORed in rather than folded into that max: it reads `created_at`, and the rows it exists for are
       // precisely the ones a `last_activity` filter excludes.
       const scanCutoff = claimedCutoff == null ? idleCutoff : Math.max(idleCutoff, claimedCutoff);
-      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, claimed_by, last_activity, created_at FROM term_sessions WHERE headless = 0 AND resident = 0 AND status IN ('running','done','crashed') AND (COALESCE(last_activity, created_at) < ? OR (? IS NOT NULL AND created_at < ?))")
-        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; claimed_by: string | null; last_activity: number | null; created_at: number }>(scanCutoff, lifetimeCutoff, lifetimeCutoff);
+      //
+      // The lifetime clock starts at the last deliberate human re-open (`opened_at`), not at `created_at`.
+      // Live instawp: a `qa` session created 13 days earlier was resumed by its owner five times in two
+      // days and reaped by this ceiling within 1–30 minutes of every resume — mid-turn, with the human
+      // still working in it — because a resume did nothing to an age measured from creation. A re-open is
+      // a human saying "this is live work again"; the 42-day zombies this ceiling exists for were never
+      // re-opened, so they still age out exactly as before.
+      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, claimed_by, last_activity, created_at, opened_at FROM term_sessions WHERE headless = 0 AND resident = 0 AND status IN ('running','done','crashed') AND (COALESCE(last_activity, created_at) < ? OR (? IS NOT NULL AND COALESCE(opened_at, created_at) < ?))")
+        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; claimed_by: string | null; last_activity: number | null; created_at: number; opened_at: number | null }>(scanCutoff, lifetimeCutoff, lifetimeCutoff);
       for (const r of stale) {
         try {
           const idleSince = r.last_activity ?? r.created_at;
@@ -3924,7 +3931,7 @@ export class TerminalManager {
           // Claimed: exempt unless the claim itself has gone stale. Unclaimed: the ordinary idle clock —
           // re-checked here because the scan may have been widened past it for the claimed rows.
           // Past the lifetime ceiling every idle-based exemption is moot — that is the point of it.
-          const overLifetime = lifetimeCutoff != null && r.created_at < lifetimeCutoff;
+          const overLifetime = lifetimeCutoff != null && (r.opened_at ?? r.created_at) < lifetimeCutoff;
           if (r.claimed_by) {
             if (!overLifetime && (claimedCutoff == null || idleSince >= claimedCutoff)) continue;
           } else if (!overLifetime && idleSince >= idleCutoff) {
@@ -3972,7 +3979,11 @@ export class TerminalManager {
             // person who took it over, not read as the janitor closing an ownerless pane.
             : reason === 'claimed-abandoned'
               ? { reason, claimedHours, claimedBy: r.claimed_by, idleForMs: Date.now() - idleSince, status: r.status }
-              : { reason, idleHours, status: r.status });
+              : reason === 'max-lifetime'
+                // Name the clock that actually fired: this used to print `idleHours` (the 72 h idle
+                // setting) on a lifetime reap, which pointed whoever read it at the wrong knob.
+                ? { reason, lifetimeHours, openedAt: r.opened_at ?? r.created_at, status: r.status }
+                : { reason, idleHours, status: r.status });
         } catch { /* one bad row must not stop the sweep */ }
       }
     }
@@ -4209,8 +4220,10 @@ export class TerminalManager {
         const attached = this.backend.hasClient(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux) === true;
         const workedSince = r.last_activity != null && r.last_activity > r.updated_at;
         if (!attached && !workedSince) continue;
-        const restored = this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ? AND status = 'crashed'")
-          .run(Date.now(), r.id);
+        // Restored under an ATTACHED human = a deliberate re-open, so it restarts the lifetime clock too;
+        // restored on agent activity alone does not (that is the never-idle case the ceiling exists for).
+        const restored = this.db.prepare("UPDATE term_sessions SET status = 'running', opened_at = CASE WHEN ? THEN ? ELSE opened_at END, updated_at = ? WHERE id = ? AND status = 'crashed'")
+          .run(attached ? 1 : 0, Date.now(), Date.now(), r.id);
         if (!restored.changes) continue;                        // raced with another writer — leave it be
         // The "Crashed — <agent>" card is now a lie about a live session; close it rather than leave the
         // owner's Inbox asserting a death that didn't stick.
@@ -9259,7 +9272,8 @@ export class TerminalManager {
     // keeps its STALE last_activity (from the original run), so the very next idle sweep would reap it as
     // long-idle within ≤60s ("killed shortly after resumption"). A deliberate re-open means the human is
     // actively using it — give it a fresh idle window (the resident reaper keys off last_activity).
-    this.db.prepare("UPDATE term_sessions SET status = 'running', last_activity = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), sessionId);
+    // `opened_at` restarts the interactive lifetime ceiling — a re-open is a human resuming live work.
+    this.db.prepare("UPDATE term_sessions SET status = 'running', last_activity = ?, opened_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), Date.now(), sessionId);
     // No "Resumed" card — reconnecting is lifecycle noise, not something the operator needs in the feed.
     this.audit(sessionId, s.agent, 'session.resumed', {});
   }
@@ -9464,8 +9478,8 @@ export class TerminalManager {
     this.allowResume(sessionId);
     const now = Date.now();
     const resident = row.resident ? 1 : 0;
-    this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 0, claimed_by = COALESCE(claimed_by, ?), claimed_at = COALESCE(claimed_at, ?), paused_at = NULL, paused_by = NULL, last_activity = ?, updated_at = ? WHERE id = ?")
-      .run(by, now, now, now, sessionId);
+    this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 0, claimed_by = COALESCE(claimed_by, ?), claimed_at = COALESCE(claimed_at, ?), paused_at = NULL, paused_by = NULL, last_activity = ?, opened_at = ?, updated_at = ? WHERE id = ?")
+      .run(by, now, now, now, now, sessionId);
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);

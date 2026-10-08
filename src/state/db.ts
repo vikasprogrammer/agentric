@@ -1428,6 +1428,13 @@ function migrate(db: Db): void {
   // flag every "is this paused" check reads through the status, not through these columns.
   addColumn(db, 'term_sessions', 'paused_at', 'INTEGER');
   addColumn(db, 'term_sessions', 'paused_by', 'TEXT');
+
+  // OPENED_AT: when a human last deliberately brought this session back (attach-resume, unpause, a crashed
+  // pane restored by someone attached). The interactive LIFETIME ceiling measures age from here, falling
+  // back to `created_at` — measured from `created_at` alone, a session older than the ceiling was reaped
+  // on the next sweep after EVERY resume, so a long-lived conversation a human kept coming back to could
+  // never be used for more than ~30 minutes at a time.
+  addColumn(db, 'term_sessions', 'opened_at', 'INTEGER');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

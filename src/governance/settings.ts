@@ -1269,7 +1269,8 @@ export class SettingsStore {
   }
 
   /**
-   * Hard AGE ceiling for a detached interactive session, measured from `created_at` — the backstop the
+   * Hard AGE ceiling for a detached interactive session, measured from its last human re-open (`opened_at`,
+   * else `created_at`) — the backstop the
    * idle clock cannot be.
    *
    * Every other ceiling in this family measures IDLENESS, and idleness is stamped by `markTurnBusy` on
