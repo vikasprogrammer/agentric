@@ -226,6 +226,22 @@ console.log('\n\x1b[1m7b) the LIFETIME ceiling — the backstop the idle clocks 
   tm.reapIdleSessions();
   assert(statusOf(ancientAttached) === 'running', 'ATTACHED → never cut, whatever the age');
 
+  // A human RE-OPEN restarts the age clock. Live instawp: a `qa` session created 13 days earlier was
+  // resumed by its owner five times in two days and cut by this ceiling 1–30 min after every resume —
+  // mid-turn — because the age was measured from creation and a resume never touched it.
+  const ev2 = aos.db.prepare("SELECT data FROM audit_events WHERE type='session.reaped' AND run_id=? ORDER BY ts DESC LIMIT 1").get(ancientBusy);
+  const d2 = ev2 && JSON.parse(ev2.data);
+  assert(d2 && d2.lifetimeHours === 168 && !('idleHours' in d2), 'a lifetime reap names lifetimeHours, not the idle setting', ev2 && ev2.data);
+  const reopened = mkSession({ created_at: Date.now() - 312 * H, last_activity: Date.now() - 1 * H, status: 'stopped' });
+  tm.markResumed(reopened);   // the attach-wrapper resume path
+  assert(aos.db.prepare('SELECT opened_at o FROM term_sessions WHERE id=?').get(reopened).o > Date.now() - 60_000, 'markResumed stamps opened_at');
+  tm.reapIdleSessions();
+  assert(statusOf(reopened) === 'running', '312h old but re-opened just now → NOT cut on age (the live case)');
+  const reopenedLongAgo = mkSession({ created_at: Date.now() - 600 * H, last_activity: Date.now() - 1 * H });
+  aos.db.prepare('UPDATE term_sessions SET opened_at = ? WHERE id = ?').run(Date.now() - 200 * H, reopenedLongAgo);
+  tm.reapIdleSessions();
+  assert(statusOf(reopenedLongAgo) === 'stopped', 're-opened 200h ago → the ceiling still applies from the re-open');
+
   aos.settings.setInteractiveMaxHours(0); // hand the baton back — later sections own other clocks
 }
 

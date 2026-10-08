@@ -19492,7 +19492,8 @@ function ConcurrencySettings({ me }: { me: Member }) {
             working never looks idle, however old it gets, and none of them can reach it. Measured on a live tenant: fifteen sessions
             open <span className="font-mono">120–1007 h</span>, every one reporting under a day idle, skipped on every tick. This one
             asks the honest question instead — has it been open longer than any real piece of work — and overrides the claim and
-            blocked exemptions. Someone actually attached is still never cut.
+            blocked exemptions. The clock restarts whenever someone re-opens the session, so a conversation you keep coming back
+            to isn't cut minutes after you resume it. Someone actually attached is still never cut.
           </p>
         </div>
         <div className="flex items-center gap-3">
