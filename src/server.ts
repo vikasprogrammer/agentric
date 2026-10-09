@@ -1919,9 +1919,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Resolve the assignee, then validate an `agent:<id>` target actually exists — a task assigned to a
     // non-existent agent silently never dispatches (it just rots on the board), so reject it up front
     // with the valid roster instead of accepting an inert hand-off.
-    const assignee = b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' && b.assignee ? b.assignee : undefined);
-    if (assignee && assignee.startsWith('agent:')) {
-      const targetId = assignee.slice('agent:'.length);
+    // `suggestedAssignee` is the proposal-lane pick (the `suggest` tool arg): who the agent thinks should work
+    // a task a human will review — validated exactly like an assignee, since accepting turns it into one.
+    const resolvePick = (v: unknown): string | undefined => v === 'me' ? `agent:${agent}` : (typeof v === 'string' && v ? v : undefined);
+    const assignee = resolvePick(b.assignee);
+    const suggestion = resolvePick(b.suggestedAssignee);
+    for (const pick of [assignee, suggestion]) {
+      if (!pick || !pick.startsWith('agent:')) continue;
+      const targetId = pick.slice('agent:'.length);
       if (!os.agents.get(targetId)) {
         const valid = [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime)).map((a) => a.id).join(', ');
         return sendJson(res, 200, { ok: false, error: `no agent "${targetId}" — assign to one of: ${valid} (call list_agents to see the roster)` });
@@ -1940,12 +1945,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // `Agent(subagent_type: code-reviewer)` and still took 12 task hand-offs in 7 days → 8 sessions,
     // $111, for reviews the sub-agent path performs for a fraction of it.
     // Refused on the agent lane only; a human dispatching from the console is a considered act.
-    if (assignee && assignee.startsWith('agent:')) {
-      const target = os.agents.get(assignee.slice('agent:'.length));
+    for (const pick of [assignee, suggestion]) {
+      if (!pick || !pick.startsWith('agent:')) continue;
+      const target = os.agents.get(pick.slice('agent:'.length));
       if (target?.subagentOnly) {
         os.audit.append({
           ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`,
-          type: 'task.subagent_only.refused', data: { title, assignee },
+          type: 'task.subagent_only.refused', data: { title, assignee: pick },
         });
         return sendJson(res, 200, {
           ok: false,
@@ -2008,6 +2014,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
           'or mention it in your report instead.',
       });
     }
+    // A proposal names who should work it. The reviewer decides on "is this work, and is that the right
+    // hand for it" in one look, and accepting adopts the pick — without one, every accept is followed by a
+    // second trip to the board to find an assignee. Recorded as a SUGGESTION, not an assignment: nobody is
+    // told "assigned to you" for work no human has agreed to, and assigning someone on the board is the
+    // reviewer's act that accepts it.
+    const proposedPick = suggestion ?? assignee;
+    if (proposed && !proposedPick) {
+      const roster = [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime) && !a.subagentOnly).map((a) => a.id).join(', ');
+      return sendJson(res, 200, {
+        ok: false,
+        error: 'this task will be PROPOSED for a human to accept, so suggest who should work it: pass suggest with the ' +
+          `agent best placed to do it ("agent:<id>" — one of: ${roster}), "me" if it is yours, or a member id ` +
+          'if only a person can. It is recorded as a suggestion the reviewer can change.',
+      });
+    }
 
     // Poke-back: an agent delegating to ANOTHER agent is woken when the delegate finishes (the MCP layer
     // defaults this ON for agent→agent hand-offs so the delegation loop closes itself). We stamp the
@@ -2027,7 +2048,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // agent acting as Alice dispatches (later) as Alice too, so accountability ladders to the person.
       const task = os.tasks.create({
         tenant: os.tenant, title, body: b.body !== undefined ? String(b.body) : '',
-        assignee,
+        assignee: proposed ? undefined : (assignee ?? suggestion),
+        suggestedAssignee: proposed ? proposedPick : undefined,
         owner: tm.sessionRunAs(session),
         priority: typeof b.priority === 'number' ? b.priority : undefined,
         labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
@@ -2046,10 +2068,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         createdBy: `agent:${agent}`,
         status: proposed ? 'proposed' : undefined,
       });
-      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: proposed ? 'task.proposed' : 'task.created', data: { id: task.id, title: task.title, assignee: task.assignee ?? null } });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: proposed ? 'task.proposed' : 'task.created', data: { id: task.id, title: task.title, assignee: task.assignee ?? null, ...(task.suggestedAssignee ? { suggested: task.suggestedAssignee } : {}) } });
       if (proposed) {
         tm.recordTaskProposal(session, agent, task);
-        return sendJson(res, 200, { ok: true, id: task.id, proposed: true });
+        return sendJson(res, 200, { ok: true, id: task.id, proposed: true, suggestedAssignee: task.suggestedAssignee });
       }
       // Immediate dispatch (parity with the console route above): an agent-assigned auto-dispatch hand-off
       // starts NOW rather than waiting for the next ~20s scheduler tick, so a delegated task begins the
@@ -2121,7 +2143,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const id = String(b.id || '');
     // A proposal is a human's to accept. The agent may withdraw its own (→ cancelled) or refine the text,
     // but moving it onto the board — or parking a real task back in `proposed` — is refused.
-    const curStatus = typeof b.status === 'string' ? os.tasks.get(id)?.status : undefined;
+    const cur = os.tasks.get(id);
+    const curStatus = typeof b.status === 'string' ? cur?.status : undefined;
     if (b.status === 'proposed' && curStatus !== 'proposed') {
       return sendJson(res, 200, { ok: false, error: '"proposed" is only for tasks you file — it is not a status you can move a task back into.' });
     }
@@ -2140,9 +2163,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         error: 'Say what this is blocked on: call task_update again with blockedOn:"human" (only a person can decide or approve), "agent" (another agent owes you something) or "external" (a third party, build or vendor). It decides who gets woken — "human" alerts the task owner instead of resuming the agent that handed you this.',
       });
     }
+    // On a proposal the agent's assignee is still only a suggestion — re-pointing it revises the pick, it
+    // doesn't assign anyone (that, and the accept it implies, is the reviewer's).
+    const nextAssignee = b.assignee === null ? null : (b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' && b.assignee ? b.assignee : undefined));
+    const suggesting = cur?.status === 'proposed' && nextAssignee !== undefined;
     const task = requestMetrics.phase('task:update.store', () => os.tasks.update(id, {
       status: typeof b.status === 'string' ? (b.status as TaskStatus) : undefined,
-      assignee: b.assignee === null ? null : (b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' ? b.assignee : undefined)),
+      assignee: suggesting ? undefined : nextAssignee,
+      suggestedAssignee: suggesting ? nextAssignee : undefined,
       priority: typeof b.priority === 'number' ? b.priority : undefined,
       labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
       mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
@@ -4390,7 +4418,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.proposal.reassigned', data: { id, from: t.assignee ?? null, to: assignee } });
       }
       if (action === 'assign') { decided.push(id); continue; }
-      const target = os.tasks.get(id)?.assignee ?? '';
+      const now = os.tasks.get(id);
+      const target = now?.assignee ?? now?.suggestedAssignee ?? ''; // accepting adopts the agent's suggestion
       const agentId = target.startsWith('agent:') ? target.slice('agent:'.length) : '';
       if (run && !agentId) { dispatched.push({ id, error: 'assign an agent to run it' }); continue; }
       if (run && !os.team.canRun(me, agentId)) { dispatched.push({ id, error: `you are not assigned to run "${agentId}"` }); continue; }
@@ -4442,15 +4471,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     // Moving a task OUT of `proposed` is accepting/dismissing it — the same gate as the Inbox buttons.
     // And nothing is ever moved INTO it: `proposed` means an agent filed it, which a human edit can't make true.
-    const cur = typeof b.status === 'string' ? os.tasks.get(taskId[1]) : undefined;
-    if (cur && b.status === 'proposed' && cur.status !== 'proposed') return sendJson(res, 400, { error: 'a task can only be proposed by the agent that files it' });
-    if (cur && cur.status === 'proposed' && b.status !== 'proposed' && !mayDecideProposal(me, cur)) {
+    // Assigning someone to a proposal (with no status in the same edit) IS accepting it: picking who works
+    // it is the reviewer saying it is work. So it moves to `todo` under the same gate as the accept button.
+    const prior = os.tasks.get(taskId[1]);
+    const acceptByAssign = !!prior && prior.status === 'proposed' && b.status === undefined
+      && typeof b.assignee === 'string' && !!b.assignee;
+    const status = acceptByAssign ? 'todo' : typeof b.status === 'string' ? (b.status as TaskStatus) : undefined;
+    const cur = status !== undefined ? prior : undefined;
+    if (cur && status === 'proposed' && cur.status !== 'proposed') return sendJson(res, 400, { error: 'a task can only be proposed by the agent that files it' });
+    if (cur && cur.status === 'proposed' && status !== 'proposed' && !mayDecideProposal(me, cur)) {
       return sendJson(res, 403, { error: 'only the person this run acted for, or an owner/admin, can accept or dismiss this proposal' });
     }
     const task = os.tasks.update(taskId[1], {
       title: typeof b.title === 'string' ? b.title : undefined,
       body: typeof b.body === 'string' ? b.body : undefined,
-      status: typeof b.status === 'string' ? (b.status as TaskStatus) : undefined,
+      status,
       assignee: b.assignee === null ? null : (typeof b.assignee === 'string' ? b.assignee : undefined),
       priority: typeof b.priority === 'number' ? b.priority : undefined,
       labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
@@ -4463,6 +4498,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       by: me.id,
     });
     if (!task) return sendJson(res, 404, { error: 'task not found' });
+    if (cur?.status === 'proposed' && task.status !== 'proposed') {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: task.status === 'cancelled' ? 'task.proposal.dismissed' : 'task.proposal.accepted', data: { id: task.id, title: task.title, by: cur.createdBy, ...(acceptByAssign ? { via: 'assign', assignee: task.assignee } : {}) } });
+    }
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: task.status === 'done' ? 'task.completed' : 'task.updated', data: { id: task.id, status: task.status } });
     return sendJson(res, 200, { ok: true, task });
   }

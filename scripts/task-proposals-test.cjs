@@ -71,7 +71,7 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
   const taskCards = (taskId) => aos.db.prepare("SELECT * FROM messages WHERE type = 'task' AND session_id = ?").all(`task:${taskId}`);
 
   console.log('\n\x1b[1m1) an agent board item lands as a PROPOSAL, not work\x1b[0m');
-  const r1 = await create('ses_a', { title: 'GET /api/pods caps at 20', body: 'found while fixing X' });
+  const r1 = await create('ses_a', { title: 'GET /api/pods caps at 20', body: 'found while fixing X', suggestedAssignee: 'me' });
   {
     assert(r1.ok === true && r1.proposed === true, 'accepted by the route, flagged proposed', r1);
     const t = aos.tasks.get(r1.id);
@@ -93,7 +93,7 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     const args = JSON.parse(c[0].args);
     assert(args.tasks.length === 3, 'the card lists all three', args.tasks.map((x) => x.title));
     assert(/3 tasks/.test(c[0].title), 'and its title counts them', c[0].title);
-    const rb = await create('ses_b', { title: 'cron finding' });
+    const rb = await create('ses_b', { title: 'cron finding', suggestedAssignee: 'agent:qa' });
     const cb = cards('ses_b');
     assert(cb.length === 1 && cb[0].audience_kind === 'admins', 'a company-identity run gets its own card, addressed to admins', cb[0]);
     assert(rb.proposed === true, 'and is proposed too', rb);
@@ -147,7 +147,7 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     const row1 = listed.args.tasks.find((x) => x.id === r1.id);
     assert(row1.body === 'found while fixing X' && row1.priority === 2 && typeof row1.createdAt === 'number', 'a row carries the live body, priority and filing time', row1);
     const due = Date.now() + 2 * 3600_000;
-    const rich = await create('ses_a', { title: 'SLA follow-up', body: 'x'.repeat(5000), priority: 0, dueAt: due, labels: ['sla'], criteria: 'customer replied to' });
+    const rich = await create('ses_a', { title: 'SLA follow-up', suggestedAssignee: 'me', body: 'x'.repeat(5000), priority: 0, dueAt: due, labels: ['sla'], criteria: 'customer replied to' });
     const richRow = tm.listMessages(alice, 'mine').find((m) => m.type === 'task.proposed').args.tasks.find((x) => x.id === rich.id);
     assert(richRow.dueAt === due && richRow.priority === 0 && richRow.labels[0] === 'sla' && richRow.criteria === 'customer replied to', 'deadline, labels and definition of done ride along', richRow);
     assert(richRow.body.length < 1300 && richRow.body.endsWith('…'), 'a long body is capped for the card', richRow.body.length);
@@ -163,7 +163,7 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     assert(viaBoard.status === 200, 'an admin can accept from the board', viaBoard);
     assert(cards('ses_a')[0].status === 'approved', 'every task decided → the card closes, however they were decided', cards('ses_a')[0].status);
     const acc = aos.db.prepare("SELECT count(*) n FROM audit_events WHERE type IN ('task.proposal.accepted','task.proposal.dismissed')").get().n;
-    assert(acc === 2, 'card decisions are audited', acc);
+    assert(acc === 3, 'every decision is audited — card and board alike', acc);
   }
 
   console.log('\n\x1b[1m6) "dismiss all" on a card, and a deleted proposal closes its card\x1b[0m');
@@ -174,7 +174,7 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     assert(cards('ses_b')[0].status === 'rejected', 'all dismissed → the card reads rejected', cards('ses_b')[0].status);
 
     addSession('ses_d', 'sec-d', alice.id, alice.id); SECRETS.ses_d = 'sec-d';
-    const d = await create('ses_d', { title: 'to be deleted' });
+    const d = await create('ses_d', { title: 'to be deleted', suggestedAssignee: 'me' });
     const del = await member(owner, 'DELETE', `/api/tasks/${d.id}`);
     assert(del.status === 200, 'an admin deletes the proposal', del);
     assert(cards('ses_d')[0].status === 'rejected', 'and its card closes rather than asking about a task that is gone', cards('ses_d')[0].status);
@@ -183,7 +183,7 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
   console.log('\n\x1b[1m6b) re-assign from the card, and "Accept & run"\x1b[0m');
   {
     addSession('ses_r', 'sec-r', alice.id, alice.id); SECRETS.ses_r = 'sec-r';
-    const p1 = await create('ses_r', { title: 'reassign me' });
+    const p1 = await create('ses_r', { title: 'reassign me', suggestedAssignee: bob.id });
     const bad = await member(alice, 'POST', '/api/tasks/proposals/decide', { ids: [p1.id], action: 'assign', assignee: 'agent:nope' });
     assert(bad.status === 400, 'an unknown assignee is refused', bad);
     const byBob = await member(bob, 'POST', '/api/tasks/proposals/decide', { ids: [p1.id], action: 'assign', assignee: bob.id });
@@ -209,6 +209,53 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     assert(rev === 3, 'each re-assignment is audited', rev);
   }
 
+  console.log('\n\x1b[1m9) a proposal SUGGESTS who should work it; assigning on the board accepts it\x1b[0m');
+  {
+    addSession('ses_s', 'sec-s', alice.id, alice.id); SECRETS.ses_s = 'sec-s';
+    const none = await create('ses_s', { title: 'no pick' });
+    assert(none.ok === false && /suggest/.test(none.error || '') && /engineer/.test(none.error || ''), 'a proposal with no suggestion is refused, with the roster', none);
+    const ghost = await create('ses_s', { title: 'ghost pick', suggestedAssignee: 'agent:nope' });
+    assert(ghost.ok === false && /no agent "nope"/.test(ghost.error || ''), 'an unknown suggested agent is refused', ghost);
+
+    const s1 = await create('ses_s', { title: 'qa should look', suggestedAssignee: 'agent:qa' });
+    const t1 = aos.tasks.get(s1.id);
+    assert(s1.ok && s1.proposed && s1.suggestedAssignee === 'agent:qa', 'filed as a proposal, the pick echoed back', s1);
+    assert(!t1.assignee && t1.suggestedAssignee === 'agent:qa', 'recorded as a SUGGESTION, not an assignee', t1);
+    const viaAssignee = await create('ses_s', { title: 'legacy arg', assignee: 'agent:qa' });
+    const t2 = aos.tasks.get(viaAssignee.id);
+    assert(!t2.assignee && t2.suggestedAssignee === 'agent:qa', 'an assignee on a proposal is read as the suggestion too', t2);
+    const listed = tm.listMessages(alice, 'mine').find((m) => m.type === 'task.proposed' && m.sessionId === 'ses_s');
+    assert(listed.args.tasks.find((x) => x.id === s1.id).suggestedAssignee === 'agent:qa', 'the Inbox card carries the suggestion');
+
+    const rev = await agentPost('/api/tasks/update', 'ses_s', { id: s1.id, assignee: 'agent:engineer' });
+    const t1b = aos.tasks.get(s1.id);
+    assert(rev.ok && !t1b.assignee && t1b.suggestedAssignee === 'agent:engineer' && t1b.status === 'proposed', 'the agent re-pointing it only revises its suggestion', t1b);
+
+    const acc = await member(alice, 'POST', '/api/tasks/proposals/decide', { ids: [viaAssignee.id], action: 'accept' });
+    const t2b = aos.tasks.get(viaAssignee.id);
+    assert(acc.status === 200 && t2b.status === 'todo' && t2b.assignee === 'agent:qa', 'accepting adopts the suggestion as the assignee', t2b);
+
+    const nosy = await member(bob, 'PATCH', `/api/tasks/${s1.id}`, { assignee: bob.id });
+    assert(nosy.status === 403 && aos.tasks.get(s1.id).status === 'proposed' && !aos.tasks.get(s1.id).assignee, 'a bystander cannot accept it by assigning', nosy);
+    const pick = await member(alice, 'PATCH', `/api/tasks/${s1.id}`, { assignee: 'agent:qa' });
+    const t1c = aos.tasks.get(s1.id);
+    assert(pick.status === 200 && t1c.status === 'todo' && t1c.assignee === 'agent:qa', 'assigning on the board moves the proposal to todo', t1c);
+    const ev = aos.db.prepare("SELECT data FROM audit_events WHERE type = 'task.proposal.accepted' AND data LIKE ?").all(`%${s1.id}%`);
+    assert(ev.length === 1 && /"via":"assign"/.test(ev[0].data), 'audited as an accept, via assign', ev);
+
+    const s3 = await create('ses_s', { title: 'run it', suggestedAssignee: 'agent:qa' });
+    dispatched.length = 0;
+    const go = await member(owner, 'POST', '/api/tasks/proposals/decide', { ids: [s3.id], action: 'accept', run: true });
+    assert(go.status === 200 && dispatched.includes(s3.id) && aos.tasks.get(s3.id).assignee === 'agent:qa', 'Accept & run dispatches to the suggested agent', go.body);
+
+    const s4 = await create('ses_s', { title: 'dismiss me', suggestedAssignee: 'agent:qa' });
+    await member(alice, 'PATCH', `/api/tasks/${s4.id}`, { status: 'cancelled' });
+    assert(!aos.tasks.get(s4.id).assignee, 'dismissing does not adopt the suggestion', aos.tasks.get(s4.id));
+    const s5 = await create('ses_s', { title: 'status accept', suggestedAssignee: 'agent:qa' });
+    await member(alice, 'PATCH', `/api/tasks/${s5.id}`, { status: 'todo' });
+    assert(aos.tasks.get(s5.id).assignee === 'agent:qa', 'moving it to todo from the status picker adopts it too', aos.tasks.get(s5.id));
+  }
+
   console.log('\n\x1b[1m7) nothing moves INTO proposed; goals ignore it; the queue is capped\x1b[0m');
   {
     const td = aos.tasks.create({ tenant: 'testco', title: 'plain', createdBy: owner.id });
@@ -225,7 +272,7 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
 
     addSession('ses_c', 'sec-c', alice.id, alice.id); SECRETS.ses_c = 'sec-c';
     let last;
-    for (let i = 0; i < 30; i++) { last = await create('ses_c', { title: `flood ${i}` }); if (!last.ok) break; }
+    for (let i = 0; i < 30; i++) { last = await create('ses_c', { title: `flood ${i}`, suggestedAssignee: 'me' }); if (!last.ok) break; }
     assert(last.ok === false && /waiting for a human/.test(last.error || ''), 'past 25 open proposals the agent is told to stop', last);
     const open = aos.tasks.openProposals('testco', 'agent:engineer');
     assert(open <= 26, 'the queue stays bounded', open);

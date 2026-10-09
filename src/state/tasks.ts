@@ -24,7 +24,7 @@ import { TASK_BLOCKED_ON, Task, TaskAttachment, TaskCreateInput, TaskEvent, Task
 
 interface TaskRow {
   id: string; tenant: string; title: string; body: string; status: string; priority: number;
-  labels: string; assignee: string | null; owner: string | null; parent_id: string | null;
+  labels: string; assignee: string | null; suggested_assignee?: string | null; owner: string | null; parent_id: string | null;
   mode: string; model: string | null; effort: string | null; auto_dispatch: number; goal_id: string | null; criteria: string | null;
   caller_agent: string | null; caller_claude_id: string | null; poke_on_done: number;
   blocked_on: string | null;
@@ -107,14 +107,15 @@ export class TaskStore {
       .prepare(`INSERT INTO tasks
         (id, tenant, title, body, status, priority, labels, assignee, owner, parent_id, mode, model, effort, auto_dispatch,
          goal_id, criteria, caller_agent, caller_claude_id, poke_on_done, due_at, attempts, last_session_id,
-         created_by, created_at, updated_at, updated_by, external_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)`)
+         created_by, created_at, updated_at, updated_by, external_key, suggested_assignee)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)`)
       .run(
         id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', status, priority,
         JSON.stringify(labels), input.assignee ?? null, input.owner ?? null, input.parentId ?? null,
         mode, model, effort, input.autoDispatch ? 1 : 0, goalId, oneLine(input.criteria),
         input.callerAgent ?? null, input.callerClaudeId ?? null, input.pokeOnDone ? 1 : 0,
         input.dueAt ?? null, input.createdBy, now, now, input.createdBy, input.externalKey ?? null,
+        input.suggestedAssignee ?? null,
       );
     if (goalId && this.db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId)) {
       this.addEvent(id, 'link', `goal:${goalId}`, input.createdBy);
@@ -250,11 +251,20 @@ export class TaskStore {
       const v = input.blockedOn && (TASK_BLOCKED_ON as readonly string[]).includes(input.blockedOn) ? input.blockedOn : null;
       if (v !== (t.blockedOn ?? null)) { sets.push('blocked_on = ?'); vals.push(v); }
     }
+    // Accepting a proposal that has no assignee yet takes the proposing agent's suggestion — "accept" means
+    // accept it as proposed. An explicit assignee in the same edit (the reviewer's own pick) wins.
+    let assignee = input.assignee;
+    if (assignee === undefined && t.status === 'proposed' && nextStatus !== 'proposed' && nextStatus !== 'cancelled'
+      && !t.assignee && t.suggestedAssignee) assignee = t.suggestedAssignee;
     let reassigned = false;
-    if (input.assignee !== undefined && (input.assignee ?? null) !== (t.assignee ?? null)) {
-      sets.push('assignee = ?'); vals.push(input.assignee ?? null);
+    if (assignee !== undefined && (assignee ?? null) !== (t.assignee ?? null)) {
+      sets.push('assignee = ?'); vals.push(assignee ?? null);
       reassigned = true;
-      this.addEvent(id, 'assign', input.assignee ? `→${input.assignee}` : '→unassigned', input.by);
+      this.addEvent(id, 'assign', assignee ? `→${assignee}` : '→unassigned', input.by);
+    }
+    if (input.suggestedAssignee !== undefined && (input.suggestedAssignee ?? null) !== (t.suggestedAssignee ?? null)) {
+      sets.push('suggested_assignee = ?'); vals.push(input.suggestedAssignee ?? null);
+      this.addEvent(id, 'assign', input.suggestedAssignee ? `suggested ${input.suggestedAssignee}` : 'suggestion withdrawn', input.by);
     }
     if (input.priority !== undefined) { sets.push('priority = ?'); vals.push(clampPriority(input.priority)); }
     if (input.mode !== undefined) { sets.push('mode = ?'); vals.push(input.mode === 'interactive' ? 'interactive' : 'headless'); }
@@ -275,7 +285,9 @@ export class TaskStore {
     // Fire the notices AFTER the write so the snapshot reflects the change. Reassignment first (the new
     // assignee's "assigned to you"), then any status transition (owner's "blocked"/"done"); the edge
     // wiring filters which merit a card + resolves the receiver.
-    if (reassigned) this.notify({ task, kind: 'assigned', by: input.by });
+    // …except when the same edit takes it OUT of `proposed`: the accept's status notice is what tells the
+    // assignee (the "assigned to you" a proposal holds back), so a second one here would double it.
+    if (reassigned && !statusChange?.startsWith('proposed→')) this.notify({ task, kind: 'assigned', by: input.by });
     if (statusChange) this.notify({ task, kind: 'status', by: input.by, detail: statusChange, ...(input.note?.trim() ? { note: input.note.trim() } : {}) });
     return task;
   }
@@ -686,6 +698,7 @@ function toTask(r: TaskRow): Task {
     id: r.id, tenant: r.tenant, title: r.title, body: r.body, status: r.status as TaskStatus,
     blockedOn: (TASK_BLOCKED_ON as readonly string[]).includes(r.blocked_on ?? '') ? (r.blocked_on as Task['blockedOn']) : undefined,
     priority: r.priority, labels: JSON.parse(r.labels) as string[], assignee: r.assignee ?? undefined,
+    suggestedAssignee: r.suggested_assignee ?? undefined,
     owner: r.owner ?? undefined, parentId: r.parent_id ?? undefined,
     mode: r.mode === 'interactive' ? 'interactive' : 'headless',
     model: r.model ?? undefined, effort: (r.effort ?? undefined) as Task['effort'],
