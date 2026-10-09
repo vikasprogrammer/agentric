@@ -6905,7 +6905,7 @@ function ApprovalBrief({ m }: { m: Msg }) {
 
 /** One task on a `task.proposed` Inbox card — its live state is stamped server-side at read time. */
 type ProposedTaskRow = {
-  id: string; title: string; assignee?: string; status: TaskStatus | 'deleted'
+  id: string; title: string; assignee?: string; suggestedAssignee?: string; status: TaskStatus | 'deleted'
   body?: string; priority?: number; dueAt?: number; labels?: string[]; criteria?: string; createdAt?: number
 }
 
@@ -6925,7 +6925,10 @@ function ProposedTaskItem({ t, members, agents, busy, onDecide }: { t: ProposedT
   const long = (t.body?.length ?? 0) > 180 || (t.body?.split('\n').length ?? 0) > 2 || !!t.criteria
   // Only a claude-code agent can be dispatched from a task, so those are the agents offered — same list as the board.
   const runnable = agents.filter((a) => a.runtime === 'claude-code')
-  const toAgent = (t.assignee ?? '').startsWith('agent:')
+  // The agent's suggestion stands in for the assignee until someone picks one — accepting adopts it.
+  const pick = t.assignee ?? t.suggestedAssignee
+  const suggested = !t.assignee && !!t.suggestedAssignee
+  const toAgent = (pick ?? '').startsWith('agent:')
   return (
     <li className={`rounded-md border px-2.5 py-2 text-xs ${pending ? 'border-violet-200 bg-background' : 'border-transparent bg-transparent'}`}>
       <div className="flex min-w-0 flex-wrap items-start gap-2 sm:flex-nowrap">
@@ -6935,9 +6938,9 @@ function ProposedTaskItem({ t, members, agents, busy, onDecide }: { t: ProposedT
             {t.priority !== undefined && <span className="inline-flex items-center gap-1"><PriorityPips p={t.priority} />{PRIORITY_LABEL[t.priority]}</span>}
             {due && <span className={`inline-flex items-center gap-0.5 rounded px-1 ${due.tone}`}><Clock className="h-3 w-3" />{due.label}</span>}
             {pending ? (
-              <Select value={t.assignee || 'none'} onValueChange={(v) => { const next = !v || v === 'none' ? null : v; if (next !== (t.assignee ?? null)) onDecide('assign', [t.id], { assignee: next }) }}>
-                <SelectTrigger size="sm" className="h-6 max-w-44 gap-1 border-dashed px-1.5 text-[11px]" disabled={busy} aria-label="Assignee">
-                  <SelectValue>{(v) => '→ ' + (!v || v === 'none' ? 'Unassigned' : principalLabel(v as string, members))}</SelectValue>
+              <Select value={pick || 'none'} onValueChange={(v) => { const next = !v || v === 'none' ? null : v; if (next !== (t.assignee ?? null)) onDecide('assign', [t.id], { assignee: next }) }}>
+                <SelectTrigger size="sm" className="h-6 max-w-52 gap-1 border-dashed px-1.5 text-[11px]" disabled={busy} aria-label="Assignee" title={suggested ? 'Suggested by the agent — accepting assigns it, or pick someone else' : undefined}>
+                  <SelectValue>{(v) => '→ ' + (!v || v === 'none' ? 'Unassigned' : principalLabel(v as string, members)) + (suggested && v === pick ? ' (suggested)' : '')}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">Unassigned</SelectItem>
@@ -6953,7 +6956,7 @@ function ProposedTaskItem({ t, members, agents, busy, onDecide }: { t: ProposedT
         {pending ? (
           <div className="ml-auto flex shrink-0 items-center gap-1">
             <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy} onClick={() => onDecide('accept', [t.id])}><Check className="mr-1 h-3 w-3" />Accept</Button>
-            {toAgent && <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy} title={`Accept and dispatch it to ${t.assignee!.slice('agent:'.length)} now`} onClick={() => onDecide('accept', [t.id], { run: true })}><Play className="mr-1 h-3 w-3" />Accept &amp; run</Button>}
+            {toAgent && <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy} title={`Accept and dispatch it to ${pick!.slice('agent:'.length)} now`} onClick={() => onDecide('accept', [t.id], { run: true })}><Play className="mr-1 h-3 w-3" />Accept &amp; run</Button>}
             <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={busy} onClick={() => onDecide('dismiss', [t.id])}>Dismiss</Button>
           </div>
         ) : (
@@ -11785,7 +11788,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
     if (r.error) alert(r.error)
     await load(); setBusy(false)
   }
-  const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); await api.patchTask(id, b); await load(); if (b.goalId !== undefined || b.status) await loadGoals(); setBusy(false) }
+  const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); const r = await api.patchTask(id, b); if (r.error) alert(r.error); await load(); if (b.goalId !== undefined || b.status || b.assignee) await loadGoals(); setBusy(false) }
   // Dispatch a task. A HEADLESS run is background work — it drives itself to completion and exits — so
   // opening the terminal on it yanks you out of the board you were working to watch a pane you can't
   // usefully drive; the card's own live tape (and the run history) is how you follow it. An INTERACTIVE
@@ -12019,14 +12022,25 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
         </div>
         <div className={fieldGrid}>
           <Field label="Assignee">
+            {/* On a proposal, assigning someone accepts it onto the board (→ todo) — the server does the move. */}
             <Select value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
               <SelectTrigger className="h-8 w-full min-w-0"><SelectValue>{(v) => !v || v === 'none' ? 'Unassigned' : nameOf(v as string)}</SelectValue></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">Unassigned</SelectItem>
-                {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
-                {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
+                {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}{detail.task.status === 'proposed' && detail.task.suggestedAssignee === `agent:${a.id}` && <span className="text-[10px] text-violet-700">suggested</span>}</span></SelectItem>)}
+                {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}{detail.task.status === 'proposed' && detail.task.suggestedAssignee === m.id && <span className="text-[10px] text-violet-700">suggested</span>}</span></SelectItem>)}
               </SelectContent>
             </Select>
+            {detail.task.status === 'proposed' && (
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+                {!detail.task.assignee && detail.task.suggestedAssignee ? (
+                  <>
+                    <span>Suggested: <span className="text-violet-700">{nameOf(detail.task.suggestedAssignee)}</span></span>
+                    <button type="button" className="text-violet-700 hover:underline disabled:opacity-50" disabled={busy} onClick={() => patch(detail.task.id, { assignee: detail.task.suggestedAssignee! })}>Assign &amp; accept</button>
+                  </>
+                ) : <span>Assigning someone accepts this proposal onto the board.</span>}
+              </div>
+            )}
           </Field>
           <Field label="Due date">
             <Input type="date" value={toDateInput(detail.task.dueAt)} onChange={(e) => patch(detail.task.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
@@ -12536,7 +12550,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
             {proposals.map((t) => (
               <li key={t.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                 <a href={navHref('tasks', t.id)} onClick={onNavClick(() => openTask(t.id))} className="min-w-0 flex-1 truncate text-foreground no-underline hover:underline">{t.title}</a>
-                <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">{assigneeChip(t.createdBy)}{t.assignee && <>→ {assigneeChip(t.assignee)}</>}</span>
+                <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">{assigneeChip(t.createdBy)}{t.assignee ? <>→ {assigneeChip(t.assignee)}</> : t.suggestedAssignee && <span className="flex items-center gap-1" title="The agent's suggestion — accepting assigns it">→ {assigneeChip(t.suggestedAssignee)}<span className="text-violet-700">suggested</span></span>}</span>
                 {isAdmin || t.owner === me.id ? (
                   <span className="flex shrink-0 gap-1">
                     <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy} onClick={() => decideProposal(t.id, 'accept')}><Check className="mr-1 h-3 w-3" />Accept</Button>

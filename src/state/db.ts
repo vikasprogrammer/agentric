@@ -1435,6 +1435,12 @@ function migrate(db: Db): void {
   // on the next sweep after EVERY resume, so a long-lived conversation a human kept coming back to could
   // never be used for more than ~30 minutes at a time.
   addColumn(db, 'term_sessions', 'opened_at', 'INTEGER');
+
+  // SUGGESTED_ASSIGNEE: who an agent thinks should work the task it PROPOSED ('agent:<id>' | member id).
+  // Kept apart from `assignee` on purpose: a proposal is not work yet, so the agent's pick is advice the
+  // reviewer weighs, and assigning someone on the board is the human's act that accepts it (→ todo).
+  // Adopted as the assignee when a proposal is accepted without one. NULL on every human-filed task.
+  addColumn(db, 'tasks', 'suggested_assignee', 'TEXT');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

@@ -877,6 +877,9 @@ export interface Task {
   priority: number; // 0 urgent … 3 low
   labels: string[];
   assignee?: string; // member id | 'agent:<id>'
+  /** A proposing agent's pick for who should work it (member id | 'agent:<id>') — advice, not an
+   *  assignment. Becomes the assignee when the proposal is accepted without one. */
+  suggestedAssignee?: string;
   owner?: string; // member id → run_as of the dispatched session; undefined → company identity
   parentId?: string;
   mode: 'headless' | 'interactive'; // how a dispatched session runs (default headless: work-to-completion)
@@ -1037,6 +1040,7 @@ export interface TaskCreateInput {
   title: string;
   body?: string;
   assignee?: string;
+  suggestedAssignee?: string; // a proposing agent's pick — see Task.suggestedAssignee
   owner?: string;
   priority?: number;
   labels?: string[];
@@ -1079,6 +1083,7 @@ export interface TaskUpdateInput {
   body?: string;
   status?: TaskStatus;
   assignee?: string | null; // null clears the assignee
+  suggestedAssignee?: string | null; // a proposing agent revising its pick; null clears it
   priority?: number;
   labels?: string[];
   mode?: 'headless' | 'interactive';

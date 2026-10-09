@@ -6614,8 +6614,8 @@ export class TerminalManager {
    * growth is noticed. Addressed to the run's accountable human (run-as), else the admin tier — the same
    * person a dispatched run of the task would act as. Quiet: no DM, because nothing is blocked on it.
    */
-  recordTaskProposal(sessionId: string, agent: string, task: { id: string; title: string; assignee?: string }): string {
-    const entry: ProposedTaskRef = { id: task.id, title: task.title, ...(task.assignee ? { assignee: task.assignee } : {}) };
+  recordTaskProposal(sessionId: string, agent: string, task: { id: string; title: string; assignee?: string; suggestedAssignee?: string }): string {
+    const entry: ProposedTaskRef = { id: task.id, title: task.title, ...(task.assignee ? { assignee: task.assignee } : {}), ...(task.suggestedAssignee ? { suggestedAssignee: task.suggestedAssignee } : {}) };
     const open = this.db
       .prepare(`SELECT id, args FROM messages WHERE type = 'task.proposed' AND status = 'open' AND session_id = ? ORDER BY created_at DESC LIMIT 1`)
       .get<{ id: string; args: string | null }>(sessionId);
@@ -6668,7 +6668,7 @@ export class TerminalManager {
       if (!live) return { ...t, status: 'deleted' as const };
       const body = live.body.trim();
       return {
-        ...t, title: live.title, ...(live.assignee ? { assignee: live.assignee } : {}), status: live.status,
+        ...t, title: live.title, assignee: live.assignee, suggestedAssignee: live.suggestedAssignee, status: live.status,
         priority: live.priority, createdAt: live.createdAt,
         ...(body ? { body: body.length > PROPOSAL_BODY_MAX ? body.slice(0, PROPOSAL_BODY_MAX).trimEnd() + '…' : body } : {}),
         ...(live.dueAt ? { dueAt: live.dueAt } : {}),
@@ -10267,7 +10267,7 @@ function toSession(r: SessionRow): Session {
 }
 
 /** One task on a `task.proposed` card. Title/assignee are snapshots from filing; status is hydrated live. */
-interface ProposedTaskRef { id: string; title: string; assignee?: string }
+interface ProposedTaskRef { id: string; title: string; assignee?: string; suggestedAssignee?: string }
 
 function proposedTaskRefs(args: string | null): ProposedTaskRef[] {
   try {
@@ -10281,7 +10281,8 @@ const PROPOSAL_BODY_MAX = 1200;
 
 const taskProposalTitle = (n: number): string => (n === 1 ? 'Proposed a task' : `Proposed ${n} tasks`);
 const taskProposalBody = (tasks: ProposedTaskRef[]): string =>
-  tasks.map((t) => `• ${t.title}${t.assignee ? ` → ${t.assignee.replace(/^agent:/, '')}` : ''}`).join('\n');
+  tasks.map((t) => `• ${t.title}${t.assignee ? ` → ${t.assignee.replace(/^agent:/, '')}`
+    : t.suggestedAssignee ? ` → ${t.suggestedAssignee.replace(/^agent:/, '')} (suggested)` : ''}`).join('\n');
 
 function toMessage(r: MessageRow): FeedMessage {
   // Approval/question rows reflect their live status from the joined table; others keep their own.

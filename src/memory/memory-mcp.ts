@@ -1098,7 +1098,10 @@ const TOOLS = [
       'its outcome. Distinct from `remember` (your private note) and `kb_write` (shared reference knowledge): ' +
       'a Task is WORK someone must do. Use sub-tasks (`parentId`) to break big work down. Give time-sensitive ' +
       'work a `due` date (ISO) — the owner is DMed once if it slips past the deadline. A task you file WITHOUT ' +
-      'autoDispatch is a PROPOSAL: it waits in a human\'s Inbox to be accepted onto the board, and nobody works it until then.',
+      'autoDispatch is a PROPOSAL: it waits in a human\'s Inbox to be accepted onto the board, and nobody works it until then. ' +
+      'A proposal must name who should work it: pass `suggest` (e.g. `suggest:"agent:engineer"`) — the reviewer sees ' +
+      'your pick, and accepting assigns it. Use `suggest`, not `assignee`, to propose work for ANOTHER agent: an ' +
+      'agent `assignee` is a hand-off and dispatches at once.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1106,6 +1109,7 @@ const TOOLS = [
         title: { type: 'string', description: 'A short imperative title, e.g. "Fix null-deref in billing.ts".' },
         body: { type: 'string', description: 'Markdown detail / acceptance criteria — enough for whoever works it. For a PROPOSAL (no autoDispatch) this is what the human reads to accept or dismiss it: lead with WHY it matters and why now, and link the source record (ticket/conversation/PR). Put any deadline in `due`, not only in the title.' },
         assignee: { type: 'string', description: 'Who works it: "agent:<id>" to hand off to another agent, a member id, or "me" for yourself. Omit to leave it open for anyone to claim.' },
+        suggest: { type: 'string', description: 'For a PROPOSAL (work a human should approve first): who you think should work it — "agent:<id>" (the agent best placed to do it; see the fleet roster), "me", or a member id when only a person can. Recorded as a suggestion, not an assignment: nothing dispatches, and the reviewer accepts or re-points it. Required when the task is proposed.' },
         priority: { type: 'number', minimum: 0, maximum: 3, description: '0 urgent … 3 low (default 2).' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Optional freeform labels.' },
         parentId: { type: 'string', description: 'Parent task id, to file this as a sub-task.' },
@@ -2785,6 +2789,7 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       session: SESSION, title,
       body: args.body !== undefined ? String(args.body) : undefined,
       assignee: args.assignee !== undefined ? String(args.assignee) : undefined,
+      suggestedAssignee: typeof args.suggest === 'string' && args.suggest.trim() ? args.suggest.trim() : undefined,
       priority: typeof args.priority === 'number' ? args.priority : undefined,
       labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
       parentId: args.parentId !== undefined ? String(args.parentId) : undefined,
@@ -2803,12 +2808,13 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       dueAt: parseDue(args.due),
     }),
   });
-  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string; proposed?: boolean };
+  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string; proposed?: boolean; suggestedAssignee?: string };
   if (!d.ok) return `Could not create the task: ${d.error ?? 'unknown error'}`;
   // Not on the board yet: an agent-filed task that doesn't dispatch waits for a human to accept it. Say so
   // plainly, or the agent reads its own proposal as committed work and waits on it (or files it again).
   if (d.proposed) {
-    return `Proposed task ${d.id}: "${title}". It is in a human's Inbox for review — NOT on the board and not ` +
+    const pick = d.suggestedAssignee ? ` with ${d.suggestedAssignee} suggested to work it` : '';
+    return `Proposed task ${d.id}: "${title}"${pick}. It is in a human's Inbox for review — NOT on the board and not ` +
       'being worked until they accept it. Do not re-file it or wait on it; carry on with your own work.';
   }
   const who = args.assignee ? ` (assigned to ${String(args.assignee)})` : ' (open — anyone can claim it)';

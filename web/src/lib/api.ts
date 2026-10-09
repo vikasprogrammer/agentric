@@ -759,6 +759,8 @@ export interface Task {
   priority: number
   labels: string[]
   assignee?: string
+  /** A proposing agent's pick for who should work it — advice until a human accepts the proposal. */
+  suggestedAssignee?: string
   owner?: string
   parentId?: string
   goalId?: string
