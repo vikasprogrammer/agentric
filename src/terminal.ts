@@ -28,6 +28,7 @@ import { readExecutedScripts, freshSince, type ScriptBody } from './governance/s
 import { isolateClaudeConfig } from './edge/config-isolation';
 import { resolveCapability } from './capabilities/normalize';
 import { unwrapComposioEnvelope } from './capabilities/composio-envelope';
+import { parseAuthStub, authStubDenial, authStubRemedy, type AuthStub } from './connectors/mcp-auth-stub';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
 import { DriftMonitor, DriftJudgement, buildDriftInput, judgeDriftConfirmed, driftNote, driftEscalationBody, askGist } from './edge/drift';
@@ -5932,6 +5933,47 @@ export class TerminalManager {
     return readExecutedScripts(command, agentDir, freshSince(started));
   }
 
+  private connectorAuthAlertAt = new Map<string, number>();
+  private static readonly CONNECTOR_AUTH_ALERT_COOLDOWN_MS = 6 * 60 * 60_000;
+
+  /** Handle a call to a connector's OAuth stub: audit it, card the admins (once per connector per
+   *  cooldown), and refuse it on an unattended run. Returns the gate result to use, or null to let an
+   *  attended session through the normal policy path (a human at the keyboard can finish the login). */
+  private connectorAuthLost(sessionId: string, agent: string, stub: AuthStub): GateResult | null {
+    const row = this.db.prepare('SELECT headless, claimed_by FROM term_sessions WHERE id = ?')
+      .get<{ headless: number; claimed_by: string | null }>(sessionId);
+    const unattended = !!row && row.headless === 1 && !row.claimed_by;
+    const conn = this.os.connectors.get(stub.server);
+    const composio = !conn && (stub.server === 'composio' || stub.server.startsWith('composio-'));
+    this.audit(sessionId, agent, 'connector.auth.lost', {
+      connector: stub.server, step: stub.step, unattended,
+      ...(conn ? { transport: conn.transport, url: conn.url || null } : {}),
+      ...(composio ? { composio: true } : {}),
+    });
+    const now = Date.now();
+    if (now - (this.connectorAuthAlertAt.get(stub.server) ?? 0) >= TerminalManager.CONNECTOR_AUTH_ALERT_COOLDOWN_MS) {
+      this.connectorAuthAlertAt.set(stub.server, now);
+      const topic = `connector-auth:${stub.server}`;
+      const name = conn?.label ? `${conn.label} (${stub.server})` : stub.server;
+      try {
+        this.closeSystemCards(topic);
+        this.postSystemCard({
+          topic,
+          type: 'notification',
+          title: `Connector "${name}" has lost its authorization`,
+          body: `Agents can't use its tools: Claude Code replaced them with an OAuth "${stub.step}" stub, which ${agent} just hit (session ${sessionId}). ${unattended ? 'That run was unattended, so it was told to carry on without the connector.' : 'That session is attended, so its human can finish the login there.'}\n\n${authStubRemedy({ label: conn?.label, url: conn?.url, composio })}`,
+          audience: { kind: 'admins' },
+          args: { connector: stub.server },
+          link: { page: 'connectors', label: 'Connectors' },
+        });
+      } catch { /* the audit line is the durable record */ }
+    }
+    if (!unattended) return null;
+    const reason = authStubDenial(stub, true);
+    this.audit(sessionId, agent, 'gate.decision', { capability: 'connector.call', decision: { effect: 'deny', riskClass: 'deny', reason } });
+    return { decision: 'deny', reason, capability: 'connector.call' };
+  }
+
   /** The gate. Same policy brain as the console — allow flows, ask → inbox approval (auto-cleared for
    *  an attended approver), never → deny. Args are enriched into facts first (the single classifier). */
   gate(sessionId: string, agent: string, capability: string, rawArgs: Record<string, unknown>, reasoning: string, subagent?: { type?: string; id?: string }): GateResult {
@@ -5944,6 +5986,14 @@ export class TerminalManager {
     if (this.os.settings.killSwitch().engaged) {
       this.audit(sessionId, agent, 'gate.killswitch', { capability });
       return { decision: 'deny', reason: 'workspace emergency stop (kill switch) is engaged — every action is blocked until an owner disengages it', capability };
+    }
+    // A remote MCP connector that lost its authorization (mcp-auth-stub.ts): Claude Code swaps its tools
+    // for OAuth stubs, and calling one is the only certain signal that it happened. Unattended runs
+    // can't finish a browser login, so refuse there; either way, tell an admin which connector is down.
+    const stub = capability === 'connector.call' ? parseAuthStub(rawArgs.tool) : null;
+    if (stub) {
+      const verdict = this.connectorAuthLost(sessionId, agent, stub);
+      if (verdict) return verdict;
     }
     // Host-egress governance (Phase 2b): OFF unless the workspace switch is on. When on, pass the
     // agent's granted host matchers (org + shared + the session's run-as member's personal) so the

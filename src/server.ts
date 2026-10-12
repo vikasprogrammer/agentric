@@ -79,6 +79,7 @@ import { UpdateWatch } from './edge/update-watch';
 import { RuntimeUpdateWatch } from './edge/runtime-update-watch';
 import { checkDeps, checkDepUpdates, installDeps, updateNpmDep } from './edge/deps';
 import { CATALOG, redact } from './connectors/connectors';
+import { warmConnectorPackages } from './connectors/npx-warm';
 import { GithubIdentity } from './edge/github-identity';
 import { PrCache, taskPrRefs, taskPrRefsBulk, prSummary, type PrToken } from './edge/task-prs';
 import { convertAppManifest, userInstallationStatus } from './connectors/github';
@@ -7559,6 +7560,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         scope,
         ownerMemberId: scope === 'personal' ? me.id : undefined,
       });
+      warmConnectorPackages(os, [created]);
       return sendJson(res, 200, redact(created));
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
@@ -7589,6 +7591,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         return sendJson(res, updated ? 200 : 404, updated ? redact(updated) : { error: 'not found' });
       }
       const updated = os.connectors.setEnabled(id, !!b.enabled);
+      if (updated?.enabled) warmConnectorPackages(os, [updated]);
       return sendJson(res, updated ? 200 : 404, updated ? redact(updated) : { error: 'not found' });
     }
   }

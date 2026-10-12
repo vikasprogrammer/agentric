@@ -31,6 +31,7 @@ import { Audience, approvalAudience, resolveRecipients } from './governance/reci
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { ensureNpmBoundary } from './edge/npm-boundary';
+import { warmConnectorPackages } from './connectors/npx-warm';
 import { TenantRecord, TenantStore } from './state/control';
 import { requestMetrics } from './edge/request-metrics';
 
@@ -268,6 +269,8 @@ export class TenantRegistry {
     const tm = new TerminalManager(os, this.loopbackBase, paths.tmuxSocket, consoleOrigin);
     const autos = new Automations(os, tm);
     autos.start();
+    // Fetch npx connectors' packages now, so the first session doesn't time out on a cold install.
+    warmConnectorPackages(os);
     // Hosted apps: the supervisor spawns each app on demand + idle-reaps it. In-session/app loopback
     // calls carry the tenant via x-aos-tenant, so it's exported into every app's env.
     const apps = new AppSupervisor(os.apps, {

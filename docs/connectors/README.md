@@ -12,6 +12,7 @@ bit us.
 | **ClickUp** | webhook (`POST /hooks/clickup`) | `clickup_reply` | **yes** | [clickup.md](clickup.md) |
 | **GitHub** | — (credential source) | `GH_TOKEN` in the shell + API bearer; `github_refresh` | no | [github.md](github.md) |
 | **Composio** | webhook (`POST /triggers/composio`) | the SaaS long tail, via a minted Tool Router URL | for triggers only | [composio.md](composio.md) |
+| **DataForSEO** | — | `dataforseo-mcp-server` over stdio, API login from the vault | no | [dataforseo.md](dataforseo.md) |
 
 Design history and the five original use cases live in [`../connectors-and-triggers.md`](../connectors-and-triggers.md)
 — note its as-built banner: the shipped tree diverged from that spec, and these pages are the current

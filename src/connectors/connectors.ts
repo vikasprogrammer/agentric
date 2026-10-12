@@ -119,6 +119,57 @@ export const CATALOG: CatalogEntry[] = [
       },
     ],
   },
+  // DataForSEO runs LOCALLY over stdio with the API login/password, never the hosted
+  // `mcp.dataforseo.com` URL. That endpoint defaults to OAuth, and an OAuth grant lives in Claude Code's
+  // own per-config-dir store: it expires, it is absent on a pooled runtime account, and when it lapses
+  // Claude Code silently swaps every tool for `authenticate`/`complete_authentication` stubs an
+  // unattended run cannot complete — the "DataForSEO keeps disconnecting" reports. On stdio every tool
+  // call is a plain Basic-auth REST call with nothing to expire. Versions are PINNED: v2→v3 renamed the
+  // whole tool surface (89 per-endpoint tools → a generic `api_request`), and agent prompts name tools.
+  {
+    type: 'dataforseo',
+    label: 'DataForSEO',
+    description: 'SEO data (SERPs, keywords, backlinks, Labs) via the official DataForSEO MCP server, run locally with your API login — no OAuth to expire. v3 tool surface: api_request + docs_search.',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'dataforseo-mcp-server@3.1.3'],
+    fields: [
+      {
+        key: 'DATAFORSEO_LOGIN',
+        label: 'API login',
+        placeholder: 'secret:DATAFORSEO_LOGIN',
+        help: 'The API login from app.dataforseo.com/api-access (not your dashboard login). Store it in Settings → Secrets and enter secret:DATAFORSEO_LOGIN here.',
+      },
+      {
+        key: 'DATAFORSEO_PASSWORD',
+        label: 'API password',
+        placeholder: 'secret:DATAFORSEO_PASSWORD',
+        help: 'The API password from the same page. Enter secret:DATAFORSEO_PASSWORD to pull it from the encrypted vault.',
+      },
+    ],
+  },
+  {
+    type: 'dataforseo-v2',
+    label: 'DataForSEO (v2 tools)',
+    description: 'The same server pinned to v2: one tool per endpoint (serp_organic_live_advanced, kw_data_google_ads_search_volume, …). Pick this when agent prompts already name those tools.',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'dataforseo-mcp-server@2.9.13'],
+    fields: [
+      {
+        key: 'DATAFORSEO_LOGIN',
+        label: 'API login',
+        placeholder: 'secret:DATAFORSEO_LOGIN',
+        help: 'The API login from app.dataforseo.com/api-access (not your dashboard login). Store it in Settings → Secrets and enter secret:DATAFORSEO_LOGIN here.',
+      },
+      {
+        key: 'DATAFORSEO_PASSWORD',
+        label: 'API password',
+        placeholder: 'secret:DATAFORSEO_PASSWORD',
+        help: 'The API password from the same page. Enter secret:DATAFORSEO_PASSWORD to pull it from the encrypted vault.',
+      },
+    ],
+  },
   {
     type: 'custom',
     label: 'Custom (local)',
