@@ -47,12 +47,13 @@ async function main() {
   assert(/catalog/.test(authStubRemedy({ url: 'https://mcp.dataforseo.com/mcp' })), 'the hosted-DataForSEO remedy points at the catalog entry');
 
   console.log('\n\x1b[1m2) DataForSEO catalog entries run locally, pinned, with vault creds\x1b[0m');
-  for (const [type, ver] of [['dataforseo', /^3\./], ['dataforseo-v2', /^2\./]]) {
+  // The login env var is per version: v2 only reads DATAFORSEO_USERNAME and 401s on every call without it.
+  for (const [type, ver, login] of [['dataforseo', /^3\./, 'DATAFORSEO_LOGIN'], ['dataforseo-v2', /^2\./, 'DATAFORSEO_USERNAME']]) {
     const e = CATALOG.find((c) => c.type === type);
     const spec = e && npxSpec({ transport: e.transport, command: e.command, args: e.args });
     const m = spec && /^dataforseo-mcp-server@(\d+\.\d+\.\d+)$/.exec(spec);
     assert(e?.transport === 'stdio' && m && ver.test(m[1]), `${type}: stdio, exact pinned version (${spec})`);
-    assert(e?.fields.map((f) => f.key).join() === 'DATAFORSEO_LOGIN,DATAFORSEO_PASSWORD' && e.fields.every((f) => /secret:/.test(f.placeholder || '')), `${type}: API login + password fields, vault refs suggested`);
+    assert(e?.fields.map((f) => f.key).join() === `${login},DATAFORSEO_PASSWORD` && e.fields[0].placeholder === 'secret:DATAFORSEO_LOGIN' && e.fields.every((f) => /secret:/.test(f.placeholder || '')), `${type}: ${login} + password fields, both from the same vault keys`);
   }
 
   console.log('\n\x1b[1m3) npx pre-fetch\x1b[0m');
