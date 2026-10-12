@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.460.0] - 2026-10-12
+### Changed
+- **Live bets per goal is now an operator setting, not a constant.** The cap (4) exists so a loop cannot
+  run more experiments than a human can attribute, but it cuts both ways: a goal that is regressing in a
+  lever with no free slot is held back by the cap rather than protected by it. It is now
+  `settings.betsLiveCap`, settable from the goal room's **Bets** header and bounded by a hard ceiling of 8;
+  `BetStore` resolves it per `create`, so a change takes effect with no restart.
+  **For admins:** the Bets header on a goal now shows "N/M live" and lets an owner or admin raise the
+  limit on how many bets one goal may run at once. [Open Goals](#/goals)
+### Added
+- **`bet_list` reports the slot count** (`cap` + `live`), so an agent knows whether it may open a bet
+  instead of discovering the answer as a refused `bet_propose`.
+
 ## [0.459.1] - 2026-10-12
 ### Fixed
 - **The "DataForSEO (v2 tools)" connector now authenticates.** The v2 server reads its login from

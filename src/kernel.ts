@@ -182,7 +182,7 @@ export class AgentOS {
     this.runtimeAccounts = new RuntimeAccountStore(this.db);
     // Goals are pure db-only structured state (no attachments/on-disk mirror) → the db alone.
     this.goals = new GoalStore(this.db);
-    this.bets = new BetStore(this.db);
+    this.bets = new BetStore(this.db, () => this.settings.betsLiveCap());
     this.feed = new FeedStore(this.db);
     // In-flight video renders (async) — db-only control state, like tasks/goals.
     this.videoJobs = new VideoJobStore(this.db);

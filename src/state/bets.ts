@@ -42,9 +42,26 @@ import { newId } from '../id';
 import { Db } from './db';
 import { Bet, BetAsset, BetState, BetVerdict, BET_LIVE_STATES } from '../types';
 
-/** Live bets per goal. Past this, a loop is running more experiments than it can attribute — and the
- *  trial's own operator hit exactly this ceiling, which is why it is a number and not a vibe. */
+/** Live bets per goal — the DEFAULT, not a constant. Past this, a loop is running more experiments
+ *  than it can attribute, and the trial's own operator hit exactly this ceiling, which is why it is a
+ *  number and not a vibe. It is a workspace SETTING (`settings.betsLiveCap`) because the cap cuts both
+ *  ways: on 2026-10-12 expresstech's goal was regressing in a page family its agent had no slot left to
+ *  bet on, so four running bets held the loop back instead of protecting it. A cap that cannot be
+ *  raised stops being an attribution guard and becomes the reason the number keeps falling. */
 export const MAX_LIVE_BETS = 4;
+/** Hard ceiling on that override. The reason for a cap at all is a HUMAN's attention: lift is measured
+ *  per-bet so the arithmetic scales fine, but nobody acts well on more than a handful of concurrent
+ *  experiments against one number. Raise the setting, never this. */
+export const MAX_LIVE_BETS_CEILING = 8;
+
+/** Resolve the effective live-bet cap from an operator override: unset/garbage → the default, else
+ *  clamped to 1..ceiling. Shared by the store and the settings route so a value that round-trips
+ *  through the API means exactly what the store will enforce. */
+export function resolveLiveBetCap(override?: number | null): number {
+  const n = Number(override);
+  if (override == null || !Number.isFinite(n)) return MAX_LIVE_BETS;
+  return Math.min(Math.max(Math.round(n), 1), MAX_LIVE_BETS_CEILING);
+}
 /** A window shorter than this cannot show a search/content effect; longer than this is not a bet. */
 export const MIN_WINDOW_DAYS = 7;
 export const MAX_WINDOW_DAYS = 60;
@@ -159,14 +176,23 @@ export interface BetJudgement {
 }
 
 export class BetStore {
-  constructor(private db: Db) {}
+  /** `liveCap` is the operator override resolver (null = unset → the default). A thunk, not a number,
+   *  so a cap change takes effect on the next `create` with no restart — same contract as the
+   *  concurrency cap. */
+  constructor(private db: Db, private liveCap: () => number | null = () => null) {}
+
+  /** The cap this store will enforce right now. */
+  maxLiveBets(): number {
+    return resolveLiveBetCap(this.liveCap());
+  }
 
   create(input: BetCreateInput): Bet {
     const title = input.title.trim();
     if (!title) throw new Error('a bet needs a title');
     if (!input.goalId) throw new Error('a bet needs a goal');
     const live = this.liveCount(input.tenant, input.goalId);
-    if (live >= MAX_LIVE_BETS) throw new Error(`that goal already has ${live} live bets (max ${MAX_LIVE_BETS}) — judge or kill one first`);
+    const cap = this.maxLiveBets();
+    if (live >= cap) throw new Error(`that goal already has ${live} live bets (max ${cap}) — judge or kill one first`);
     const windowDays = Math.min(Math.max(Math.round(input.windowDays ?? 21), MIN_WINDOW_DAYS), MAX_WINDOW_DAYS);
     const now = Date.now();
     const start = input.start !== false;

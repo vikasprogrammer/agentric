@@ -562,8 +562,10 @@ Key modules:
   Judged off the scheduler tick by `src/edge/bet-review.ts` (spawn-free, one owner card per bet guarded on
   the `bet.judged` audit event, then the wake queue tells the agent to write its lesson). Agent tools
   `bet_propose`/`bet_list`/`bet_update`/`asset_record`/`asset_measure`; read side `GET /api/bets?goal=`.
-  Caps: 4 live bets per goal, 60 assets, and re-lengthening a window re-stamps the judge date off the
-  ORIGINAL start. See `docs/bets-plan.md`.
+  Caps: 4 live bets per goal (the DEFAULT — `settings.betsLiveCap` raises it to `MAX_LIVE_BETS_CEILING`=8,
+  set from the goal room's Bets header; the cap cuts both ways, and a goal regressing in a lever with no
+  free slot is held back by it, not protected), 60 assets, and re-lengthening a window re-stamps the judge
+  date off the ORIGINAL start. See `docs/bets-plan.md`.
 - `src/edge/dreaming.ts` — the **self-learning ("Dreaming")** engine: a periodic deterministic pass that
   reflects on recent episodes + outcomes + friction, **compounds** them into `settings: dreaming_state`,
   emits a living KB page + a tenant-shared memory Insight, and **closes the loop** — distilled guidance is

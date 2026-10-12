@@ -97,6 +97,7 @@ const CHAT_ROUTER_KEY = 'chat_router_enabled'; // generic Slack/Discord `/agent`
 const TASK_PROPOSALS_KEY = 'task_proposals'; // agent-filed board items wait for a human accept ('off' = straight to todo)
 const ROUTER_CONFIG_KEY = 'router_config'; // auto-router tuning (JSON RouterConfig): enabled/minScore/margin/llm
 const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat session idle-kill, minutes
+const BETS_LIVE_CAP_KEY = 'bets_live_cap'; // live bets per goal override; unset → the default in src/state/bets.ts
 const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency cap override; unset → RAM-derived default, 0 → unlimited
 const INTERACTIVE_IDLE_HOURS_KEY = 'interactive_idle_timeout_hours'; // auto-close a detached member session idle past this; unset → 48h, 0 → off
 const UNATTENDED_MAX_HOURS_KEY = 'unattended_max_runtime_hours'; // hard runtime ceiling for a headless/unattended run (stuck-mid-turn backstop); unset → 24h, 0 → off
@@ -1146,6 +1147,30 @@ export class SettingsStore {
     const clamped = !Number.isFinite(n) || n < 0 ? 30 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 60);
     this.set(CHAT_IDLE_MIN_KEY, String(clamped), by);
     return this.chatIdleTimeoutMinutes();
+  }
+
+  // ── live bets per goal (docs/bets-plan.md) ───────────────────────────────────────
+  // How many bets one goal may have running at once. The cap exists so a loop cannot run more
+  // experiments than a human can act on, but it is an OPERATOR number: a goal that is regressing in a
+  // lever with no free slot is held back by the cap, not protected by it. Resolution (default and
+  // clamp) lives with the store — `resolveLiveBetCap` in src/state/bets.ts — so this returns the raw
+  // override only, exactly like the concurrency cap above.
+
+  /** The operator-set live-bet cap, or `null` when unset (→ `MAX_LIVE_BETS`). */
+  betsLiveCap(): number | null {
+    const raw = this.getRow(BETS_LIVE_CAP_KEY)?.value;
+    if (raw == null || raw.trim() === '') return null; // unset → the default
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1) return null;     // garbage → treat as unset
+    return Math.floor(n);
+  }
+
+  /** Set (or clear, with `null`) the live-bet cap override. The store clamps to 1..ceiling. */
+  setBetsLiveCap(n: number | null, by?: string): number | null {
+    const v = Number(n);
+    if (n == null || !Number.isFinite(v) || v < 1) this.set(BETS_LIVE_CAP_KEY, '', by);
+    else this.set(BETS_LIVE_CAP_KEY, String(Math.floor(v)), by);
+    return this.betsLiveCap();
   }
 
   // ── whole-box concurrency cap (docs/concurrency-cap-plan.md) ─────────────────────

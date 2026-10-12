@@ -35,7 +35,7 @@ const DAY = 86_400_000;
   const { TenantRegistry } = require(path.join(ROOT, 'dist/tenant-registry.js'));
   const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
   const { reviewBets } = require(path.join(ROOT, 'dist/edge/bet-review.js'));
-  const { MAX_LIVE_BETS, MET_FRACTION } = require(path.join(ROOT, 'dist/state/bets.js'));
+  const { MAX_LIVE_BETS, MAX_LIVE_BETS_CEILING, MET_FRACTION } = require(path.join(ROOT, 'dist/state/bets.js'));
   const registry = new TenantRegistry(ROOT, 0, path.join(ROOT, 'config/agent-os.config.json'));
   registry.bootAll();
   const { os: aos, tm } = registry.default();
@@ -192,6 +192,36 @@ const DAY = 86_400_000;
   assert(board.bets.every((x) => Array.isArray(x.assets)), 'each with its assets');
   assert(board.counts && board.counts.kept === 1, 'and a count per state', board.counts);
   assert(board.canEdit === true, 'an owner is told they may edit', board.canEdit);
+
+  console.log('\n\x1b[1m11b) The live-bet cap is an operator number, not a constant\x1b[0m');
+  // The cap cuts both ways: expresstech (2026-10-12) had four running bets while its goal regressed in a
+  // page family with no slot left, so the cap was holding the loop back. Raising it must change what the
+  // STORE enforces, not just what a settings page displays.
+  const setCap = (value) => fetch(`${base}/api/settings/bets`, { method: 'PUT', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ value }) }).then((r) => r.json().then((j) => ({ status: r.status, ...j })));
+  const anonCap = await fetch(`${base}/api/settings/bets`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: 6 }) });
+  assert(anonCap.status === 401, 'no cookie cannot change the cap', anonCap.status);
+  const raised = await setCap(6);
+  assert(raised.ok && raised.resolved === 6, 'an owner raises it to 6', raised);
+  assert(aos.bets.maxLiveBets() === 6, 'and the STORE enforces the new number, with no restart', aos.bets.maxLiveBets());
+  while (aos.bets.liveCount(aos.tenant, goal.id) < 6) {
+    const r = await propose({ goalId: goal.id, title: `Extra ${aos.bets.liveCount(aos.tenant, goal.id)}`, expectedLift: 1, windowDays: 7 });
+    if (!r.ok) break;
+  }
+  assert(aos.bets.liveCount(aos.tenant, goal.id) === 6, `the ${MAX_LIVE_BETS}-bet default no longer refuses the 5th and 6th`, aos.bets.liveCount(aos.tenant, goal.id));
+  const over6 = await propose({ goalId: goal.id, title: 'One past the raised cap', expectedLift: 1 });
+  assert(/max 6/.test(over6.error || ''), 'the raised cap holds, and the refusal names the number in force', over6);
+  // Out of range is a refusal rather than a silent clamp — an operator who asks for 99 must be told the
+  // ceiling, not handed 8 and left believing they got 99.
+  const tooBig = await setCap(99);
+  assert(tooBig.status === 400 && new RegExp(String(MAX_LIVE_BETS_CEILING)).test(tooBig.error || ''), 'past the ceiling is a 400 naming the ceiling, not a clamp', tooBig);
+  assert(aos.bets.maxLiveBets() === 6, 'and the refused write left the cap alone', aos.bets.maxLiveBets());
+  // The agent learns its slot count from `bet_list` instead of from a refusal.
+  const listed = await call('/api/agent/bets/list', { goalId: goal.id });
+  assert(listed.cap === 6 && listed.live === 6, 'bet_list reports cap + live so the agent knows its slots', { cap: listed.cap, live: listed.live });
+  const boardCap = await (await fetch(`${base}/api/bets?goal=${goal.id}`, { headers: { cookie } })).json();
+  assert(boardCap.cap === 6 && boardCap.live === 6 && boardCap.capCeiling === MAX_LIVE_BETS_CEILING, 'and the board carries the cap for the header control', { cap: boardCap.cap, live: boardCap.live, ceiling: boardCap.capCeiling });
+  const cleared = await setCap(null);
+  assert(cleared.ok && cleared.value === null && cleared.resolved === MAX_LIVE_BETS, `clearing it returns to the ${MAX_LIVE_BETS}-bet default`, cleared);
 
   console.log('\n\x1b[1m12) A human can decide on the board\x1b[0m');
   // Clear the live slots this test has filled — the cap is real and case 10 left it at the ceiling.
