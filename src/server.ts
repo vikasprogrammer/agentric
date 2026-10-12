@@ -4395,8 +4395,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ? (tm.taskProposalCardTasks(b.messageId) ?? [])
       : Array.isArray(b.ids) ? b.ids.map(String) : [];
     if (!ids.length) return sendJson(res, 400, { error: 'no tasks named' });
-    // The reviewer can re-point a proposal at the right person/agent from the card itself — alone
-    // (`assign`, the task stays proposed) or in the same click as accepting it. `null` clears it.
+    // The reviewer can re-point a proposal at the right person/agent from the card itself. Picking someone
+    // (`assign`) IS accepting it — the same rule as assigning on the board: choosing who works it is the
+    // reviewer saying it is work. Only `null` (clearing the pick) leaves it proposed.
     const hasAssignee = 'assignee' in b;
     const assignee = hasAssignee ? (typeof b.assignee === 'string' && b.assignee ? b.assignee : null) : undefined;
     if (action === 'assign' && !hasAssignee) return sendJson(res, 400, { error: 'assign needs an assignee (or null to clear it)' });
@@ -4414,6 +4415,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const t = os.tasks.get(id);
       if (!t || t.status !== 'proposed') continue;
       if (!mayDecideProposal(me, t)) { denied++; continue; }
+      if (action === 'assign' && assignee) {
+        // One edit, so the new assignee gets one "assigned" notice for accepted work, not two.
+        if (!os.tasks.update(id, { assignee, status: 'todo', note: 'accepted onto the board', by: me.id })) continue;
+        if ((t.assignee ?? null) !== assignee) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.proposal.reassigned', data: { id, from: t.assignee ?? null, to: assignee } });
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.proposal.accepted', data: { id, title: t.title, by: t.createdBy, via: 'assign' } });
+        decided.push(id);
+        continue;
+      }
       if (hasAssignee && (t.assignee ?? null) !== assignee) {
         os.tasks.update(id, { assignee, by: me.id });
         os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.proposal.reassigned', data: { id, from: t.assignee ?? null, to: assignee } });

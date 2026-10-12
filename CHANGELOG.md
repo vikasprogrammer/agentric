@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.459.0] - 2026-10-12
+### Changed
+- **Picking an assignee on an Inbox proposal card accepts it.** The card's assignee picker now moves an
+  agent-proposed task to `todo` with that person or agent assigned, the same as assigning it on the board
+  (one edit, so the assignee gets one notice; audited `task.proposal.accepted` with `via: 'assign'`).
+  Clearing the pick still leaves it proposed.
+  **For users:** Choosing who should work an agent's proposed task in the Inbox now puts it on the board for them — no separate Accept click. [Open Tasks](#/tasks)
+
 ## [0.458.0] - 2026-10-12
 ### Added
 - **DataForSEO stops "disconnecting": a local, API-key connector, and the gate now notices when any remote connector loses its login.** Every tenant's DataForSEO connector pointed at the hosted `mcp.dataforseo.com` URL with no headers, which authorizes with an OAuth grant kept in Claude Code's own config dir. The grant expires, isn't there at all on a pooled runtime account, and when it's missing Claude Code silently swaps every tool for `authenticate`/`complete_authentication` stubs an unattended run can't complete (20 stub calls in one tenant's transcripts). initech's `composio-company` has failed the same way since 2026-09-08, taking GSC/GA4/DataForSEO/Stripe/Sheets with it, and nobody was told. Two catalog entries, **DataForSEO** (`dataforseo-mcp-server@3.1.3`: `api_request` + docs tools) and **DataForSEO (v2 tools)** (`@2.9.13`: the 89 per-endpoint tools existing prompts name), run the official server over stdio with `secret:DATAFORSEO_LOGIN`/`secret:DATAFORSEO_PASSWORD`. Each call is plain Basic auth, with nothing to expire. Versions are pinned because v2→v3 renamed every tool. A cold `npx` install measured 21–35s, close to the MCP startup timeout, so enabled `npx` connectors are pre-fetched at boot and on add/enable (`src/connectors/npx-warm.ts`, audited `connector.warmed`). And a call to any connector's OAuth stub now reaches the gate as what it is: audited `connector.auth.lost`, one admin card per connector per 6h naming the fix, and on an unattended run a refusal telling the agent to carry on without it instead of hunting for a login (`src/connectors/mcp-auth-stub.ts`). Runbook `docs/connectors/dataforseo.md`; pinned by `scripts/connector-auth-stub-test.cjs`.
