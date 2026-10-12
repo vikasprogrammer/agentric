@@ -809,10 +809,11 @@ status puts a human's accept between "an agent thought this is work" and "it is 
   nobody is told "assigned to you" for work no human agreed to, and the agent's `task_update({ assignee })`
   on its proposal only revises the pick. Accepting with no assignee set adopts it (`TaskStore.update`, so
   the Inbox Accept, Accept & run, and the board status picker all agree); dismissing doesn't.
-- **Assigning IS accepting on the board.** A board `PATCH` that sets an assignee on a proposal (no status
-  in the same edit) moves it to `todo` — picking who works it is the reviewer saying it is work. Same
-  gate as the accept button, audited `task.proposal.accepted` with `via: 'assign'`. The Inbox card's
-  re-point (`action: 'assign'`) still leaves it proposed: there Accept / Accept & run sit right beside it.
+- **Assigning IS accepting.** A board `PATCH` that sets an assignee on a proposal (no status in the same
+  edit) moves it to `todo` — picking who works it is the reviewer saying it is work — and so does the
+  Inbox card's re-point (`action: 'assign'` with an assignee). Same gate as the accept button, audited
+  `task.proposal.accepted` with `via: 'assign'`. Only clearing the pick (`assignee: null`) leaves it
+  proposed. To run it straight away, Accept & run still re-points and dispatches in one click.
 - **Not held:** an auto-dispatch hand-off (a `task_wait` caller would hang on a click — bound those with
   a delegation budget instead), a `goal:`-provenance run (a human asked for that plan), a human's task.
 - **Bounds:** 25 open proposals per agent (`MAX_OPEN_TASK_PROPOSALS`), then `task_create` refuses. The

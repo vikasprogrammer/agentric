@@ -188,12 +188,17 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     assert(bad.status === 400, 'an unknown assignee is refused', bad);
     const byBob = await member(bob, 'POST', '/api/tasks/proposals/decide', { ids: [p1.id], action: 'assign', assignee: bob.id });
     assert(byBob.status === 403 && !aos.tasks.get(p1.id).assignee, 'a bystander cannot re-point it', byBob);
-    const toBob = await member(alice, 'POST', '/api/tasks/proposals/decide', { ids: [p1.id], action: 'assign', assignee: bob.id });
-    const t1 = aos.tasks.get(p1.id);
-    assert(toBob.status === 200 && t1.assignee === bob.id && t1.status === 'proposed', 'assign changes the assignee and leaves it proposed', t1);
-    assert(taskCards(p1.id).length === 0, 'and the new human assignee hears nothing until it is accepted', taskCards(p1.id).length);
     const cleared = await member(alice, 'POST', '/api/tasks/proposals/decide', { ids: [p1.id], action: 'assign', assignee: null });
-    assert(cleared.status === 200 && !aos.tasks.get(p1.id).assignee, 'null clears it', aos.tasks.get(p1.id).assignee);
+    assert(cleared.status === 200 && !aos.tasks.get(p1.id).assignee && aos.tasks.get(p1.id).status === 'proposed', 'null clears the pick and leaves it proposed', aos.tasks.get(p1.id));
+    assert(taskCards(p1.id).length === 0, 'and nobody hears about work no one accepted', taskCards(p1.id).length);
+
+    const p0 = await create('ses_r', { title: 'assign from the card', suggestedAssignee: 'agent:qa' });
+    const toBob = await member(alice, 'POST', '/api/tasks/proposals/decide', { ids: [p0.id], action: 'assign', assignee: bob.id });
+    const t0 = aos.tasks.get(p0.id);
+    assert(toBob.status === 200 && toBob.body.decided.includes(p0.id) && t0.assignee === bob.id && t0.status === 'todo', 'picking an assignee on the card accepts it onto the board', t0);
+    assert(taskCards(p0.id).length === 1, 'and the new assignee hears about it exactly once', taskCards(p0.id).length);
+    const viaCard = aos.db.prepare("SELECT data FROM audit_events WHERE type = 'task.proposal.accepted' ORDER BY rowid DESC LIMIT 1").get();
+    assert(JSON.parse(viaCard.data).via === 'assign' && JSON.parse(viaCard.data).id === p0.id, 'audited as an accept via assign', viaCard.data);
 
     const noAgent = await member(owner, 'POST', '/api/tasks/proposals/decide', { ids: [p1.id], action: 'accept', run: true });
     assert(noAgent.body.error && aos.tasks.get(p1.id).status === 'proposed', 'Accept & run without an agent assignee accepts nothing', noAgent.body);
@@ -206,7 +211,7 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     assert(go.status === 200 && go.body.decided.includes(p1.id) && aos.tasks.get(p1.id).status === 'todo', 'Accept & run accepts it', go.body);
     assert(dispatched.includes(p1.id) && go.body.dispatched.length === 1, 'and dispatches it in the same click', go.body);
     const rev = aos.db.prepare("SELECT count(*) n FROM audit_events WHERE type = 'task.proposal.reassigned'").get().n;
-    assert(rev === 3, 'each re-assignment is audited', rev);
+    assert(rev === 2, 'each re-assignment is audited (clearing an already-empty pick is not one)', rev);
   }
 
   console.log('\n\x1b[1m9) a proposal SUGGESTS who should work it; assigning on the board accepts it\x1b[0m');

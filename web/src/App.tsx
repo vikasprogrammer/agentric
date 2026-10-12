@@ -6939,7 +6939,7 @@ function ProposedTaskItem({ t, members, agents, busy, onDecide }: { t: ProposedT
             {due && <span className={`inline-flex items-center gap-0.5 rounded px-1 ${due.tone}`}><Clock className="h-3 w-3" />{due.label}</span>}
             {pending ? (
               <Select value={pick || 'none'} onValueChange={(v) => { const next = !v || v === 'none' ? null : v; if (next !== (t.assignee ?? null)) onDecide('assign', [t.id], { assignee: next }) }}>
-                <SelectTrigger size="sm" className="h-6 max-w-52 gap-1 border-dashed px-1.5 text-[11px]" disabled={busy} aria-label="Assignee" title={suggested ? 'Suggested by the agent — accepting assigns it, or pick someone else' : undefined}>
+                <SelectTrigger size="sm" className="h-6 max-w-52 gap-1 border-dashed px-1.5 text-[11px]" disabled={busy} aria-label="Assignee" title={suggested ? 'Suggested by the agent — Accept assigns it, or pick someone else to accept it with them' : 'Picking someone accepts it onto the board'}>
                   <SelectValue>{(v) => '→ ' + (!v || v === 'none' ? 'Unassigned' : principalLabel(v as string, members)) + (suggested && v === pick ? ' (suggested)' : '')}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
@@ -7017,6 +7017,7 @@ function ActionItem({ m, me, members, agents, onOpen, onDismiss }: { m: Msg; me:
       setBusy(false)
       if (r.error) setHint('⚠ ' + r.error)
       else if (extra?.run && r.dispatched?.some((d) => d.sessionId)) setHint('accepted — a session is running it')
+      else if (action === 'assign' && extra?.assignee && r.decided?.length) setHint('assigned and accepted onto the board')
     }
     return (
       <div className="rounded-lg border border-violet-300 bg-violet-50/40 px-3 py-2.5">
