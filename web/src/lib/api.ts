@@ -2278,7 +2278,9 @@ export const api = {
   deleteGoal: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/goals/${id}`),
   planGoal: (id: string, steer?: { guidance?: string; maxTasks?: number; autoDispatch?: boolean }) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/goals/${id}/plan`, steer ?? {}),
   /** The bets on a goal (or every bet when `goalId` is omitted), each with its assets, plus per-state counts. */
-  bets: (goalId?: string) => call<{ bets: (Bet & { assets: BetAsset[] })[]; counts: Record<string, number>; canEdit: boolean; error?: string }>('GET', '/api/bets' + (goalId ? '?goal=' + encodeURIComponent(goalId) : '')),
+  bets: (goalId?: string) => call<{ bets: (Bet & { assets: BetAsset[] })[]; counts: Record<string, number>; canEdit: boolean; cap?: number; live?: number; capCeiling?: number; capDefault?: number; error?: string }>('GET', '/api/bets' + (goalId ? '?goal=' + encodeURIComponent(goalId) : '')),
+  /** The live-bet cap (owner/admin). `value` null = use the default; the server refuses anything past its ceiling. */
+  saveBetsCap: (value: number | null) => call<{ ok: boolean; value?: number | null; resolved?: number; default?: number; ceiling?: number; error?: string }>('PUT', '/api/settings/bets', { value }),
   /** Decide a bet and record what it taught (owner/admin). A terminal state without a lesson is refused —
    *  `verdict`/`observedLift` are the sweep's and are not writable here. */
   patchBet: (id: string, b: { state?: BetState; lesson?: string; hypothesis?: string; expectedLift?: number; baseline?: number; windowDays?: number }) =>

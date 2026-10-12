@@ -69,7 +69,7 @@ publishing problem, not evidence against the hypothesis. Only then does `met` ap
 
 | Thing | Limit | Why |
 |---|---|---|
-| live bets per goal | 4 (`MAX_LIVE_BETS`) | past this a loop runs more experiments than it can attribute — the trial's operator hit exactly this ceiling |
+| live bets per goal | 4 by default (`MAX_LIVE_BETS`), raisable to 8 (`MAX_LIVE_BETS_CEILING`) via the `bets_live_cap` setting | past this a loop runs more experiments than it can attribute — the trial's operator hit exactly this ceiling. Tunable because it cuts both ways: on 2026-10-12 expresstech's goal was regressing in a page family its agent had no slot left to bet on, so the cap was holding the loop back rather than protecting it. Set from the goal room's Bets header (`PUT /api/settings/bets`, owner/admin, audited `settings.betsCap.updated`); `bet_list` reports `cap`/`live` so an agent knows its slots without being refused |
 | window | 7–60 days, clamped | shorter cannot show a content/search effect; longer is not a bet |
 | assets per bet | 60 | enough for a page family, few enough that "measure them all" stays cheap |
 | re-lengthening a window | judge date re-stamped off the **original** start | otherwise a bet postpones its own judgement forever |

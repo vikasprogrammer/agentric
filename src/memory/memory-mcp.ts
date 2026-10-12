@@ -1351,7 +1351,7 @@ const TOOLS = [
       '`baseline` those things earn TODAY (0 for something new), and a `windowDays` long enough for the ' +
       'effect to show (7-60). Then record what you ship with `asset_record` and its numbers with ' +
       '`asset_measure`. At the end of the window the server computes the verdict FROM YOUR ASSETS — you ' +
-      'cannot grade your own bet, which is what makes a kept bet worth anything. Max 4 live bets per goal.',
+      'cannot grade your own bet, which is what makes a kept bet worth anything. Live bets per goal are ' + 'capped (4 by default, raisable by an owner) — `bet_list` reports the cap and how many you are using.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2949,8 +2949,15 @@ async function betList(args: Record<string, unknown>): Promise<string> {
     limit: args.limit !== undefined ? Number(args.limit) : undefined,
   });
   const bets = (d.bets as Array<Record<string, unknown>>) ?? [];
-  if (!bets.length) return 'No bets match. (A goal with no bets is one nobody is attempting — open one with `bet_propose`.)';
-  return bets.map((b) => {
+  // Slot line: how many live bets this goal has against the cap, so the agent knows whether it may open
+  // one without discovering the answer as a refusal.
+  const cap = Number(d.cap ?? 0);
+  const live = d.live !== undefined ? Number(d.live) : undefined;
+  const slots = cap && live !== undefined
+    ? `slots: ${live}/${cap} live${live >= cap ? ' — full, judge or kill one before proposing' : ` (${cap - live} free)`}\n\n`
+    : '';
+  if (!bets.length) return slots + 'No bets match. (A goal with no bets is one nobody is attempting — open one with `bet_propose`.)';
+  return slots + bets.map((b) => {
     const assets = (b.assets as Array<Record<string, unknown>>) ?? [];
     const measured = assets.filter((a) => a.value !== undefined);
     const total = measured.reduce((s, a) => s + Number(a.value ?? 0), 0);

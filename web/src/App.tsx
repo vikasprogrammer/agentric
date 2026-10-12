@@ -10061,10 +10061,13 @@ function BetsBoard({ goalId, metric, readings, onCount }: { goalId: string; metr
   const [busy, setBusy] = useState('')
   const [lesson, setLesson] = useState<Record<string, string>>({})
   const [hint, setHint] = useState<Record<string, string>>({})
+  const [cap, setCap] = useState<{ cap: number; live: number; ceiling: number } | null>(null)
+  const [capHint, setCapHint] = useState('')
 
   const load = useCallback(async () => {
     const r = await api.bets(goalId)
     setBets(r.bets ?? []); setCounts(r.counts ?? {}); setCanEdit(!!r.canEdit); setLoaded(true)
+    setCap(r.cap != null && r.live != null ? { cap: r.cap, live: r.live, ceiling: r.capCeiling ?? r.cap } : null)
     onCount?.((r.bets ?? []).length)
   }, [goalId, onCount])
   useEffect(() => { setLoaded(false); setLesson({}); setHint({}); void load() }, [load])
@@ -10223,8 +10226,30 @@ function BetsBoard({ goalId, metric, readings, onCount }: { goalId: string; metr
       <div className="rounded-md border p-3">
       <div className="flex items-baseline justify-between gap-2">
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Bets</div>
-        <div className="text-[11px] text-muted-foreground">{bets.length} on this goal</div>
+        {/* Slots, next to the lanes rather than in Settings: the cap is only ever interesting while
+            looking at a full board, and a loop that has run out of slots cannot bet on the cause of a
+            decline until a human either judges one or raises it. */}
+        <div className="flex items-baseline gap-2 text-[11px] text-muted-foreground">
+          {cap && <span className={cap.live >= cap.cap ? 'font-medium text-amber-600 dark:text-amber-500' : ''} title={cap.live >= cap.cap ? 'Every slot is in use — judge or kill a bet, or raise the cap, before a new one can open' : undefined}>{cap.live}/{cap.cap} live</span>}
+          {cap && canEdit && (
+            <select
+              className="h-5 rounded border bg-background px-1 text-[10px]"
+              value={String(cap.cap)}
+              aria-label="Live bets allowed per goal"
+              onChange={async (e) => {
+                setCapHint('')
+                const r = await api.saveBetsCap(Number(e.target.value))
+                if (r.error) return setCapHint(r.error)
+                await load()
+              }}
+            >
+              {Array.from({ length: cap.ceiling }, (_, i) => i + 1).map((n) => <option key={n} value={n}>max {n}</option>)}
+            </select>
+          )}
+          <span>{bets.length} on this goal</span>
+        </div>
       </div>
+      {capHint && <div className="mt-1 text-right text-[10px] text-amber-600 dark:text-amber-500">⚠ {capHint}</div>}
       {/* Lanes size THEMSELVES (auto-fit, 250px floor) rather than snapping to a column count: this board
           lives in the goal room's main column, which is ~750px on a 1440 laptop — a fixed four-lane grid
           there gives 170px lanes full of truncated URLs. And an EMPTY lane is not drawn at all: most of the

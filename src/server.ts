@@ -92,6 +92,7 @@ import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governa
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeAgentSkills, sanitizeAgentTools, sanitizeUsableSubagents, Task, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, isDraftTask, GoalStatus, GoalMetric, BetState, BET_STATES, riskClassForLevel } from './types';
+import { MAX_LIVE_BETS, MAX_LIVE_BETS_CEILING, resolveLiveBetCap } from './state/bets';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -2329,8 +2330,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       state: b.state != null ? String(b.state) as BetState | 'live' : undefined,
       limit: b.limit !== undefined ? Number(b.limit) : undefined,
     });
-    // Assets ride along: "how is my bet doing" is one call, not one per bet.
-    return sendJson(res, 200, { bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })) });
+    // Assets ride along: "how is my bet doing" is one call, not one per bet. The cap rides along too —
+    // the agent's actual decision is "have I got a slot", and it used to learn the answer only by being
+    // refused at `bet_propose`.
+    const goalId = b.goalId != null ? String(b.goalId) : undefined;
+    return sendJson(res, 200, {
+      bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })),
+      cap: os.bets.maxLiveBets(),
+      live: goalId ? os.bets.liveCount(os.tenant, goalId) : undefined,
+    });
   }
   if (method === 'POST' && p === '/api/agent/bets/update') {
     const b = await readBody(req);
@@ -4633,7 +4641,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/bets') {
     const goalId = url.searchParams.get('goal') || undefined;
     const bets = os.bets.list(os.tenant, { goalId, limit: 200 });
-    return sendJson(res, 200, { bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })), counts: os.bets.counts(os.tenant, goalId), canEdit: isAdmin(me) });
+    // The cap rides along with the board: "how many of my slots are used" is the question a human asks
+    // before deciding whether to raise it, and it belongs next to the lanes rather than in Settings.
+    return sendJson(res, 200, {
+      bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })),
+      counts: os.bets.counts(os.tenant, goalId),
+      canEdit: isAdmin(me),
+      cap: os.bets.maxLiveBets(),
+      live: goalId ? os.bets.liveCount(os.tenant, goalId) : undefined,
+      capCeiling: MAX_LIVE_BETS_CEILING,
+      capDefault: MAX_LIVE_BETS,
+    });
   }
   // Console WRITE side for bets — owner/admin. The same two things an agent may do (decide + record the
   // lesson) and nothing more: `observed_lift`/`verdict` stay the sweep's, so the board cannot be used to
@@ -5560,6 +5578,38 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Apply immediately (batched) so an operator lowering the window sees it take effect, not next hour.
     const dropped = pruneAuditMirror(os.db, days);
     return sendJson(res, 200, { ok: true, auditRetentionDays: days, pruned: dropped });
+  }
+
+  // ── live bets per goal (docs/bets-plan.md) ──
+  // Owner/admin knob. The cap is an attribution guard, but a goal that is regressing in a lever with no
+  // free slot is held back by it — so it is tunable, bounded by MAX_LIVE_BETS_CEILING. Reports the raw
+  // override AND what the store will actually enforce, because those differ whenever a value is clamped.
+  if (method === 'GET' && p === '/api/settings/bets') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, {
+      value: os.settings.betsLiveCap(),
+      resolved: os.bets.maxLiveBets(),
+      default: MAX_LIVE_BETS,
+      ceiling: MAX_LIVE_BETS_CEILING,
+      source: os.settings.betsLiveCap() != null ? 'setting' : 'default',
+    });
+  }
+  if (method === 'PUT' && p === '/api/settings/bets') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as { value?: unknown };
+    if ('value' in b) {
+      const raw = b.value;
+      const clear = raw === null || raw === '';
+      const n = clear ? null : Number(raw);
+      // Out of range is a 400 rather than a silent clamp: an operator who asks for 20 should be told the
+      // ceiling, not handed 8 and left believing they got 20.
+      if (!clear && (!Number.isFinite(n as number) || (n as number) < 1 || (n as number) > MAX_LIVE_BETS_CEILING)) {
+        return sendJson(res, 400, { error: `value must be an integer 1-${MAX_LIVE_BETS_CEILING}, or null to use the default (${MAX_LIVE_BETS})` });
+      }
+      const saved = os.settings.setBetsLiveCap(clear ? null : (n as number), me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.betsCap.updated', data: { value: saved, resolved: resolveLiveBetCap(saved) } });
+    }
+    return sendJson(res, 200, { ok: true, value: os.settings.betsLiveCap(), resolved: os.bets.maxLiveBets(), default: MAX_LIVE_BETS, ceiling: MAX_LIVE_BETS_CEILING });
   }
 
   // ── whole-box concurrency cap (docs/concurrency-cap-plan.md Phase 1) ──
