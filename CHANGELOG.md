@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.460.1] - 2026-10-12
+### Removed
+- **The sidebar's "N ended" toggle.** The sidebar session list now shows only live sessions (plus the
+  one you have open, even if it ended); past runs are on All sessions. With nothing live it says so
+  instead of rendering an empty list.
+  **For users:** the sidebar no longer lists ended sessions behind an "ended" toggle — find past runs
+  under All sessions. [Open Sessions](#/sessions)
+
 ## [0.460.0] - 2026-10-12
 ### Changed
 - **Live bets per goal is now an operator setting, not a constant.** The cap (4) exists so a loop cannot

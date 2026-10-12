@@ -1499,8 +1499,6 @@ function Console({ me }: { me: Member }) {
   // own open/close state — the old inline footer expander outgrew the fixed footer once the nav hit
   // ~16 items and fought the sessions list for space.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('aos_sidebar_collapsed') === '1')
-  // Sidebar session list: ended runs collapse behind a toggle so live work stays at the top.
-  const [showEndedNav, setShowEndedNav] = useState(false)
   useEffect(() => { localStorage.setItem('aos_sidebar_collapsed', sidebarCollapsed ? '1' : '0') }, [sidebarCollapsed])
 
   useEffect(() => {
@@ -1861,16 +1859,13 @@ function Console({ me }: { me: Member }) {
       const rank = (s: Session) => (isLive(s) ? 0 : 1) // live first; all terminal (dead) states tie
       return rank(a) - rank(b) || b.createdAt - a.createdAt
     })
-  // Sidebar split: live sessions always show; the open one shows even if ended; the rest of the ended
-  // ones hide behind the "N ended" toggle so a pile of past runs doesn't push live work off-screen.
+  // Sidebar shows live sessions plus the open one even if it ended; past runs live on All sessions.
   const navLive = mySessions.filter(isLive)
   // Signals the collapsed rail surfaces (the expanded sidebar shows them per-row / per-label):
   // how many of MY sessions are blocked on me, and whether the Inbox has anything unread at all.
   const waitingMine = mySessions.filter((s) => waiting.has(s.id)).length
   const unreadInbox = messages.filter((m) => !m.read).length
-  const navEnded = mySessions.filter((s) => !isLive(s))
-  const selectedEndedNav = navEnded.find((s) => s.tmux === selected?.tmux)
-  const collapsibleNav = navEnded.filter((s) => s.tmux !== selected?.tmux)
+  const selectedEndedNav = mySessions.find((s) => !isLive(s) && s.tmux === selected?.tmux)
   // A sidebar switcher row. The "⋯" menu is a SIBLING of the link, not a child — a button nested inside
   // an <a> is invalid interactive content and swallows the anchor's navigation. It stays in flow at
   // opacity-0 (so hovering doesn't reflow the title) and reveals on row hover / keyboard focus / while
@@ -1992,25 +1987,14 @@ function Console({ me }: { me: Member }) {
               <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className="h-5 w-5 text-emerald-600" onClick={onNavClick(() => nav('agents'))} title="spawn an agent"><Plus className="h-3.5 w-3.5" /></Button>
             </div>
           </div>
-          {mySessions.length === 0 && (
+          {navLive.length === 0 && !selectedEndedNav && (
             <div className="text-xs text-muted-foreground">
-              No sessions yet. <a href={navHref('agents')} className="text-primary underline" onClick={onNavClick(() => nav('agents'))}>Spawn an agent</a>.
+              {mySessions.length === 0 ? 'No sessions yet.' : 'No live sessions.'} <a href={navHref('agents')} className="text-primary underline" onClick={onNavClick(() => nav('agents'))}>Spawn an agent</a>.
             </div>
           )}
           <div className="space-y-0.5">
             {navLive.map(renderNavSession)}
             {selectedEndedNav && renderNavSession(selectedEndedNav)}
-            {showEndedNav && collapsibleNav.map(renderNavSession)}
-            {collapsibleNav.length > 0 && (
-              <button
-                onClick={() => setShowEndedNav((v) => !v)}
-                className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground"
-                title={showEndedNav ? 'hide ended sessions' : 'show stopped/ended sessions'}
-              >
-                <ChevronDown className={`h-3 w-3 transition-transform ${showEndedNav ? '' : '-rotate-90'}`} />
-                {showEndedNav ? 'hide ended' : `${collapsibleNav.length} ended`}
-              </button>
-            )}
           </div>
         </div>
 
