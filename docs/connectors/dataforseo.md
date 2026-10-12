@@ -31,7 +31,9 @@ remote session to drop.
      skills already name those tools.
 3. Fill both fields with `secret:DATAFORSEO_LOGIN` / `secret:DATAFORSEO_PASSWORD`. They are resolved from
    the vault at launch, and an unresolvable reference is blanked and audited as
-   `connector.secret.unresolved`.
+   `connector.secret.unresolved`. The login lands in a different env var per version: v3 reads
+   `DATAFORSEO_LOGIN`, v2 reads only `DATAFORSEO_USERNAME` and answers every call with HTTP 401 without it.
+   The catalog entries set the right one; a hand-built connector must too.
 
 **Keep the connector's NAME when replacing an old one.** The MCP server key is the connector id (a slug of
 its label), and tool names are `mcp__<id>__<tool>`. Replacing a `DataforSEO` connector with one labelled

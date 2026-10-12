@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.459.1] - 2026-10-12
+### Fixed
+- **The "DataForSEO (v2 tools)" connector now authenticates.** The v2 server reads its login from
+  `DATAFORSEO_USERNAME`, not `DATAFORSEO_LOGIN`, so a connector added from the 0.458.0 catalog entry got
+  HTTP 401 on every call. The entry now sets `DATAFORSEO_USERNAME` from the same `secret:DATAFORSEO_LOGIN`
+  vault key, so one stored login serves both versions. The v3 entry was unaffected.
+  **For admins:** if you added "DataForSEO (v2 tools)" on 0.458.0, remove it and add it again with the same name.
+
 ## [0.459.0] - 2026-10-12
 ### Changed
 - **Picking an assignee on an Inbox proposal card accepts it.** The card's assignee picker now moves an

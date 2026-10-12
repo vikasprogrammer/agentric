@@ -155,9 +155,11 @@ export const CATALOG: CatalogEntry[] = [
     transport: 'stdio',
     command: 'npx',
     args: ['-y', 'dataforseo-mcp-server@2.9.13'],
+    // v2 reads DATAFORSEO_USERNAME (v3 reads DATAFORSEO_LOGIN, falling back to USERNAME). The env var
+    // differs; the vault key does not, so one stored DATAFORSEO_LOGIN serves both versions.
     fields: [
       {
-        key: 'DATAFORSEO_LOGIN',
+        key: 'DATAFORSEO_USERNAME',
         label: 'API login',
         placeholder: 'secret:DATAFORSEO_LOGIN',
         help: 'The API login from app.dataforseo.com/api-access (not your dashboard login). Store it in Settings → Secrets and enter secret:DATAFORSEO_LOGIN here.',
