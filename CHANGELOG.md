@@ -7,6 +7,10 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Docs
+- `docs/code-graph-plan.md` — parked research on a code-graph for coding agents (fleet exploration
+  share, tool landscape, evidence, and the A/B to run), plus `scripts/code-exploration-share.mjs`, the
+  transcript analyzer behind the numbers.
 
 ## [0.461.0] - 2026-10-13
 ### Added
