@@ -2364,6 +2364,8 @@ export class Automations {
     this.sweepBets(now);
     this.sweepLoginExpiry(now);
     this.sweepExpiredShares(now);
+    // Keep session search's transcript index current (time-boxed; see TerminalManager.indexSessionText).
+    try { this.tm.indexSessionText(150, now.getTime()); } catch { /* search is best-effort, the tick is not */ }
     // Re-nudge stale human-in-the-loop prompts (approvals/questions blocking an agent) so a missed ask
     // doesn't strand the run forever. Wrapped so a bad row can't take down the scheduler.
     try { this.stalePromptSweeper?.(now.getTime()); } catch { /* best-effort, never kills the tick */ }

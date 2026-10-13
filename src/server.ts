@@ -22,7 +22,8 @@ import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { governedCapabilities } from './capabilities/normalize';
 import { evaluate } from './observability/evaluation';
-import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation } from './terminal';
+import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation, type Session } from './terminal';
+import { normalizeSessionRef, toSessionFtsQuery } from './edge/session-search';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
 import { deriveProgress, parseClaim, ProgressClaim, SessionProgress } from './state/session-progress';
 
@@ -1291,41 +1292,68 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // existing tree instead of inventing a new folder; the artifact LIST stays own-scoped.
     return sendJson(res, 200, { artifacts, folders: os.artifacts.folders(), enabled: os.artifacts.enabled });
   }
-  // agent reads back ITS OWN past sessions (episodic self-query — "have I done this before, how did it
-  // go?"), the run-history companion to the semantic memory plane. Own-scoped server-side to the caller's
-  // agent id; metadata only (id/title/status/rating/dates), never a transcript — that's `session_open`.
+  // agent searches past sessions (episodic self-query — "have I done this before, how did it go?", and
+  // "find the run I was in"). Two scopes, chosen by the caller: `agent` (default) = the caller's OWN runs;
+  // `member` = every session the run's run-as human can see in the console (optionally one `agent`), for
+  // an agent acting on that human's behalf. A query is a ranked keyword search over the row's prose AND
+  // what was said in the run (TerminalManager.searchSessions). Metadata + a match snippet + the console
+  // `url` — never a transcript (that's `session_open`), and never a link the agent has to assemble.
   if (method === 'GET' && p === '/api/agent/sessions') {
     const session = url.searchParams.get('session') || '';
     const agent = tm.sessionAgent(session);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);
-    const q = (url.searchParams.get('query') || '').trim().toLowerCase();
-    // Filters + limit are pushed into the store: it selects this agent's ids in SQL and derives only
-    // those rows (see sessionsForAgent) instead of building the whole tenant's list to discard it here.
-    const mine = tm.sessionsForAgent(agent, { query: q, excludeId: session, limit });
-    const sessions = mine.map((s) => ({
-      id: s.id, title: s.title, task: s.task, status: s.status,
+    const q = (url.searchParams.get('query') || '').trim();
+    const scope = url.searchParams.get('scope') === 'member' ? 'member' : 'agent';
+    const agentFilter = (url.searchParams.get('agent') || '').trim() || undefined;
+    let viewer: Member | undefined;
+    if (scope === 'member') {
+      const runAsId = tm.sessionRunAs(session);
+      viewer = runAsId ? os.team.getMember(runAsId) : undefined;
+      if (!viewer) return sendJson(res, 200, { sessions: [], error: 'no_member', scope });
+    }
+    const searchAgent = scope === 'agent' ? agent : agentFilter;
+    let rows: { session: Session; snippet?: string }[];
+    if (toSessionFtsQuery(q)) rows = tm.searchSessions({ query: q, agent: searchAgent, viewer, excludeId: session, limit });
+    else if (viewer) rows = tm.recentSessionsForMember(viewer, { agent: searchAgent, excludeId: session, limit }).map((s) => ({ session: s }));
+    else rows = tm.sessionsForAgent(agent, { query: q.toLowerCase(), excludeId: session, limit }).map((s) => ({ session: s }));
+    if (scope === 'member') {
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'session.searched', data: { scope, query: q.slice(0, 200), agent: agentFilter, runAs: viewer!.id, results: rows.length } });
+    }
+    const sessions = rows.map(({ session: s, snippet }) => ({
+      id: s.id, agent: s.agent, title: s.title, task: s.task, status: s.status, summary: s.summary,
       createdAt: s.createdAt, updatedAt: s.updatedAt, rating: s.rating, headless: s.headless, source: s.sourceKind,
+      snippet, url: tm.sessionUrl(s.id),
     }));
-    return sendJson(res, 200, { sessions });
+    return sendJson(res, 200, { sessions, scope });
   }
-  // agent OPENS one of its own past sessions to read what happened — the friendly transcript timeline, or
-  // (summary=1) a throwaway-claude recap of the whole run. Own-scoped: the target must belong to the
-  // caller's agent (resolved via `sessionsForAgent`), else 403. Falls back to the raw pane log for a
-  // headless run that tee'd only `session-<id>.log` and has no structured transcript.
+  // agent OPENS a past session to read what happened — the friendly transcript timeline, or (summary=1)
+  // a throwaway-claude recap of the whole run. Allowed when the target is the caller's own agent's run, or
+  // one the run's run-as human can see in the console (the `member` scope of session_history) — the
+  // latter audited as `session.opened`. Accepts a bare id, the `aos-<id>` tmux name, or a console URL.
+  // Falls back to the raw pane log for a headless run that tee'd only `session-<id>.log`.
   if (method === 'GET' && p === '/api/agent/session') {
     const session = url.searchParams.get('session') || '';
     const agent = tm.sessionAgent(session);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
-    const id = url.searchParams.get('id') || '';
+    const id = normalizeSessionRef(url.searchParams.get('id') || '');
     // Ownership is one indexed row-test; the shape then comes from the by-id list path — instead of
     // building this agent's whole history to `.find()` one id in it.
-    if (!tm.sessionBelongsToAgent(id, agent)) return sendJson(res, 403, { error: 'not one of your sessions' });
+    let via: 'agent' | 'member' = 'agent';
+    if (!tm.sessionBelongsToAgent(id, agent)) {
+      const runAsId = tm.sessionRunAs(session);
+      const viewer = runAsId ? os.team.getMember(runAsId) : undefined;
+      if (!viewer || !tm.memberCanViewSession(id, viewer)) return sendJson(res, 403, { error: 'not one of your sessions' });
+      via = 'member';
+    }
     const target = tm.listSessions(undefined, undefined, [id])[0];
     if (!target) return sendJson(res, 403, { error: 'not one of your sessions' });
-    const meta = { id: target.id, title: target.title, task: target.task, status: target.status, createdAt: target.createdAt, updatedAt: target.updatedAt, rating: target.rating };
+    if (via === 'member') {
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'session.opened', data: { target: id, targetAgent: target.agent, via, runAs: tm.sessionRunAs(session) } });
+    }
+    const meta = { id: target.id, agent: target.agent, title: target.title, task: target.task, status: target.status, createdAt: target.createdAt, updatedAt: target.updatedAt, rating: target.rating, url: tm.sessionUrl(target.id) };
     const convo = tm.sessionConversation(id);
     if (url.searchParams.get('summary') === '1') {
       // Pool credentials, not the box default — see TerminalManager.outOfBandCredentialEnv. `reason` is

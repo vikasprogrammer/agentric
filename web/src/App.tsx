@@ -969,7 +969,15 @@ function useHashRoute(): { route: Route; detail: string; query: string; nav: (r:
     const head = slash === -1 ? path : path.slice(0, slash)
     const rest = slash === -1 ? '' : path.slice(slash + 1)
     const route = (ROUTES as string[]).includes(head) ? (head as Route) : 'inbox'
-    return { route, detail: rest ? decodeDetail(rest) : '', query }
+    let detail = rest ? decodeDetail(rest) : ''
+    // The sessions detail is the tmux NAME (`aos-<id>`), but a bare session id is what every API,
+    // tool and log line prints — so `#/sessions/ses_…` is the link people (and agents) actually build.
+    // Accept it and rewrite the address bar to the canonical form instead of opening a blank pane.
+    if (route === 'sessions' && /^ses_[A-Za-z0-9]+$/.test(detail)) {
+      detail = `aos-${detail}`
+      try { window.history.replaceState(null, '', `#/sessions/${detail}${query ? `?${query}` : ''}`) } catch { /* cosmetic */ }
+    }
+    return { route, detail, query }
   }
   const [state, setState] = useState(parse)
   // Where you came FROM, most recent last. A full-page room (a task, a goal) is reachable from several
