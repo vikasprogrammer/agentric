@@ -64,6 +64,8 @@ interface Login extends LoginState {
   tmux: string;
   /** Prompts already answered, so a poll can't press Enter twice on the same screen. */
   answered: Set<string>;
+  /** URLs of attempts the runtime already rejected — their PKCE challenge is spent. */
+  deadUrls: Set<string>;
   codeAt?: number;
   /** When we first saw an authorize URL that wasn't yet whole — lets us wait out a mid-render capture
    *  before deciding the link is genuinely clipped. */
@@ -95,7 +97,9 @@ const looksWhole = (u: string): boolean => /[?&]state=[^&\s]+/.test(u);
  *  whether it's complete enough to show, so a still-partial reassembly is treated as "not ready yet". */
 export function extractAuthorizeUrl(pane: string): string | undefined {
   const lines = pane.split('\n');
-  const start = lines.findIndex((l) => URL_START_RE.test(l));
+  // The LAST one: after a retry the pane can still hold the previous attempt's (now dead) URL above it.
+  let start = -1;
+  for (let i = lines.length - 1; i >= 0; i--) if (URL_START_RE.test(lines[i])) { start = i; break; }
   if (start < 0) return undefined;
   let url = lines[start].match(URL_RE)?.[0];
   if (!url) return undefined;
@@ -181,7 +185,10 @@ export class RuntimeLoginManager {
     //    box to delete a directory — the exact class of "the easy path silently doesn't work" this surface
     //    exists to remove. Move it aside instead and continue into a clean dir. Moved, never deleted: the
     //    dir also holds the transcripts of every run made under that account.
-    if (fs.existsSync(path.join(dir, spec.credentialEnv.configDirFile))) {
+    //  "Holds a login" is judged by the dir having ANY content, not by the credential file: on macOS the
+    //  login lives in the Keychain, so an old dir has no `.credentials.json` — and reusing it handed the CLI
+    //  a config that was already onboarded (and an expired Keychain entry), which is not a fresh sign-in.
+    if (dirHasContent(dir)) {
       const owner = this.deps.accounts.list().find((a) => a.configDir && path.resolve(a.configDir) === path.resolve(dir));
       if (owner) throw new Error(`${dir} is the credential dir of the "${owner.name}" account — remove that account first, or use another name`);
       const aside = `${dir}.orphan-${Date.now()}`;
@@ -198,7 +205,14 @@ export class RuntimeLoginManager {
     this.deps.backend.spawn('', {
       sessionId: id, agent: 'runtime-login', tmuxName: tmux,
       env: { [spec.credentialEnv.configDirVar]: dir },
-      argv: [spec.bin],
+      // `auth login` exits on a rejected code instead of offering a retry the way the TUI did, so wrap it in
+      // a loop that restores that contract: same "Press Enter to retry" prompt, and the re-run mints a fresh
+      // authorize URL — exactly what the BAD_CODE_RE branch in poll() expects. Exits once a login succeeds.
+      // Each pass starts on a WIPED pane (`tmux clear-history`, run from inside it): poll() reads the whole
+      // scrollback, so the previous attempt's "Login failed" and dead URL would otherwise still be there.
+      argv: spec.loginArgs
+        ? ['sh', '-c', 'while :; do clear; tmux clear-history 2>/dev/null; "$0" "$@" && exit 0; printf "\\nPress Enter to retry\\n"; read _; done', spec.bin, ...spec.loginArgs]
+        : [spec.bin],
       // Wide pane on purpose: nobody attaches to this one, and the authorize URL is ~400 chars. A TUI
       // hard-wraps to its terminal width and emits real newlines, which `capture-pane -J` will not
       // rejoin — at the default 203 columns the URL came back truncated at the wrap point (caught by a
@@ -206,7 +220,7 @@ export class RuntimeLoginManager {
       // needs no reassembly heuristic.
       cols: 900,
     });
-    const login: Login = { id, runtime, name: clean, phase: 'starting', startedAt: Date.now(), dir, tmux, answered: new Set(), codeAttempts: 0 };
+    const login: Login = { id, runtime, name: clean, phase: 'starting', startedAt: Date.now(), dir, tmux, answered: new Set(), deadUrls: new Set(), codeAttempts: 0 };
     this.logins.set(id, login);
     this.deps.audit('runtime.account.login.started', { runtime, name: clean, dir });
     return toState(login);
@@ -238,7 +252,13 @@ export class RuntimeLoginManager {
     // the human a fresh link, rather than telling them to start over while the pane quietly re-arms with a
     // challenge the link in their browser no longer matches. That mismatch is what made a second attempt
     // fail as reliably as the first.
-    if (BAD_CODE_RE.test(pane)) {
+    // Only after a code was actually submitted: a rejection can follow nothing else, and checking in other
+    // phases let a previous attempt's error still on screen be counted again on every poll.
+    if (l.phase === 'exchanging' && BAD_CODE_RE.test(pane)) {
+      // The error and the retry prompt are separate writes; a poll can land between them. Re-arming then
+      // would skip the Enter, leaving the CLI parked on the retry prompt and the dead URL on screen — wait
+      // for the prompt instead (EXCHANGE_GRACE_MS still bounds it).
+      if (!RETRY_PROMPT_RE.test(pane) && l.codeAttempts < MAX_CODE_ATTEMPTS) return toState(l);
       if (l.codeAttempts >= MAX_CODE_ATTEMPTS) {
         return toState(this.fail(l, `the runtime rejected ${l.codeAttempts} codes — sign in on the box with CLAUDE_CONFIG_DIR=${l.dir} claude, then add that dir by path`));
       }
@@ -246,8 +266,9 @@ export class RuntimeLoginManager {
       this.deps.audit('runtime.account.login.code.rejected', { runtime: l.runtime, name: l.name, attempt: l.codeAttempts });
       // Re-arm: press Enter on the retry prompt, drop the stale URL, and go back to waiting for the CLI to
       // print the next one. `answered` is reset because the retry replays the same pre-browser prompts.
-      if (RETRY_PROMPT_RE.test(pane)) this.deps.backend.injectText('', l.tmux, '', true, true, 1);
+      this.deps.backend.injectText('', l.tmux, '', true, true, 1);
       l.phase = 'starting';
+      if (l.url) l.deadUrls.add(l.url);
       l.url = undefined;
       l.urlSeenAt = undefined;
       l.codeAt = undefined;
@@ -275,7 +296,8 @@ export class RuntimeLoginManager {
     }
 
     const url = extractAuthorizeUrl(pane);
-    if (url && l.phase === 'starting' && l.url === undefined) {
+    // A rejected attempt's URL can linger on screen for a beat after the retry Enter — never re-offer it.
+    if (url && l.phase === 'starting' && l.url === undefined && !l.deadUrls.has(url)) {
       if (looksWhole(url)) {
         l.phase = 'awaiting-code';
         l.url = url;
@@ -376,6 +398,10 @@ export class RuntimeLoginManager {
     }
   }
 }
+
+const dirHasContent = (dir: string): boolean => {
+  try { return fs.readdirSync(dir).length > 0; } catch { return false; }
+};
 
 const toState = (l: Login): LoginState => ({
   id: l.id, runtime: l.runtime, name: l.name, phase: l.phase, url: l.url, error: l.error,
