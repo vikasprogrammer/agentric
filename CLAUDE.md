@@ -389,9 +389,15 @@ Key modules:
   + 13 conditional (chat-reply / egress / media / multi-org `github_token`, each exposed only when its
   env flag is set; full list in `docs/agent-mcp-tools.md`). Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):
-  `session_history` lists the agent's OWN past sessions (id/title/status/rating, own-scoped, "have I done
-  this before?") and `session_open` reopens any one — the friendly transcript timeline (`readConversation`)
-  or a `summary:true` recap — gated server-side to the caller's own agent. KB:
+  `session_history` searches past sessions — with a `query`, ranked FTS5/bm25 over each run's title/task/
+  report summary (`term_sessions_fts`, trigger-kept) AND what was said in it (`session_text_fts`, one row per
+  conversation, filled off the scheduler tick by `indexSessionText` — see `src/edge/session-search.ts`).
+  Scope `agent` (default) = own runs; `member` = everything the run-as human can see in the console
+  (`canReadRow`, audited `session.searched`). `session_open` reopens one — the friendly transcript timeline
+  (`readConversation`) or a `summary:true` recap — own-agent, or member-visible (audited `session.opened`).
+  Both return the console `url` (`TerminalManager.sessionUrl`): the sessions route's detail is the TMUX name
+  `aos-<id>`, so an agent-built `#/sessions/ses_…` used to land on a blank pane (the console now rewrites
+  that form too). KB:
   `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`library_list` (session cards are
   **owner-scoped** — addressed to the run's `run_as`/spawner via the `sessionOwner` audience — so the

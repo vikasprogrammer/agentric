@@ -1441,6 +1441,45 @@ function migrate(db: Db): void {
   // reviewer weighs, and assigning someone on the board is the human's act that accepts it (→ todo).
   // Adopted as the assignee when a proposal is accepted without one. NULL on every human-filed task.
   addColumn(db, 'tasks', 'suggested_assignee', 'TEXT');
+
+  // SESSION SEARCH (`session_history`): ranked keyword search over past runs. Two indexes, because the
+  // two halves of a session change at very different rates:
+  //   - term_sessions_fts — external-content FTS over the row's own prose (title, seed task, report
+  //     summary), kept in step by triggers. The UPDATE trigger is scoped to those columns AND to a real
+  //     change: term_sessions is rewritten constantly (activity stamps, cost, turn state), and an
+  //     un-scoped trigger would re-tokenize a whole seed task on every hook beacon.
+  //   - session_text_fts — what was actually SAID in the run (prompts, replies, the files/URLs it
+  //     touched), one row per CONVERSATION (`claude_session_id`, else the session id), filled off the
+  //     scheduler tick by TerminalManager.indexSessionText. Title + task alone missed the case that
+  //     motivated this: a long interactive run titled after its first job whose later work (a PayPal
+  //     webhook fix) existed only in the transcript, so an agent asked to find it read the live DB and
+  //     grepped other agents' transcripts from Bash instead.
+  const hadSessionFts = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'term_sessions_fts'").get();
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS term_sessions_fts USING fts5(
+      title, task, report_summary, content='term_sessions', content_rowid='rowid', tokenize='porter unicode61'
+    );
+    CREATE TRIGGER IF NOT EXISTS term_sessions_fts_ai AFTER INSERT ON term_sessions BEGIN
+      INSERT INTO term_sessions_fts(rowid, title, task, report_summary) VALUES (new.rowid, new.title, new.task, new.report_summary);
+    END;
+    CREATE TRIGGER IF NOT EXISTS term_sessions_fts_ad AFTER DELETE ON term_sessions BEGIN
+      INSERT INTO term_sessions_fts(term_sessions_fts, rowid, title, task, report_summary) VALUES ('delete', old.rowid, old.title, old.task, old.report_summary);
+    END;
+    CREATE TRIGGER IF NOT EXISTS term_sessions_fts_au AFTER UPDATE OF title, task, report_summary ON term_sessions
+      WHEN old.title IS NOT new.title OR old.task IS NOT new.task OR old.report_summary IS NOT new.report_summary BEGIN
+      INSERT INTO term_sessions_fts(term_sessions_fts, rowid, title, task, report_summary) VALUES ('delete', old.rowid, old.title, old.task, old.report_summary);
+      INSERT INTO term_sessions_fts(rowid, title, task, report_summary) VALUES (new.rowid, new.title, new.task, new.report_summary);
+    END;
+    CREATE VIRTUAL TABLE IF NOT EXISTS session_text_fts USING fts5(convo UNINDEXED, body, tokenize='porter unicode61');
+    -- Watermark per conversation: re-read a transcript only once its rows show activity after this.
+    CREATE TABLE IF NOT EXISTS session_text_index (
+      convo      TEXT PRIMARY KEY,
+      indexed_at INTEGER NOT NULL,
+      bytes      INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  // Existing rows predate the triggers — index them once, on the boot that creates the table.
+  if (!hadSessionFts) db.exec("INSERT INTO term_sessions_fts(term_sessions_fts) VALUES ('rebuild')");
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

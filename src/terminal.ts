@@ -51,6 +51,7 @@ import { readTranscriptEnd } from './edge/outcome';
 import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF, WAITING_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
 import { readConversation, findTranscript, registerTranscriptRoot, Conversation } from './edge/conversation';
+import { digestConversation, sessionConsoleUrl, toSessionFtsQuery } from './edge/session-search';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
 // the tick poller finishes the rest, bounded by a TTL + a poll ceiling so a stuck render can't linger.
@@ -171,8 +172,9 @@ gateway before it runs. An action may be **allowed**, **denied**, or **suspended
 You have durable memory spanning your past runs (your own, plus anything shared workspace-wide). At most
 a short head start is placed in this prompt — you must reach for the rest:
 - \`recall\` **at the start of non-trivial work** to pull past decisions, fixes, and gotchas, so you
-  don't re-derive facts or repeat mistakes a previous run already solved. \`session_history\` /
-  \`session_open\` show your actual past runs when you need to know how something went last time.
+  don't re-derive facts or repeat mistakes a previous run already solved. \`session_history\` (keyword
+  search over what was said in each run; \`scope:'member'\` to find a run your human was in) /
+  \`session_open\` show actual past runs. Link a human to a session with the \`url\` those tools return.
 - \`remember\` at the **moments worth encoding** — when a result **surprised** you, when something took
   real **effort** to work out, when you made a **decision** future runs will reuse, or when you hit a
   **gotcha / constraint / root cause**. One self-contained fact per memory; skip routine steps and
@@ -1945,6 +1947,155 @@ export class TerminalManager {
     return !!this.db
       .prepare('SELECT 1 FROM term_sessions WHERE id = ? AND agent = ? AND archived_at IS NULL')
       .get(sessionId, agent);
+  }
+
+  /** Whether `viewer` may see this (non-archived) session in the console — the same rule the Sessions
+   *  list applies. Backs `session_open` on a run found with `session_history({ scope:'member' })`. */
+  memberCanViewSession(sessionId: string, viewer: Member): boolean {
+    const r = this.db
+      .prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ? AND archived_at IS NULL')
+      .get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
+    return !!r && this.withRowCache(() => this.canReadRow(sessionId, r.spawned_by, r.run_as, viewer));
+  }
+
+  /** The console deep-link for a session — hand this to a human; never assemble one. */
+  sessionUrl(id: string): string {
+    return sessionConsoleUrl(this.publicOrigin || this.baseUrl, id);
+  }
+
+  /**
+   * Ranked keyword search over past sessions (`session_history` with a query). Matches the row's own
+   * prose (title, seed task, report summary) AND what was said in the run (`session_text_fts`, filled by
+   * {@link indexSessionText}), scored together with bm25 — a run matching in both outranks one matching
+   * in either.
+   *
+   * Scope is one of two, and the caller picks it, not the query:
+   *   - `agent` (no `viewer`): that agent's OWN runs — the long-standing `session_history` rule.
+   *   - `viewer`: every session that member can see in the console, optionally narrowed to one `agent`.
+   *     This is the "find the session I was in" case: the agent is acting FOR a person, and the person
+   *     can already open every one of these runs themselves. Visibility is the console's own rule
+   *     (`canReadRow`), so this never shows an agent anything its human couldn't see.
+   *
+   * Runs that share a transcript (a `poke:`/resume run continues the same conversation) collapse to the
+   * best-scoring one, so one conversation is one hit.
+   */
+  searchSessions(opts: { query: string; agent?: string; viewer?: Member; excludeId?: string; limit?: number }): { session: Session; snippet?: string }[] {
+    const any = toSessionFtsQuery(opts.query, 'any');
+    if (!any) return [];
+    if (!opts.viewer && !opts.agent) return [];
+    const all = toSessionFtsQuery(opts.query, 'all');
+    const limit = Math.min(Math.max(Math.floor(opts.limit ?? 20), 1), 100);
+    const filters: string[] = ['s.archived_at IS NULL'];
+    const scopeArgs: unknown[] = [];
+    if (opts.agent) { filters.push('s.agent = ?'); scopeArgs.push(opts.agent); }
+    if (opts.excludeId) { filters.push('s.id != ?'); scopeArgs.push(opts.excludeId); }
+    // Over-fetch: member visibility and conversation-collapsing both run after SQL.
+    const ranked = this.db.prepare(`
+      SELECT s.id, s.spawned_by, s.run_as, COALESCE(s.claude_session_id, s.id) AS convo, SUM(h.rank) AS score
+        FROM (
+          SELECT ts.id AS id, bm25(term_sessions_fts, 4.0, 1.5, 3.0) AS rank
+            FROM term_sessions_fts JOIN term_sessions ts ON ts.rowid = term_sessions_fts.rowid
+           WHERE term_sessions_fts MATCH ?
+          UNION ALL
+          SELECT ts.id, bm25(session_text_fts)
+            FROM session_text_fts JOIN term_sessions ts ON ts.claude_session_id = session_text_fts.convo
+           WHERE session_text_fts MATCH ?
+          UNION ALL
+          SELECT ts.id, bm25(session_text_fts)
+            FROM session_text_fts JOIN term_sessions ts ON ts.id = session_text_fts.convo AND ts.claude_session_id IS NULL
+           WHERE session_text_fts MATCH ?
+        ) h JOIN term_sessions s ON s.id = h.id
+       WHERE ${filters.join(' AND ')}
+       GROUP BY s.id
+       ORDER BY score ASC, s.created_at DESC
+       LIMIT ?`);
+    type Cand = { id: string; spawned_by: string | null; run_as: string | null; convo: string; score: number };
+    const fetch = (m: string): Cand[] => ranked.all<Cand>(m, m, m, ...scopeArgs, Math.min(limit * 8, 400));
+    // Every-word matches first (a run that says "dataforseo" AND "disconnect" beats one that says
+    // "disconnecting" five times), then any-word matches to fill. One word → the two are the same query.
+    const cand = all === any ? fetch(any) : [...fetch(all), ...fetch(any)];
+    const viewer = opts.viewer;
+    const seen = new Set<string>();
+    const picked: { id: string; convo: string; match: string }[] = [];
+    this.withRowCache(() => {
+      for (const c of cand) {
+        if (picked.length >= limit) break;
+        if (seen.has(c.convo)) continue;
+        if (viewer && !this.canReadRow(c.id, c.spawned_by, c.run_as, viewer)) continue;
+        seen.add(c.convo);
+        picked.push({ id: c.id, convo: c.convo, match: any });
+      }
+    });
+    if (!picked.length) return [];
+    // Where in the run the words were said — enough for the agent to tell a real hit from a passing mention.
+    // Falls back to the row's own prose (title/task/summary) when the words aren't in the transcript.
+    const snip = this.db.prepare(`SELECT snippet(session_text_fts, 1, '«', '»', '…', 16) AS s FROM session_text_fts
+                                   WHERE session_text_fts MATCH ? AND convo = ? LIMIT 1`);
+    const rowSnip = this.db.prepare(`SELECT snippet(term_sessions_fts, -1, '«', '»', '…', 16) AS s
+                                       FROM term_sessions_fts JOIN term_sessions ts ON ts.rowid = term_sessions_fts.rowid
+                                      WHERE term_sessions_fts MATCH ? AND ts.id = ? LIMIT 1`);
+    const byId = new Map(this.listSessions(undefined, 400, picked.map((p) => p.id)).map((s) => [s.id, s]));
+    const out: { session: Session; snippet?: string }[] = [];
+    for (const p of picked) {
+      const session = byId.get(p.id);
+      if (!session) continue;
+      const raw = snip.get<{ s: string }>(p.match, p.convo)?.s ?? rowSnip.get<{ s: string }>(p.match, p.id)?.s;
+      const s = raw?.replace(/\s+/g, ' ').trim();
+      out.push({ session, snippet: s || undefined });
+    }
+    return out;
+  }
+
+  /** Newest sessions a member can see (optionally one agent's) — `session_history({ scope:'member' })`
+   *  with no query. Visibility runs over a bounded newest-first window, never the whole tenant. */
+  recentSessionsForMember(viewer: Member, opts: { agent?: string; excludeId?: string; limit?: number } = {}): Session[] {
+    const limit = Math.min(Math.max(Math.floor(opts.limit ?? 20), 1), 100);
+    const filters = ['archived_at IS NULL'];
+    const args: unknown[] = [];
+    if (opts.agent) { filters.push('agent = ?'); args.push(opts.agent); }
+    if (opts.excludeId) { filters.push('id != ?'); args.push(opts.excludeId); }
+    const rows = this.db
+      .prepare(`SELECT id, spawned_by, run_as FROM term_sessions WHERE ${filters.join(' AND ')} ORDER BY created_at DESC LIMIT 500`)
+      .all<{ id: string; spawned_by: string | null; run_as: string | null }>(...args);
+    const ids = this.withRowCache(() => rows.filter((r) => this.canReadRow(r.id, r.spawned_by, r.run_as, viewer)).slice(0, limit).map((r) => r.id));
+    return this.listSessions(undefined, 400, ids);
+  }
+
+  /**
+   * Fill `session_text_fts` — what was said in each conversation — a slice at a time, off the scheduler
+   * tick. A conversation is (re)read once its rows show activity after its watermark, so a finished run
+   * is read once and a live one is caught up as it goes; the backlog of an existing tenant drains newest
+   * first over the first minutes after deploy. Bounded by `budgetMs` because transcript reads are
+   * synchronous and a days-long transcript is megabytes. Returns how many conversations it indexed.
+   */
+  indexSessionText(budgetMs = 150, now = Date.now()): number {
+    const started = Date.now();
+    const stale = this.db.prepare(`
+      SELECT COALESCE(s.claude_session_id, s.id) AS convo, MAX(s.id) AS id, -- any run of it reads the same transcript
+             MAX(COALESCE(s.last_activity, s.updated_at, s.created_at)) AS active
+        FROM term_sessions s LEFT JOIN session_text_index i ON i.convo = COALESCE(s.claude_session_id, s.id)
+       WHERE s.archived_at IS NULL
+       GROUP BY COALESCE(s.claude_session_id, s.id)
+      HAVING MAX(i.indexed_at) IS NULL OR active > MAX(i.indexed_at)
+       ORDER BY active DESC
+       LIMIT 40`).all<{ convo: string; id: string; active: number }>();
+    const del = this.db.prepare('DELETE FROM session_text_fts WHERE convo = ?');
+    const ins = this.db.prepare('INSERT INTO session_text_fts (convo, body) VALUES (?, ?)');
+    const mark = this.db.prepare(`INSERT INTO session_text_index (convo, indexed_at, bytes) VALUES (?, ?, ?)
+                                   ON CONFLICT(convo) DO UPDATE SET indexed_at = excluded.indexed_at, bytes = excluded.bytes`);
+    let n = 0;
+    for (const row of stale) {
+      if (n > 0 && Date.now() - started > budgetMs) break;
+      let body = '';
+      try { body = digestConversation(this.sessionConversation(row.id).turns); } catch { /* unreadable → index nothing, retry on next activity */ }
+      del.run(row.convo);
+      if (body) ins.run(row.convo, body);
+      // Stamp the watermark at the row's own activity time, not `now`: activity that lands while we read
+      // is still newer than the mark, so the next sweep picks it up.
+      mark.run(row.convo, Math.min(row.active ?? now, now), body.length);
+      n++;
+    }
+    return n;
   }
 
   /**
@@ -4893,7 +5044,7 @@ export class TerminalManager {
       // A human-facing deep-link back to THIS session's console page (the tmux is `aos-<id>`, which is the
       // sessions route's detail segment). Handed to agents so a PR/report/artifact can point a reviewer at
       // the run that produced it — the traceability spine from an external artifact back into the audited OS.
-      AOS_SESSION_URL: `${this.publicOrigin || this.baseUrl}/#/sessions/aos-${id}`,
+      AOS_SESSION_URL: this.sessionUrl(id),
       AOS_TENANT: this.os.tenant, // routes loopback agent calls to THIS tenant's runtime (multi-tenant)
       SESSION: id,
       AGENT: agent,

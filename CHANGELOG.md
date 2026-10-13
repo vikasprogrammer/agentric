@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.461.0] - 2026-10-13
+### Added
+- **`session_history` is a real keyword search, and can find a run on another agent.** A query is now
+  ranked full-text search (FTS5, bm25, stemmed) over each run's title, seed task and report summary AND
+  over what was said in it: prompts, replies, and the files/URLs each action touched. The transcript half
+  is a per-conversation index filled off the scheduler tick in 150ms slices, capped at 32KB per
+  conversation and sampled evenly, so the last topic of a days-long run survives. Every-word matches rank
+  above any-word ones, the resumed runs of one conversation collapse to a single hit, and each hit shows
+  a snippet of where it matched. A new `scope:'member'` searches every session the person the run acts for
+  can see in the console (the console's own visibility rule, audited `session.searched`), and
+  `session_open` opens those too (audited `session.opened`). The motivating case: asked to find "the
+  session where we fixed the PayPal webhook", an agent found the old tool could not see work buried late in
+  a run titled after its first job, so it read the tenant DB with `node:sqlite` from Bash and grepped other
+  agents' transcripts instead.
+  **For users:** ask any agent to find a past session by what happened in it (for example "the session
+  where we fixed the PayPal webhook"). It searches what was said in the run, not just its title, and can
+  find sessions you were in with other agents.
+### Fixed
+- **Session links from agents open the session.** The console's session route expects the tmux name
+  (`#/sessions/aos-ses_…`), but agents built `#/sessions/ses_…` from the bare id, which opened a blank
+  pane. The console now accepts the bare-id form and rewrites the address bar. `session_history` and
+  `session_open` also return the canonical `url`, and accept a bare id, `aos-<id>` or a full link.
+
 ## [0.460.1] - 2026-10-12
 ### Removed
 - **The sidebar's "N ended" toggle.** The sidebar session list now shows only live sessions (plus the

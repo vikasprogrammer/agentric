@@ -999,35 +999,40 @@ const TOOLS = [
   {
     name: 'session_history',
     description:
-      'List your OWN past sessions — your episodic run history ("have I done this before, and how did it ' +
-      'go?"). The companion to `recall`: memory holds distilled facts you chose to keep, this holds the ' +
-      'actual runs, which you can reopen in full. Returns each run\'s id, title, status, human rating ' +
-      '(👍/👎 if scored), and seed task — newest first, not the transcript (use `session_open` for that). ' +
-      'Scoped to THIS agent: you only ever see your own runs, never another agent\'s. Filter with `query` ' +
-      '(matches the title/task). Read-only.',
+      'Search or list past sessions — the actual runs, which you can reopen in full with `session_open`. ' +
+      'The companion to `recall`: memory holds distilled facts, this holds what happened. With a `query` ' +
+      'it is a ranked KEYWORD search over each run\'s title, seed task, report summary AND what was said in ' +
+      'it (prompts, replies, files/URLs touched), with a snippet showing where it matched; without one it ' +
+      'lists newest first. Scope: `agent` (default) = your OWN runs ("have I done this before?"); `member` = ' +
+      'every session the human this run acts for can see in the console, any agent ("find the session I was ' +
+      'in where we fixed X") — narrow with `agent`. Each result has a `url`: give THAT to a human, never ' +
+      'build a session link yourself. Read-only.',
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        query: { type: 'string', description: 'Optional text to match against past sessions\' title and seed task.' },
-        limit: { type: 'number', minimum: 1, maximum: 100, default: 20, description: 'Max sessions, newest first (default 20).' },
+        query: { type: 'string', description: 'Keywords to search for (any word matches; runs matching more of them rank higher). Omit to list newest first.' },
+        scope: { type: 'string', enum: ['agent', 'member'], default: 'agent', description: '`agent` = your own runs; `member` = every run your human can see (needs a run acting for a person).' },
+        agent: { type: 'string', description: 'With scope `member`: only this agent\'s runs.' },
+        limit: { type: 'number', minimum: 1, maximum: 100, default: 20, description: 'Max sessions (default 20).' },
       },
     },
   },
   {
     name: 'session_open',
     description:
-      'Open ONE of your past sessions (id from `session_history`) and read what happened — the friendly ' +
+      'Open ONE past session (id from `session_history`) and read what happened — the friendly ' +
       'timeline of messages and the actions you took, so you can see how you approached something before ' +
       'and what the outcome was. Set `summary:true` for a short recap of the whole run instead of the full ' +
-      'turn-by-turn timeline (best when the session was long). You can only open your OWN sessions. Read-only.',
+      'turn-by-turn timeline (best when the session was long). Opens your own sessions, or any session ' +
+      '`session_history({ scope:\'member\' })` returned. Takes the id, `aos-<id>`, or the session URL. Read-only.',
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        id: { type: 'string', description: 'The session id to open (from session_history).' },
+        id: { type: 'string', description: 'The session to open: its id (from session_history), `aos-<id>`, or its console URL.' },
         summary: { type: 'boolean', description: 'Return a condensed recap of the whole session instead of the message-by-message timeline. Default false.' },
       },
       required: ['id'],
@@ -2647,8 +2652,8 @@ async function artifactsList(args: Record<string, unknown>): Promise<string> {
 }
 
 // ── Episodic self-query: your own past sessions (the run-history companion to `recall`) ──
-interface SessionLite { id: string; title: string; task: string; status: string; createdAt: number; updatedAt?: number; rating?: 'up' | 'down'; headless?: boolean; source?: string }
-interface SessionMeta { id: string; title: string; task: string; status: string; createdAt: number; updatedAt?: number; rating?: 'up' | 'down' }
+interface SessionLite { id: string; agent?: string; title: string; task: string; status: string; summary?: string; createdAt: number; updatedAt?: number; rating?: 'up' | 'down'; headless?: boolean; source?: string; snippet?: string; url?: string }
+interface SessionMeta { id: string; agent?: string; title: string; task: string; status: string; createdAt: number; updatedAt?: number; rating?: 'up' | 'down'; url?: string }
 type ChatTurnLite =
   | { kind: 'user'; text: string }
   | { kind: 'assistant'; text: string }
@@ -2672,13 +2677,25 @@ async function sessionHistory(args: Record<string, unknown>): Promise<string> {
   u.searchParams.set('session', SESSION);
   if (typeof args.limit === 'number') u.searchParams.set('limit', String(args.limit));
   if (args.query) u.searchParams.set('query', String(args.query));
+  const member = args.scope === 'member';
+  if (member) u.searchParams.set('scope', 'member');
+  if (args.agent) u.searchParams.set('agent', String(args.agent));
   const res = await fetch(u, { headers: H() });
-  const data = (await res.json()) as { sessions?: SessionLite[] };
+  const data = (await res.json()) as { sessions?: SessionLite[]; error?: string };
+  if (data.error === 'no_member') return 'This run is not acting for a person, so there are no teammate sessions to search — scope `member` needs a run started by (or for) a teammate. Your own runs are still searchable with the default scope.';
   const sessions = data.sessions ?? [];
-  if (!sessions.length) return args.query ? 'None of your past sessions match that.' : 'You have no past sessions yet.';
+  if (!sessions.length) return args.query ? 'No past session matches that.' : member ? 'No sessions to show.' : 'You have no past sessions yet.';
   return sessions
-    .map((s) => `- ${s.id} · ${s.status}${verdictMark(s.rating)} · ${fmtWhen(s.updatedAt || s.createdAt)} — ${snip(s.title, 80)}${s.task ? `\n    ↳ ${snip(s.task, 100)}` : ''}`)
-    .join('\n') + '\n\n(Use `session_open <id>` to read one, or add `summary:true` for a recap.)';
+    .map((s) => {
+      const who = member && s.agent ? `${s.agent} · ` : '';
+      const lines = [`- ${s.id} · ${who}${s.status}${verdictMark(s.rating)} · ${fmtWhen(s.updatedAt || s.createdAt)} — ${snip(s.title, 80)}`];
+      if (s.summary) lines.push(`    ↳ ${snip(s.summary, 140)}`);
+      else if (s.task) lines.push(`    ↳ ${snip(s.task, 100)}`);
+      if (s.snippet) lines.push(`    matched: ${snip(s.snippet, 200)}`);
+      if (s.url) lines.push(`    ${s.url}`);
+      return lines.join('\n');
+    })
+    .join('\n') + '\n\n(Use `session_open <id>` to read one, or add `summary:true` for a recap. Link humans with the url shown.)';
 }
 
 async function sessionOpen(args: Record<string, unknown>): Promise<string> {
@@ -2690,11 +2707,11 @@ async function sessionOpen(args: Record<string, unknown>): Promise<string> {
   u.searchParams.set('id', id);
   if (wantSummary) u.searchParams.set('summary', '1');
   const res = await fetch(u, { headers: H() });
-  if (res.status === 403) return 'That session is not one of yours — you can only open your OWN past sessions (see session_history).';
+  if (res.status === 403) return 'You can\'t open that session — only your own runs, or ones the person this run acts for can see (find those with session_history scope `member`).';
   const data = (await res.json()) as { meta?: SessionMeta; turns?: ChatTurnLite[]; found?: boolean; summary?: string; log?: string; error?: string };
   if (data.error) return `Could not open that session: ${data.error}.`;
   const m = data.meta;
-  const head = m ? `Session ${m.id} — ${snip(m.title, 100)} [${m.status}${verdictMark(m.rating)}]\nStarted ${fmtWhen(m.createdAt)}${m.task ? `\nSeed: ${snip(m.task, 200)}` : ''}\n\n` : '';
+  const head = m ? `Session ${m.id}${m.agent ? ` (${m.agent})` : ''} — ${snip(m.title, 100)} [${m.status}${verdictMark(m.rating)}]\nStarted ${fmtWhen(m.createdAt)}${m.url ? `\nLink: ${m.url}` : ''}${m.task ? `\nSeed: ${snip(m.task, 200)}` : ''}\n\n` : '';
   if (wantSummary) return head + (data.summary?.trim() || 'This session has no transcript to summarize yet.');
   const turns = data.turns ?? [];
   if (data.found && turns.length) {
