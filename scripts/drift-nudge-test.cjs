@@ -209,7 +209,20 @@ for (const t of ['drift.judged', 'drift.judge_failed', 'drift.nudged', 'drift.es
     { kind: 'activity', tool: 'Bash', label: 'Ran a command', detail: 'cat .github/workflows/ci.yml', status: 'ok', ts: 2 },
     { kind: 'assistant', text: 'The CI cache key looks wrong, let me rework the whole cache layer.', ts: 3 },
   ] });
-  const settle = () => new Promise((r) => setTimeout(r, 150));
+  // Wait for the judgements the gate fired in the background — the REAL promises, not a guessed sleep.
+  // It used to be a flat 150ms, which three stub round-trips lose on a loaded box (a 2 GB droplet at load
+  // ~22 failed the deploy gate on every run while the same test passed alone).
+  const inFlight = new Set();
+  const runJudge = tm.runDriftJudge.bind(tm);
+  tm.runDriftJudge = (...a) => {
+    const p = Promise.resolve(runJudge(...a)).finally(() => inFlight.delete(p));
+    inFlight.add(p);
+    return p;
+  };
+  const settle = async () => {
+    await new Promise((r) => setTimeout(r, 10));
+    while (inFlight.size) await Promise.allSettled([...inFlight]);
+  };
   let cmdSeq = 0;
   const bash = (sid, agent, n) => {
     const out = [];

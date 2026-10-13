@@ -7,6 +7,13 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.461.1] - 2026-10-13
+### Fixed
+- **`drift-nudge-test` no longer fails the deploy gate on a loaded box.** It waited a flat 150ms for the
+  background drift judge, which makes three HTTP round trips to its stub. On a 2 GB droplet at load ~22
+  that lost the race on every `make-live` run, while the same test passed when run alone. It now awaits the
+  judge's real promises.
 ### Docs
 - `docs/code-graph-plan.md` — parked research on a code-graph for coding agents (fleet exploration
   share, tool landscape, evidence, and the A/B to run), plus `scripts/code-exploration-share.mjs`, the
