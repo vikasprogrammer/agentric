@@ -153,14 +153,16 @@ $H/.claude"
 DATA_HOME="$(cd "$AGENT_DIR/../.." 2>/dev/null && pwd)"
 if [ -n "$DATA_HOME" ]; then
   # agent-os.db's WAL/SHM sidecars are separate files — name them, or a read of `agent-os.db-wal`
-  # walks straight past a rule that only covers the base file.
+  # walks straight past a rule that only covers the base file. secret.key is the vault master key (missing
+  # here until v0.462.0). Bash reads of the same set are denied server-side (governance/protected-read.ts).
   PROTECTED="$PROTECTED
 $DATA_HOME/connectors
 $DATA_HOME/control
 $DATA_HOME/tenants
 $DATA_HOME/agent-os.db
 $DATA_HOME/agent-os.db-wal
-$DATA_HOME/agent-os.db-shm"
+$DATA_HOME/agent-os.db-shm
+$DATA_HOME/secret.key"
 fi
 export AOS_PROTECTED_PATHS="$PROTECTED"
 # Deny the native AskUserQuestion tool: it renders a multiple-choice picker in the TUI and BLOCKS the

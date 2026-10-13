@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.462.0] - 2026-10-13
+### Security
+- **An agent's shell can no longer read the tenant DB, the connector bag, the vault key or other
+  sessions' transcripts.** The protected-path check only ever covered the Read/Glob/Grep tools, and an
+  agent runs as the same OS user as the server, so Bash reached all of it. Replaying 30 days of real
+  commands showed this was routine, not a one-off. On expresstech, agents ran `sqlite3`/`node:sqlite`
+  on `agent-os.db` 34 times, scraped `FREESCOUT_API_KEY` out of other sessions' `connectors/*.mcp.json`,
+  and grepped `~/.claude/projects` for other agents' transcripts. A new engine-level check
+  (`governance/protected-read.ts`, folded in with `stricterDecision` on every tenant whatever its policy)
+  denies a shell call that names one of these paths in the command line, a heredoc or `-e` body, or a
+  script the command runs. It also catches relative paths through the agent folder or a `cd`, `~` and
+  `$HOME` forms, globs, the DB's WAL sidecars, and recursive readers pointed at an ancestor. It covers the
+  OS's own state (the DB, `secret.key`, `connectors/`, `control/`, `tenants/`, pooled
+  `runtime-accounts/`, `claude-config/`), `~/.claude/projects` and the Claude/Codex logins. It
+  deliberately does NOT cover `~/.ssh`/`~/.aws`, which infra agents use by design through ssh and the
+  CLIs. An agent's own transcript folder, Claude Code auto-memory and skill/plugin folders stay readable.
+  The deny message points at the governed tools (`session_history`, `secret_get`/`secret_request`).
+  The policy preview gives the same answer, and `secret.key` joins the Read tool's list, where it was
+  missing. Pattern-matching can't stop a deliberately obfuscated path; real containment is
+  `AOS_UID_ISOLATION`.
+- **Login session ids and magic-link tokens are stored hashed.** `auth_sessions.sid` was the `aos_sid`
+  cookie verbatim, so reading the DB meant signing in as any member, owners included. Both are now stored
+  as a SHA-256 (`h1:` tag). The migration hashes existing rows in place, so cookies and links already
+  handed out keep working.
+  **For admins:** agents that read the workspace database, other sessions' files or connector configs from
+  the shell are now refused and steered to the built-in tools. If an agent's instructions tell it to run
+  `sqlite3` on `agent-os.db`, update them to use `session_history`, the task tools or `secret_request`.
+
 ## [0.461.2] - 2026-10-13
 ### Fixed
 - **Session search's transcript indexer no longer stalls the server on long transcripts.** v0.461.0

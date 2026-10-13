@@ -864,6 +864,16 @@ drift and prints the one-line fix.
   Deliberately NOT `disableRemoteControl` (which kills the feature outright): a human attached in the
   browser terminal can still type `/rc` on purpose. Same undeclared-input class as the `~/.claude` note
   below.
+- **An agent's SHELL can read anything its OS user can — so the tenant DB and every transcript are
+  guarded by INTENT, not by the filesystem.** The Read/Glob/Grep arm of the gate hook (`AOS_PROTECTED_PATHS`)
+  never covered Bash; `src/governance/protected-read.ts` (v0.462.0) now denies a shell call that names the
+  DB, `secret.key`, `connectors/`, `control/`, `tenants/`, `runtime-accounts/`, `claude-config/`,
+  `~/.claude/projects` or a runtime login — in the command, a heredoc/`-e` body, or a script it runs — and
+  login cookies/magic-link tokens are stored hashed (`tokenAtRest`), so a read that slips past can't sign
+  anyone in. Replaying a live tenant's commands showed agents doing this ROUTINELY (DB queries, scraping API
+  keys out of other sessions' `connectors/*.mcp.json`), so expect denials where a prompt relied on it.
+  `~/.ssh`/`~/.aws` are deliberately NOT in the shell list (infra agents use keys by design). Obfuscation
+  beats any intent check; the real wall is `AOS_UID_ISOLATION`.
 - **The box owner's `~/.claude` is an undeclared input to every agent.** A session runs as the same OS user
   as the human who owns the machine, so it loads their user-scope `settings.json` — `enabledPlugins` above
   all, which drags in a plugin's subagent types, skills, slash commands and **SessionStart prompt hooks**.

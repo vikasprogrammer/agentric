@@ -36,7 +36,7 @@ server.on('listening', async () => {
   const owner = aos.db.prepare("SELECT id FROM members WHERE role='owner' LIMIT 1").get();
   const now = Date.now();
   aos.db.prepare('INSERT INTO auth_sessions (sid, member_id, created_at, expires_at, last_seen_at) VALUES (?,?,?,?,?)')
-    .run('testsid', owner.id, now, now + 86_400_000, now);
+    .run(require('../dist/state/db').tokenAtRest('testsid'), owner.id, now, now + 86_400_000, now); // stored hashed
   const H = { 'content-type': 'application/json', cookie: 'aos_sid=testsid' };
   const save = (body) => fetch(`${base}/api/settings/memory`, { method: 'PUT', headers: H, body: JSON.stringify(body) }).then((r) => r.json());
   const stamp = () => Number(aos.db.prepare("SELECT value FROM settings WHERE key='memory_backend_switched_at'").get()?.value || 0);

@@ -9,7 +9,7 @@
  */
 import { randomBytes } from 'crypto';
 import { newId } from '../id';
-import { Db } from '../state/db';
+import { Db, tokenAtRest } from '../state/db';
 import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove, NotificationPrefs, sanitizeNotificationPrefs, sanitizeNavPins, sanitizeAgentPins, PromptShortcut, sanitizePromptShortcuts } from '../types';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // magic links valid for 7 days
@@ -34,6 +34,10 @@ interface IdentityRow {
   created_by: string | null;
 }
 
+// Login session ids (the aos_sid cookie) and magic-link tokens are bearer secrets: whoever holds one IS
+// that member. They are stored only as `tokenAtRest(...)` (a SHA-256), so the DB — which an agent's shell
+// running as the same OS user can reach — never holds a usable credential. The raw value exists only in
+// the cookie / the link handed to the human.
 const token = (): string => randomBytes(32).toString('hex');
 
 export class TeamStore {
@@ -306,7 +310,7 @@ export class TeamStore {
     if (!tok) return null;
     const inv = this.db
       .prepare('SELECT email, role FROM invites WHERE token = ? AND accepted_at IS NULL AND expires_at > ?')
-      .get<{ email: string; role: Role }>(tok, Date.now());
+      .get<{ email: string; role: Role }>(tokenAtRest(tok), Date.now());
     return inv ? { email: inv.email, role: inv.role } : null;
   }
 
@@ -315,9 +319,9 @@ export class TeamStore {
     const now = Date.now();
     const inv = this.db
       .prepare('SELECT * FROM invites WHERE token = ? AND accepted_at IS NULL AND expires_at > ?')
-      .get<{ email: string }>(tok, now);
+      .get<{ email: string }>(tokenAtRest(tok), now);
     if (!inv) return null;
-    this.db.prepare('UPDATE invites SET accepted_at = ? WHERE token = ?').run(now, tok);
+    this.db.prepare('UPDATE invites SET accepted_at = ? WHERE token = ?').run(now, tokenAtRest(tok));
     const member = this.getMemberByEmail(inv.email);
     if (!member) return null;
     if (member.status !== 'active') this.db.prepare('UPDATE members SET status = ? WHERE id = ?').run('active', member.id);
@@ -329,7 +333,7 @@ export class TeamStore {
     const now = Date.now();
     this.db
       .prepare('INSERT INTO auth_sessions (sid, member_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
-      .run(sid, memberId, now, now + SESSION_TTL_MS);
+      .run(tokenAtRest(sid), memberId, now, now + SESSION_TTL_MS);
     return sid;
   }
   resolveSession(sid: string): Member | undefined {
@@ -337,7 +341,7 @@ export class TeamStore {
     const now = Date.now();
     const row = this.db
       .prepare('SELECT member_id, expires_at, last_seen_at FROM auth_sessions WHERE sid = ? AND expires_at > ?')
-      .get<{ member_id: string; expires_at: number; last_seen_at: number | null }>(sid, now);
+      .get<{ member_id: string; expires_at: number; last_seen_at: number | null }>(tokenAtRest(sid), now);
     if (!row) return undefined;
     // Sliding window: bump the 30-day expiry on activity so a daily-active user never hits the hard
     // cutoff and gets locked out. Throttled to ≤1 write/day/session (only slide once the row is >1 day
@@ -351,7 +355,7 @@ export class TeamStore {
     if (slide || touch) {
       this.db
         .prepare('UPDATE auth_sessions SET expires_at = ?, last_seen_at = ? WHERE sid = ?')
-        .run(slide ? now + SESSION_TTL_MS : row.expires_at, now, sid);
+        .run(slide ? now + SESSION_TTL_MS : row.expires_at, now, tokenAtRest(sid));
     }
     return this.getMember(row.member_id);
   }
@@ -367,7 +371,7 @@ export class TeamStore {
       .all<{ memberId: string; lastSeenAt: number }>(Date.now());
   }
   destroySession(sid: string): void {
-    this.db.prepare('DELETE FROM auth_sessions WHERE sid = ?').run(sid);
+    this.db.prepare('DELETE FROM auth_sessions WHERE sid = ?').run(tokenAtRest(sid));
   }
 
   // ── agent assignment ─────────────────────────────────────────────────────────
@@ -437,7 +441,7 @@ export class TeamStore {
     const now = Date.now();
     this.db
       .prepare('INSERT INTO invites (token, email, role, invited_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(tok, email.toLowerCase(), role, invitedBy ?? null, now, now + INVITE_TTL_MS);
+      .run(tokenAtRest(tok), email.toLowerCase(), role, invitedBy ?? null, now, now + INVITE_TTL_MS);
     return tok;
   }
   private ownerCount(): number {
