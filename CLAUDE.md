@@ -391,7 +391,9 @@ Key modules:
   handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):
   `session_history` searches past sessions — with a `query`, ranked FTS5/bm25 over each run's title/task/
   report summary (`term_sessions_fts`, trigger-kept) AND what was said in it (`session_text_fts`, one row per
-  conversation, filled off the scheduler tick by `indexSessionText` — see `src/edge/session-search.ts`).
+  conversation, filled off the scheduler tick by `indexSessionText` — see `src/edge/session-search.ts`;
+  ⚠ it runs ON the event loop, so every read is bounded: ≤1 MB head+tail of the file, only when its mtime
+  moved, a live run at most every 10 min — v0.461.0 parsed whole transcripts and an 89 MB one cost 4.1 s).
   Scope `agent` (default) = own runs; `member` = everything the run-as human can see in the console
   (`canReadRow`, audited `session.searched`). `session_open` reopens one — the friendly transcript timeline
   (`readConversation`) or a `summary:true` recap — own-agent, or member-visible (audited `session.opened`).

@@ -1480,6 +1480,14 @@ function migrate(db: Db): void {
   `);
   // Existing rows predate the triggers — index them once, on the boot that creates the table.
   if (!hadSessionFts) db.exec("INSERT INTO term_sessions_fts(term_sessions_fts) VALUES ('rebuild')");
+  // v0.461.2: the transcript file's mtime at the last read (unchanged file → no re-read) and when that read
+  // happened (a live run is re-read at most every 10 min). See TerminalManager.indexSessionText.
+  const preBounded = !(db.prepare('PRAGMA table_info(session_text_index)').all() as Array<{ name: string }>).some((c) => c.name === 'mtime');
+  addColumn(db, 'session_text_index', 'mtime', 'INTEGER');
+  addColumn(db, 'session_text_index', 'read_at', 'INTEGER');
+  // Rows written by v0.461.0 hold digests made under the old rules (harness markup included) and would
+  // never be re-read while their run stays quiet — start the transcript half over once.
+  if (preBounded) db.exec('DELETE FROM session_text_index; DELETE FROM session_text_fts;');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

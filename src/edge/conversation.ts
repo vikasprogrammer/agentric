@@ -278,7 +278,41 @@ export function readConversation(claudeSessionId: string): Conversation {
   } catch {
     return { turns: [], found: false };
   }
+  return parseConversationText(raw);
+}
 
+/**
+ * A transcript FILE read with a byte ceiling: under `maxBytes` the whole thing, over it the first
+ * `headBytes` and the last `maxBytes - headBytes`, cut at line boundaries (a sliced first/last line is
+ * dropped, never half-parsed). For BACKGROUND readers only — the session search indexer — which must not
+ * block the event loop: a days-long transcript is tens of MB (89 MB on a live tenant; 4.1 s to parse on
+ * a 2 GB box), and the console's own on-demand read keeps using {@link readConversation}.
+ */
+export function readConversationBounded(file: string, maxBytes: number, headBytes: number): Conversation {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    if (size <= maxBytes) return parseConversationText(fs.readFileSync(fd, 'utf8'));
+    const slice = (start: number, len: number): string => {
+      const buf = Buffer.alloc(len);
+      const n = fs.readSync(fd!, buf, 0, len, start);
+      return buf.subarray(0, n).toString('utf8');
+    };
+    const head = slice(0, headBytes);
+    const tail = slice(size - (maxBytes - headBytes), maxBytes - headBytes);
+    const headLines = head.slice(0, head.lastIndexOf('\n') + 1);
+    const tailLines = tail.slice(tail.indexOf('\n') + 1);
+    return parseConversationText(headLines + tailLines);
+  } catch {
+    return { turns: [], found: false };
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+/** The line parser behind {@link readConversation}: JSONL transcript text → ordered turns. */
+export function parseConversationText(raw: string): Conversation {
   const turns: ChatTurn[] = [];
   // tool_use_id → index in `turns`, so the tool_result on the NEXT user message resolves the card.
   const activityById = new Map<string, number>();

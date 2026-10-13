@@ -46,6 +46,8 @@ const long = [turn('user', 'build the feature pages'), ...Array.from({ length: 4
 const dig = digestConversation(long, 8 * 1024);
 assert(dig.length <= 8 * 1024, 'the digest respects its cap', dig.length);
 assert(dig.includes('feature pages') && dig.includes('paypal webhook'), 'squeezing keeps BOTH the first and the last topic of a long run');
+assert(digestConversation([turn('user', '<command-name>/goal</command-name> <command-args>fix the menu</command-args><system-reminder>secret harness text</system-reminder>')]) === '/goal fix the menu',
+  'harness markup and system reminders never reach the index', digestConversation([turn('user', '<command-name>/goal</command-name> <command-args>fix the menu</command-args><system-reminder>secret harness text</system-reminder>')]));
 assert(!digestConversation([{ kind: 'activity', tool: 'Bash', label: 'Ran a command', detail: 'curl /wp-json/edd/webhooks/v1/paypal', status: 'ok' }]).includes('undefined')
   && digestConversation([{ kind: 'activity', tool: 'Bash', label: 'Ran a command', detail: 'curl /wp-json/edd/webhooks/v1/paypal', status: 'ok' }]).includes('/wp-json/edd/webhooks'),
   'an action’s hint (a path, a URL) is searchable');
@@ -112,6 +114,7 @@ assert(!digestConversation([{ kind: 'activity', tool: 'Bash', label: 'Ran a comm
 
   console.log('\n\x1b[1m3) what was said in the run — the transcript index\x1b[0m');
   const CONVO = '11111111-2222-3333-4444-555555555555';
+  let mt = 0;
   writeTranscript(CONVO, [
     { role: 'user', text: 'Build the accessible mobile menu feature pages' },
     { role: 'assistant', text: 'Built three feature pages.' },
@@ -126,18 +129,45 @@ assert(!digestConversation([{ kind: 'activity', tool: 'Bash', label: 'Ran a comm
     { role: 'user', text: 'Every PayPal IPN is failing with a 500 now, can you look?' },
     { role: 'assistant', text: 'The live PayPal client credentials were removed; restored them and the webhook retry succeeded.' },
   ]);
+  const file = path.join(projects, `${CONVO}.jsonl`);
+  const bumpMtime = () => { const t = new Date(Date.now() + (++mt) * 60_000); fs.utimesSync(file, t, t); };
+  bumpMtime();
   aos.db.prepare('UPDATE term_sessions SET last_activity = ? WHERE id = ?').run(Date.now(), longRun);
-  tm.indexSessionText(5_000);
+  assert(tm.indexSessionText(5_000) === 0, 'a run that just got read is not re-read inside the 10-minute floor, however active');
+  const LATER = Date.now() + 11 * 60_000;
+  assert(tm.indexSessionText(5_000, LATER) === 1, 'after the floor, the changed transcript is read again');
   const pp = tm.searchSessions({ query: 'paypal webhook', agent: 'ops' });
   assert(ids(pp).join() === longRun, 'a topic that exists ONLY in the transcript finds the run once it continues', ids(pp));
   assert(pp[0] && /«paypal»/i.test(pp[0].snippet || ''), 'with a snippet marking where it matched', pp[0] && pp[0].snippet);
   const resumed = mkRun({ agent: 'ops', title: 'poke: follow up', claude_session_id: CONVO, run_as: alice.id, spawned_by: alice.id });
   const both = ids(tm.searchSessions({ query: 'paypal', agent: 'ops' }));
   assert(both.length === 1 && (both[0] === longRun || both[0] === resumed), 'two runs of ONE conversation are one hit', both);
-  tm.indexSessionText(5_000); // picks up the resumed row's conversation if it looks newer
   const before = aos.db.prepare('SELECT COUNT(*) AS c FROM session_text_fts').get().c;
-  assert(tm.indexSessionText(5_000) === 0, 'a sweep with no new activity reads no transcript');
-  assert(aos.db.prepare('SELECT COUNT(*) AS c FROM session_text_fts').get().c === before, 'and one conversation is one indexed row, however many runs it has');
+  // New activity on the row, but the transcript FILE did not change: the watermark moves, nothing is read.
+  aos.db.prepare('UPDATE term_sessions SET last_activity = ? WHERE id = ?').run(Date.now() + 1000, resumed);
+  assert(tm.indexSessionText(5_000, LATER + 11 * 60_000) === 0, 'activity with an unchanged transcript file reads nothing');
+  assert(tm.indexSessionText(5_000, LATER + 22 * 60_000) === 0, 'and the next sweep has nothing left to do');
+  assert(aos.db.prepare('SELECT COUNT(*) AS c FROM session_text_fts').get().c === before, 'one conversation is one indexed row, however many runs it has');
+
+  // A days-long transcript: far over the read ceiling. Only head + tail are parsed, and both topics survive.
+  const { readConversationBounded } = require(path.join(ROOT, 'dist/edge/conversation.js'));
+  const BIG = '99999999-2222-3333-4444-555555555555';
+  const filler = 'x'.repeat(2000);
+  writeTranscript(BIG, [
+    { role: 'user', text: 'Start: audit the checkout funnel' },
+    ...Array.from({ length: 3000 }, (_, i) => ({ role: 'assistant', text: `step ${i} ${filler}` })),
+    { role: 'user', text: 'Last thing: rotate the Mailgun key' },
+  ]);
+  const bigFile = path.join(projects, `${BIG}.jsonl`);
+  const size = fs.statSync(bigFile).size;
+  const t0 = Date.now();
+  const bounded = readConversationBounded(bigFile, 256 * 1024, 64 * 1024);
+  const texts = bounded.turns.map((x) => x.text || '').join(' ');
+  assert(size > 4 * 1024 * 1024 && bounded.found, `a ${(size / 1048576).toFixed(1)} MB transcript is read bounded`);
+  assert(/checkout funnel/.test(texts) && /Mailgun/.test(texts), 'the head (first ask) and the tail (latest topic) both survive');
+  assert(bounded.turns.length < 200, 'and only a slice of the middle is parsed', bounded.turns.length);
+  assert(bounded.turns.every((x) => x.kind !== 'user' || typeof x.text === 'string'), 'no half-line was parsed into a turn');
+  assert(Date.now() - t0 < 1000, 'quickly', Date.now() - t0);
 
   console.log('\n\x1b[1m4) the loopback routes — scopes, urls, session_open\x1b[0m');
   const bobRun = mkRun({ agent: 'ops', title: 'paypal refund for bob', run_as: bob.id, spawned_by: bob.id });
