@@ -8,6 +8,7 @@
  * The DB is per home (like the tmux socket and audit dir) so multiple instances never collide.
  * It is the single connection the stores share; each store owns its own tables.
  */
+import { createHash } from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1488,6 +1489,31 @@ function migrate(db: Db): void {
   // Rows written by v0.461.0 hold digests made under the old rules (harness markup included) and would
   // never be re-read while their run stays quiet — start the transcript half over once.
   if (preBounded) db.exec('DELETE FROM session_text_index; DELETE FROM session_text_fts;');
+
+  // BEARER TOKENS AT REST (v0.462.0): login session ids and magic-link tokens used to sit in the DB raw, so
+  // anything that could read the file — an agent's shell runs as the same OS user — could sign in as any
+  // member, owners included. Hash the existing rows in place: a cookie or link already handed out keeps
+  // working, because TeamStore now hashes what it's given before looking it up. Idempotent (the `h1:`
+  // tag marks a hashed row).
+  for (const [table, col] of [['auth_sessions', 'sid'], ['invites', 'token']] as const) {
+    const raw = db.prepare(`SELECT ${col} AS v FROM ${table} WHERE ${col} NOT LIKE 'h1:%'`).all() as Array<{ v: string }>;
+    if (!raw.length) continue;
+    const upd = db.prepare(`UPDATE ${table} SET ${col} = ? WHERE ${col} = ?`);
+    db.exec('BEGIN');
+    try {
+      for (const r of raw) upd.run(tokenAtRest(r.v), r.v);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+}
+
+/** How a bearer token (login session id, magic-link token) is stored: a SHA-256, tagged so a migrated row
+ *  is distinguishable from a raw one. See TeamStore. */
+export function tokenAtRest(raw: string): string {
+  return 'h1:' + createHash('sha256').update(raw).digest('hex');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

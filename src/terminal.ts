@@ -25,6 +25,7 @@ import { exclusionFor } from './connectors/composio-claims';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, RuntimeAccountKind, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets, commandText } from './governance/enricher';
 import { readExecutedScripts, freshSince, type ScriptBody } from './governance/script-bodies';
+import { protectedReadDecision } from './governance/protected-read';
 import { isolateClaudeConfig } from './edge/config-isolation';
 import { resolveCapability } from './capabilities/normalize';
 import { unwrapComposioEnvelope } from './capabilities/composio-envelope';
@@ -6203,7 +6204,10 @@ export class TerminalManager {
       capability = envelope.capability;
     }
     const agentDir = this.os.agents.get(agent)?.dir;
-    const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), agentDir, this.os.settings.enrichPatterns(), hostGrants, this.scriptsRun(sessionId, capability, rawArgs, agentDir));
+    const scriptBodies = this.scriptsRun(sessionId, capability, rawArgs, agentDir);
+    const rawInput = (rawArgs.input && typeof rawArgs.input === 'object' ? rawArgs.input : rawArgs) as Record<string, unknown>;
+    const rawCommand = commandText(rawArgs.command) || commandText(rawInput.command);
+    const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), agentDir, this.os.settings.enrichPatterns(), hostGrants, scriptBodies);
     // An outbound email is its own governed capability: reclassify so the policy gates it by recipient
     // (internal → green, external → yellow) instead of the generic connector-mutation tier.
     if (args.emailSend === true) {
@@ -6270,6 +6274,12 @@ export class TerminalManager {
         dataHome: this.os.paths?.home,
         askOutsideWorkdir: this.os.settings.fileWriteGuardEnabled(),
       }));
+    }
+    // Protected-path guard for the SHELL (governance/protected-read.ts): the gate hook only ever covered
+    // Read/Glob/Grep, so a Bash read of the tenant DB, the vault key or ~/.claude went through. Raw command
+    // (heredoc bodies included) + the bodies of scripts it runs. Unconditional, deny-only, ssh.exec exempt.
+    if (rawCommand) {
+      decision = stricterDecision(decision, protectedReadDecision(capability, rawCommand, agentDir, scriptBodies, this.os.paths?.home));
     }
     // The DECISION BRIEF — one human-legible account of this effect (docs/decision-brief-layer-plan.md).
     // Computed once here, next to classify(); it rides on the gate.decision audit row (making the audit
@@ -6514,11 +6524,15 @@ export class TerminalManager {
     const unwrapped = unwrapComposioEnvelope(capability, args, this.emailOrgDomains());
     if (unwrapped) { args = unwrapped.args; capability = unwrapped.capability; }
     const agentDir = this.os.agents.get(agent)?.dir;
-    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), agentDir, this.os.settings.enrichPatterns(), undefined, this.scriptsRun(sessionId, capability, args, agentDir));
+    const scriptBodies = this.scriptsRun(sessionId, capability, args, agentDir);
+    const input = (args.input && typeof args.input === 'object' ? args.input : args) as Record<string, unknown>;
+    const command = commandText(args.command) || commandText(input.command);
+    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), agentDir, this.os.settings.enrichPatterns(), undefined, scriptBodies);
     const cap = enriched.emailSend === true
       ? 'email.send'
       : resolveCapability(capability, typeof enriched.tool === 'string' ? enriched.tool : undefined);
-    return this.os.policy.classify({ capabilityId: cap, args: enriched, reasoning: '' }, this.ctx(sessionId, agent));
+    const decision = this.os.policy.classify({ capabilityId: cap, args: enriched, reasoning: '' }, this.ctx(sessionId, agent));
+    return command ? stricterDecision(decision, protectedReadDecision(cap, command, agentDir, scriptBodies, this.os.paths?.home)) : decision;
   }
 
   /**
