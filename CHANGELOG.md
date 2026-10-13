@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.462.1] - 2026-10-13
+### Fixed
+- **Adding a Claude runtime account from the console no longer hangs on "the authorization link appears
+  here in a moment…".** The guided login ran the bare `claude` TUI, whose pre-browser screens depend on
+  the config dir: a dir left over from a removed account (on macOS the login is in the Keychain, so there
+  is no `.credentials.json` and the "already holds a login" guard passed) was already onboarded, so the
+  CLI skipped straight to the folder-trust dialog and never printed a URL. It now runs `claude auth login
+  --claudeai`, which prints the link immediately whatever the dir holds, wrapped in a retry loop that keeps
+  the fresh-link-after-a-rejected-code recovery; any non-empty leftover dir is archived aside (never
+  reused, never deleted on cancel — which would have taken its run history with it); and a rejected
+  attempt's link can no longer be re-offered or its error counted twice.
+  **For admins:** signing in a new Claude account under Settings → Runtime accounts shows its link right away again, including when you reuse an old account's name.
+
 ## [0.462.0] - 2026-10-13
 ### Security
 - **An agent's shell can no longer read the tenant DB, the connector bag, the vault key or other

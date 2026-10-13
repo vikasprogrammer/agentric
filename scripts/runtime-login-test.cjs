@@ -52,7 +52,10 @@ pane = THEME;
 let s = m.start('claude-code', 'overflow-1');
 assert(s.phase === 'starting' && spawned.length === 1, 'start() spawns the runtime with its config dir pointed at a fresh dir');
 assert(spawned[0].env.CLAUDE_CONFIG_DIR === path.join(accountsDir, 'claude-code', 'overflow-1'), 'the credential dir is inside the tenant home', JSON.stringify(spawned[0].env));
-assert(spawned[0].argv.join(' ') === 'claude', 'it runs the vendor CLI alone — no launch script, no task, no gate env', spawned[0].argv.join(' '));
+assert(spawned[0].argv[0] === 'sh' && spawned[0].argv.slice(-4).join(' ') === 'claude auth login --claudeai',
+  'it runs the vendor CLI\'s dedicated login command alone — no launch script, no task, no gate env', spawned[0].argv.join(' '));
+assert(/Press Enter to retry/.test(spawned[0].argv[2]) && /clear-history/.test(spawned[0].argv[2]),
+  'wrapped in a retry loop that re-prints the retry prompt on a wiped pane (auth login exits on a bad code)', spawned[0].argv[2]);
 assert(spawned[0].cols >= 600, 'the pane is spawned wide so the CLI does not hard-wrap the authorize URL', String(spawned[0].cols));
 assert(fs.existsSync(spawned[0].env.CLAUDE_CONFIG_DIR), 'the dir exists before the CLI needs it');
 
@@ -103,6 +106,9 @@ s = m.poll(s.id);
 const beforeSubmit = typed.length;
 m.submitCode(s.id, 'nope');
 assert(typed[beforeSubmit].enterPresses === 1, 'the code is submitted with exactly ONE Enter — a second lands on the retry prompt and re-arms the flow');
+pane = 'Login failed: Request failed with status code 400';   // caught before the retry prompt printed
+let early = m.poll(s.id);
+assert(early.phase === 'exchanging' && early.codeAttempts === 0, 'an error caught before its retry prompt waits a poll instead of re-arming without the Enter', JSON.stringify(early));
 pane = 'OAuth error: Request failed with status code 400\n Press Enter to retry.';
 const beforeRetry = typed.length;
 s = m.poll(s.id);
@@ -111,11 +117,18 @@ assert(/rejected/.test(s.notice || ''), 'and says so, telling the human the earl
 assert(s.codeAttempts === 1, 'the rejection is counted');
 assert(typed.length === beforeRetry + 1 && typed[beforeRetry].enterPresses === 1, 'exactly one Enter is pressed on the retry prompt');
 assert(audits.some((a) => a.type === 'runtime.account.login.code.rejected'), 'the rejection is audited');
+s = m.poll(s.id); // the error is still on screen while the retry spins up
+assert(s.codeAttempts === 1 && s.phase === 'starting', 'an error still on screen is not counted again — only a submitted code can be rejected', JSON.stringify(s));
 // The retry prints a FRESH url — that, not the stale one, is what the console must show.
 const URL2 = URL.replace('state=xyz', 'state=fresh2');
 pane = `Browser didn't open? Use the url below to sign in (c to copy)\n${URL2}\n Paste code here if prompted >`;
 s = m.poll(s.id);
 assert(s.phase === 'awaiting-code' && s.url === URL2, 'the fresh link replaces the dead one', JSON.stringify(s));
+{ // a retry that leaves the dead attempt in scrollback: the LAST url wins, and the old error is not re-counted
+  const { extractAuthorizeUrl } = require(path.join(ROOT, 'dist/edge/runtime-login.js'));
+  const stacked = `${URL_SCREEN}\nLogin failed: Request failed with status code 400\nPress Enter to retry\n${URL2}\n Paste code here if prompted >`;
+  assert(extractAuthorizeUrl(stacked) === URL2, 'with two links on screen, the newest is the one surfaced');
+}
 m.submitCode(s.id, 'nope2');
 assert(!m.poll(s.id).notice, 'submitting again clears the stale notice');
 // …but it does not loop forever: a code that keeps failing ends with the manual fallback.
@@ -202,6 +215,18 @@ assert(archived.length === 1 && fs.existsSync(path.join(accountsDir, 'claude-cod
   'the orphan is archived beside it, never deleted', JSON.stringify(archived));
 assert(audits.some((a) => a.type === 'runtime.account.login.orphan.archived'), 'and the move is audited');
 m.cancel(orphanStart.id);
+
+// macOS keeps the login in the Keychain, so a leftover dir has NO credential file — only the CLI's
+// `.claude.json` (onboarded) and run history. Reusing it is what hung instapods on the folder-trust dialog
+// (2026-10-13), and cancelling then would have DELETED that history. It must be archived like any orphan.
+fs.mkdirSync(path.join(accountsDir, 'claude-code', 'kcorphan', 'projects'), { recursive: true });
+fs.writeFileSync(path.join(accountsDir, 'claude-code', 'kcorphan', '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true }));
+const kcStart = m.start('claude-code', 'kcorphan');
+assert(kcStart.phase === 'starting' && !fs.existsSync(path.join(accountsDir, 'claude-code', 'kcorphan', '.claude.json')),
+  'a leftover dir with no credential file (Keychain login) is not reused — the CLI gets a clean dir');
+assert(fs.readdirSync(path.join(accountsDir, 'claude-code')).some((d) => d.startsWith('kcorphan.orphan-')),
+  'and the leftover is archived, not deleted');
+m.cancel(kcStart.id);
 
 assert(m.supported('codex').ok === false, 'a runtime whose login flow has not been walked is not offered');
 assert(m.supported('claude-code').ok === true, 'claude-code is offered');

@@ -1495,6 +1495,13 @@ export interface CodingRuntimeSpec {
    *  on prompts it recognises, so claiming it for an unverified CLI would strand operators mid-flow.
    *  False → the console still accepts a credential dir added by path. */
   guidedLogin: boolean;
+  /** Arguments after `bin` that run the runtime's DEDICATED login command for the guided flow. Bare `claude`
+   *  is the TUI, and which screens it shows before the browser step depends on the config dir's state: a
+   *  dir that was ever onboarded skips theme + login-method and lands on the folder-trust dialog, never
+   *  printing a URL — the guided flow sat on "the link appears in a moment" forever (instapods,
+   *  2026-10-13). `claude auth login` prints the URL and the paste prompt straight away, whatever the dir
+   *  holds. Omitted → the bare binary, with the prompt answering in `runtime-login.ts` as the fallback. */
+  loginArgs?: readonly string[];
   /** A few known-good model ids, offered as suggestions in the console. NOT an allowlist — a custom or
    *  newer id must still be settable, so validation only rejects ids that clearly belong to ANOTHER
    *  runtime (see `foreignModel`). */
@@ -1521,6 +1528,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     // left out for the same reason it was never proven: an unverified kind must not be silently selectable.
     liveCredentialKinds: ['oauth'],
     guidedLogin: true,
+    loginArgs: ['auth', 'login', '--claudeai'],
     suggestedModels: ['claude-opus-4-8', 'claude-sonnet-4-8', 'claude-haiku-4-5'],
     foreignModel: /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i,
     capabilities: {
