@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.461.2] - 2026-10-13
+### Fixed
+- **Session search's transcript indexer no longer stalls the server on long transcripts.** v0.461.0
+  parsed each conversation's whole transcript on the event loop and re-read a live run on every
+  scheduler tick. On expresstech one 89 MB transcript took 4.1 s to parse, so v0.461.0 was rolled back
+  there. The indexer now reads at most 1 MB of a transcript (head and tail, cut at line boundaries), skips
+  a file whose mtime hasn't changed, re-reads a live run at most every 10 minutes, and strips harness
+  markup (system reminders, slash-command tags) from what it indexes. Measured against expresstech's real
+  data: the 1,042-conversation backlog drains in about 180 ticks of roughly 150 ms each, and a steady-state
+  sweep takes about 11 ms. Digests written by v0.461.0 are dropped once and rebuilt under these rules.
+
 ## [0.461.1] - 2026-10-13
 ### Fixed
 - **`drift-nudge-test` no longer fails the deploy gate on a loaded box.** It waited a flat 150ms for the

@@ -16,6 +16,14 @@ import { consolePage } from '../governance/chat-links';
 /** Upper bound on one conversation's indexed text. Most runs are far below it; a days-long session is
  *  not, and indexing its whole transcript would make the FTS table the largest thing in the DB. */
 export const SESSION_TEXT_CAP = 32 * 1024;
+/** The indexer reads at most this much of a transcript file (head + tail), and the head part of it. A
+ *  background read runs on the server's event loop: measured on a 2 GB droplet against its real
+ *  transcripts (up to 89 MB), a 2 MB ceiling still put p95 sweeps at ~200 ms; the digest keeps 32 KB of
+ *  text either way, so the extra middle bought nothing. */
+export const SESSION_TEXT_READ_MAX = 1024 * 1024;
+export const SESSION_TEXT_READ_HEAD = 256 * 1024;
+/** A conversation that keeps changing (a live run) is re-read at most this often. */
+export const SESSION_TEXT_REREAD_MS = 10 * 60_000;
 /** Over the cap, a human prompt keeps this much and the agent's words/actions this much each. */
 const USER_PIECE = 400;
 const OTHER_PIECE = 160;
@@ -34,7 +42,7 @@ export function digestConversation(turns: ChatTurn[], cap = SESSION_TEXT_CAP): s
   const pieces: { text: string; user: boolean }[] = [];
   for (const t of turns) {
     if (t.kind === 'user' || t.kind === 'assistant') {
-      const s = t.text.replace(/\s+/g, ' ').trim();
+      const s = stripHarness(t.text).replace(/\s+/g, ' ').trim();
       if (s) pieces.push({ text: s, user: t.kind === 'user' });
     } else if (t.kind === 'activity') {
       const s = [t.label, t.detail].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
@@ -64,6 +72,15 @@ export function digestConversation(turns: ChatTurn[], cap = SESSION_TEXT_CAP): s
     used += s.length + 1;
   }
   return [...keep.entries()].sort((x, y) => x[0] - y[0]).map(([, s]) => s).join('\n');
+}
+
+/** Drop what the harness injects into the user role — system reminders whole, and the bare tags around
+ *  slash-command text (`<command-name>`, `<local-command-stdout>`, …) — so they never become search hits
+ *  or snippets. The words a person typed inside a command's args are kept. */
+function stripHarness(text: string): string {
+  return text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ')
+    .replace(/<\/?(?:command|local-command)-[a-z-]+>/g, ' ');
 }
 
 /** `k` items spread evenly across `arr`, always including the first and the last. */

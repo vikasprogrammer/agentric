@@ -50,8 +50,8 @@ import { readSessionCost } from './edge/session-cost';
 import { readTranscriptEnd } from './edge/outcome';
 import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF, WAITING_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
-import { readConversation, findTranscript, registerTranscriptRoot, Conversation } from './edge/conversation';
-import { digestConversation, sessionConsoleUrl, toSessionFtsQuery } from './edge/session-search';
+import { readConversation, readConversationBounded, findTranscript, registerTranscriptRoot, Conversation } from './edge/conversation';
+import { digestConversation, sessionConsoleUrl, toSessionFtsQuery, SESSION_TEXT_READ_HEAD, SESSION_TEXT_READ_MAX, SESSION_TEXT_REREAD_MS } from './edge/session-search';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
 // the tick poller finishes the rest, bounded by a TTL + a poll ceiling so a stuck render can't linger.
@@ -2063,10 +2063,16 @@ export class TerminalManager {
 
   /**
    * Fill `session_text_fts` — what was said in each conversation — a slice at a time, off the scheduler
-   * tick. A conversation is (re)read once its rows show activity after its watermark, so a finished run
-   * is read once and a live one is caught up as it goes; the backlog of an existing tenant drains newest
-   * first over the first minutes after deploy. Bounded by `budgetMs` because transcript reads are
-   * synchronous and a days-long transcript is megabytes. Returns how many conversations it indexed.
+   * tick. Runs on the server's event loop, so every step is bounded — v0.461.0 wasn't, and on a live
+   * tenant one 89 MB transcript cost a 4.1 s synchronous parse that repeated every tick while its run was
+   * active:
+   *   - a transcript is only read once its FILE changed (mtime) — activity on a row whose transcript
+   *     didn't move just advances the watermark;
+   *   - a conversation that keeps changing is re-read at most every {@link SESSION_TEXT_REREAD_MS};
+   *   - a read is capped at {@link SESSION_TEXT_READ_MAX} bytes (head + tail, `readConversationBounded`);
+   *   - the sweep stops starting reads once `budgetMs` is spent.
+   * Newest activity first, so a finished run is searchable within a tick or two and an existing tenant's
+   * backlog drains over the first hours after deploy. Returns how many transcripts it read.
    */
   indexSessionText(budgetMs = 150, now = Date.now()): number {
     const started = Date.now();
@@ -2076,26 +2082,54 @@ export class TerminalManager {
         FROM term_sessions s LEFT JOIN session_text_index i ON i.convo = COALESCE(s.claude_session_id, s.id)
        WHERE s.archived_at IS NULL
        GROUP BY COALESCE(s.claude_session_id, s.id)
-      HAVING MAX(i.indexed_at) IS NULL OR active > MAX(i.indexed_at)
+      HAVING MAX(i.indexed_at) IS NULL
+          OR (active > MAX(i.indexed_at) AND COALESCE(MAX(i.read_at), 0) < ?)
        ORDER BY active DESC
-       LIMIT 40`).all<{ convo: string; id: string; active: number }>();
+       LIMIT 40`).all<{ convo: string; id: string; active: number }>(now - SESSION_TEXT_REREAD_MS);
+    if (!stale.length) return 0;
+    const prior = this.db.prepare('SELECT mtime FROM session_text_index WHERE convo = ?');
     const del = this.db.prepare('DELETE FROM session_text_fts WHERE convo = ?');
     const ins = this.db.prepare('INSERT INTO session_text_fts (convo, body) VALUES (?, ?)');
-    const mark = this.db.prepare(`INSERT INTO session_text_index (convo, indexed_at, bytes) VALUES (?, ?, ?)
-                                   ON CONFLICT(convo) DO UPDATE SET indexed_at = excluded.indexed_at, bytes = excluded.bytes`);
-    let n = 0;
+    const mark = this.db.prepare(`INSERT INTO session_text_index (convo, indexed_at, bytes, mtime, read_at) VALUES (?, ?, ?, ?, ?)
+                                   ON CONFLICT(convo) DO UPDATE SET indexed_at = excluded.indexed_at, bytes = excluded.bytes,
+                                     mtime = excluded.mtime, read_at = excluded.read_at`);
+    const touch = this.db.prepare('UPDATE session_text_index SET indexed_at = ? WHERE convo = ?');
+    this.refreshTranscriptRoots();
+    let reads = 0;
     for (const row of stale) {
-      if (n > 0 && Date.now() - started > budgetMs) break;
-      let body = '';
-      try { body = digestConversation(this.sessionConversation(row.id).turns); } catch { /* unreadable → index nothing, retry on next activity */ }
-      del.run(row.convo);
-      if (body) ins.run(row.convo, body);
+      if (reads > 0 && Date.now() - started > budgetMs) break;
       // Stamp the watermark at the row's own activity time, not `now`: activity that lands while we read
       // is still newer than the mark, so the next sweep picks it up.
-      mark.run(row.convo, Math.min(row.active ?? now, now), body.length);
-      n++;
+      const watermark = Math.min(row.active ?? now, now);
+      const src = this.transcriptSource(row.id);
+      const was = prior.get<{ mtime: number | null }>(row.convo);
+      if (was && src.mtime !== undefined && was.mtime === src.mtime) { touch.run(watermark, row.convo); continue; }
+      let body = '';
+      try {
+        const convo = src.file ? readConversationBounded(src.file, SESSION_TEXT_READ_MAX, SESSION_TEXT_READ_HEAD)
+          : src.other ? this.sessionConversation(row.id) : { turns: [], found: false };
+        body = digestConversation(convo.turns);
+      } catch { /* unreadable → index nothing, retry when the file changes */ }
+      del.run(row.convo);
+      if (body) ins.run(row.convo, body);
+      mark.run(row.convo, watermark, body.length, src.mtime ?? null, Date.now());
+      reads++;
     }
-    return n;
+    return reads;
+  }
+
+  /** Where a session's transcript lives, for the background indexer: a Claude Code JSONL `file` (read
+   *  bounded) with its mtime, or `other` for a runtime whose transcript has its own reader (Codex). */
+  private transcriptSource(sessionId: string): { file?: string; mtime?: number; other?: boolean } {
+    const row = this.db.prepare('SELECT agent, claude_session_id FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; claude_session_id: string | null }>(sessionId);
+    if (!row) return {};
+    const runtime = this.os.agents.get(row.agent)?.runtime;
+    if (runtime === 'codex') return { other: true };
+    if (!runtimeSupports(runtime, 'transcript') || !row.claude_session_id) return {};
+    const file = findTranscript(row.claude_session_id);
+    if (!file) return {};
+    try { return { file, mtime: Math.floor(fs.statSync(file).mtimeMs) }; } catch { return {}; }
   }
 
   /**
