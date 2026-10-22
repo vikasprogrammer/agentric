@@ -37,11 +37,20 @@ export interface VideoGenRequest {
   model?: string;
   durationSec?: number;
   imageUrl?: string; // optional image-to-video seed
+  /** Reference images for a reference-to-video model — mapped onto whatever list field the model's schema
+   *  names (`reference_images` / `images` / `refers` …). Already-resolved URLs or data URLs. */
+  referenceImageUrls?: string[];
+  /** Output aspect ratio ("9:16", "16:9", "1:1", …) — mapped onto the model's ratio/aspect/resolution field. */
+  aspectRatio?: string;
+  /** Model-specific fields, sent verbatim and winning over everything derived above (never `model`). */
+  params?: Record<string, unknown>;
 }
 
 /** Opaque, JSON-serialised handle stored in video_jobs.provider_ref and round-tripped to poll(). */
 export interface VideoSubmitResult {
   providerRef: string;
+  /** Things the agent should know about how its input was mapped (e.g. a param the schema doesn't list). */
+  notes?: string[];
 }
 
 export interface VideoPollResult {
@@ -115,6 +124,164 @@ function errText(body: unknown, status: number): string {
   return msg ? `video backend error (${status}): ${msg}` : `video backend error (${status})`;
 }
 
+function withoutModel(params: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!params) return {};
+  const { model: _drop, ...rest } = params;
+  return rest;
+}
+
+// ── Atlas model schemas ──────────────────────────────────────────────────────
+
+/** The part of an Atlas model's published JSON schema (`components.schemas.Input`) that we read. */
+export interface AtlasInputSchema {
+  properties: Record<string, AtlasSchemaProp>;
+  required?: string[];
+}
+interface AtlasSchemaProp {
+  type?: string;
+  enum?: unknown[];
+  default?: unknown;
+  minimum?: number;
+  maximum?: number;
+  maxItems?: number;
+  items?: { type?: string; properties?: Record<string, unknown> };
+}
+
+const SCHEMA_TTL_MS = 6 * 3600_000;
+const SCHEMA_MISS_TTL_MS = 5 * 60_000; // a failed lookup is retried soon, not pinned for hours
+let atlasIndex: { at: number; base: string; urls: Map<string, string> } | undefined;
+const atlasSchemas = new Map<string, { at: number; schema: AtlasInputSchema | null }>();
+
+/** A model's Input schema, cached. The public `/api/v1/models` list maps each model to a schema URL.
+ *  Never throws — `null` means "unknown", and the caller falls back to the historical field names. */
+export async function atlasInputSchema(base: string, model: string): Promise<AtlasInputSchema | null> {
+  const key = `${base} ${model}`;
+  const hit = atlasSchemas.get(key);
+  if (hit && Date.now() - hit.at < (hit.schema ? SCHEMA_TTL_MS : SCHEMA_MISS_TTL_MS)) return hit.schema;
+  let schema: AtlasInputSchema | null = null;
+  try {
+    if (!atlasIndex || atlasIndex.base !== base || Date.now() - atlasIndex.at > SCHEMA_TTL_MS) {
+      const res = await timedFetch(`${base}/api/v1/models`, {}, POLL_TIMEOUT_MS, 'Atlas');
+      const j = (await res.json()) as { data?: { model?: string; schema?: unknown }[] };
+      const urls = new Map<string, string>();
+      for (const m of j.data ?? []) if (m.model && typeof m.schema === 'string') urls.set(m.model, m.schema);
+      if (urls.size) atlasIndex = { at: Date.now(), base, urls };
+    }
+    const url = atlasIndex?.urls.get(model);
+    if (url) {
+      const res = await timedFetch(url, {}, POLL_TIMEOUT_MS, 'Atlas');
+      const doc = (await res.json()) as { components?: { schemas?: { Input?: AtlasInputSchema } } };
+      const input = doc.components?.schemas?.Input;
+      if (input?.properties) schema = input;
+    }
+  } catch { /* unknown schema — fall back */ }
+  atlasSchemas.set(key, { at: Date.now(), schema });
+  return schema;
+}
+
+const SEED_FIELDS = ['image', 'image_url', 'first_image', 'start_image'];
+const REF_FIELDS = ['reference_images', 'images', 'refers', 'image_urls', 'reference_image_urls'];
+const RATIO_FIELDS = ['ratio', 'aspect_ratio'];
+/** `resolution` presets that encode an aspect (LTX quality: portrait_9_16 …), best first. */
+const RATIO_PRESETS: Record<string, string[]> = {
+  '9:16': ['portrait_9_16'], '16:9': ['landscape_16_9'], '3:4': ['portrait_3_4'], '4:3': ['landscape_4_3'], '1:1': ['square_hd', 'square'],
+};
+
+function fail(msg: string): never {
+  throw new VendorError(msg, false, 'Atlas', 400);
+}
+
+/**
+ * Map a request onto one Atlas model's Input schema. Every input the caller supplied must land in a field
+ * the model reads, or this throws naming the fields it does read — a silently dropped image is how a
+ * reference-to-video call rendered an unrelated chair. Then: enum fields left unset get their schema
+ * default (some models reject a missing `resolution` despite documenting a default, and LTX quality can't
+ * price a request without one), and `params` goes on last, verbatim.
+ */
+export function buildAtlasVideoBody(req: VideoGenRequest, model: string, schema: AtlasInputSchema | null): { body: Record<string, unknown>; notes: string[] } {
+  const body: Record<string, unknown> = { model, prompt: req.prompt };
+  const notes: string[] = [];
+  const params = withoutModel(req.params);
+  if (!schema) {
+    if (req.durationSec) body.duration = req.durationSec;
+    if (req.imageUrl) body.image = req.imageUrl; // URL, Base64 data URL, or asset://<id>
+    if (req.referenceImageUrls?.length) body.reference_images = req.referenceImageUrls;
+    if (req.aspectRatio) body.aspect_ratio = req.aspectRatio;
+    if (req.referenceImageUrls?.length || req.aspectRatio) notes.push(`couldn't read ${model}'s schema, so references/aspect used the common field names — pass \`params\` if the model names them differently`);
+    return { body: { ...body, ...params }, notes };
+  }
+  const P = schema.properties;
+  const fields = () => Object.keys(P).filter((k) => k !== 'model').join(', ');
+
+  // Seed image + reference images. A reference-only model (no seed field) takes the seed as its first
+  // reference; a seed-only model takes a single reference as its seed.
+  const seedField = SEED_FIELDS.find((f) => P[f]);
+  const refField = REF_FIELDS.find((f) => P[f]?.type === 'array')
+    ?? Object.keys(P).find((k) => P[k].type === 'array' && /image|refer/i.test(k) && !/video|audio/i.test(k));
+  let seed = req.imageUrl;
+  let refs = [...(req.referenceImageUrls ?? [])];
+  if (seed && !seedField) {
+    if (!refField) fail(`${model} takes no input image (its fields: ${fields()})`);
+    refs = [seed, ...refs];
+    seed = undefined;
+  }
+  if (refs.length && !refField) {
+    if (!seedField || refs.length > 1 || seed) fail(`${model} takes no reference images${seedField ? ` — only one \`image\`` : ''} (its fields: ${fields()})`);
+    seed = refs[0];
+    refs = [];
+  }
+  if (seed && seedField) body[seedField] = seed;
+  if (refs.length && refField) {
+    const max = P[refField].maxItems;
+    if (max && refs.length > max) fail(`${model} takes at most ${max} reference images, got ${refs.length}`);
+    const item = P[refField].items;
+    body[refField] = item?.type === 'object'
+      ? refs.map((url) => (item.properties && 'type' in item.properties ? { url, type: 'image' } : { url }))
+      : refs;
+  }
+
+  // Duration: snap to the model's allowed values, or derive a frame count (LTX takes 8k+1 frames at 24fps).
+  if (req.durationSec) {
+    const d = P.duration;
+    if (d) {
+      const allowed = (d.enum ?? []).filter((v): v is number => typeof v === 'number' && v > 0);
+      let v = allowed.length ? allowed.reduce((a, b) => (Math.abs(b - req.durationSec!) < Math.abs(a - req.durationSec!) ? b : a)) : req.durationSec;
+      if (!allowed.length) v = Math.min(d.maximum ?? v, Math.max(d.minimum ?? v, v));
+      if (v !== req.durationSec) notes.push(`${model} can't do ${req.durationSec}s — rendering ${v}s`);
+      body.duration = d.type === 'integer' ? Math.round(v) : v;
+    } else if (P.num_frames) {
+      const f = P.num_frames;
+      const lo = f.minimum ?? 25, hi = f.maximum ?? 257;
+      const frames = Math.min(hi, Math.max(lo, Math.round((req.durationSec * 24 - 1) / 8) * 8 + 1));
+      body.num_frames = frames - ((frames - 1) % 8);
+    }
+  }
+
+  // Aspect ratio: a ratio field if the model has one, else an aspect-encoding resolution preset.
+  if (req.aspectRatio) {
+    const ar = req.aspectRatio;
+    const ratioField = RATIO_FIELDS.find((f) => P[f]);
+    if (ratioField) {
+      const allowed = P[ratioField].enum;
+      if (allowed && !allowed.includes(ar)) fail(`${model} doesn't support aspect ratio ${ar} (allowed: ${allowed.join(', ')})`);
+      body[ratioField] = ar;
+    } else {
+      const preset = (RATIO_PRESETS[ar] ?? []).find((v) => P.resolution?.enum?.includes(v));
+      if (!preset) fail(`${model} has no aspect-ratio setting for ${ar} (its fields: ${fields()}) — pass the model's own field in \`params\``);
+      body.resolution = preset;
+    }
+  }
+
+  for (const [k, prop] of Object.entries(P)) {
+    if (k === 'model' || k === 'prompt' || k in body || k in params || prop.default === undefined) continue;
+    if (prop.enum) body[k] = prop.default;
+  }
+
+  const unknown = Object.keys(params).filter((k) => !P[k]);
+  if (unknown.length) notes.push(`${model}'s schema doesn't list ${unknown.join(', ')} — sent anyway; the model may ignore ${unknown.length > 1 ? 'them' : 'it'}`);
+  return { body: { ...body, ...params }, notes };
+}
+
 // ── fal.ai ─────────────────────────────────────────────────────────────────────
 
 interface FalSubmitResponse {
@@ -152,6 +319,10 @@ class FalVideoBackend implements VideoBackend {
     const body: Record<string, unknown> = { prompt: req.prompt };
     if (req.durationSec) body.duration = String(req.durationSec); // fal video models mostly take a string seconds
     if (req.imageUrl) body.image_url = req.imageUrl;
+    // fal has no schema we read up front; these are its common names, and `params` overrides them.
+    if (req.referenceImageUrls?.length) body.image_urls = req.referenceImageUrls;
+    if (req.aspectRatio) body.aspect_ratio = req.aspectRatio;
+    Object.assign(body, withoutModel(req.params));
     const d = await withRetry(async () => {
       const res = await timedFetch(`https://queue.fal.run/${model}`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }, SUBMIT_TIMEOUT_MS, 'fal');
       const j = (await res.json().catch(() => ({}))) as FalSubmitResponse & Record<string, unknown>;
@@ -226,10 +397,12 @@ class AtlasVideoBackend implements VideoBackend {
 
   async submit(req: VideoGenRequest): Promise<VideoSubmitResult> {
     const model = req.model?.trim() || (req.imageUrl ? this.imageModel : this.defaultModel);
-    const body: Record<string, unknown> = { model, prompt: req.prompt };
-    if (req.durationSec) body.duration = req.durationSec;
-    // Atlas takes the seed frame as `image` (URL, Base64 data URL, or asset://<id>) — NOT `image_url`.
-    if (req.imageUrl) body.image = req.imageUrl;
+    // Atlas models disagree on field names (`image` vs `image_url`, `reference_images` vs `refers`,
+    // `ratio` vs `aspect_ratio` vs a `resolution` preset), and a field the model doesn't know is dropped
+    // in silence — so read the model's own published schema and map onto it. Unreadable → the old shape.
+    const schema = await atlasInputSchema(this.base, model);
+    const { body, notes } = buildAtlasVideoBody(req, model, schema);
+    await this.publishDataUrls(body);
     const d = await withRetry(async () => {
       const res = await timedFetch(`${this.base}/api/v1/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }, SUBMIT_TIMEOUT_MS, 'Atlas');
       const j = (await res.json().catch(() => ({}))) as { id?: string; prediction_id?: string; data?: { id?: string } };
@@ -239,7 +412,37 @@ class AtlasVideoBackend implements VideoBackend {
     });
     const id = d.id || d.prediction_id || d.data?.id!;
     const ref: AtlasRef = { predictionId: id, base: this.base };
-    return { providerRef: JSON.stringify(ref) };
+    return { providerRef: JSON.stringify(ref), notes: notes.length ? notes : undefined };
+  }
+
+  /** Swap inline data URLs for hosted ones (Atlas `uploadMedia`) everywhere except `image`/`last_image`,
+   *  the only fields Atlas documents as taking Base64. Reference lists (Wan's `refers`) require a public
+   *  URL, and `image_url` is `format: uri`. A failed upload leaves the data URL for the vendor to judge. */
+  private async publishDataUrls(body: Record<string, unknown>): Promise<void> {
+    const host = async (v: string): Promise<string> => (v.startsWith('data:') ? (await this.upload(v).catch(() => undefined)) ?? v : v);
+    for (const [k, v] of Object.entries(body)) {
+      if (k === 'image' || k === 'last_image') continue;
+      if (typeof v === 'string') body[k] = await host(v);
+      else if (Array.isArray(v)) {
+        body[k] = await Promise.all(v.map(async (item) => {
+          if (typeof item === 'string') return host(item);
+          if (item && typeof item === 'object' && typeof (item as { url?: unknown }).url === 'string') return { ...item, url: await host((item as { url: string }).url) };
+          return item;
+        }));
+      }
+    }
+  }
+
+  private async upload(dataUrl: string): Promise<string | undefined> {
+    const m = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(dataUrl);
+    if (!m) return undefined;
+    const mime = m[1] || 'application/octet-stream';
+    const bytes = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]));
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type: mime }), `upload.${(mime.split('/')[1] || 'bin').replace(/[^a-z0-9]/gi, '')}`);
+    const res = await timedFetch(`${this.base}/api/v1/model/uploadMedia`, { method: 'POST', headers: { Authorization: `Bearer ${this.key}` }, body: form }, SUBMIT_TIMEOUT_MS, 'Atlas');
+    const j = (await res.json().catch(() => ({}))) as { data?: { download_url?: string } };
+    return res.ok ? j.data?.download_url : undefined;
   }
 
   async poll(providerRef: string): Promise<VideoPollResult> {
