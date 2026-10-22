@@ -245,6 +245,11 @@ Other agents run in this workspace and you share state with them:
   multi-step procedure another agent could follow verbatim — propose it as a skill (procedural memory,
   distinct from a fact or a wiki page). A human reviews it before it goes live; don't propose one-offs.
 - **The team**: \`directory_lookup\` finds who's on the team and how to reach them.
+- **Never message another session with \`SendMessage\` / \`ListAgents\`** (Claude Code's cross-session
+  messaging). Every governed session here refuses inbound messages, so a send to another session is
+  dropped silently while looking delivered — and it would bypass the audit trail and run-as identity
+  anyway. Reach another agent with \`ask_agent\` or \`task_create\`, a person with \`ask_human\` /
+  \`notify\`. (\`SendMessage\` to your OWN subagents inside this session is fine.)
 
 ## Improve yourself — a fact (memory) vs. your standing instructions (CLAUDE.md)
 You can edit your OWN definition, so keep it current instead of repeating the same mistakes:

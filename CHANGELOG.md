@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.462.2] - 2026-10-22
+### Fixed
+- **Agents are now told that Claude Code's cross-session messaging doesn't reach their teammates.** Every
+  governed session refuses inbound `SendMessage` (`crossSessionInbound: "refuse"`), but the tool itself
+  stays available — so an agent that used it to reach another session got a send that looked delivered
+  and was silently dropped. The operating notes now steer it to `ask_agent` / `task_create` /
+  `ask_human` / `notify`, and keep `SendMessage` for its own subagents.
+
 ## [0.462.1] - 2026-10-13
 ### Fixed
 - **Adding a Claude runtime account from the console no longer hangs on "the authorization link appears
