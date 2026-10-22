@@ -1731,6 +1731,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       model: b.model ? String(b.model) : undefined,
       durationSec: b.durationSec !== undefined ? Number(b.durationSec) : undefined,
       image: b.image ? String(b.image) : b.imageUrl ? String(b.imageUrl) : undefined,
+      referenceImages: Array.isArray(b.referenceImages) ? b.referenceImages.map(String) : undefined,
+      aspectRatio: b.aspectRatio ? String(b.aspectRatio) : undefined,
+      params: b.params as Record<string, unknown> | undefined,
     });
     return sendJson(res, out.ok ? 200 : 400, out);
   }

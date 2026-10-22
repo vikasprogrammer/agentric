@@ -106,6 +106,8 @@ const OUTCOME_SYNONYMS: Record<string, string> = {
 };
 const normalizeOutcome = (o: string): string => OUTCOME_SYNONYMS[o.trim().toLowerCase()] ?? o.trim().toLowerCase();
 const VIDEO_MAX_DURATION_SEC = 60;         // clamp the requested clip length
+const VIDEO_MAX_REFERENCE_IMAGES = 20;     // the largest list any Atlas reference-to-video model takes (Wan 3.0)
+const VIDEO_MAX_PARAMS_BYTES = 8_192;      // model-specific knobs, not a media channel
 const VIDEO_JOB_TTL_MS = 20 * 60_000;      // give up on a render after 20 minutes
 const VIDEO_MAX_POLLS = 200;               // poll-attempt ceiling (belt-and-suspenders with the TTL)
 const VIDEO_INCALL_POLLS = 3;              // brief in-call polls to catch a fast render before returning
@@ -9260,7 +9262,7 @@ export class TerminalManager {
    * the money-cap rule applies. Cost is an estimate (video is per-second and rarely returned in-band).
    * An optional `image` seed (URL or artifact id) switches it to image-to-video via `backend.imageModel`.
    */
-  async generateVideo(sessionId: string, input: { prompt: string; model?: string; durationSec?: number; image?: string }): Promise<{ ok: boolean; status?: 'done' | 'rendering'; jobId?: string; artifact?: { id: string; filename: string; mime: string }; model?: string; costUsd?: number; error?: string; retryable?: boolean; vendor?: string }> {
+  async generateVideo(sessionId: string, input: { prompt: string; model?: string; durationSec?: number; image?: string; referenceImages?: string[]; aspectRatio?: string; params?: Record<string, unknown> }): Promise<{ ok: boolean; status?: 'done' | 'rendering'; jobId?: string; artifact?: { id: string; filename: string; mime: string }; model?: string; costUsd?: number; notes?: string[]; error?: string; retryable?: boolean; vendor?: string }> {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
@@ -9281,16 +9283,30 @@ export class TerminalManager {
       if ('error' in resolved) return { ok: false, error: resolved.error };
       imageUrl = resolved.url;
     }
+    // Reference images (reference-to-video models) resolve the same way; the backend maps them onto the
+    // model's own list field.
+    const referenceImageUrls: string[] = [];
+    for (const ref of (input.referenceImages ?? []).map((r) => String(r).trim()).filter(Boolean)) {
+      const resolved = this.resolveImageRef(agent, ref);
+      if ('error' in resolved) return { ok: false, error: resolved.error };
+      referenceImageUrls.push(resolved.url);
+    }
+    if (referenceImageUrls.length > VIDEO_MAX_REFERENCE_IMAGES) return { ok: false, error: `at most ${VIDEO_MAX_REFERENCE_IMAGES} reference images` };
+    const aspectRatio = input.aspectRatio?.trim() || undefined;
+    if (aspectRatio && !/^(\d{1,2}:\d{1,2}|adaptive)$/.test(aspectRatio)) return { ok: false, error: `aspectRatio must look like "9:16" (got "${aspectRatio}")` };
+    const params = input.params;
+    if (params !== undefined && (typeof params !== 'object' || params === null || Array.isArray(params))) return { ok: false, error: '`params` must be an object of model-specific fields' };
+    if (params && JSON.stringify(params).length > VIDEO_MAX_PARAMS_BYTES) return { ok: false, error: `\`params\` is too large (max ${VIDEO_MAX_PARAMS_BYTES} bytes) — pass media as \`image\`/\`referenceImages\`` };
 
     const estimateUsd = +(durationSec * DEFAULT_VIDEO_COST_PER_SEC_USD).toFixed(4);
-    const model = input.model?.trim() || (imageUrl ? backend.imageModel : backend.defaultModel);
-    const gate = this.gate(sessionId, agent, 'video.generate', { prompt, model, durationSec, imageToVideo: !!imageUrl, amountUsd: estimateUsd }, `generate a ${durationSec}s ${imageUrl ? 'image-to-video' : 'video'} with ${model}`);
+    const model = input.model?.trim() || (imageUrl || referenceImageUrls.length ? backend.imageModel : backend.defaultModel);
+    const gate = this.gate(sessionId, agent, 'video.generate', { prompt, model, durationSec, imageToVideo: !!imageUrl, referenceImages: referenceImageUrls.length, aspectRatio, params, amountUsd: estimateUsd }, `generate a ${durationSec}s ${imageUrl ? 'image-to-video' : referenceImageUrls.length ? 'reference-to-video' : 'video'} with ${model}`);
     if (gate.decision === 'deny') return { ok: false, error: 'blocked by policy' };
     if (gate.decision === 'pending') return { ok: false, error: 'this generation needs human approval — an approval request was filed; retry once it is approved' };
 
     let submit;
     try {
-      submit = await backend.submit({ prompt, model, durationSec, imageUrl });
+      submit = await backend.submit({ prompt, model, durationSec, imageUrl, referenceImageUrls, aspectRatio, params });
     } catch (e) {
       const info = vendorErrorInfo(e);
       this.audit(sessionId, agent, 'video.failed', { model, error: info.message, vendor: info.vendor, retryable: info.retryable });
@@ -9300,16 +9316,17 @@ export class TerminalManager {
     const srow = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
     const source = srow?.run_as ?? srow?.spawned_by ?? undefined;
     const job = this.os.videoJobs.create({ sessionId, agent, source, backend: backend.name, model, prompt, providerRef: submit.providerRef, costUsd: estimateUsd, ttlMs: VIDEO_JOB_TTL_MS });
-    this.audit(sessionId, agent, 'video.submitted', { jobId: job.id, model, backend: backend.name, durationSec, estimateUsd });
+    const notes = submit.notes;
+    this.audit(sessionId, agent, 'video.submitted', { jobId: job.id, model, backend: backend.name, durationSec, estimateUsd, referenceImages: referenceImageUrls.length, aspectRatio, paramKeys: params ? Object.keys(params) : undefined, notes });
 
     // Brief in-call poll for the fast case; otherwise the tick poller finishes it.
     for (let i = 0; i < VIDEO_INCALL_POLLS; i++) {
       await new Promise((r) => setTimeout(r, VIDEO_INCALL_POLL_MS));
       const done = await this.advanceVideoJob(job.id, backend).catch(() => undefined);
-      if (done?.status === 'done') return { ok: true, status: 'done', jobId: job.id, artifact: done.artifact, model, costUsd: done.costUsd ?? estimateUsd };
+      if (done?.status === 'done') return { ok: true, status: 'done', jobId: job.id, artifact: done.artifact, model, costUsd: done.costUsd ?? estimateUsd, notes };
       if (done?.status === 'failed') return { ok: false, error: done.error || 'render failed' };
     }
-    return { ok: true, status: 'rendering', jobId: job.id, model, costUsd: estimateUsd };
+    return { ok: true, status: 'rendering', jobId: job.id, model, costUsd: estimateUsd, notes };
   }
 
   /** The Settings-derived config for building a video backend (keys + default model). */

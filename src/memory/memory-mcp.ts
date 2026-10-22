@@ -332,7 +332,11 @@ const VIDEO_GENERATE_TOOL = {
     'do NOT block waiting, just tell the user it will appear in the Library shortly. To animate an image, pass ' +
     '`image` and describe the motion in `prompt`. `image` accepts ANY of: a Library artifact id (e.g. from a ' +
     'prior image_generate), a file path in your working folder (a file you wrote OR one uploaded into the ' +
-    'session), or an http(s) image URL. Governed (cost-metered + audited).',
+    'session), or an http(s) image URL. For a REFERENCE-to-video model (a `…/reference-to-video` id: the ' +
+    'subject/style is taken from the images rather than the first frame being the image), pass them as ' +
+    '`referenceImages` — same ref forms. `aspectRatio` sets the frame shape. Each model is mapped onto its ' +
+    'own field names; anything else a model needs (e.g. `num_frames`, `camera_motion`, `audio`) goes in ' +
+    '`params`. Governed (cost-metered + audited).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -340,6 +344,9 @@ const VIDEO_GENERATE_TOOL = {
       model: { type: 'string', description: 'Optional model id (backend-specific). Omit to use the workspace default (an image-to-video model is chosen automatically when `image` is set).' },
       durationSec: { type: 'number', description: 'Desired clip length in seconds (1–60; default 5). The model may clamp it.' },
       image: { type: 'string', description: 'Optional image to animate (image-to-video). A Library artifact id, a file path in your working folder (written or uploaded), or an http(s) image URL.' },
+      referenceImages: { type: 'array', items: { type: 'string' }, description: 'Reference images for a reference-to-video model (1–20; the model may take fewer). Same forms as `image`.' },
+      aspectRatio: { type: 'string', description: 'Output aspect ratio, e.g. "9:16" (vertical reel), "16:9", "1:1". Omit for the model default.' },
+      params: { type: 'object', additionalProperties: true, description: 'Model-specific fields sent as-is, overriding anything derived above (e.g. {"resolution":"1080p","audio":false}). Use the model\'s own field names.' },
     },
     required: ['prompt'],
   },
@@ -2135,18 +2142,22 @@ async function videoGenerate(args: Record<string, unknown>): Promise<string> {
   if (typeof args.model === 'string' && args.model.trim()) body.model = args.model.trim();
   if (args.durationSec !== undefined) body.durationSec = Number(args.durationSec);
   if (typeof args.image === 'string' && args.image.trim()) body.image = args.image.trim();
+  if (Array.isArray(args.referenceImages)) body.referenceImages = args.referenceImages.map(String);
+  if (typeof args.aspectRatio === 'string' && args.aspectRatio.trim()) body.aspectRatio = args.aspectRatio.trim();
+  if (args.params && typeof args.params === 'object') body.params = args.params;
   const res = await fetch(AOS_URL + '/api/agent/video/generate', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; error?: string; vendor?: string; retryable?: boolean; status?: string; jobId?: string; artifact?: { id: string; filename: string }; model?: string; costUsd?: number };
+  const d = (await res.json()) as { ok?: boolean; error?: string; vendor?: string; retryable?: boolean; status?: string; jobId?: string; artifact?: { id: string; filename: string }; model?: string; costUsd?: number; notes?: string[] };
   if (!d.ok) return `video_generate error: ${mediaErrorHint(d)}`;
   const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
+  const notes = d.notes?.length ? ` Note: ${d.notes.join('; ')}.` : '';
   if (d.status === 'done' && d.artifact) {
-    return `Video ready with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${d.artifact.id} (${d.artifact.filename}).`;
+    return `Video ready with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${d.artifact.id} (${d.artifact.filename}).${notes}`;
   }
-  return `Video is rendering with ${d.model ?? 'the default model'}${cost} (job ${d.jobId ?? '?'}). It'll appear in the Library and post an inbox card when done — no need to wait; let the user know it's on the way.`;
+  return `Video is rendering with ${d.model ?? 'the default model'}${cost} (job ${d.jobId ?? '?'}). It'll appear in the Library and post an inbox card when done — no need to wait; let the user know it's on the way.${notes}`;
 }
 
 async function videoUnderstand(args: Record<string, unknown>): Promise<string> {

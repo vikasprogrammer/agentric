@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.463.0] - 2026-10-22
+### Added
+- **`video_generate` maps each Atlas model onto its own field names, and takes `referenceImages`,
+  `aspectRatio` and `params`.** Atlas models disagree on what they call their inputs (`image` vs
+  `image_url`, `reference_images` vs `images` vs `refers`, `ratio` vs `aspect_ratio` vs a `resolution`
+  preset), and a field a model doesn't read is dropped without an error. So Wan 3.0 reference-to-video
+  given `image` rendered an unrelated velvet chair, and LTX 2.3 400'd on a `resolution` its schema
+  marks as defaulted. The Atlas adapter now reads the model's published Input schema (cached 6h, with
+  the old field names as the fallback) and maps the seed, the references, the duration (snapped to the
+  allowed values, or `num_frames` for LTX) and the aspect onto it. It fills enum defaults, and refuses
+  an input the model has nowhere to put, naming the fields it does accept. Inline images going to a
+  field that needs a public URL are hosted first via Atlas `uploadMedia`. `params` is sent as-is and
+  wins. Checked live: Wan 3.0 reference-to-video from a local still, and LTX 2.3 quality
+  image-to-video at 9:16. Both rendered the input image at 9:16. Pinned by `scripts/video-gen-mapping-test.cjs`.
+  **For users:** agents can now make videos with reference-to-video models (Wan 3.0, Seedance mini,
+  Kling O3) and set the frame shape, e.g. a vertical 9:16 reel, on any video model.
+
 ## [0.462.2] - 2026-10-22
 ### Fixed
 - **Agents are now told that Claude Code's cross-session messaging doesn't reach their teammates.** Every
