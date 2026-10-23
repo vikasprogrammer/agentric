@@ -3916,9 +3916,9 @@ export class TerminalManager {
    *     automation/task run is now an attachable interactive TUI, torn down at turn-end by the Stop
    *     beacon; if that beacon never lands (transport failure), or a human attached then detached without
    *     a further turn, the run would linger. So we also reap unattended (`headless=1`, non-resident,
-   *     UNCLAIMED) running rows that have SEEN at least one turn-end beacon (`last_activity` stamped, so we
-   *     never touch a mid-first-turn long run) and have been idle past the same timeout with NO client
-   *     attached and no pending human block.
+   *     UNCLAIMED) running rows with `last_activity` stamped and older than the same timeout, NO turn in
+   *     flight (`isWorking` — `last_activity` alone is a turn START since v0.324.0, so it can't tell a long
+   *     turn from an idle pane), NO client attached and no pending human block.
    */
   reapIdleSessions(): void {
     const timeoutMin = this.os.settings.chatIdleTimeoutMinutes();
@@ -4004,8 +4004,8 @@ export class TerminalManager {
     // fires gate.attempt on its first tool (see hasMadeProgress). Settings → Runtime; default 30m, 0 = off.
     const noProgMin = this.os.settings.unattendedNoProgressMinutes();
     const noProgCutoff = noProgMin > 0 ? Date.now() - noProgMin * 60_000 : null;
-    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity, created_at FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status IN ('done','crashed') OR (headless = 1 AND status = 'running'))")
-      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; headless: number; last_activity: number | null; created_at: number }>();
+    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity, busy_since, created_at FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status IN ('done','crashed') OR (headless = 1 AND status = 'running'))")
+      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; headless: number; last_activity: number | null; busy_since: number | null; created_at: number }>();
     for (const r of unattended) {
       try {
         // TERMINAL = the run is over, whichever way it ended. `crashed` used to be missing from every
@@ -4031,15 +4031,26 @@ export class TerminalManager {
         const noProgress = noProgCutoff != null && r.headless === 1 && r.status === 'running'
           && r.last_activity == null && r.created_at < noProgCutoff && !this.hasMadeProgress(r.id);
         const forceReap = overMaxAge || noProgress;
+        // A TURN IN FLIGHT is not idle, however old `last_activity` is. Since v0.324.0 `markTurnBusy` stamps
+        // `last_activity` when a turn STARTS (`UserPromptSubmit`, or the first tool call promoting the launch
+        // stamp) and never again mid-turn — so for an unattended run, whose whole job is usually ONE long
+        // turn, `last_activity` is the turn's start time, and the straggler rule below read "started more
+        // than the idle timeout ago" as "idle". Live globex (30 days): 45 of 75 idle-backstop reaps landed
+        // within 3 minutes of the run's last tool call, 31 of them at ~31 min — the 30-min timeout counted
+        // from a stamp 5s after launch. One was a drafting run killed while updating its tracking sheet,
+        // after creating every draft and before `report`. `isWorking` is the console's own "spinner" test:
+        // a genuinely running turn keeps it true (the gate re-stamps past MID_TURN_MAX_MS), while a lost
+        // Stop beacon or a wedged turn ages out of it at MID_TURN_MAX_MS and is reaped then.
+        const midTurn = r.status === 'running' && this.isWorking(r, alive);
         if (alive) {
           if (!alive.has(r.tmux)) continue;                          // pane already gone — nothing to reap
           // a 'running' straggler is only idle-reaped once it has seen a turn-end beacon AND gone quiet past the
           // cutoff; a 'done' orphan is reaped on sight — it should never still be holding an interactive pane.
           // The hard-age (overMaxAge) and no-progress backstops reap regardless of the beacon.
-          if (r.status === 'running' && !forceReap && (r.last_activity == null || r.last_activity >= cutoff)) continue;
+          if (r.status === 'running' && !forceReap && (r.last_activity == null || r.last_activity >= cutoff || midTurn)) continue;
         } else {
           // no liveness signal: classic straggler rule, running-only, so we can't re-sweep a done row blind.
-          if (r.status !== 'running' || (!forceReap && (r.last_activity == null || r.last_activity >= cutoff))) continue;
+          if (r.status !== 'running' || (!forceReap && (r.last_activity == null || r.last_activity >= cutoff || midTurn))) continue;
         }
         const space = this.spaceFor(r.run_as ?? r.spawned_by);
         if (this.backend.hasClient(space, r.tmux) === true) continue; // a human is still watching — leave it

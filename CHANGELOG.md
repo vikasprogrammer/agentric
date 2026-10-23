@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.463.2] - 2026-10-23
+### Fixed
+- **The idle backstop killed unattended runs in the middle of their work.** It reaps a run whose
+  `last_activity` is older than the idle timeout (30 min), on the premise that `last_activity` marks a
+  finished turn. Since v0.324.0 it marks a turn's START and is not refreshed mid-turn, so any unattended
+  turn longer than 30 minutes was torn down while still working — before it could `report`, leaving
+  `outcome: unknown`. On one tenant, 45 of 75 backstop reaps in 30 days came within 3 minutes of a tool
+  call (31 at ~31 minutes). The backstop now leaves a run alone while a turn is in flight (`isWorking`,
+  the same test as the console's spinner); a lost turn-end signal or a wedged turn still ages out and is
+  reaped after `MID_TURN_MAX_MS` (2h). Pinned in `scripts/idle-reaper-test.cjs`.
+  **For admins:** long scheduled runs (more than 30 minutes) are no longer cut off before they finish and report.
+
 ## [0.463.1] - 2026-10-23
 ### Fixed
 - **A late answer to an agent's question could land in a different session of that agent.** A durable
