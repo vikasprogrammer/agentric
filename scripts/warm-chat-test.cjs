@@ -106,7 +106,11 @@ console.log('\x1b[1m\n4) turn-end beacon keeps a warm session alive but stops "w
 
 console.log('\x1b[1m\n5) a turn in flight reports working; a dead pane never does\x1b[0m');
 {
-  const busyLive = mkChat({ busy_since: Date.now() });
+  // A turn in flight has `last_activity` <= `busy_since` (markTurnBusy stamps both with one `now`). The
+  // fixture's own `last_activity: Date.now()` default runs AFTER this argument, so on a slow runner it can
+  // land a millisecond later and read as "that turn already ended" — pin both to one instant.
+  const t0 = Date.now();
+  const busyLive = mkChat({ busy_since: t0, last_activity: t0 });
   livePanes.add('aos-' + busyLive);
   const busyDead = mkChat({ busy_since: Date.now(), created_at: Date.now() - 60_000 });  // pane vanished mid-turn
   const list = tm.listSessions();

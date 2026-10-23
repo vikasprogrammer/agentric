@@ -395,6 +395,40 @@ assert(!killed.includes('aos-CRASH-ZOMBIE'), '…and does not re-kill the alread
   const after = aos.db.prepare('SELECT COUNT(*) n FROM memories WHERE tenant=?').get(aos.tenant).n;
   assert(after === before, 'a deleted session writes no episode — junk addressed to nobody', `${before} -> ${after}`);
 
+  /* The idle BACKSTOP must not reap a turn in flight. `markTurnBusy` stamps `last_activity` when a turn
+   * STARTS and never again mid-turn, so a one-long-turn unattended run reads "idle since launch". Live
+   * globex: a drafting run created every draft and was killed 31 min in, while updating its tracking
+   * sheet, before `report` — 45 of 75 backstop reaps that month landed within 3 min of a tool call. */
+  console.log('\n\x1b[1m10) idle backstop vs a turn in flight\x1b[0m');
+  tm.backend.aliveNames = () => new Set(aos.db.prepare('SELECT tmux FROM term_sessions').all().map((r) => r.tmux));
+  aos.settings.setChatIdleTimeoutMinutes(30);
+  aos.settings.setUnattendedMaxHours(24);
+  aos.settings.setUnattendedNoProgressMinutes(30);
+  const M = 60_000;
+  const unattendedRun = (ageMin, busyAgoMin, lastActAgoMin) => {
+    const id = mkSession({ headless: 1, spawned_by: 'automation:a1', created_at: Date.now() - ageMin * M,
+      last_activity: Date.now() - lastActAgoMin * M });
+    aos.db.prepare('UPDATE term_sessions SET busy_since = ? WHERE id = ?').run(busyAgoMin == null ? null : Date.now() - busyAgoMin * M, id);
+    return id;
+  };
+  // turn started 5s after launch, still running 31 min later: busy_since == last_activity (markTurnBusy)
+  const longTurn = unattendedRun(31, 31 - 0.1, 31 - 0.1);
+  // the Stop beacon landed 40 min ago and nothing has happened since: the classic straggler
+  const straggler = unattendedRun(60, null, 40);
+  // a turn that started 3h ago and has emitted nothing since (no re-stamp): wedged, not working
+  const wedged = unattendedRun(200, 180, 180);
+  // a later turn (busy_since newer than the last turn-end) — e.g. woken by a background-task notification
+  const secondTurn = unattendedRun(90, 35, 35);
+  killed.length = 0;
+  tm.reapIdleSessions();
+  await settle();
+  assert(!killed.includes('aos-' + longTurn) && statusOf(longTurn) === 'running', 'a 31-min first turn still in flight → left running');
+  assert(!killed.includes('aos-' + secondTurn) && statusOf(secondTurn) === 'running', 'a later turn in flight past the timeout → left running');
+  assert(killed.includes('aos-' + straggler), 'a run idle 40 min after its turn ENDED → still reaped (the backstop works)');
+  assert(killed.includes('aos-' + wedged), 'a turn silent past MID_TURN_MAX_MS → reaped (wedged, not working)');
+  const reason = aos.db.prepare("SELECT data FROM audit_events WHERE run_id=? AND type='session.reaped'").get(straggler);
+  assert(reason && /idle-backstop/.test(reason.data), 'the straggler is audited as idle-backstop', reason && reason.data);
+
   console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}IDLE REAPER: ${pass}/${pass + fail} passed\x1b[0m`);
   try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
   process.exit(fail === 0 ? 0 : 1);
