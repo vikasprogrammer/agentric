@@ -261,6 +261,29 @@ console.log('\ndownload');
   assert(/missing_scope/.test(String(aos.db.prepare("SELECT data FROM audit_events WHERE type = 'slack.thread.unreadable' ORDER BY ts DESC LIMIT 1").get().data)), 'verbatim — `missing_scope` is the one an operator must act on');
   global.fetch = realFetch;
 
+  // ── 9. one message, two events ───────────────────────────────────────────────
+  // Reported 2026-10-23 (instawp): an @mention in a channel arrives as `app_mention` AND as a plain
+  // `message` (we subscribe to message.channels for continuity), same `ts`. Both ran the pipeline — a
+  // live thread got the text typed in twice, a reaped one got revived AND freshly spawned.
+  console.log('\none message, two events');
+  global.fetch = async () => ({ ok: true, json: async () => ({ ok: true, messages: [] }) });
+  before = routed.length;
+  await Promise.all([
+    // In a thread the bot has spoken in — where the plain `message` copy is acted on too, not dropped.
+    sock.dispatch(env({ type: 'message', channel: CH, channel_type: 'channel', user: 'U1', ts: '1000.1', thread_ts: REPORT_TS, text: '<@BOT> support-ops twice?' })),
+    sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'channel', user: 'U1', ts: '1000.1', thread_ts: REPORT_TS, text: '<@BOT> support-ops twice?' })),
+  ]);
+  assert(routed.length === before + 1, 'an @mention delivered as app_mention + message runs ONCE, whichever lands first', `ran ${routed.length - before}x`);
+  before = routed.length;
+  await sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'channel', user: 'U1', ts: '1000.1', thread_ts: REPORT_TS, text: '<@BOT> support-ops twice?' }));
+  assert(routed.length === before, 'and a redelivered envelope for the same message is ignored');
+  await sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'channel', user: 'U1', ts: '1000.2', text: '<@BOT> support-ops again' }));
+  assert(routed.length === before + 1, 'while the next message (new ts) still routes');
+  before = routed.length;
+  await sock.dispatch(env({ type: 'message', channel: 'D0DM1', channel_type: 'im', user: 'U1', ts: '1000.3', text: '<@BOT> support-ops in a DM' }));
+  assert(routed.length === before + 1, 'a DM `message` carrying a mention is NOT dropped — Slack sends no app_mention there');
+  global.fetch = realFetch;
+
   console.log(`\n${pass} passed, ${fail} failed`);
   fs.rmSync(HOME, { recursive: true, force: true });
   process.exit(fail ? 1 : 0);

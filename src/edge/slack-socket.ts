@@ -30,6 +30,10 @@ const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_THREAD_MESSAGES = 30;
 /** Per-message clip inside that block — a pasted stack trace is context, not the point. */
 const MAX_THREAD_CHARS = 800;
+/** How long a handled message's `channel:ts` is remembered for de-duplication. Slack re-delivers an
+ *  envelope it thinks went un-ACKed within seconds, so minutes is ample; bounded so the map can't grow. */
+const SEEN_TTL_MS = 10 * 60_000;
+const SEEN_MAX = 2_000;
 
 /** Ack + the (usually empty) thread-read warning, as one message so the person sees both at once. */
 function withWarning(ack: string, warning: string): string {
@@ -53,6 +57,8 @@ export class SlackSocket {
    *  page. The in-thread warning tells the person who tagged us; this tells the admin who can fix it —
    *  they are rarely the same person, and the admin never sees the thread. */
   private lastThreadScopeError?: { channel: string; scope: string; error: string; at: number };
+  /** `channel:ts` of messages already dispatched → when. See {@link firstSighting}. */
+  private readonly seen = new Map<string, number>();
 
   constructor(
     private readonly os: AgentOS,
@@ -162,11 +168,45 @@ export class SlackSocket {
     if (type === 'slash_commands') void this.dispatchSlashCommand(msg).catch(() => { /* same */ });
   }
 
+  /**
+   * True the first time a message (`channel` + its own `ts`) is seen, false on any repeat — Slack's
+   * at-least-once redelivery of an envelope, or an `app_mention`/`message` pair the twin rule above
+   * doesn't cover (a group DM). Marked synchronously, so two events racing through `dispatch` can't both
+   * pass. A message without a `ts` is never treated as a repeat.
+   */
+  private firstSighting(channel: string, ts: unknown): boolean {
+    if (typeof ts !== 'string' || !ts) return true;
+    const key = `${channel}:${ts}`;
+    const now = Date.now();
+    const at = this.seen.get(key);
+    if (at !== undefined && now - at < SEEN_TTL_MS) return false;
+    this.seen.delete(key); // re-insert at the end so the map stays oldest-first for the sweep below
+    this.seen.set(key, now);
+    if (this.seen.size > SEEN_MAX) {
+      for (const [k, t] of this.seen) {
+        if (now - t >= SEEN_TTL_MS || this.seen.size > SEEN_MAX) this.seen.delete(k);
+        else break; // insertion-ordered: everything after this is newer
+      }
+    }
+    return true;
+  }
+
   private async dispatch(envelope: any): Promise<void> {
     const ev = parseSlackEvent(envelope);
     if (!ev) return;
     if (ev.fromBot || (this.botUserId && ev.user === this.botUserId)) return; // ignore self / other bots
     if (!ev.channel) return;
+    // ONE human message, TWO events. With `message.channels`/`message.groups` subscribed (for thread
+    // continuity), an @mention in a channel arrives as an `app_mention` AND a plain `message` with the same
+    // `ts`, and both used to run the whole pipeline: a live thread got the text typed in twice, and a
+    // reaped one was revived by the first while the second — landing inside the revive's boot window,
+    // where the pane can't take keystrokes yet — fell through to a FRESH spawn on the same thread (instawp
+    // 2026-10-23: two infra-ops sessions answering one Slack reply). The `app_mention` is the canonical
+    // copy, so its `message` twin is dropped here, before any await, which makes the outcome independent
+    // of arrival order. DMs are exempt: Slack sends no `app_mention` there, the `message` is the only copy.
+    if (ev.eventType === 'message' && (ev.channelType === 'channel' || ev.channelType === 'group')
+      && this.botUserId && (ev.text || '').includes(`<@${this.botUserId}>`)) return;
+    if (!this.firstSighting(ev.channel, (ev.raw as { ts?: unknown } | undefined)?.ts)) return;
 
     // Resolve the triggering Slack user → an Agentric member (per-member run-as). Prefer an explicit
     // identity-map link (provider `slack`, set on the Team page); fall back to matching the Slack

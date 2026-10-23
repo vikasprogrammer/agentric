@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.463.3] - 2026-10-23
+### Fixed
+- **One Slack @mention started two agent sessions.** With `message.channels` subscribed (for thread
+  continuity), Slack delivers an in-channel @mention twice — as `app_mention` and as a plain `message`
+  with the same `ts` — and both ran the whole ingress pipeline. In a live thread the agent got the text
+  typed in twice; in a reaped one the first event revived the bound session while the second, landing
+  inside the revive's boot window where the pane can't take keystrokes yet, fell through to a fresh spawn
+  on the same thread. The `message` twin of an in-channel mention is now dropped before any work, and
+  every message is de-duplicated on `channel:ts`, which also absorbs Slack's at-least-once redelivery.
+  Pinned in `scripts/slack-ingress-test.cjs`.
+  **For users:** tagging the bot in a Slack thread now gets exactly one agent reply, not two.
+
 ## [0.463.2] - 2026-10-23
 ### Fixed
 - **The idle backstop killed unattended runs in the middle of their work.** It reaps a run whose
