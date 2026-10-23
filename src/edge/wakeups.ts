@@ -118,6 +118,19 @@
  * line onto the task ("… was not woken — it had no live run, so the result stands here"). Not a card and
  * not a DM: the owner already has the `task.notified` DM for the completion itself, and a second ping
  * about the plumbing is the noise this lane exists to avoid.
+ *
+ * ## An answer is addressed to ONE conversation ({@link WAKE_KIND_ANSWER}, 2026-10-23)
+ *
+ * A late answer to a durable `ask` rode this queue as an ordinary wake-up, and the per-agent design sent it
+ * somewhere other than the session that asked, in two ways. The sibling lane typed it into whatever other
+ * run of that agent was live, and coalescing merged it with other pending wake-ups and then delivered the
+ * whole batch to ONE of their transcripts, the newest. The result was an answer like "apply the hotfix"
+ * arriving in a run that never asked the question, which takes it as an instruction.
+ *
+ * So an `answer` wake-up is pinned. It is batched only with other answers to the SAME transcript, never
+ * with pokes, and it reaches its own live pane or resumes its own transcript, never a sibling. Its batches
+ * are delivered first, and a batch that resumes still ends the pass, so the agent still gets at most one
+ * new claude per delivery.
  */
 import { newId } from '../id';
 import { AgentOS } from '../kernel';
@@ -135,6 +148,12 @@ export const MAX_AGENTS_PER_SWEEP = 10;
  * module header). Injects like any other wake-up; refuses only the resume lane.
  */
 export const WAKE_KIND_DONE = 'poke-done';
+/**
+ * A human's (or a deadline default's) answer to a durable question, addressed to the conversation that
+ * asked it. Pinned to its transcript: never coalesced with other wake-ups, never injected into a sibling
+ * (see the module header).
+ */
+export const WAKE_KIND_ANSWER = 'answer';
 
 export interface WakeupInput {
   /** Caller agent id (bare, no `agent:` prefix). */
@@ -190,17 +209,18 @@ export class WakeupQueue {
     const existing = this.db
       .prepare("SELECT id FROM agent_wakeups WHERE agent = ? AND source = ? AND kind = ? AND status = 'pending'")
       .get<{ id: string }>(agent, input.source, kind);
+    const id = existing?.id ?? newId('wakeup');
     if (existing) {
       this.db
         .prepare('UPDATE agent_wakeups SET message = ?, title = ?, transcript = ?, run_as = ?, updated_at = ? WHERE id = ?')
-        .run(input.message, input.title ?? null, input.transcript, input.runAs ?? null, now, existing.id);
+        .run(input.message, input.title ?? null, input.transcript, input.runAs ?? null, now, id);
     } else {
       this.db
         .prepare(`INSERT INTO agent_wakeups (id, tenant, agent, source, kind, transcript, run_as, title, message, status, attempts, created_at, updated_at)
                   VALUES (?,?,?,?,?,?,?,?,?,'pending',0,?,?)`)
-        .run(newId('wakeup'), this.os.tenant, agent, input.source, kind, input.transcript, input.runAs ?? null, input.title ?? null, input.message, now, now);
+        .run(id, this.os.tenant, agent, input.source, kind, input.transcript, input.runAs ?? null, input.title ?? null, input.message, now, now);
     }
-    return this.deliver(agent, opts);
+    return this.deliver(agent, { ...opts, forRow: id });
   }
 
   /** Has a human PAUSED the session that owns this transcript? The resume lane's veto — see its use
@@ -213,12 +233,49 @@ export class WakeupQueue {
   }
 
   /**
-   * Deliver every pending wake-up for ONE agent, coalesced, down the highest-priority reachable lane.
+   * Deliver every pending wake-up for ONE agent. Answers go first, one batch per transcript they are
+   * pinned to; everything else is coalesced into one batch after them. A batch that RESUMES ends the
+   * pass, so the agent still gets at most one new claude per call and the rest wait for the next tick.
    * Undelivered work stays pending (attempts bumped) — never dropped, never doubled.
+   *
+   * Returns the outcome for the batch holding `forRow` (enqueue's own wake-up) when given, else the
+   * last batch attempted.
    */
-  deliver(agentId: string, opts: { budget?: number } = {}): WakeupDelivery {
+  deliver(agentId: string, opts: { budget?: number; forRow?: string } = {}): WakeupDelivery {
     const pending = this.pending(agentId);
     if (!pending.length) return { ok: false, reason: 'nothing pending', queued: false };
+    let mine: WakeupDelivery | undefined;
+    let last: WakeupDelivery = { ok: false, reason: 'nothing pending', queued: false };
+    for (const batch of this.batches(pending)) {
+      last = this.deliverBatch(agentId, batch.rows, { budget: opts.budget, pinned: batch.pinned });
+      if (opts.forRow && batch.rows.some((r) => r.id === opts.forRow)) mine = last;
+      if (last.ok && last.via === 'resume') break;
+    }
+    if (opts.forRow && !mine) return { ok: false, reason: 'another wake-up for this agent resumed first — queued for the next tick', queued: true };
+    return mine ?? last;
+  }
+
+  /** Split an agent's pending wake-ups into delivery batches: one PINNED batch per transcript that has
+   *  answers waiting, then every other wake-up together. Answers never coalesce with anything addressed
+   *  elsewhere (see "An answer is addressed to ONE conversation" in the module header). */
+  private batches(pending: Row[]): Array<{ rows: Row[]; pinned: boolean }> {
+    const answers = new Map<string, Row[]>();
+    const rest: Row[] = [];
+    for (const r of pending) {
+      if (r.kind !== WAKE_KIND_ANSWER) { rest.push(r); continue; }
+      const group = answers.get(r.transcript);
+      if (group) group.push(r); else answers.set(r.transcript, [r]);
+    }
+    const out = [...answers.values()].map((rows) => ({ rows, pinned: true }));
+    if (rest.length) out.push({ rows: rest, pinned: false });
+    return out;
+  }
+
+  /**
+   * Deliver ONE batch, coalesced, down the highest-priority reachable lane. A `pinned` batch may only
+   * reach its own transcript: its own live pane, else a resume of it. It never takes the sibling lane.
+   */
+  private deliverBatch(agentId: string, pending: Row[], opts: { budget?: number; pinned: boolean }): WakeupDelivery {
     const newest = pending[pending.length - 1];
     const message = this.coalesce(pending);
     const principal = newest.run_as ? `member:${newest.run_as}` : 'system';
@@ -261,7 +318,7 @@ export class WakeupQueue {
     // is offered a wake-up only when there is something for it to DO (never good news alone) and only
     // when speaking there cannot put one person's work in front of another: same run-as identity, and no
     // outward thread/DM binding of its own to answer into.
-    const dest = own ?? (doneOnly ? undefined : pool.find((r) => this.acceptsSibling(r, pending)));
+    const dest = own ?? (doneOnly || opts.pinned ? undefined : pool.find((r) => this.acceptsSibling(r, pending)));
     if (dest) {
       const via = own ? 'inject' : 'inject-sibling';
       const injected = this.tm.injectToSession(dest.id, message, true, principal);
@@ -350,6 +407,10 @@ export class WakeupQueue {
    */
   private coalesce(rows: Row[]): string {
     if (rows.length === 1) return rows[0].message;
+    if (rows.every((r) => r.kind === WAKE_KIND_ANSWER)) {
+      return `${rows.length} of your questions have been answered — all of them, in order:\n\n` +
+        rows.map((r, i) => `— ${i + 1} of ${rows.length} —\n${r.message}`).join('\n\n');
+    }
     return `You have ${rows.length} updates waiting on work you handed off — all of them, in order:\n\n` +
       rows.map((r, i) => `— ${i + 1} of ${rows.length} —\n${r.message}`).join('\n\n') +
       `\n\nHandle every one of them before you pick your own work back up.`;
