@@ -879,7 +879,7 @@ export class Automations {
    * TASK_MAX_ATTEMPTS so a failing task can't spin). Every effect the session has still passes the gateway,
    * so "start work" adds no new trust surface. Audited `task.dispatched`.
    */
-  dispatchTask(id: string, opts: { guard?: boolean; by?: string; clickup?: { taskId: string; commentId: string }; extra?: string } = {}): FireResult {
+  dispatchTask(id: string, opts: { guard?: boolean; by?: string; clickup?: { taskId: string; commentId: string }; extra?: string; resume?: string; resumeAgent?: string } = {}): FireResult {
     const guard = opts.guard ?? true;
     const pre = this.canDispatch(id, { guard });
     if (!pre.ok) {
@@ -910,9 +910,15 @@ export class Automations {
     // MAX_TASK_RESUMES resumes that still didn't close the task, start FRESH to escape a wedged transcript
     // — a fresh run mints a new `claude_session_id`, so the streak resets and the LAST attempt before the
     // ceiling is a clean slate. A changed assignee / no transcript ⇒ `resumable` undefined ⇒ fresh.
-    const resumable = this.tm.resumableTaskTranscript(t.id, agentId);
-    const resuming = !!resumable && resumable.uses < 1 + MAX_TASK_RESUMES;
-    const resumeId = resuming ? resumable!.claudeSessionId : undefined;
+    //
+    // `resume` overrides all of that with ONE named transcript: an answer to a question goes back to the
+    // conversation that asked it, which is not necessarily the newest `task:<id>` run (the asker may have
+    // claimed the task from a chat or cron run) and must not be swapped for a fresh one by the resume cap.
+    // Only when the asker is the agent now assigned — a transcript belongs to one agent.
+    const pinned = opts.resume && opts.resumeAgent === agentId ? opts.resume : undefined;
+    const resumable = pinned ? undefined : this.tm.resumableTaskTranscript(t.id, agentId);
+    const resuming = !!pinned || (!!resumable && resumable.uses < 1 + MAX_TASK_RESUMES);
+    const resumeId = pinned ?? (resuming ? resumable!.claudeSessionId : undefined);
     // `clickup` binds the run to the ticket it was started from (`clickup_threads`), which is what exposes
     // `clickup_reply` and mirrors the run's completion back onto the ticket — so a run started with
     // `/agentric <agent> …` answers where it was asked, like one started with `/<agent> …` always has.

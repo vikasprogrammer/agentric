@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.463.1] - 2026-10-23
+### Fixed
+- **A late answer to an agent's question could land in a different session of that agent.** A durable
+  `ask` outlives its run, so its answer is delivered after the asker has gone, and both delivery paths
+  chose a transcript by agent instead of by question. The wake queue typed the answer into any live
+  sibling run of the agent, or coalesced it with other pending wake-ups and resumed whichever transcript
+  was newest. The task path resumed the newest `task:<id>` run, which is not the asker when the asker
+  claimed the task from a chat or cron run. The live symptom was an infra-ops "apply the hotfix" answer
+  arriving in an infra-ops conversation that never asked. Answers are now pinned to the asking session's
+  transcript. They ride the wake queue as a new `answer` kind, which never takes the sibling lane and is
+  batched only with answers to the same transcript. The task path resumes that transcript explicitly
+  (bypassing the resume cap) and waits while its pane is still up. The delivered message now names the
+  question id and the asking session. Pinned by `scripts/answer-pinning-test.cjs`.
+
 ## [0.463.0] - 2026-10-22
 ### Added
 - **`video_generate` maps each Atlas model onto its own field names, and takes `referenceImages`,

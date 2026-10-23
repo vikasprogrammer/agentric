@@ -16,7 +16,7 @@ import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
 import { TerminalManager, ApprovalNotice, QuestionNotice, QuestionAnswerNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice, renderOptions } from './terminal';
 import { Automations } from './edge/automations';
-import { WAKE_KIND_DONE } from './edge/wakeups';
+import { WAKE_KIND_ANSWER, WAKE_KIND_DONE } from './edge/wakeups';
 import { AppSupervisor } from './edge/app-supervisor';
 import { InsightAlert } from './edge/alerts';
 import { SlackSocket } from './edge/slack-socket';
@@ -321,13 +321,26 @@ export class TenantRegistry {
     // live pane, else resume the transcript). This is what makes a durable `ask` worth having: the human
     // can answer an hour later and the agent is actually told. A run with no pinned transcript can't be
     // resumed, so the queue refuses it and the answer stays readable via `check_inbox`.
+    // An answer belongs to the conversation that ASKED it — the session row's pinned claude transcript.
+    // Both lanes below resume exactly that transcript; neither may pick "the agent's newest run" (another
+    // session of the same agent would take the answer as its own instruction).
+    const askerTranscript = (sessionId: string): { transcript: string | null; runAs: string | null } | undefined =>
+      os.db
+        .prepare('SELECT claude_session_id AS transcript, run_as AS runAs FROM term_sessions WHERE id = ?')
+        .get<{ transcript: string | null; runAs: string | null }>(sessionId);
+    const liveOn = (transcript: string): boolean =>
+      os.db
+        .prepare('SELECT id FROM term_sessions WHERE claude_session_id = ? ORDER BY created_at DESC LIMIT 20')
+        .all<{ id: string }>(transcript)
+        .some((r) => tm.reachable(r.id));
     tm.setQuestionDeliverer((n) => {
       // The answer also unblocked the task this run had parked: deliver it by dispatching THE TASK, which
-      // resumes the same transcript. A wake-queue resume would be a second run the task's one-live-run
-      // guard can't see — and an auto-dispatch tick would then start a third on the same transcript.
+      // resumes the ASKING run's transcript. A wake-queue resume would be a second run the task's
+      // one-live-run guard can't see — and an auto-dispatch tick would then start a third on it.
       if (n.taskId) {
         const who = n.defaulted ? 'nobody answered, so the default applied' : `answered by ${n.by}`;
-        const extra = `Your question was answered (${who}) and the task is back on the board:\n\nQ: ${n.prompt}\nA: ${n.answer}\n\nPick the work back up from here.`;
+        const extra = `Your question (${n.questionId}, asked in session ${n.sessionId}) was answered (${who}) and the task is back on the board:\n\nQ: ${n.prompt}\nA: ${n.answer}\n\nPick the work back up from here.`;
+        const resume = askerTranscript(n.sessionId)?.transcript ?? undefined;
         // The asking run usually still holds its pane for a few seconds after parking the task (turn-end
         // reap), and the one-live-run guard rightly refuses a second session meanwhile. Retry until it is
         // gone; a pane that never goes (a human attached) gets the answer injected instead.
@@ -336,7 +349,12 @@ export class TenantRegistry {
         const attempt = (): void => {
           const t = os.tasks.get(taskId);
           if (!t || t.status !== 'todo') return; // someone else picked it up / closed it meanwhile
-          const r = autos.dispatchTask(taskId, { guard: false, by: n.by, extra });
+          // The one-live-run guard only sees `task:<id>` runs. An asker that claimed the task from a chat or
+          // cron run is invisible to it, so check the transcript itself: resuming it while its pane is still
+          // up would put a second claude on one conversation. Same wait as the guard's.
+          const r = resume && liveOn(resume)
+            ? { ok: false, reason: 'already working on this transcript' }
+            : autos.dispatchTask(taskId, { guard: false, by: n.by, extra, resume, resumeAgent: n.agent });
           if (r.ok) return;
           if (/already working/.test(r.reason ?? '') && ++tries < ANSWER_DISPATCH_RETRIES) {
             setTimeout(attempt, ANSWER_DISPATCH_RETRY_MS).unref?.();
@@ -350,18 +368,17 @@ export class TenantRegistry {
       deliverViaWakeup(n);
     });
     const deliverViaWakeup = (n: QuestionAnswerNotice): void => {
-      const row = os.db
-        .prepare('SELECT claude_session_id AS transcript, run_as AS runAs FROM term_sessions WHERE id = ?')
-        .get<{ transcript: string | null; runAs: string | null }>(n.sessionId);
+      const row = askerTranscript(n.sessionId);
       if (!row?.transcript) return;
       const who = n.defaulted ? 'nobody answered, so the default applied' : `answered by ${n.by}`;
       autos.wakeups.enqueue({
         agent: n.agent,
         source: `question:${n.questionId}`,
+        kind: WAKE_KIND_ANSWER,
         transcript: row.transcript,
         runAs: row.runAs ?? undefined,
         title: 'Answer to your question',
-        message: `Your question has been answered (${who}).\n\nQ: ${n.prompt}\nA: ${n.answer}\n\n`
+        message: `Your question (${n.questionId}, asked in session ${n.sessionId}) has been answered (${who}).\n\nQ: ${n.prompt}\nA: ${n.answer}\n\n`
           + 'Pick the work back up from here — this is the decision you were waiting on.',
       });
     };
