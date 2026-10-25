@@ -68,6 +68,12 @@ const MUTATION_TOOL = /create|send|update|delete|remove|write|post|put|patch|mer
 // (a flag name isn't a destructive verb — #139), while `drop table`, `sudo systemctl restart`, `kubectl
 // delete` still match. `\w` in the lookarounds just mirrors the word-boundary these keywords already had.
 const RISKY_SHELL = /(?<![-\w])(stripe|refund|deploy|prod|drop|delete|kubectl|systemctl|shutdown)(?![-\w])/i;
+// Hestia account/site (un)suspension via the raw CLI: `v-suspend-user`, `v-unsuspend-user`, and the
+// -domain / -web-domain siblings. The structured suspend capability already sets `userSuspend`, but run
+// as a plain shell.exec — e.g. `ssh root@box v-unsuspend-user <acct>` — it carried no fact and classified
+// green, which let a containment be reversed un-gated (mylabcatalog, 2026-10-22). Flag-style lookarounds
+// mirror RISKY_SHELL so a path prefix (`/usr/local/hestia/bin/v-unsuspend-user`) still matches.
+const SUSPEND_STATE_CHANGE = /(?<![-\w])v-(un)?suspend-(user|domain|web-domain)(?![-\w])/i;
 const AMOUNT_KEY = /amount.*usd|usd.*amount|amountusd|amount_usd/i;
 const PAYMENT_TOOL = /refund|payment|charge|payout|\bpay\b/i;
 const PAYMENT_AMOUNT_KEY = /^(amount|total|amount_cents|amountcents)$/i;
@@ -483,6 +489,14 @@ export function enrichArgs(
     facts.emailExternal = emailExternal;
     facts.emailExternalCount = emailExternalCount;
     if (emailRecipients) facts.emailRecipients = emailRecipients;
+  }
+
+  // Raw-CLI Hestia (un)suspension → owner approval. The structured suspend capability sets this fact;
+  // a plain shell.exec that runs `v-(un)suspend-user` must too, or it slips through green. Match the
+  // SANITIZED intent (so an `echo`/`grep` that merely names the command does not trip it, same as the
+  // built-in scans); a caller-supplied truthy `userSuspend` is left intact.
+  if (isShell && command && facts.userSuspend !== true && SUSPEND_STATE_CHANGE.test(commandIntent)) {
+    facts.userSuspend = true;
   }
 
   // Workspace-defined custom patterns (Settings → Governance): each sets a boolean fact the policy

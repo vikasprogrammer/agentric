@@ -7,6 +7,27 @@
   },
   "decisions": [
     {
+      "name": "raw-SSH v-unsuspend-user is owner-gated (mylabcatalog incident 2026-10-22)",
+      "capability": "shell.exec",
+      "args": { "tool": "Bash", "input": { "command": "ssh root@198.51.100.7 v-unsuspend-user govunebufo7114" } },
+      "expect": "ask:owner",
+      "expectFacts": { "userSuspend": true }
+    },
+    {
+      "name": "v-suspend-user is owner-gated too",
+      "capability": "shell.exec",
+      "args": { "tool": "Bash", "input": { "command": "v-suspend-user someacct" } },
+      "expect": "ask:owner",
+      "expectFacts": { "userSuspend": true }
+    },
+    {
+      "name": "an echo that merely names v-unsuspend-user (quoted data) is not a suspend",
+      "capability": "shell.exec",
+      "args": { "tool": "Bash", "input": { "command": "echo \"to reactivate later, run v-unsuspend-user <acct>\"" } },
+      "expect": "allow",
+      "expectFacts": { "userSuspend": false }
+    },
+    {
       "name": "bash read is allowed",
       "capability": "shell.exec",
       "args": {

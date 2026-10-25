@@ -7,6 +7,8 @@
     { "match": { "capability": "*", "when": { "arg": "amountUsd", "op": "gt", "value": "$moneyCapUsd" } }, "action": "never" },
     { "match": { "capability": "*", "when": { "arg": "deleteCount", "op": "gt", "value": "$bulkDeleteCount" } }, "action": "never" },
 
+    { "match": { "capability": "*", "when": { "arg": "userSuspend", "op": "eq", "value": true } }, "action": "ask", "approver": "owner" },
+
     { "match": { "capability": "email.send", "when": { "arg": "emailExternal", "op": "eq", "value": true } }, "action": "ask", "approver": "admin" },
 
     { "match": { "capability": "secret.put" }, "action": "ask", "approver": "admin" },
