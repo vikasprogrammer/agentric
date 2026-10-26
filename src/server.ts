@@ -1443,6 +1443,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // agent ENDS ITS OWN session — the self-stop escape hatch (work is done / blocked with no point
   // waiting). Same halt the console kill button performs (stopSession: kills tmux, cancels pending
   // questions/approvals, blocks auto-resume, records a `stopped` episode), but `by` = the agent id.
+  // `/handoff` → the agent's `handoff` tool: open a fresh session for this work, seeded with its note.
+  if (method === 'POST' && p === '/api/agent/handoff') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const r = tm.handoffSession(session, String(b.note || ''), { title: typeof b.title === 'string' ? b.title : undefined, by: agent });
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   if (method === 'POST' && p === '/api/agent/stop') {
     const b = await readBody(req);
     const session = String(b.session || '');
@@ -3947,6 +3957,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // Out-of-band session summary — reads the run's existing transcript and summarizes it in a THROWAWAY
   // claude, so the target session's own context is never touched (no pollution). Same visibility gate as
   // the terminal/transcript. Returns { summary, via, found }; never blocks the session.
+  // Hand a session off to a fresh one (the console's "Hand off to a fresh session"). A live agent is asked to
+  // run `/handoff` itself — it has the context to write the note; the console then polls GET for the new
+  // session. A session that isn't live gets an out-of-band summary of its transcript as the note instead.
+  const handoffMatch = p.match(/^\/api\/sessions\/([\w-]+)\/handoff$/);
+  if (handoffMatch && (method === 'GET' || method === 'POST')) {
+    const id = handoffMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (method === 'GET') return sendJson(res, 200, { sessionId: tm.handoffChild(id) ?? null });
+    if (tm.reachable(id) && tm.supportsHandoffCommand(id)) {
+      const r = tm.injectToSession(id, '/handoff', true, me.email);
+      if (r.ok) {
+        os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.handoff.requested', data: {} });
+        return sendJson(res, 200, { status: 'requested' });
+      }
+    }
+    const convo = tm.sessionConversation(id);
+    const cred = tm.outOfBandCredentialEnv();
+    const out = await summarizeConversation(convo, { credentials: cred?.vars, account: cred?.account });
+    if (!out.found || !out.summary) return sendJson(res, 400, { error: 'nothing to hand off — this session has no transcript yet' });
+    const r = tm.handoffSession(id, `(Written by Agentric from the transcript — the session was not running.)\n\n${out.summary}`, { by: me.email });
+    return sendJson(res, r.ok ? 200 : 400, r.ok ? { status: 'created', ...r } : r);
+  }
   const summarizeMatch = p.match(/^\/api\/sessions\/([\w-]+)\/summarize$/);
   if (method === 'POST' && summarizeMatch) {
     const id = summarizeMatch[1];

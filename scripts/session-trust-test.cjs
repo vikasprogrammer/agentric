@@ -125,6 +125,20 @@ const run = (cmd, args, env, stdin) => new Promise((resolve) => {
   const g2 = tm.gate('ses_mode', 'engineer', 'connector.call', { tool: 'mcp__composio__CLICKUP_GET_TASK', input: { task_id: '1' } }, '');
   assert(g2.decision !== 'deny', 'back to normal: reads pass', g2);
 
+  console.log('\n\x1b[1m4) /handoff\x1b[0m');
+  tm.setSessionMode('ses_mode', 'readonly', { id: alice.id, email: alice.email });
+  assert(!tm.handoffSession('ses_mode', 'too short', { by: 'engineer' }).ok, 'a note too short to act on is refused');
+  const note = '- Goal: ship the MCP safety framework\n- Done: PR https://github.com/acme/app/pull/12 (branch feat/x)\n- Next: re-run QA on the head';
+  const h = tm.handoffSession('ses_mode', note, { by: 'engineer' });
+  assert(h.ok && h.sessionId && h.url, 'handoff opens a new session', h);
+  const child = aos.db.prepare('SELECT * FROM term_sessions WHERE id = ?').get(h.sessionId);
+  assert(child.agent === 'engineer' && child.run_as === alice.id, 'same agent, acting as the same person');
+  assert(child.task.includes(note) && child.task.includes('ses_mode') && child.task.includes('x'), 'seeded with the note, a link back and the original request');
+  assert(h.sessionId !== 'ses_mode' && child.claude_session_id === null, 'a FRESH conversation, not a resume of the old one');
+  assert(child.mode === 'readonly', 'the working mode carries over');
+  assert(tm.handoffChild('ses_mode') === h.sessionId, 'the console can find where the work went');
+  assert(tm.supportsHandoffCommand('ses_mode') === true, 'claude-code sessions have the /handoff command');
+
   console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}SESSION TRUST: ${pass}/${pass + fail} passed\x1b[0m`);
   try { fs.rmSync(HOME, { recursive: true, force: true }); fs.rmSync(fakeBin, { recursive: true, force: true }); } catch {}
   process.exit(fail === 0 ? 0 : 1);

@@ -269,6 +269,27 @@ You can edit your OWN definition, so keep it current instead of repeating the sa
 - Links aren't clickable in this terminal: always print any URL the user must open or copy
   (OAuth/connect links etc.) in full as plain text, not only as a markdown label.`;
 
+/** The `/handoff` slash command every claude-code agent gets (see TerminalManager.handoffSession). */
+const HANDOFF_COMMAND = `---
+description: Hand this work off to a fresh session (frees context, keeps the thread)
+---
+This conversation is getting long. Hand the work off to a fresh session instead of continuing here:
+
+1. Write a handoff note that someone who has NOT read this conversation could act on straight away:
+   - the goal, and who it is for;
+   - where things stand right now;
+   - what is DONE, with exact references (PR and issue links, branches, commits, file paths, ticket and
+     task ids, URLs);
+   - decisions made and why, and anything that was tried and failed;
+   - open questions and anything you are unsure of;
+   - the exact next steps, in order.
+   Bullet points, complete but no padding.
+2. Call the \`handoff\` tool with that note (and a short title if the work has a natural name).
+3. Tell the person the new session's link, then stop working on this task here.
+
+$ARGUMENTS
+`;
+
 /** Whitespace-collapsed, for comparing a submitted prompt with text the server delivered. */
 function normalizePromptText(t: string): string {
   return String(t ?? '').replace(/\s+/g, ' ').trim();
@@ -3396,6 +3417,9 @@ export class TerminalManager {
     // Custom output styles are the same filesystem convention (`.claude/output-styles/`), and only the
     // SELECTED one applies — so the whole library is synced and no per-agent allowlist is needed.
     if (caps.outputStyle) this.materializeOutputStyles(o.id, o.agent, manifest.dir);
+    // `/handoff` — the person's way to move a long conversation into a fresh session (see handoffSession).
+    // Same filesystem convention as skills (`.claude/commands/<name>.md`), so claude-code only.
+    if (caps.nativeSkills) this.materializeHandoffCommand(manifest.dir);
     if (caps.nativeSubagents) this.materializeSubagents(o.id, o.agent, manifest);
     // Unattended (automation/cron/task) runs are now an attachable interactive TUI, not `claude -p` — so a
     // human can take one over mid-run by simply attaching (no kill, no resume). The launcher's UNATTENDED
@@ -4408,6 +4432,61 @@ export class TerminalManager {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * HAND OFF a long conversation to a fresh session. People had invented this by hand — "write a summary
+   * file so I can compact", then "read file …/tmp-session-summary.md and continue" — in 22 sessions across
+   * 7 members in a month, because a compacted context loses detail and a cleared one loses everything. Here
+   * the agent writes the note (it has the context) via `/handoff` → the `handoff` tool, and the OS opens a
+   * NEW session for the same agent, acting as the same person, seeded with that note plus the original
+   * request and a link back. The old session is left as it is; the console shows where the work went.
+   * Carries the parent's working mode. Audited `session.handoff` on both runs.
+   */
+  handoffSession(parentId: string, note: string, opts: { title?: string; by: string }): { ok: boolean; sessionId?: string; url?: string; error?: string } {
+    const p = this.db.prepare('SELECT * FROM term_sessions WHERE id = ?').get<SessionRow>(parentId);
+    if (!p) return { ok: false, error: 'unknown session' };
+    const body = String(note ?? '').trim();
+    if (body.length < 40) return { ok: false, error: 'the handoff note is too short — write the goal, current state, what is done (with links), decisions, and the exact next steps' };
+    const parentUrl = this.sessionUrl(parentId);
+    const original = (p.task || '').trim();
+    const task =
+      `You are picking up work handed off from an earlier session that had grown long: ${parentUrl}\n` +
+      'Its own handoff note is below. Treat it as the current state: do not redo finished work, and verify ' +
+      'anything the note marks as uncertain before you act on it. If the person speaks to you here, they ' +
+      'are continuing the same piece of work.\n\n' +
+      `## Handoff note\n\n${body.slice(0, 20_000)}\n\n` +
+      (original ? `## The earlier session's original request\n\n${original.length > 2000 ? original.slice(0, 2000) + '…' : original}\n` : '');
+    const title = (opts.title?.trim() || `↪ ${p.title}`).slice(0, 120);
+    const child = this.createSession(p.agent, title, task, p.spawned_by ?? undefined, !!p.headless, undefined, undefined, p.run_as ?? undefined);
+    if (isSessionMode(p.mode) && p.mode !== 'normal') this.db.prepare('UPDATE term_sessions SET mode = ? WHERE id = ?').run(p.mode, child.id);
+    this.audit(parentId, opts.by, 'session.handoff', { from: parentId, to: child.id, chars: body.length });
+    this.audit(child.id, opts.by, 'session.handoff', { from: parentId, to: child.id, chars: body.length });
+    return { ok: true, sessionId: child.id, url: this.sessionUrl(child.id) };
+  }
+
+  /** Does this session's runtime have the `/handoff` slash command (claude-code — native `.claude/commands`)? */
+  supportsHandoffCommand(sessionId: string): boolean {
+    const agent = this.sessionAgent(sessionId);
+    const rt = agent ? this.os.agents.get(agent)?.runtime : undefined;
+    return CODING_RUNTIMES[isCodingRuntime(rt) ? rt : 'claude-code'].capabilities.nativeSkills;
+  }
+
+  /** The newest session this one was handed off to, if any. */
+  handoffChild(parentId: string): string | undefined {
+    const row = this.db.prepare("SELECT data FROM audit_events WHERE run_id = ? AND type = 'session.handoff' ORDER BY ts DESC LIMIT 5").all<{ data: string }>(parentId)
+      .map((r) => { try { return JSON.parse(r.data) as { from?: string; to?: string }; } catch { return {}; } })
+      .find((d) => d.from === parentId && d.to);
+    return row?.to;
+  }
+
+  /** Write `.claude/commands/handoff.md` into an agent folder. Idempotent; never fatal. */
+  private materializeHandoffCommand(agentDir: string): void {
+    try {
+      const dir = path.join(agentDir, '.claude', 'commands');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'handoff.md'), HANDOFF_COMMAND);
+    } catch { /* a missing slash command must never block a launch */ }
   }
 
   /** A session's working mode (`normal` when unset). */
