@@ -24,6 +24,7 @@ import { activeToolkits, resolveIdentities } from './connectors/composio-identit
 import { exclusionFor } from './connectors/composio-claims';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, RuntimeAccountKind, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets, commandText } from './governance/enricher';
+import { detectPastedCredential, credentialHoldMessage } from './governance/prompt-secrets';
 import { readExecutedScripts, freshSince, type ScriptBody } from './governance/script-bodies';
 import { protectedReadDecision } from './governance/protected-read';
 import { isolateClaudeConfig } from './edge/config-isolation';
@@ -213,12 +214,6 @@ Your terminal output may not be read. The operator lives in the Inbox:
   **not** in a claude.ai Artifact — an Artifact lives on external hosting outside this tenant, with no
   inbox card, no \`library_list\` listing, and no audit trail, so the operator never sees it here.
 
-## Opening a pull request — always link back to this session
-When you open a pull request (or any deliverable that carries a description), add a line linking back to
-this run so a reviewer can trace the change to the audited session that produced it — the URL is in the
-\`AOS_SESSION_URL\` env var (\`echo "$AOS_SESSION_URL"\`), e.g. \`Agentric session: <url>\`. Print it as a
-plain URL (links aren't clickable here).
-
 ## You are one agent in a fleet — share state, but delegate on purpose
 Other agents run in this workspace and you share state with them:
 - **Tasks** (\`task_*\`) are the shared, durable work queue. Before non-trivial work, \`task_list\` to
@@ -272,6 +267,30 @@ You can edit your OWN definition, so keep it current instead of repeating the sa
 ## Environment notes
 - Links aren't clickable in this terminal: always print any URL the user must open or copy
   (OAuth/connect links etc.) in full as plain text, not only as a markdown label.`;
+
+/** Whitespace-collapsed, for comparing a submitted prompt with text the server delivered. */
+function normalizePromptText(t: string): string {
+  return String(t ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/** The commits-and-PRs section of the brief, per the workspace's attribution setting
+ *  (`Settings.commitAttribution()`). `session-link` asks for the traceability line back to the audited
+ *  run; `none` asks for the opposite, and the claude-code launcher hides the CLI's own trailer/footer to
+ *  match (`CLAUDE_ATTRIBUTION`). Kept out of {@link AGENT_OS_OPERATING_NOTES} because it varies by tenant. */
+export function commitAttributionBrief(mode: 'session-link' | 'none'): string {
+  if (mode === 'none') {
+    return `## Commits and pull requests — no AI attribution
+This workspace does not want AI or Agentric attribution in what you author on its behalf: no
+\`Co-Authored-By: Claude\` trailer, no "Generated with Claude Code" footer, no Agentric session link, and
+no mention of Claude or Agentric in commit messages, PR titles/descriptions, or PR, issue and ticket
+comments. Write them as the person you work for would. The audited session trail stays in Agentric.`;
+  }
+  return `## Opening a pull request — always link back to this session
+When you open a pull request (or any deliverable that carries a description), add a line linking back to
+this run so a reviewer can trace the change to the audited session that produced it — the URL is in the
+\`AOS_SESSION_URL\` env var (\`echo "$AOS_SESSION_URL"\`), e.g. \`Agentric session: <url>\`. Print it as a
+plain URL (links aren't clickable here).`;
+}
 
 /**
  * Session lifecycle. `running` (tmux alive) resolves into exactly one terminal state:
@@ -3401,6 +3420,9 @@ export class TerminalManager {
       // how Claude Code takes a style. `Default` is left unset: naming it is a no-op, and an absent key
       // keeps a lower settings layer (or a plugin's forced style) doing whatever it already did.
       if (tuning.outputStyle && tuning.outputStyle !== 'Default') env.CLAUDE_OUTPUT_STYLE = tuning.outputStyle;
+      // Settings → Runtime → attribution: `none` hides the CLI's own Co-Authored-By trailer + PR footer
+      // (the brief drops the session-link line for every runtime; this half is claude-code's settings file).
+      if (this.os.settings.commitAttribution() === 'none') env.CLAUDE_ATTRIBUTION = 'none';
     }
     this.audit(o.id, o.agent, 'session.tuning', { runtime, model: tuning.model, effort: tuning.effort, permissionMode: caps.permissionMode ? tuning.permissionMode : undefined, outputStyle: tuning.outputStyle, override: o.tuning ?? null });
     // Account rotation: if a POOL is configured for this runtime, pick an available account and point the
@@ -3617,6 +3639,7 @@ export class TerminalManager {
     const space = this.spaceFor(row.run_as ?? row.spawned_by);
     const turn: 'idle' | 'busy' | 'blocked' | 'unknown' =
       this.hasPendingHumanBlock(sessionId) ? 'blocked' : this.residentTurnState(space, row.tmux);
+    this.noteServerText(sessionId, body);
     const ok = this.backend.injectText(space, row.tmux, body, true);
     if (ok) {
       // `busy_since` = a turn is in flight. On a WARM session the pane outlives the turn, so this (not
@@ -4309,6 +4332,58 @@ export class TerminalManager {
     }
     this.turnEndDeferred.delete(sessionId);
     this.teardownUnattended(sessionId, space, r.tmux, 'turn-end');
+  }
+
+  /** Text the SERVER put in front of a session's runtime — the opening task and every pane injection
+   *  (chat follow-ups, pokes, answers, `/reload-skills`, an attached file's path) — kept briefly so the
+   *  UserPromptSubmit hook can tell those apart from what a human typed. Bounded per session and by age;
+   *  in memory only, because the only question asked of it is about the next few minutes. */
+  private serverText = new Map<string, { text: string; at: number }[]>();
+  private static readonly SERVER_TEXT_TTL_MS = 6 * 60 * 60_000;
+
+  private noteServerText(sessionId: string, text: string): void {
+    const norm = normalizePromptText(text);
+    if (!norm) return;
+    const now = Date.now();
+    const list = (this.serverText.get(sessionId) ?? []).filter((e) => now - e.at < TerminalManager.SERVER_TEXT_TTL_MS);
+    list.push({ text: norm, at: now });
+    this.serverText.set(sessionId, list.slice(-30));
+  }
+
+  /** Did the server send this prompt? True when the prompt is (part of) something we delivered — the
+   *  claude TUI may submit an injection with its own framing trimmed, never with a human's words added. A
+   *  human's text typed after an attached file's path is NOT contained in the path, so it is still read.
+   *  After a restart the map is empty, so the session's own task row backs it up for the opening prompt. */
+  private isServerText(sessionId: string, prompt: string): boolean {
+    const norm = normalizePromptText(prompt);
+    if (!norm) return true;
+    const now = Date.now();
+    for (const e of this.serverText.get(sessionId) ?? []) {
+      if (now - e.at < TerminalManager.SERVER_TEXT_TTL_MS && e.text.includes(norm)) return true;
+    }
+    const task = this.db.prepare('SELECT task FROM term_sessions WHERE id = ?').get<{ task: string }>(sessionId)?.task;
+    return !!task && normalizePromptText(task).includes(norm);
+  }
+
+  /**
+   * Should this HUMAN-typed message be held back because it carries a credential? Returns the message to
+   * show the human, or null to let it through. Called from the TUI's UserPromptSubmit hook (`via: 'tui'`,
+   * where server-delivered text is skipped first) and from the console's own send paths. Audits the hold
+   * with the credential's KIND only — never the value. Fails open: a guard on human input must never be
+   * the reason a turn can't start.
+   */
+  holdHumanPrompt(sessionId: string, prompt: string, via: 'tui' | 'reply' | 'inject', by?: string): string | null {
+    try {
+      if (via === 'tui' && this.isServerText(sessionId, prompt)) return null;
+      const hit = detectPastedCredential(prompt);
+      if (!hit) return null;
+      const agent = this.sessionAgent(sessionId) ?? '';
+      const row = this.db.prepare('SELECT run_as, spawned_by FROM term_sessions WHERE id = ?').get<{ run_as: string | null; spawned_by: string | null }>(sessionId);
+      this.audit(sessionId, by || row?.run_as || row?.spawned_by || agent, 'prompt.credential.held', { kind: hit.kind, via, agent });
+      return credentialHoldMessage(hit.kind, agent || undefined);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -5123,6 +5198,7 @@ export class TerminalManager {
 
   /** `{ AOS_URL, SESSION, AGENT, TASK_B64, AOS_SECRET }` — the base env every runner/launcher inherits. */
   private sessionEnv(id: string, agent: string, task: string, secret: string): Record<string, string> {
+    this.noteServerText(id, task);   // the opening prompt is ours, not a human's (see holdHumanPrompt)
     const env: Record<string, string> = {
       AOS_URL: this.baseUrl,
       // The tenant's REAL external origin (FQDN/Tailscale), for human-facing deep-links agents emit.
@@ -5602,7 +5678,8 @@ export class TerminalManager {
     // the same class of question — "which of these lookalike tools is the right one" — and because both
     // are about acting as the right identity rather than the first tool that matches.
     const composio = this.composioContext(actingMember, selfAgent ?? '');
-    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, composio, github, codeReview, goalsSection, fleet, team, preamble, learned, lane, WAITING_BRIEF]
+    const attribution = commitAttributionBrief(this.os.settings.commitAttribution());
+    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, attribution, messaging, composio, github, codeReview, goalsSection, fleet, team, preamble, learned, lane, WAITING_BRIEF]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -6107,6 +6184,7 @@ export class TerminalManager {
     if (!claudeSupportsReloadSkills()) return { reloaded: 0 }; // watcher still exposes it next turn
     let reloaded = 0;
     for (const r of rows) {
+      this.noteServerText(r.id, '/reload-skills');
       if (this.backend.injectText(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux, '/reload-skills', true)) {
         reloaded++;
         this.audit(r.id, agent, 'skills.reloaded', { agent });
@@ -6144,6 +6222,7 @@ export class TerminalManager {
     // live incidents killed that ambition: a claude TUI renders a submitted message with the same `❯`
     // glyph and paste chip as a parked one, and a mid-turn agent parks injected text on purpose, so a pane
     // capture cannot tell delivered from parked. Guessing stopped two working runs. See session-backend.ts.
+    this.noteServerText(sessionId, body);
     const ok = this.backend.injectText(space, row.tmux, body, submit);
     if (!ok) return { ok: false, error: 'could not deliver keystrokes to the terminal' };
     // Submitted text starts a turn, so mark the session busy (the Stop-hook beacon clears it) — without
@@ -9527,6 +9606,7 @@ export class TerminalManager {
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+    this.noteServerText(sessionId, rel);
     const injected = this.backend.injectText(this.spaceFor(row.run_as ?? row.spawned_by), row.tmux, rel + ' ', false);
     this.audit(sessionId, by, 'session.attachment', { path: rel, bytes: data.length, injected });
     return { ok: true, path: rel };

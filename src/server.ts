@@ -22,6 +22,7 @@ import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { governedCapabilities } from './capabilities/normalize';
 import { evaluate } from './observability/evaluation';
+import { standingSuggestions } from './edge/standing-instructions';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation, type Session } from './terminal';
 import { normalizeSessionRef, toSessionFtsQuery } from './edge/session-search';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
@@ -1811,6 +1812,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const session = String(b.session || '');
     if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    // A human pasting a credential into the TUI: tell the hook to hold the prompt (it prints claude's
+    // `decision: block`), and don't start a turn that never happens. Server-delivered text is skipped.
+    if (b.event === 'UserPromptSubmit' && typeof b.prompt === 'string' && b.prompt) {
+      const hold = tm.holdHumanPrompt(session, b.prompt, 'tui');
+      if (hold) return sendJson(res, 200, { ok: true, hold });
+    }
     tm.recordLifecycle(session, String(b.event || ''), { reason: String(b.reason || ''), errorType: String(b.errorType || '') });
     return sendJson(res, 200, { ok: true });
   }
@@ -3696,6 +3703,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     const message = String(b.message || '').trim();
     if (!message) return sendJson(res, 400, { error: 'message is required' });
+    const held = tm.holdHumanPrompt(id, message, 'reply', me.email);
+    if (held) return sendJson(res, 422, { held: true, error: held });
     const r = tm.chatSend(id, message, me.id);
     if (r === 'busy') return sendJson(res, 409, { status: 'busy', error: 'the agent is still working on the previous message — resend in a moment' });
     if (r === 'paused') return sendJson(res, 409, { status: 'paused', error: 'this session is paused — resume it to keep talking' });
@@ -3906,6 +3915,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const text = String(b.text || '');
     if (!text.trim()) return sendJson(res, 400, { error: 'text is required' });
     const submit = b.submit === undefined ? true : Boolean(b.submit);
+    const held = tm.holdHumanPrompt(id, text, 'inject', me.email);
+    if (held) return sendJson(res, 422, { ok: false, held: true, error: held });
     const r = tm.injectToSession(id, text, submit, me.email);
     return sendJson(res, r.ok ? 200 : 409, r);
   }
@@ -4071,6 +4082,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // This member's personal context — free-text they inject into every session that runs AS them
   // (buildCompanyMd reads it at launch). Per person, self-service, not admin-gated. Edited on Profile.
   if (method === 'GET' && p === '/api/me/context') return sendJson(res, 200, { context: os.team.memberContext(me.id) });
+  // Instructions this member keeps typing at the start of sessions — recurring constraints to add to their
+  // context, and same-request-every-day routines to automate (src/edge/standing-instructions.ts). Read-only,
+  // from their OWN console-started sessions in the last 30 days; nothing is applied.
+  if (method === 'GET' && p === '/api/me/context/suggestions') {
+    const since = Date.now() - 30 * 86_400_000;
+    const rows = os.db.prepare('SELECT task, agent, created_at FROM term_sessions WHERE spawned_by = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 500')
+      .all<{ task: string; agent: string; created_at: number }>(me.id, since);
+    const suggestions = standingSuggestions(rows.map((r) => ({ task: r.task, agent: r.agent, createdAt: r.created_at })), os.team.memberContext(me.id));
+    return sendJson(res, 200, { suggestions });
+  }
   if (method === 'PUT' && p === '/api/me/context') {
     const b = await readBody(req);
     const context = os.team.setMemberContext(me.id, (b as { context?: unknown }).context);
@@ -5541,6 +5562,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const trust = os.settings.setAgentProposalTrust(sanitizeAgentProposalTrust({ ...os.settings.agentProposalTrust(), ...b }), me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.agentProposalTrust.updated', data: { ...trust } });
     return sendJson(res, 200, { ok: true, trust });
+  }
+
+  // ── commit/PR attribution: what agents put in the commits + PRs they author (default session-link) ──
+  if (method === 'GET' && p === '/api/settings/commit-attribution') {
+    return sendJson(res, 200, { mode: os.settings.commitAttribution() });
+  }
+  if (method === 'PUT' && p === '/api/settings/commit-attribution') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as { mode?: unknown };
+    if (b.mode !== 'none' && b.mode !== 'session-link') return sendJson(res, 400, { error: "mode must be 'session-link' or 'none'" });
+    const mode = os.settings.setCommitAttribution(b.mode, me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.commitAttribution.updated', data: { mode } });
+    return sendJson(res, 200, { ok: true, mode });
   }
 
   // ── task proposals: do agent-filed board items wait for a human's accept (default on) ──

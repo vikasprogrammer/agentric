@@ -47,6 +47,8 @@ const AGENT_PROPOSAL_TRUST_KEY = 'agent_proposal_trust'; // cross-agent edit tie
 
 /** What the sessions list shows in its money column: dollar cost, token total, or both. */
 export type SessionMetrics = 'cost' | 'tokens' | 'both';
+/** Settings → Runtime → attribution in agent-authored commits and PRs (see `commitAttribution()`). */
+export type CommitAttribution = 'session-link' | 'none';
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
 const UPDATE_WATCH_KEY = 'update_watch'; // JSON {mode, everyHours} — the self-update watcher
 const RUNTIME_WATCH_KEY = 'runtime_watch'; // JSON {mode, everyHours} — the agent-runtime CLI watcher
@@ -94,6 +96,7 @@ export const DEFAULT_GOVERNANCE_THRESHOLDS: GovernanceThresholds = { moneyCapUsd
 
 const EMAIL_ORG_DOMAINS_KEY = 'email_org_domains'; // internal email domains (JSON string[]); email.send to these is green
 const CHAT_ROUTER_KEY = 'chat_router_enabled'; // generic Slack/Discord `/agent` router fallback ('off' disables)
+const COMMIT_ATTRIBUTION_KEY = 'commit_attribution'; // AI/Agentric attribution in commits + PRs ('none' hides it; unset = 'session-link')
 const TASK_PROPOSALS_KEY = 'task_proposals'; // agent-filed board items wait for a human accept ('off' = straight to todo)
 const ROUTER_CONFIG_KEY = 'router_config'; // auto-router tuning (JSON RouterConfig): enabled/minScore/margin/llm
 const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat session idle-kill, minutes
@@ -1098,6 +1101,20 @@ export class SettingsStore {
   // dispatch are unaffected either way (a caller may be blocked on them via task_wait).
 
   /** Whether agent-filed, non-dispatching tasks need a human's accept before they join the board. */
+  /** What agents put in the commits and pull requests they author. `session-link` (default) keeps the
+   *  runtime's own AI attribution and asks for an "Agentric session: <url>" line in each PR description,
+   *  the traceability link back to the audited run. `none` hides all of it — the right call when commits
+   *  are authored as the human (per-member GitHub) on a public repo, where an internal console URL is a
+   *  leak and the trailer is noise someone strips by hand. The audit trail is unaffected either way. */
+  commitAttribution(): CommitAttribution {
+    return this.getRow(COMMIT_ATTRIBUTION_KEY)?.value === 'none' ? 'none' : 'session-link';
+  }
+
+  setCommitAttribution(mode: CommitAttribution, by?: string): CommitAttribution {
+    this.set(COMMIT_ATTRIBUTION_KEY, mode === 'none' ? 'none' : 'session-link', by);
+    return this.commitAttribution();
+  }
+
   taskProposalsEnabled(): boolean {
     return this.getRow(TASK_PROPOSALS_KEY)?.value !== 'off';
   }

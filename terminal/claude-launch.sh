@@ -223,6 +223,17 @@ if [ -n "${CLAUDE_OUTPUT_STYLE:-}" ]; then
     OUTPUT_STYLE_LINE="  \"outputStyle\": \"$SAFE_STYLE\","
   fi
 fi
+# COMMIT/PR ATTRIBUTION (Settings → Runtime → "Attribution in commits & PRs", src/governance/settings.ts).
+# Claude Code appends a `Co-Authored-By: Claude` trailer to commits and a "Generated with Claude Code"
+# footer to PR descriptions on its own. A workspace that set attribution to `none` (one member on a
+# public plugin repo removed those by hand in 10 sessions in a month) gets both hidden here: empty
+# `attribution.commit`/`attribution.pr` is the setting's own "hide" value, and the deprecated
+# `includeCoAuthoredBy` rides along for an older CLI. The brief drops the Agentric session-link line too.
+ATTRIBUTION_LINE=""
+if [ "${CLAUDE_ATTRIBUTION:-}" = "none" ]; then
+  ATTRIBUTION_LINE='  "attribution": { "commit": "", "pr": "" },
+  "includeCoAuthoredBy": false,'
+fi
 # REMOTE CONTROL (claude.ai/code + the Claude mobile app driving a local session) is OFF for governed
 # runs. It only activates on an explicit `/remote-control` (`/rc`) — EXCEPT when auto-connect is on, and
 # auto-connect is a USER-level setting: the box owner flipping "Enable Remote Control for all sessions"
@@ -236,6 +247,7 @@ fi
 cat > .claude/aos-settings.json <<JSON
 {
 $OUTPUT_STYLE_LINE
+$ATTRIBUTION_LINE
   "remoteControlAtStartup": false,
   "crossSessionInbound": "refuse",
   "isolatePeerMachines": true,

@@ -1830,6 +1830,9 @@ export interface RouterPreviewResp {
   error?: string
 }
 
+/** One "you keep typing this" suggestion (src/edge/standing-instructions.ts). */
+export interface StandingSuggestion { kind: 'context' | 'routine'; text: string; sessions: number; days: number; agent?: string }
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -2100,7 +2103,7 @@ export const api = {
   /** Send the human's next turn into a chat session — a clean headless resume run. `busy` = a prior
    *  turn is still generating (keep the draft, resend shortly). */
   reply: (id: string, message: string) =>
-    call<{ status?: 'sent' | 'busy'; error?: string }>('POST', `/api/sessions/${id}/reply`, { message }),
+    call<{ status?: 'sent' | 'busy'; held?: boolean; error?: string }>('POST', `/api/sessions/${id}/reply`, { message }),
   /** Take a chat session over into the Terminal — makes it a live attachable interactive TUI; the caller
    *  then opens the terminal on it. */
   takeoverToTerminal: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/takeover-terminal`),
@@ -2131,6 +2134,9 @@ export const api = {
   // This member's personal context (free-text injected into every session run as them).
   myContext: () => call<{ context: string }>('GET', '/api/me/context'),
   saveMyContext: (context: string) => call<{ context: string }>('PUT', '/api/me/context', { context }),
+  /** Instructions this member keeps retyping when starting sessions: constraint clauses to add to their
+   *  context, and same-request-on-many-days routines to automate. Read-only. */
+  myContextSuggestions: () => call<{ suggestions: StandingSuggestion[]; error?: string }>('GET', '/api/me/context/suggestions'),
   /** Persist this member's pinned sidebar nav (the keys promoted to Main). Returns the resolved list. */
   saveNavPins: (pinned: string[]) => call<{ pinned: string[] }>('PUT', '/api/me/nav', { pinned }),
   /** Persist this member's pinned agents (floated to the top of the Agents list), in order. */
@@ -2236,6 +2242,10 @@ export const api = {
   dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string; /** refused: this session is already working the task */ live?: boolean }>('POST', `/api/tasks/${id}/dispatch`),
   /** Accept (→ todo) or dismiss (→ cancelled) agent-proposed tasks: by `ids`, or every task on one Inbox card (`messageId`). */
   decideTaskProposals: (b: { ids?: string[]; messageId?: string; action: 'accept' | 'dismiss' | 'assign'; assignee?: string | null; run?: boolean }) => call<{ ok: boolean; decided?: string[]; denied?: number; dispatched?: Array<{ id: string; sessionId?: string; error?: string }>; error?: string }>('POST', '/api/tasks/proposals/decide', b),
+  /** What agents put in the commits + PRs they author: the Agentric session link + the runtime's own AI
+   *  trailer (`session-link`, default), or nothing (`none`). Owner/admin to change. */
+  commitAttribution: () => call<{ mode: 'session-link' | 'none'; error?: string }>('GET', '/api/settings/commit-attribution'),
+  saveCommitAttribution: (mode: 'session-link' | 'none') => call<{ ok: boolean; mode?: 'session-link' | 'none'; error?: string }>('PUT', '/api/settings/commit-attribution', { mode }),
   taskProposalsSetting: () => call<{ enabled: boolean; error?: string }>('GET', '/api/settings/task-proposals'),
   saveTaskProposalsSetting: (enabled: boolean) => call<{ ok: boolean; enabled?: boolean; error?: string }>('PUT', '/api/settings/task-proposals', { enabled }),
   deleteTask: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/tasks/${id}`),
