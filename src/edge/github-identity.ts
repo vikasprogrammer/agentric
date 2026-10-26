@@ -348,11 +348,22 @@ export class GithubIdentity {
     const blob = this.load(memberId);
     if (!blob) return undefined;
     if (!this.needsRefresh(blob, nowMs) || !blob.refreshToken || !this.configured()) return blob;
-    const tok = await refreshUserToken({ clientId: this.clientId(), clientSecret: this.clientSecret(), refreshToken: blob.refreshToken }, nowMs);
-    if ('error' in tok) return blob; // keep the stale token; caller/next attempt retries
-    const next = this.toBlob(tok, blob.login, nowMs, blob);
-    this.save(memberId, next);
-    return next;
+    return singleFlight(this.flightKey(memberId), async () => {
+      const cur = this.load(memberId) ?? blob;          // another flight may have refreshed meanwhile
+      if (!this.needsRefresh(cur, nowMs) || !cur.refreshToken) return cur;
+      const tok = await refreshUserToken({ clientId: this.clientId(), clientSecret: this.clientSecret(), refreshToken: cur.refreshToken }, nowMs);
+      if ('error' in tok) return cur; // keep the stale token; caller/next attempt retries
+      const next = this.toBlob(tok, cur.login, nowMs, cur);
+      this.save(memberId, next);
+      return next;
+    });
+  }
+
+  /** One refresh per member at a time. GitHub ROTATES the refresh token on use, so two sessions refreshing
+   *  the same member concurrently would race: the loser presents a refresh token GitHub has just retired.
+   *  Keyed by tenant so two tenants in one process never share a flight. */
+  private flightKey(memberId: string): string {
+    return `${this.os.tenant}:${memberId}`;
   }
 
   /** True when an expiring token is within the refresh skew of expiry. Non-expiring tokens never are. */
@@ -399,12 +410,20 @@ export class GithubIdentity {
     if (!blob.refreshToken) {
       return this.needsRefresh(blob, nowMs) ? { status: 'no_refresh_token' } : { status: 'ok', blob, refreshed: false };
     }
+    // Cross-fire guard: the caller's token went bad because ANOTHER session already rotated it — the stored
+    // one is brand new. Rotating again would kill that session's copy in turn (the QA run refreshing, the
+    // engineer refreshing back, …). Hand back the fresh stored token instead of minting another.
+    if (blob.expiresAt !== undefined && blob.expiresAt - nowMs > FRESH_ENOUGH_MS) return { status: 'ok', blob, refreshed: false };
     if (!this.configured()) return { status: 'not_configured' };
-    const tok = await refreshUserToken({ clientId: this.clientId(), clientSecret: this.clientSecret(), refreshToken: blob.refreshToken }, nowMs);
-    if ('error' in tok) return { status: 'failed', detail: tok.error };
-    const next = this.toBlob(tok, blob.login, nowMs, blob);
-    this.save(memberId, next);
-    return { status: 'ok', blob: next, refreshed: true };
+    return singleFlight(this.flightKey(memberId), async () => {
+      const cur = this.load(memberId) ?? blob;
+      if (cur.token !== blob.token) return { status: 'ok' as const, blob: cur, refreshed: false }; // a parallel flight won
+      const tok = await refreshUserToken({ clientId: this.clientId(), clientSecret: this.clientSecret(), refreshToken: cur.refreshToken ?? '' }, nowMs);
+      if ('error' in tok) return { status: 'failed' as const, detail: tok.error };
+      const next = this.toBlob(tok, cur.login, nowMs, cur);
+      this.save(memberId, next);
+      return { status: 'ok' as const, blob: next, refreshed: true };
+    });
   }
 
   /** Merge an OAuth token result into a stored blob (carrying the refresh token forward if a new one wasn't issued). */
@@ -417,4 +436,18 @@ export class GithubIdentity {
       connectedAt: prev?.connectedAt ?? nowMs,
     };
   }
+}
+
+/** A member token with more life than this left was minted in the last hour or so (they live ~8 h) —
+ *  treat it as already refreshed rather than rotating it again (see `forceRefresh`). */
+const FRESH_ENOUGH_MS = 7 * 60 * 60_000;
+
+const flights = new Map<string, Promise<unknown>>();
+/** Run `fn` at most once at a time per `key`; concurrent callers share the in-flight promise. */
+function singleFlight<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const cur = flights.get(key) as Promise<T> | undefined;
+  if (cur) return cur;
+  const p = fn().finally(() => flights.delete(key));
+  flights.set(key, p);
+  return p;
 }

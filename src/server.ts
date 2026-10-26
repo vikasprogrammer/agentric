@@ -1153,6 +1153,27 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   //
   // The token handed back is the company bot's, org-scoped, for an org this tenant's own App is
   // installed on — the same class of credential the session already holds, never a wider one.
+  // The CURRENT GitHub token for a session's member identity — what the `gh` shim and the git credential
+  // helper fetch on each call (TerminalManager.installLiveGithub), so a run never holds a token that expired
+  // or that another session's refresh rotated. Refreshes once (single-flight) when near expiry. Session-
+  // secret gated like the rest of the loopback; `none` → the caller falls back to its launch-time env.
+  if (method === 'POST' && p === '/api/agent/github/token') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const member = tm.githubMemberFor(session);
+    if (!member) return sendJson(res, 200, { status: 'none' });
+    const gh = new GithubIdentity(os);
+    const before = gh.load(member);
+    const blob = await gh.ensureFresh(member).catch(() => before);
+    if (!blob || gh.isExpired(blob)) return sendJson(res, 200, { status: 'none' });
+    if (before && blob.token !== before.token) {
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'github.token.refreshed', data: { login: blob.login, principal: member, via: 'live-fetch' } });
+    }
+    return sendJson(res, 200, { status: 'ok', token: blob.token, login: blob.login });
+  }
   if (method === 'POST' && p === '/api/agent/github/credential') {
     const b = await readBody(req);
     const session = String(b.session || '');

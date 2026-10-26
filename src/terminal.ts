@@ -3135,6 +3135,23 @@ export class TerminalManager {
   get consoleOrigin(): string { return this.publicOrigin; }
 
   createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning, clickup?: { taskId: string; commentId: string }, telegram?: { chat: string; messageThreadId?: string; messageId: string }): Session {
+    // ONE claude per conversation. A resume of a transcript that a live pane already holds would start a
+    // SECOND claude writing the same transcript in the same folder — the session clash. Every lane that
+    // used to make that decision locally (pokes, chat follow-ups) had grown its own guard; the one that
+    // hadn't was the agent's own `schedule`: on instapods a drain loop's self-scheduled checks fired 16
+    // resumes into a conversation whose interactive session was still open, and the agent took to writing
+    // "00-READ-ME-TWO-SESSIONS.txt" and asking itself to `ps aux | grep 'claude --resume'` before acting.
+    // So the guard lives here, where every resume passes: type the request into the live pane instead
+    // (claude queues it if a turn is mid-flight) and hand back THAT session.
+    if (resumeClaudeId) {
+      const holder = this.liveHolderOf(resumeClaudeId);
+      if (holder) {
+        const typed = this.injectToSession(holder.id, task, true, spawnedBy ?? 'system');
+        this.audit(holder.id, agent, typed.ok ? 'session.resume.redirected' : 'session.resume.clash', { transcript: resumeClaudeId, spawnedBy: spawnedBy ?? null, title, ...(typed.ok ? {} : { error: typed.error }) });
+        const row = typed.ok ? this.db.prepare('SELECT * FROM term_sessions WHERE id = ?').get<SessionRow>(holder.id) : undefined;
+        if (row) return toSession(row);
+      }
+    }
     const id = newId('session');
     const tmux = `aos-${id}`;
     // The conversation this run drives. A thread follow-up passes the PRIOR run's id so the launcher
@@ -3472,12 +3489,15 @@ export class TerminalManager {
     // Per-member git: if THIS run's run-as human has linked their own GitHub account, their token
     // OVERRIDES the bot/agent GH_TOKEN — so git push / gh pr are authored as the actual person.
     const asMember = this.injectMemberGithub(env, o.agent, o.actingMember, o.id);
+    // …and keep it CURRENT for the life of the run: `gh` and `git` fetch the member's token from the server
+    // on each call instead of trusting the copy baked into the env at launch (see installLiveGithub).
+    const liveGithub = this.installLiveGithub(env, o.agent, o.actingMember, o.id);
     // Whatever set GH_TOKEN above (member token or agent bot), teach plain `git` to use it too — `gh`
     // reads GH_TOKEN natively but `git push` over HTTPS does not, so without this only half the toolchain
     // authenticates. A github.com-scoped credential helper closes that gap. On a bot run whose App spans
     // several orgs the helper also resolves per REPO, since one bot token only covers one org — but never
     // on a member run, where doing so would re-author that human's commits as the bot.
-    this.configureGitCredentials(env, { multiOrg: !asMember && !!env.AOS_GH_ORGS });
+    this.configureGitCredentials(env, { multiOrg: !asMember && !liveGithub && !!env.AOS_GH_ORGS, live: liveGithub });
     // Phase 2c: granted Host connections' SSH keys → a session ssh_config + ssh/scp PATH shim, so the
     // agent's plain `ssh` authenticates to a host without ever handling the key. (Local-lane only.)
     this.injectHostCredentials(env, o.agent, o.actingMember, o.id);
@@ -4384,6 +4404,13 @@ export class TerminalManager {
     } catch {
       return null;
     }
+  }
+
+  /** The live session currently driving this claude transcript, if any — the newest reachable row bound
+   *  to it. `reachable` asks the PANE (see its doc), so a run that reported but still has its REPL counts. */
+  liveHolderOf(claudeSessionId: string): { id: string } | undefined {
+    const rows = this.db.prepare('SELECT id FROM term_sessions WHERE claude_session_id = ? ORDER BY created_at DESC LIMIT 10').all<{ id: string }>(claudeSessionId);
+    return rows.find((r) => this.reachable(r.id));
   }
 
   /** Is a person's terminal attached to this session's pane right now? Uses the backend's own client
@@ -5597,6 +5624,11 @@ export class TerminalManager {
             'use the shared bot token if one exists, else fail to authenticate). If this task needs to push ' +
             'code or open a PR, use `ask` to have an owner or admin set up the GitHub App in one click ' +
             `(**Connections → Creds → GitHub → Create GitHub App**), then ask **${who}** to connect their account.`;
+      } else if (this.os.paths && !this.uidIsolation) {
+        github = '# GitHub credentials stay current\n\n' +
+          '`gh` and `git` fetch your GitHub token fresh on every call, so a token that expired or was ' +
+          'refreshed by another session never breaks you. Never `export GH_TOKEN=<literal>` or paste a token ' +
+          'into a command — just run `gh`/`git`. `github_refresh` is only for a token that still fails.';
       }
     }
     // Multi-org git reach. The company App may be installed on SEVERAL orgs, but the token injected at
@@ -10362,9 +10394,17 @@ export class TerminalManager {
    *
    * Written for bash 3.2 + BSD userland (macOS) — no GNU-isms, no arrays.
    */
-  private configureGitCredentials(env: Record<string, string>, opts: { multiOrg?: boolean } = {}): void {
-    if (!env.GH_TOKEN) return;
-    const plain = '!f() { test "$1" = get && printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; }; f';
+  private configureGitCredentials(env: Record<string, string>, opts: { multiOrg?: boolean; live?: boolean } = {}): void {
+    if (!env.GH_TOKEN && !opts.live) return;
+    // Member runs: ask the server for the CURRENT token on every git auth (the same call the `gh` shim
+    // makes), falling back to the launch-time $GH_TOKEN if the server can't answer.
+    const live =
+      '!f() { test "$1" = get || return 0; t=$GH_TOKEN; ' +
+      'if [ -n "$AOS_URL" ] && [ -n "$AOS_SECRET" ]; then ' +
+      'r=$(curl -s --max-time 5 -X POST "$AOS_URL/api/agent/github/token" -H "content-type: application/json" -H "x-aos-secret: $AOS_SECRET" -H "x-aos-tenant: $AOS_TENANT" -d "{\\"session\\":\\"$SESSION\\"}" 2>/dev/null); ' +
+      'case "$r" in *\'"token":"\'*) t=$(printf \'%s\' "$r" | sed -n \'s/.*"token":"\\([^"]*\\)".*/\\1/p\');; esac; fi; ' +
+      'test -n "$t" && printf \'username=x-access-token\\npassword=%s\\n\' "$t"; }; f';
+    const plain = opts.live ? live : '!f() { test "$1" = get && printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; }; f';
     if (!opts.multiOrg) {
       env.GIT_CONFIG_COUNT = '2';
       env.GIT_CONFIG_KEY_0 = 'credential.https://github.com.helper';
@@ -10392,6 +10432,47 @@ export class TerminalManager {
     // per-org resolution above is dead code.
     env.GIT_CONFIG_KEY_2 = 'credential.https://github.com.useHttpPath';
     env.GIT_CONFIG_VALUE_2 = 'true';
+  }
+
+  /**
+   * Keep a member's GitHub token current for the whole run. The env copy injected at launch dies when the
+   * ~8 h token expires — and sooner when ANOTHER session of the same member refreshes it, because GitHub
+   * rotates on refresh: instawp, 2026-10, an engineer run found its token dead because the QA run it had
+   * dispatched refreshed theirs, and declined to refresh back for fear of cutting QA off mid-run. So both
+   * halves of the toolchain now fetch the token at CALL time from `/api/agent/github/token` (which refreshes
+   * once, single-flight, when it's near expiry): a `gh` shim on PATH, and the git credential helper
+   * (`configureGitCredentials({ live })`). Any failure falls back to the launch-time `$GH_TOKEN`.
+   * Only for a run whose identity has a linked GitHub account; local lane only, like the ssh shim.
+   */
+  private installLiveGithub(env: Record<string, string>, agent: string, actingMember: string | undefined, sessionId: string): boolean {
+    if (!actingMember || !this.os.paths || this.uidIsolation) return false;
+    if (!new GithubIdentity(this.os).load(actingMember)) return false;
+    const binDir = path.join(this.os.paths.connectors, `session-${sessionId}.d`, 'bin');
+    try {
+      fs.mkdirSync(binDir, { recursive: true });
+      const real = this.resolveBin('gh');
+      fs.writeFileSync(path.join(binDir, 'gh'), [
+        '#!/bin/sh',
+        '# Agentric: run gh with the CURRENT GitHub token for this session, not the one from launch.',
+        'if [ -n "$AOS_URL" ] && [ -n "$AOS_SECRET" ]; then',
+        '  r=$(curl -s --max-time 5 -X POST "$AOS_URL/api/agent/github/token" -H "content-type: application/json" -H "x-aos-secret: $AOS_SECRET" -H "x-aos-tenant: $AOS_TENANT" -d "{\\"session\\":\\"$SESSION\\"}" 2>/dev/null)',
+        '  case "$r" in *\'"token":"\'*) t=$(printf \'%s\' "$r" | sed -n \'s/.*"token":"\\([^"]*\\)".*/\\1/p\'); [ -n "$t" ] && GH_TOKEN="$t" && GITHUB_TOKEN="$t" && export GH_TOKEN GITHUB_TOKEN;; esac',
+        'fi',
+        `exec ${real} "$@"`,
+        '',
+      ].join('\n'), { mode: 0o755 });
+    } catch {
+      return false;
+    }
+    if (!(env.PATH ?? '').split(path.delimiter).includes(binDir)) env.PATH = `${binDir}${path.delimiter}${env.PATH ?? process.env.PATH ?? ''}`;
+    env.AOS_SHIM_DIR = binDir;
+    this.audit(sessionId, agent, 'github.token.live', { principal: actingMember });
+    return true;
+  }
+
+  /** Which member's GitHub identity a session's `gh`/`git` should act as right now — its run-as. */
+  githubMemberFor(sessionId: string): string | undefined {
+    return this.sessionRunAs(sessionId) ?? undefined;
   }
 
   /** Find the real `ssh`/`scp` on the PARENT PATH (which never includes a session shim dir), so the
@@ -10454,7 +10535,8 @@ export class TerminalManager {
     }
     // Prepend the shim dir so `ssh`/`scp` resolve to it (the launcher then prepends ~/.local/bin ahead,
     // which won't shadow ssh in practice). Off-lane leaves env.PATH unset → seed from the parent PATH.
-    env.PATH = `${binDir}${path.delimiter}${env.PATH ?? process.env.PATH ?? ''}`;
+    if (!(env.PATH ?? '').split(path.delimiter).includes(binDir)) env.PATH = `${binDir}${path.delimiter}${env.PATH ?? process.env.PATH ?? ''}`;
+    env.AOS_SHIM_DIR = binDir;
   }
 
   /** The JSON policy engine ignores ctx; provide a minimal stand-in to satisfy the type. */
