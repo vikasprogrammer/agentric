@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.463.4] - 2026-10-26
+### Fixed
+- **A chat reply sent while its session was still starting spawned a second session.** Reviving a
+  reaped thread (or starting a fresh chat run) takes a few seconds before the agent's pane exists. In that
+  window the session already counts as live, so a second message could neither be typed in (no pane) nor
+  trigger a revive (already reachable), and every thread-continuation path — Slack, Discord, DM, ClickUp,
+  Telegram, task threads — fell through to a fresh spawn on the same thread. Such a message is now queued
+  and folded into the prompt the agent starts with (audited `chat.delivered` with `turn: "launching"`).
+  Pinned by `scripts/launch-window-test.cjs`, now in `test:governance`.
+  **For users:** two quick messages to an agent that was asleep now reach the same agent, together.
+
 ## [0.463.3] - 2026-10-23
 ### Fixed
 - **One Slack @mention started two agent sessions.** With `message.channels` subscribed (for thread
