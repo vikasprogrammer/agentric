@@ -23,6 +23,7 @@ import { exampleCapabilities } from './capabilities/examples';
 import { governedCapabilities } from './capabilities/normalize';
 import { evaluate } from './observability/evaluation';
 import { standingSuggestions } from './edge/standing-instructions';
+import { isSessionMode } from './governance/session-mode';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation, type Session } from './terminal';
 import { normalizeSessionRef, toSessionFtsQuery } from './edge/session-search';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
@@ -1153,6 +1154,27 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   //
   // The token handed back is the company bot's, org-scoped, for an org this tenant's own App is
   // installed on — the same class of credential the session already holds, never a wider one.
+  // The CURRENT GitHub token for a session's member identity — what the `gh` shim and the git credential
+  // helper fetch on each call (TerminalManager.installLiveGithub), so a run never holds a token that expired
+  // or that another session's refresh rotated. Refreshes once (single-flight) when near expiry. Session-
+  // secret gated like the rest of the loopback; `none` → the caller falls back to its launch-time env.
+  if (method === 'POST' && p === '/api/agent/github/token') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const member = tm.githubMemberFor(session);
+    if (!member) return sendJson(res, 200, { status: 'none' });
+    const gh = new GithubIdentity(os);
+    const before = gh.load(member);
+    const blob = await gh.ensureFresh(member).catch(() => before);
+    if (!blob || gh.isExpired(blob)) return sendJson(res, 200, { status: 'none' });
+    if (before && blob.token !== before.token) {
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'github.token.refreshed', data: { login: blob.login, principal: member, via: 'live-fetch' } });
+    }
+    return sendJson(res, 200, { status: 'ok', token: blob.token, login: blob.login });
+  }
   if (method === 'POST' && p === '/api/agent/github/credential') {
     const b = await readBody(req);
     const session = String(b.session || '');
@@ -1421,6 +1443,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // agent ENDS ITS OWN session — the self-stop escape hatch (work is done / blocked with no point
   // waiting). Same halt the console kill button performs (stopSession: kills tmux, cancels pending
   // questions/approvals, blocks auto-resume, records a `stopped` episode), but `by` = the agent id.
+  // `/handoff` → the agent's `handoff` tool: open a fresh session for this work, seeded with its note.
+  if (method === 'POST' && p === '/api/agent/handoff') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const r = tm.handoffSession(session, String(b.note || ''), { title: typeof b.title === 'string' ? b.title : undefined, by: agent });
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   if (method === 'POST' && p === '/api/agent/stop') {
     const b = await readBody(req);
     const session = String(b.session || '');
@@ -1818,7 +1850,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const hold = tm.holdHumanPrompt(session, b.prompt, 'tui');
       if (hold) return sendJson(res, 200, { ok: true, hold });
     }
+    // Who sent this turn — and, when it isn't the run-as member, one line telling the agent (the hook hands
+    // it to claude as `additionalContext`).
+    const context = b.event === 'UserPromptSubmit' && typeof b.prompt === 'string' ? tm.attributeTurn(session, b.prompt) : null;
     tm.recordLifecycle(session, String(b.event || ''), { reason: String(b.reason || ''), errorType: String(b.errorType || '') });
+    if (context) return sendJson(res, 200, { ok: true, context });
     return sendJson(res, 200, { ok: true });
   }
   // Claude Code Notification hook (notify-hook.sh): the session is blocked waiting on the human
@@ -1981,7 +2017,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // A delegate whose only reason to exist separately is a FRESH CONTEXT (a reviewer, a critic, a
     // second opinion) does not need a governed session to provide one — a sub-agent already has its own
     // context, cannot see the caller's reasoning, and costs no launch/MCP boot/CLAUDE.md reload/pane.
-    // Live evidence: instawp's `code-reviewer` is documented in engineer's OWN prompt as
+    // Live evidence: globex's `code-reviewer` is documented in engineer's OWN prompt as
     // `Agent(subagent_type: code-reviewer)` and still took 12 task hand-offs in 7 days → 8 sessions,
     // $111, for reviews the sub-agent path performs for a fraction of it.
     // Refused on the agent lane only; a human dispatching from the console is a considered act.
@@ -2008,7 +2044,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // ── Self-dispatch refusal ──────────────────────────────────────────────────────────────────
     // An agent filing an auto-dispatch task for ITSELF is not delegation — it is the agent ending its
     // turn and immediately paying a full context reload to carry on doing what it was already doing.
-    // Measured on the instawp fleet over 7 days: 104 such tasks, 70 of them dispatched within 2 minutes
+    // Measured on the globex fleet over 7 days: 104 such tasks, 70 of them dispatched within 2 minutes
     // of being filed, $1,330 of sessions that rebuilt a context their own caller was still holding.
     //
     // There is no defer here to preserve: `dueAt` is a soft deadline that dispatchable() never reads, so
@@ -2037,7 +2073,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
     // ── Proposed, not filed ────────────────────────────────────────────────────────────────
     // A task an agent files WITHOUT dispatching it is a claim that something is work — and on the live
-    // fleet agents filed ~100% of all tasks (instapods, 14 days: 140 of 140), half of them board items
+    // fleet agents filed ~100% of all tasks (northwind, 14 days: 140 of 140), half of them board items
     // nobody had agreed to. So it lands `proposed`: never dispatched, never claimable, on ONE grouped
     // Inbox card per run for the accountable human to accept or dismiss. The agent is NOT blocked — it
     // gets the id back and carries on. Deliberately untouched: an auto-dispatch hand-off (a caller may be
@@ -3533,6 +3569,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!agent || !task) return sendJson(res, 400, { error: 'agent and task are required' });
     if (!os.team.canRun(me, agent)) return sendJson(res, 403, { error: `you are not assigned to run "${agent}"` });
     const s = tm.createSession(agent, String(b.title || task), task, me.id);
+    // Start restricted ("investigate only" / "draft only") — set before the first tool call can reach the gate.
+    if (isSessionMode(b.mode) && b.mode !== 'normal') tm.setSessionMode(s.id, b.mode, me);
     return sendJson(res, 200, { id: s.id, tmux: s.tmux });
   }
   // ─── Native chat surface (non-technical) — a plain-language window onto a claude-code run, an
@@ -3648,6 +3686,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
     const convo = tm.sessionConversation(id);
+    tm.labelSpeakers(id, convo.turns);
     // Resolve the deliverables an activity produced (a Library artifact, a KB page, a hosted app) into
     // viewer-safe preview cards the chat UI renders inline — dropping anything the viewer may not see or
     // that no longer exists. The viewer already passed canViewSession, so their own run's outputs resolve;
@@ -3705,6 +3744,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!message) return sendJson(res, 400, { error: 'message is required' });
     const held = tm.holdHumanPrompt(id, message, 'reply', me.email);
     if (held) return sendJson(res, 422, { held: true, error: held });
+    tm.noteTyper(id, me.id, 'composer');
     const r = tm.chatSend(id, message, me.id);
     if (r === 'busy') return sendJson(res, 409, { status: 'busy', error: 'the agent is still working on the previous message — resend in a moment' });
     if (r === 'paused') return sendJson(res, 409, { status: 'paused', error: 'this session is paused — resume it to keep talking' });
@@ -3917,12 +3957,54 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const submit = b.submit === undefined ? true : Boolean(b.submit);
     const held = tm.holdHumanPrompt(id, text, 'inject', me.email);
     if (held) return sendJson(res, 422, { ok: false, held: true, error: held });
+    if (submit) tm.noteTyper(id, me.id, 'inject');
     const r = tm.injectToSession(id, text, submit, me.email);
     return sendJson(res, r.ok ? 200 : 409, r);
   }
   // Out-of-band session summary — reads the run's existing transcript and summarizes it in a THROWAWAY
   // claude, so the target session's own context is never touched (no pollution). Same visibility gate as
   // the terminal/transcript. Returns { summary, via, found }; never blocks the session.
+  // Hand a session off to a fresh one (the console's "Hand off to a fresh session"). A live agent is asked to
+  // run `/handoff` itself — it has the context to write the note; the console then polls GET for the new
+  // session. A session that isn't live gets an out-of-band summary of its transcript as the note instead.
+  // What this conversation handed off and is waiting on (the session view's "Waiting on" strip).
+  // The console's terminal reports that THIS member just pressed Enter in a session — how a turn typed in a
+  // shared TUI is attributed to the person who typed it (TerminalManager.attributeTurn). Fire-and-forget.
+  const typedMatch = p.match(/^\/api\/sessions\/([\w-]+)\/typed$/);
+  if (method === 'POST' && typedMatch) {
+    const id = typedMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed' });
+    tm.noteTyper(id, me.id, 'terminal');
+    return sendJson(res, 200, { ok: true });
+  }
+  const waitingMatch = p.match(/^\/api\/sessions\/([\w-]+)\/waiting$/);
+  if (method === 'GET' && waitingMatch) {
+    const id = waitingMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
+    return sendJson(res, 200, { waiting: tm.waitingOn(id) });
+  }
+  const handoffMatch = p.match(/^\/api\/sessions\/([\w-]+)\/handoff$/);
+  if (handoffMatch && (method === 'GET' || method === 'POST')) {
+    const id = handoffMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (method === 'GET') return sendJson(res, 200, { sessionId: tm.handoffChild(id) ?? null });
+    if (tm.reachable(id) && tm.supportsHandoffCommand(id)) {
+      const r = tm.injectToSession(id, '/handoff', true, me.email);
+      if (r.ok) {
+        os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.handoff.requested', data: {} });
+        return sendJson(res, 200, { status: 'requested' });
+      }
+    }
+    const convo = tm.sessionConversation(id);
+    const cred = tm.outOfBandCredentialEnv();
+    const out = await summarizeConversation(convo, { credentials: cred?.vars, account: cred?.account });
+    if (!out.found || !out.summary) return sendJson(res, 400, { error: 'nothing to hand off — this session has no transcript yet' });
+    const r = tm.handoffSession(id, `(Written by Agentric from the transcript — the session was not running.)\n\n${out.summary}`, { by: me.email });
+    return sendJson(res, r.ok ? 200 : 400, r.ok ? { status: 'created', ...r } : r);
+  }
   const summarizeMatch = p.match(/^\/api\/sessions\/([\w-]+)\/summarize$/);
   if (method === 'POST' && summarizeMatch) {
     const id = summarizeMatch[1];
@@ -4017,6 +4099,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // Transfer a session to another owner — reassign its run-as (the accountable human). Beyond the view
   // gate, this changes accountability, so restrict it to an owner/admin OR the session's current owner
   // (a member handing off their own run). The target is any real member; the tm method validates it.
+  // Working mode for a session: draft-only (nothing goes out under anyone's name) / read-only (that, plus no
+  // local changes) / normal. Anyone who may operate the session may restrict it; enforced at the gate.
+  const modeMatch = p.match(/^\/api\/sessions\/([\w-]+)\/mode$/);
+  if (method === 'POST' && modeMatch) {
+    const id = modeMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    const b = await readBody(req) as { mode?: unknown };
+    if (!isSessionMode(b.mode)) return sendJson(res, 400, { error: "mode must be 'normal', 'draft' or 'readonly'" });
+    const r = tm.setSessionMode(id, b.mode, me);
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   const transferMatch = p.match(/^\/api\/sessions\/([\w-]+)\/transfer$/);
   if (method === 'POST' && transferMatch) {
     const id = transferMatch[1];

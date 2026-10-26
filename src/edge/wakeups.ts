@@ -68,7 +68,7 @@
  *
  * ## "A live pane is free" is only true while the run is unfinished (2026-08-27)
  *
- * The resume lane was suppressed successfully — 14 of 289 deliveries on live instawp over 7 days. But the
+ * The resume lane was suppressed successfully — 14 of 289 deliveries on live globex over 7 days. But the
  * cost moved rather than vanished. Sessions that received an inject ran **78 API calls against 42**, at
  * **381k context per call against 277k**, costing **93% more per run** ($24.62 vs $12.74) — 14% of runs
  * consuming 24% of spend. The per-CALL price is identical; injects simply cause many more calls, on a
@@ -99,7 +99,7 @@
  * into ITS audience: its `report` card goes to its own session owner, its `slack_reply` into its own
  * thread. That is the user report *"in some cases it sends data back to the wrong caller"*.
  *
- * Measured on live instawp, 30 days: 369 of 1532 pokes took the sibling lane, and of the 251 that could
+ * Measured on live globex, 30 days: 369 of 1532 pokes took the sibling lane, and of the 251 that could
  * be joined to their task, **64 (25%) landed in a run acting as a different member than the task owner**
  * — one person's task body and result inside a run accountable to someone else. So lane 2 now asks two
  * questions about the recipient before it will speak there ({@link WakeupQueue.acceptsSibling}): the
@@ -255,6 +255,18 @@ export class WakeupQueue {
     return mine ?? last;
   }
 
+  /** When the newest hand-off in this batch was made — the source task's creation time. A caller whose
+   *  last `report` is OLDER than this dispatched the work after reporting, so it is still waiting on it
+   *  (see `deliverBatch`). 0 when no source is a task we know: then any report counts, as before. */
+  private dispatchedAt(pending: Row[]): number {
+    let at = 0;
+    for (const p of pending) {
+      const t = this.db.prepare('SELECT created_at FROM tasks WHERE id = ?').get<{ created_at: number }>(p.source)?.created_at;
+      if (t) at = Math.max(at, t);
+    }
+    return at;
+  }
+
   /** Split an agent's pending wake-ups into delivery batches: one PINNED batch per transcript that has
    *  answers waiting, then every other wake-up together. Answers never coalesce with anything addressed
    *  elsewhere (see "An answer is addressed to ONE conversation" in the module header). */
@@ -294,17 +306,27 @@ export class WakeupQueue {
       .filter((r) => this.tm.reachable(r.id));
     // A run that has REPORTED is finished — it said so. Its pane is still reachable (that is the whole
     // point of the attachable lane), which made it look like a free delivery target, and 55% of injects
-    // measured on live instawp landed in one. For GOOD NEWS that is a resurrection in place: the same
+    // measured on live globex landed in one. For GOOD NEWS that is a resurrection in place: the same
     // thing `dropDone` already refuses to spawn a claude for, done to a run that merely hasn't been torn
     // down yet. It is not free either — an injected session ran 78 API calls against 42, at 381k context
     // per call against 277k, costing 93% more per run, because the message lands in a transcript that
     // then keeps growing. So a done-only batch treats a finished run as no target at all, and every
     // batch prefers a still-working session over a finished one.
+    //
+    // "Finished" is measured against THIS hand-off, though. A run that dispatched the work AFTER its last
+    // `report` is plainly still waiting for it — it reported once early in a long human-driven session and
+    // kept going. globex, 2026-10: one engineer conversation handed QA off 28 times after an early report,
+    // 26 of the results were dropped here as `done-no-own-pane`, and the human typed "did QA complete?" 75
+    // times. Fleet-wide that was 206 dropped completions in 30 days whose caller was an interactive
+    // session. So a run counts as finished only when its last report POSTDATES the hand-off, and never
+    // while a person is attached to its terminal.
+    const dispatchedAt = this.dispatchedAt(pending);
     const finished = new Set<string>(
       live.length
         ? this.db
-            .prepare(`SELECT DISTINCT run_id FROM audit_events WHERE type = 'session.reported' AND run_id IN (${live.map(() => '?').join(',')})`)
-            .all<{ run_id: string }>(...live.map((r) => r.id))
+            .prepare(`SELECT run_id, MAX(ts) AS at FROM audit_events WHERE type = 'session.reported' AND run_id IN (${live.map(() => '?').join(',')}) GROUP BY run_id`)
+            .all<{ run_id: string; at: number }>(...live.map((r) => r.id))
+            .filter((r) => r.at > dispatchedAt && !this.tm.humanAttached(r.run_id))
             .map((r) => r.run_id)
         : [],
     );
@@ -458,7 +480,7 @@ export class WakeupQueue {
    * Two conditions, both about WHO ends up reading the answer rather than about liveness:
    *
    *  - **same run-as.** A sibling run acts as a different member often enough to matter (64 of 251
-   *    sibling injects on live instawp over 30 days), and injecting there puts one person's task body,
+   *    sibling injects on live globex over 30 days), and injecting there puts one person's task body,
    *    title and result inside a run accountable to somebody else.
    *  - **no outward binding.** A session bound to a Slack/Discord/Telegram/ClickUp thread or a DM has a
    *    conversation it answers into. Anything typed there is liable to be replied to THAT audience — the

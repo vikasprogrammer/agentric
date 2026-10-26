@@ -1097,6 +1097,25 @@ const TOOLS = [
       properties: { reason: { type: 'string', description: 'Optional short note on why you are stopping — recorded in the audit trail.' } },
     },
   },
+  {
+    name: 'handoff',
+    description:
+      'Hand THIS work off to a fresh session when the conversation has grown long — the person usually asks ' +
+      'with `/handoff`. Opens a NEW session for you, acting as the same person, seeded with your note plus ' +
+      'the original request and a link back here; this session is left as it is. The note must stand on its ' +
+      'own for someone who has not read this conversation: goal, current state, what is done (with exact ' +
+      'links/branches/files/ids), decisions and why, what failed, open questions, the exact next steps. ' +
+      'Returns the new session\'s link — give it to the person, then stop working on the task here.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['note'],
+      properties: {
+        note: { type: 'string', description: 'The handoff note (markdown). Complete but concise.' },
+        title: { type: 'string', description: 'Optional short title for the new session.' },
+      },
+    },
+  },
   // ── Tasks: the shared work queue (the durable unit of work, distinct from Memory + KB) ──
   {
     name: 'task_create',
@@ -2785,6 +2804,17 @@ async function stop(args: Record<string, unknown>): Promise<string> {
   return 'Ending this session now.';
 }
 
+async function handoff(args: Record<string, unknown>): Promise<string> {
+  const res = await fetch(AOS_URL + '/api/agent/handoff', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, note: String(args.note ?? ''), title: typeof args.title === 'string' ? args.title : undefined }),
+  });
+  const d = (await res.json()) as { ok?: boolean; url?: string; sessionId?: string; error?: string };
+  if (!d.ok) return `Could not hand off: ${d.error ?? 'unknown error'}`;
+  return `Handed off. The work continues in a new session: ${d.url} — tell the person this link, then stop working on the task here.`;
+}
+
 // ── Tasks: the shared work queue ──────────────────────────────────────────────
 interface TaskLite { id: string; title: string; status: string; priority: number; assignee?: string; labels?: string[]; body?: string; goalId?: string; criteria?: string; dependsOn?: string[] }
 interface TaskEventLite { kind: string; body?: string; author: string; createdAt: number }
@@ -3822,6 +3852,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'schedule' ? await schedule(args)
         : name === 'unschedule' ? await unschedule(args)
         : name === 'stop' ? await stop(args)
+        : name === 'handoff' ? await handoff(args)
         : name === 'task_create' ? await taskCreate(args)
         : name === 'task_list' ? await taskList(args)
         : name === 'task_get' ? await taskGet(args)

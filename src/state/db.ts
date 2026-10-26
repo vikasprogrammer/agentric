@@ -1437,6 +1437,15 @@ function migrate(db: Db): void {
   // never be used for more than ~30 minutes at a time.
   addColumn(db, 'term_sessions', 'opened_at', 'INTEGER');
 
+  // MODE: a person's working restriction on a running session — 'draft' (nothing goes out under anyone's
+  // name) or 'readonly' (that, plus no local changes); NULL = normal. Enforced at the gate
+  // (governance/session-mode.ts), so it holds across turns, compactions and resumes.
+  addColumn(db, 'term_sessions', 'mode', 'TEXT');
+  // SPEAKER: the member who sent the conversation's latest human turn (console terminal Enter beacon, chat
+  // composer, inject box). A shared session can be driven by several people; this is who the agent is
+  // acting for right now — `gh`/`git` use their GitHub identity (TerminalManager.githubMemberFor).
+  addColumn(db, 'term_sessions', 'speaker', 'TEXT');
+
   // SUGGESTED_ASSIGNEE: who an agent thinks should work the task it PROPOSED ('agent:<id>' | member id).
   // Kept apart from `assignee` on purpose: a proposal is not work yet, so the agent's pick is advice the
   // reviewer weighs, and assigning someone on the board is the human's act that accepts it (→ todo).

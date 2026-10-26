@@ -8,6 +8,47 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.465.0] - 2026-10-26
+### Fixed
+- **Results of delegated work were being dropped in exactly the sessions where a person was waiting.**
+  The wake-up deliverer treated any run that had ever called `report` as finished, and refused to inject
+  good news into it. A long human-driven session reports early and keeps going, so on globex one engineer
+  conversation handed QA off 28 times and 26 results were dropped (`done-no-own-pane`) while the human typed
+  "did QA complete?" 75 times. Fleet-wide that was 206 dropped completions in 30 days. A run now counts as
+  finished only if it reported AFTER dispatching the hand-off, and never while a person is attached.
+  Pinned in `scripts/wakeup-queue-test.cjs`.
+- **Session clash: a second claude on a live conversation.** An agent's own `schedule` resumed its
+  transcript while the interactive session was still open (16 overlapping runs on one northwind
+  conversation; the agent had taken to leaving itself "00-READ-ME-TWO-SESSIONS.txt"). `createSession` now
+  refuses to start a second claude on a transcript a live pane holds: the request is typed into that pane
+  instead (audited `session.resume.redirected`). One guard where every resume passes.
+- **GitHub tokens no longer go stale or get rotated out from under a running session.** `gh` (a session
+  PATH shim) and `git` (the credential helper) now fetch the member's CURRENT token from
+  `POST /api/agent/github/token` on every call, refreshing once, single-flight, near expiry; any failure
+  falls back to the launch-time env. `github_refresh` no longer rotates a token another session refreshed
+  in the last hour. Closes the "QA refreshed its token and killed mine" cross-fire.
+### Added
+- **"Waiting on" strip in the session view** — each hand-off the conversation is waiting on, with the
+  delegate and its live state (queued / working Nm / blocked / came back). `GET /api/sessions/:id/waiting`.
+  **For users:** a session now shows what the agent handed off and is waiting on, and the result arrives in the session on its own.
+- **Draft-only / read-only sessions** (Operations → Working mode, or `mode` at spawn). Draft-only: nothing
+  goes out under anyone's name (email, chat posts/DMs, ticket/PR comments, new PRs/issues, `git push`,
+  external write calls); read-only adds no file edits, commits, deletes, installs or SQL writes. Enforced
+  at the gate (`src/governance/session-mode.ts`), the live agent is told in its pane, audited
+  `session.mode.set`. Replaces "do not post anything" / "do not edit anything" typed into 40+ sessions.
+  **For users:** you can set a session to Draft only or Read only from its Operations menu, and Agentric enforces it.
+- **`/handoff` and "Hand off to a fresh session".** The agent writes a handoff note and the OS opens a new
+  session for the same agent and person, seeded with the note, the original request and a link back
+  (new always-on MCP tool `handoff`; `.claude/commands/handoff.md` for claude-code agents). From the menu, a
+  live agent is asked to run `/handoff`; a stopped one is summarized from its transcript. Replaces the
+  hand-made "write a summary file so I can compact" routine (22 sessions, 7 members).
+  **For users:** type /handoff (or use Operations → Hand off) to continue long work in a fresh session without losing the thread.
+- **Who said what in a shared session.** The console terminal reports which member pressed Enter; the
+  composer and inject box attribute their own sends. Each human turn is audited `turn.speaker` and named
+  in the conversation view; when the speaker isn't the run-as member, the agent is told who it is acting
+  for (UserPromptSubmit `additionalContext`), and `gh`/`git` act as the speaker when they've linked GitHub.
+  **For users:** when two people use the same session, the agent now knows who is speaking and acts as that person on GitHub.
+
 ## [0.464.0] - 2026-10-26
 ### Added
 - **Attribution in commits & PRs is now a workspace setting** (Settings → Runtime). Default is unchanged:
@@ -133,7 +174,7 @@ new version heading in the same commit.
 - **An agent's shell can no longer read the tenant DB, the connector bag, the vault key or other
   sessions' transcripts.** The protected-path check only ever covered the Read/Glob/Grep tools, and an
   agent runs as the same OS user as the server, so Bash reached all of it. Replaying 30 days of real
-  commands showed this was routine, not a one-off. On expresstech, agents ran `sqlite3`/`node:sqlite`
+  commands showed this was routine, not a one-off. On initech, agents ran `sqlite3`/`node:sqlite`
   on `agent-os.db` 34 times, scraped `FREESCOUT_API_KEY` out of other sessions' `connectors/*.mcp.json`,
   and grepped `~/.claude/projects` for other agents' transcripts. A new engine-level check
   (`governance/protected-read.ts`, folded in with `stricterDecision` on every tenant whatever its policy)
@@ -160,10 +201,10 @@ new version heading in the same commit.
 ### Fixed
 - **Session search's transcript indexer no longer stalls the server on long transcripts.** v0.461.0
   parsed each conversation's whole transcript on the event loop and re-read a live run on every
-  scheduler tick. On expresstech one 89 MB transcript took 4.1 s to parse, so v0.461.0 was rolled back
+  scheduler tick. On initech one 89 MB transcript took 4.1 s to parse, so v0.461.0 was rolled back
   there. The indexer now reads at most 1 MB of a transcript (head and tail, cut at line boundaries), skips
   a file whose mtime hasn't changed, re-reads a live run at most every 10 minutes, and strips harness
-  markup (system reminders, slash-command tags) from what it indexes. Measured against expresstech's real
+  markup (system reminders, slash-command tags) from what it indexes. Measured against initech's real
   data: the 1,042-conversation backlog drains in about 180 ticks of roughly 150 ms each, and a steady-state
   sweep takes about 11 ms. Digests written by v0.461.0 are dropped once and rebuilt under these rules.
 
@@ -250,12 +291,12 @@ new version heading in the same commit.
 
 ## [0.456.2] - 2026-10-08
 ### Fixed
-- **A resumed session was cut again within minutes, mid-work.** The interactive LIFETIME ceiling (`interactiveMaxHours`, default 168 h) measured age from `created_at`, and nothing a human did reset it — so any session older than a week was "over lifetime" forever, and every resume was reaped on the next sweep the moment no browser terminal happened to be attached. Live instawp: a `qa` session created 13 days earlier was resumed by its owner five times in two days and reaped 1–30 minutes after each one, once with its agent mid-turn. A deliberate re-open (attach-resume `markResumed`, unpause, a crashed pane restored under an attached human) now stamps a new `term_sessions.opened_at`, and the ceiling measures from `COALESCE(opened_at, created_at)`. Sessions that were never re-opened — the 42-day zombies the ceiling exists for — age out exactly as before; restore-on-agent-activity deliberately does not restart the clock. The `session.reaped` audit on a lifetime reap also named the wrong knob (`idleHours: 72`, the idle setting); it now records `lifetimeHours` + `openedAt`. Pinned by `scripts/idle-reaper-test.cjs`.
+- **A resumed session was cut again within minutes, mid-work.** The interactive LIFETIME ceiling (`interactiveMaxHours`, default 168 h) measured age from `created_at`, and nothing a human did reset it — so any session older than a week was "over lifetime" forever, and every resume was reaped on the next sweep the moment no browser terminal happened to be attached. Live globex: a `qa` session created 13 days earlier was resumed by its owner five times in two days and reaped 1–30 minutes after each one, once with its agent mid-turn. A deliberate re-open (attach-resume `markResumed`, unpause, a crashed pane restored under an attached human) now stamps a new `term_sessions.opened_at`, and the ceiling measures from `COALESCE(opened_at, created_at)`. Sessions that were never re-opened — the 42-day zombies the ceiling exists for — age out exactly as before; restore-on-agent-activity deliberately does not restart the clock. The `session.reaped` audit on a lifetime reap also named the wrong knob (`idleHours: 72`, the idle setting); it now records `lifetimeHours` + `openedAt`. Pinned by `scripts/idle-reaper-test.cjs`.
   **For users:** Resuming an old session no longer gets it closed again a few minutes later — the 7-day age limit now counts from when you last re-opened it.
 
 ## [0.456.1] - 2026-10-06
 ### Fixed
-- **"Ready to close" asked the task list instead of the number.** A goal was proposed for closing — and its owner carded that it was finished — as soon as every task filed under it was done, with no reference to its metric. On the instapods clicks goal that put a green "Ready to close" pill directly beside a metric panel reading "59 of 100 · Not moving": the same page contradicting itself, and an Inbox card saying the goal was finished when it was 41 clicks short. Task completion is the weakest evidence a measured goal has, so it no longer gets a vote: `GoalStore.readyToClose` (and therefore the scheduler's completion sweep) now excludes a goal with a metric unless its verdict is `achieved`, and the console derives the same way. A goal with NO metric is unchanged. The quieter fact is still said — a measured goal whose filed work ran out gets a muted "all filed tasks are done, but the number is at X of Y — close it only if the outcome is good enough, or plan the gap", because nobody having planned the rest is worth knowing; it just is not a close. Pinned by `scripts/goal-metric-review-test.cjs`.
+- **"Ready to close" asked the task list instead of the number.** A goal was proposed for closing — and its owner carded that it was finished — as soon as every task filed under it was done, with no reference to its metric. On the northwind clicks goal that put a green "Ready to close" pill directly beside a metric panel reading "59 of 100 · Not moving": the same page contradicting itself, and an Inbox card saying the goal was finished when it was 41 clicks short. Task completion is the weakest evidence a measured goal has, so it no longer gets a vote: `GoalStore.readyToClose` (and therefore the scheduler's completion sweep) now excludes a goal with a metric unless its verdict is `achieved`, and the console derives the same way. A goal with NO metric is unchanged. The quieter fact is still said — a measured goal whose filed work ran out gets a muted "all filed tasks are done, but the number is at X of Y — close it only if the outcome is good enough, or plan the gap", because nobody having planned the rest is worth knowing; it just is not a close. Pinned by `scripts/goal-metric-review-test.cjs`.
 
 ## [0.456.0] - 2026-10-06
 ### Added
@@ -264,12 +305,12 @@ new version heading in the same commit.
 
 ## [0.455.1] - 2026-10-06
 ### Fixed
-- **An agent's question and its blocked task were two cards for one decision, and answering one left the other.** A run that `ask`s and then parks its task `blocked` raises both "needs your input" and "task blocked — needs you". They weren't linked: answering the question left the task blocked with its card open, and unblocking the task left the question pending. Worse, the answer could be lost: on the live case (instapods `tsk_5f40…`) the human answered 3s after the run parked the task, while its pane was still winding down, so `answerQuestion` assumed a live asker would poll for it — but the run had stopped waiting, ended, and never heard. Now answering the question (Inbox or DM, or a durable default firing) files the answer on the task, returns it to the board (closing the blocked card) and delivers it by dispatching THE TASK with the Q/A in its prompt — retrying while the asking pane is still up, never a second run beside it, and never via the wake queue, whose resume the task's one-live-run guard couldn't see. The reverse: a human unblocking the task (card, board, DM) settles the run's pending questions — the note typed on the card becomes the answer, no note cancels it (`TerminalManager.resolveTaskQuestions`). An agent leaving its own block settles nothing, and a park behind unfinished dependencies is never unblocked by an answer. Pinned by `scripts/ask-block-link-test.cjs`.
+- **An agent's question and its blocked task were two cards for one decision, and answering one left the other.** A run that `ask`s and then parks its task `blocked` raises both "needs your input" and "task blocked — needs you". They weren't linked: answering the question left the task blocked with its card open, and unblocking the task left the question pending. Worse, the answer could be lost: on the live case (northwind `tsk_5f40…`) the human answered 3s after the run parked the task, while its pane was still winding down, so `answerQuestion` assumed a live asker would poll for it — but the run had stopped waiting, ended, and never heard. Now answering the question (Inbox or DM, or a durable default firing) files the answer on the task, returns it to the board (closing the blocked card) and delivers it by dispatching THE TASK with the Q/A in its prompt — retrying while the asking pane is still up, never a second run beside it, and never via the wake queue, whose resume the task's one-live-run guard couldn't see. The reverse: a human unblocking the task (card, board, DM) settles the run's pending questions — the note typed on the card becomes the answer, no note cancels it (`TerminalManager.resolveTaskQuestions`). An agent leaving its own block settles nothing, and a park behind unfinished dependencies is never unblocked by an answer. Pinned by `scripts/ask-block-link-test.cjs`.
   **For users:** When an agent both asks you a question and marks its task blocked, answering either one now clears both, and the agent picks the task back up with your answer. [Open Inbox](#/inbox)
 
 ## [0.455.0] - 2026-10-06
 ### Fixed
-- **"Unblock & run" could put two sessions on one task.** The console's dispatch (`POST /api/tasks/:id/dispatch`, `guard:false`) skipped the one-live-run-per-task check entirely, so a second click on the Inbox card — which stayed enabled until the next feed poll dropped it — spawned a parallel session (live: one instapods task got two sessions two seconds apart), and so did a click while the run that raised the block was still up. `canDispatch` now refuses a live run on EVERY path; what a human still forces past is the `blocked` park and the scheduler's caution (pool, per-agent busy). The route answers a refusal with the live session's id (`live: true, sessionId`), and the card keeps its buttons disabled once an action lands. Pinned by `scripts/unblock-run-dedupe-test.cjs`.
+- **"Unblock & run" could put two sessions on one task.** The console's dispatch (`POST /api/tasks/:id/dispatch`, `guard:false`) skipped the one-live-run-per-task check entirely, so a second click on the Inbox card — which stayed enabled until the next feed poll dropped it — spawned a parallel session (live: one northwind task got two sessions two seconds apart), and so did a click while the run that raised the block was still up. `canDispatch` now refuses a live run on EVERY path; what a human still forces past is the `blocked` park and the scheduler's caution (pool, per-agent busy). The route answers a refusal with the live session's id (`live: true, sessionId`), and the card keeps its buttons disabled once an action lands. Pinned by `scripts/unblock-run-dedupe-test.cjs`.
 ### Added
 - **A blocked-task card shows whether its session is still running.** The Inbox's "Task blocked — needs you" card is hydrated with the task's current run (`args.run`: session id, alive/ended, status — `TerminalManager.taskRunStates`, one query + one cached liveness poll per feed read, only when such a card is on the page). While that run is live the card offers **Open session** instead of "Unblock & run", since the answer belongs in the session that asked.
   **For users:** A "Task blocked — needs you" card now says whether the agent's session is still running or has ended, and lets you open it — so you answer in the live session instead of accidentally starting a second one. [Open Inbox](#/inbox)
@@ -285,21 +326,21 @@ new version heading in the same commit.
 
 ## [0.453.0] - 2026-10-04
 ### Added
-- **Bets: the unit between a goal and the work, judged on what it actually shipped.** New `bets` + `bet_assets` tables (`src/state/bets.ts`, `os.bets`) and `tasks.bet_id`. A bet is one falsifiable attempt at a goal's number — hypothesis, `expectedLift`, a 7–60 day window — and its lift is `Σ(asset.value) − baseline` measured on its OWN assets, never on the goal, because whole-metric attribution cannot separate two concurrent bets (on the instapods trial three ran inside four days while the goal drifted down for unrelated reasons; judged on the goal all three read as failures). **The server owns the number and the agent owns the words:** `judge()` computes `observedLift` and `met|short|no_signal` from the assets, those columns are absent from every agent write path, and the agent supplies the lesson plus the kept/expanded/killed call — a terminal state requires a lesson, and killing a `met` bet is allowed with both numbers in the `bet.updated` audit row. `no_signal` outranks failure: no assets, no measurements, or every asset unindexed means untested, which is a publishing problem rather than evidence against the hypothesis. Judged off the scheduler tick by `src/edge/bet-review.ts` — spawn-free, one owner card per bet, then the wake queue asks the agent that ran it to close its own loop. New agent tools `bet_propose` / `bet_list` / `bet_update` / `asset_record` / `asset_measure`; read side `GET /api/bets?goal=`. Caps: 4 live bets per goal, 60 assets per bet, and re-lengthening a window re-stamps the judge date off the original start so judgement cannot be postponed forever. Pinned by `scripts/bets-test.cjs`; see `docs/bets-plan.md`.
+- **Bets: the unit between a goal and the work, judged on what it actually shipped.** New `bets` + `bet_assets` tables (`src/state/bets.ts`, `os.bets`) and `tasks.bet_id`. A bet is one falsifiable attempt at a goal's number — hypothesis, `expectedLift`, a 7–60 day window — and its lift is `Σ(asset.value) − baseline` measured on its OWN assets, never on the goal, because whole-metric attribution cannot separate two concurrent bets (on the northwind trial three ran inside four days while the goal drifted down for unrelated reasons; judged on the goal all three read as failures). **The server owns the number and the agent owns the words:** `judge()` computes `observedLift` and `met|short|no_signal` from the assets, those columns are absent from every agent write path, and the agent supplies the lesson plus the kept/expanded/killed call — a terminal state requires a lesson, and killing a `met` bet is allowed with both numbers in the `bet.updated` audit row. `no_signal` outranks failure: no assets, no measurements, or every asset unindexed means untested, which is a publishing problem rather than evidence against the hypothesis. Judged off the scheduler tick by `src/edge/bet-review.ts` — spawn-free, one owner card per bet, then the wake queue asks the agent that ran it to close its own loop. New agent tools `bet_propose` / `bet_list` / `bet_update` / `asset_record` / `asset_measure`; read side `GET /api/bets?goal=`. Caps: 4 live bets per goal, 60 assets per bet, and re-lengthening a window re-stamps the judge date off the original start so judgement cannot be postponed forever. Pinned by `scripts/bets-test.cjs`; see `docs/bets-plan.md`.
   **For users:** A goal can now carry the individual bets being made on it, each judged at the end of its own window on the pages or posts it produced — so you can see which attempt moved the number instead of guessing from the total. [Open Goals](#/goals)
 
 ## [0.452.0] - 2026-10-04
 ### Added
-- **Durable asks: a question can now outlive the run that raised it.** `ask` takes `multi` (the human picks several options; the answer comes back comma-joined), `default` (what applies if nobody answers), `deadline_hours` (1–168, clamped server-side; a default with no deadline gets the ceiling) and `goal`. Any durability field makes the question survive its session ending — `cancelPendingQuestions` CARRIES it (`question.carried`) instead of cancelling, the scheduler resolves it at the deadline to its default (`question.defaulted`) or cancels it when there is none (`question.expired`), and an answer arriving after the asker finished is delivered through the wake queue (`setQuestionDeliverer`), so the agent is told what was decided instead of answering into nothing. The asking side stops blocking for an hour on a durable question: ~30s in case a human is right there, then it parks with the deadline and default stated, and is told not to re-ask. Console question cards render multi-select chips plus a "no answer by X → Y" line. Found by the instapods growth trial, where an unattended run asked the same question on three consecutive days and each pending card was cancelled ~5 minutes later, so it could never be answered. Pinned by `scripts/question-durability-test.cjs`.
+- **Durable asks: a question can now outlive the run that raised it.** `ask` takes `multi` (the human picks several options; the answer comes back comma-joined), `default` (what applies if nobody answers), `deadline_hours` (1–168, clamped server-side; a default with no deadline gets the ceiling) and `goal`. Any durability field makes the question survive its session ending — `cancelPendingQuestions` CARRIES it (`question.carried`) instead of cancelling, the scheduler resolves it at the deadline to its default (`question.defaulted`) or cancels it when there is none (`question.expired`), and an answer arriving after the asker finished is delivered through the wake queue (`setQuestionDeliverer`), so the agent is told what was decided instead of answering into nothing. The asking side stops blocking for an hour on a durable question: ~30s in case a human is right there, then it parks with the deadline and default stated, and is told not to re-ask. Console question cards render multi-select chips plus a "no answer by X → Y" line. Found by the northwind growth trial, where an unattended run asked the same question on three consecutive days and each pending card was cancelled ~5 minutes later, so it could never be answered. Pinned by `scripts/question-durability-test.cjs`.
   **For users:** An agent's question now waits for you instead of expiring with its run — answer it hours later and the agent picks it up, or let the deadline pass and its stated fallback applies. Questions with several valid answers let you tick more than one. [Open Inbox](#/inbox)
 
 ## [0.451.1] - 2026-10-04
 ### Fixed
-- **Goal heartbeat: diagnose on the evidence that belongs to the stall.** Counting every session in the lookback let a run that succeeded *before* the number went stale out-vote two fresh refusals, so a dead runtime credential came back `unknown`; evidence is now counted only since the last reading we have. The diagnosis is also bounded by `now` (a `goal_measure` reading may carry an explicit `at`, and a future-dated row made the stall look measured), which is what makes it replayable against a past moment — replaying the live instapods stall is how both ordering bugs surfaced. New `not-firing` cause for the shape the scheduler's pile-up guard leaves behind: an enabled trigger that has stopped firing with no run even attempted, which records neither a session nor a failure.
+- **Goal heartbeat: diagnose on the evidence that belongs to the stall.** Counting every session in the lookback let a run that succeeded *before* the number went stale out-vote two fresh refusals, so a dead runtime credential came back `unknown`; evidence is now counted only since the last reading we have. The diagnosis is also bounded by `now` (a `goal_measure` reading may carry an explicit `at`, and a future-dated row made the stall look measured), which is what makes it replayable against a past moment — replaying the live northwind stall is how both ordering bugs surfaced. New `not-firing` cause for the shape the scheduler's pile-up guard leaves behind: an enabled trigger that has stopped firing with no run even attempted, which records neither a session nor a failure.
 
 ## [0.451.0] - 2026-10-04
 ### Added
-- **Goal heartbeat: a stalled goal now says why it stalled and what to do.** When a measured goal goes `unmeasured`, `src/edge/goal-heartbeat.ts` diagnoses the runner behind its readings from that agent's own sessions and triggers — an expired runtime credential refusing every launch, a parked/taken-over session making the scheduler skip each cycle, launches crashing before turn one, no enabled trigger left, or runs completing without ever calling `goal_measure` — and the review card leads with that fault instead of "nobody is measuring this", carries the fix, and re-cards when the CAUSE changes even though the verdict has not. Diagnosis is read-only arithmetic (no spawning, no repair), claims a cause only on unambiguous evidence, and the cause + evidence counts land in the `goal.reviewed` audit row. Found by the instapods growth trial, where the existing symptom card fired twice, was DM'd both times, and changed nothing while the loop sat dead for nine days across three unrelated mechanical faults. Pinned by `scripts/goal-heartbeat-test.cjs`.
+- **Goal heartbeat: a stalled goal now says why it stalled and what to do.** When a measured goal goes `unmeasured`, `src/edge/goal-heartbeat.ts` diagnoses the runner behind its readings from that agent's own sessions and triggers — an expired runtime credential refusing every launch, a parked/taken-over session making the scheduler skip each cycle, launches crashing before turn one, no enabled trigger left, or runs completing without ever calling `goal_measure` — and the review card leads with that fault instead of "nobody is measuring this", carries the fix, and re-cards when the CAUSE changes even though the verdict has not. Diagnosis is read-only arithmetic (no spawning, no repair), claims a cause only on unambiguous evidence, and the cause + evidence counts land in the `goal.reviewed` audit row. Found by the northwind growth trial, where the existing symptom card fired twice, was DM'd both times, and changed nothing while the loop sat dead for nine days across three unrelated mechanical faults. Pinned by `scripts/goal-heartbeat-test.cjs`.
   **For users:** If a goal with a metric stops being measured, the alert now names the actual reason — an expired login, a session someone left open, a crashing agent — and tells you the one thing to fix. [Open Goals](#/goals)
 
 ## [0.450.1] - 2026-10-03
@@ -318,7 +359,7 @@ new version heading in the same commit.
 ## [0.450.0] - 2026-10-03
 ### Added
 - **Login-expiry warnings for Claude Code credentials.** Every `claude login` has a fixed refresh-token
-  lifetime (`refreshTokenExpiresAt`) that use does not extend — the expresstech box default died at its
+  lifetime (`refreshTokenExpiresAt`) that use does not extend — the initech box default died at its
   date while running 6–30 sessions a day, and was found only by the refusal card after runs had stopped.
   An hourly, spawn-free sweep (`src/edge/login-expiry.ts`, off the scheduler tick) now reads that date for
   the box default and every enabled credential-dir pool account and raises one admin card per login as it
@@ -334,7 +375,7 @@ new version heading in the same commit.
 ### Fixed
 - **A signed-out runtime account is skipped by rotation instead of failing every other run.** When a
   pool account's login expired with no refresh token, `pick()` kept handing it out least-recently-used and
-  the launch pre-flight refused each run it landed on — instapods logged 53 refused runs in a week with a
+  the launch pre-flight refused each run it landed on — northwind logged 53 refused runs in a week with a
   healthy account idle beside it, and re-raised "Agent runs are blocked" every 30 minutes. Rotation now
   probes each candidate's credential (`pickUsableAccount`) and walks past a dead one to the next account,
   for launches, reload-rotation and the summarizer alike. The skip is audited
@@ -425,7 +466,7 @@ new version heading in the same commit.
   polling with `sleep 5` in a bounded loop, and argued for it from a ~5-minute prompt-cache TTL. Both
   premises are gone: claude-code now REFUSES a foreground `sleep` (`Blocked: sleep …`, adding "do not
   chain shorter sleeps to work around this block") and cache writes on these runs are essentially all
-  1-hour entries (measured: instapods 8,793 `ephemeral_1h` vs 0 `ephemeral_5m`; expresstech ~20k vs 12),
+  1-hour entries (measured: northwind 8,793 `ephemeral_1h` vs 0 `ephemeral_5m`; initech ~20k vs 12),
   so the "one long wait costs more than twenty short polls" argument no longer holds. The note now points
   at the two supported waits — `Bash` with `run_in_background: true` on a command that exits when the
   condition holds (read with `TaskOutput`), and `Monitor` with a bounded `timeout_ms` and a filter that
@@ -455,7 +496,7 @@ new version heading in the same commit.
 - **A run that only lacks a free account now waits for one instead of crashing.** When every runtime
   account is rate-limited, rotation falls through to the box's own login — which on most boxes has never
   been used and holds no tokens — so the launch pre-flight refused the run and reported it as a crashed
-  session. Live instawp: 21 of its last 22 `crashed` sessions were this, each card telling an admin to
+  session. Live globex: 21 of its last 22 `crashed` sessions were this, each card telling an admin to
   re-login a credential that was not the problem, while the accounts that were reset themselves within the
   hour. A temporary exhaustion now parks the run as **queued** (a new session status, with its own dot and
   filter in Sessions), and the 60s sweep launches it by itself the moment an account frees up. A pool with
@@ -468,7 +509,7 @@ new version heading in the same commit.
 ### Fixed
 - **A credential record with no tokens no longer reports "expired on 1970-01-01".** `expiresAt: 0` is what
   a record with neither an access nor a refresh token stores, not a date; every card and admin alert about
-  the box default on instawp rendered it as an expiry that never happened. It now reads "holds no usable
+  the box default on globex rendered it as an expiry that never happened. It now reads "holds no usable
   login — its credential record carries neither an access token nor a refresh token".
 ## [0.447.2] - 2026-09-18
 ### Fixed
@@ -529,7 +570,7 @@ new version heading in the same commit.
   asserted the row was `running` after unpause, but `launchAgentRuntime` hands the real launch to a
   `setImmediate` whose `.catch` stamps the row `crashed` — and that deferred half does far more than the
   stubbed `backend.spawn` (env files, skills, credentials). On a box where any of it throws, the status
-  flipped between the `await` and the read: instawp failed the assertion, expresstech passed it, and
+  flipped between the `await` and the read: globex failed the assertion, initech passed it, and
   `make-live.sh` correctly refused to restart anything. The section stubs the deferred launch (it is about
   the route and the status transition, not the launcher) and both status assertions now report the value
   they actually found.
@@ -633,7 +674,7 @@ new version heading in the same commit.
   no reply path: the DM was the task title plus a console link, the card rendered as a muted Activity
   row, and the only way forward was the board's status dropdown. It also fired on every park regardless
   of `blockedOn`, so a task an agent had chained behind ANOTHER task — a wait no human could shorten —
-  DM'd its owner "needs you" anyway (live: an instapods marketing task queued behind a revert PR).
+  DM'd its owner "needs you" anyway (live: an northwind marketing task queued behind a revert PR).
   - **Routing now reads `blockedOn`.** Blocked on a `human` → the ask: card + DM. Blocked behind
     unfinished dependencies → nobody is told, because it is self-clearing. Any other park → a card, no
     DM: a durable record without interrupting someone for a decision that isn't urgent.
@@ -708,7 +749,7 @@ new version heading in the same commit.
 ### Added
 - **A proposed-task card in the Inbox now carries what you need to decide on it.** The `task.proposed`
   card only snapshotted each task's id, title and assignee, and truncated the title to one line. A real
-  expresstech card read "QSM SLA: conv 269039 follow-up wait at 46h (hits th…", which cut off the
+  initech card read "QSM SLA: conv 269039 follow-up wait at 46h (hits th…", which cut off the
   deadline, the reason and the urgency on a card that was already a day old.
   `hydrateTaskProposalCard` now reads the live task for its body (capped at 1,200 chars), priority, due
   date, labels, definition of done and filing time, as well as its current title and assignee. Each row
@@ -809,7 +850,7 @@ new version heading in the same commit.
 - **An agent's `npm install` can no longer rewrite the Agentric software checkout.** npm installs into
   the nearest ancestor that has a `package.json`, not the folder it runs in — so an agent working in a
   scratch folder under a data home at `<checkout>/data` (the deploy convention) installed into the
-  checkout itself. Live on instawp: `infra-ops` ran `npm install playwright-core` in a scratch folder,
+  checkout itself. Live on globex: `infra-ops` ran `npm install playwright-core` in a scratch folder,
   npm added it to the checkout's `package.json` + lockfile, and the next `make-live` refused the
   "dirty" live checkout. Each tenant build now writes a minimal private `package.json` at the data home
   root (`ensureNpmBoundary`, never overwriting one that exists), so such installs land in
@@ -821,7 +862,7 @@ new version heading in the same commit.
 - **Before you drop a retired rule, the console shows what actually changes — because a rule's effect
   is not readable from the rule.** v0.428.0 surfaced rules the product retired that a tenant still
   enforces, and left the drop to an owner's click. The click was still half-blind: it showed the rule
-  text. On expresstech the retired `shell.exec`+`risky` rule sat at **index 0, ahead of all three
+  text. On initech the retired `shell.exec`+`risky` rule sat at **index 0, ahead of all three
   `never` guardrails**, and first-match meant it SHADOWED every one of them — a `destructive` command,
   a spend over the money cap and a bulk delete over the count cap were each being offered for approval
   instead of refused outright. Dropping it made that tenant **stricter**, the opposite of what the
@@ -837,7 +878,7 @@ new version heading in the same commit.
 ### Fixed
 - **Corrected the justification comment in `policy-baseline.ts`, which stated something false about the
   fleet.** It argued the human-in-the-loop click was needed because the same retired rule was "pure
-  noise on instapods but a guardrail somebody is actually USING on expresstech (5 rejected of 26)".
+  noise on northwind but a guardrail somebody is actually USING on initech (5 rejected of 26)".
   Checking those rejections showed the opposite: four were the heredoc false-positive class fixed in
   v0.425.1, and the fifth was an `rm -rf` carrying `destructive: true` — a command the ruleset should
   never have offered for approval at all. The click stays, for a stronger reason now recorded in its
@@ -847,7 +888,7 @@ new version heading in the same commit.
 ## [0.436.0] - 2026-09-10
 ### Added
 - **An agent's task no longer lands on the board until a person accepts it.** Agents file essentially
-  every task on the live fleet (instapods, 14 days: 140 of 140, none by a human), and half of them are
+  every task on the live fleet (northwind, 14 days: 140 of 140, none by a human), and half of them are
   board items no one agreed to — `engineer` alone left 31 unassigned `todo`s. They are usually real
   findings, but they skipped triage and read as committed work. A task an agent files WITHOUT
   dispatching it now lands in a new `proposed` status: it never dispatches (every path, a console Run
@@ -1019,12 +1060,12 @@ new version heading in the same commit.
 - `scripts/headless-resumable-test.cjs` isolates its `CLAUDE_CONFIG_DIR`. The new launch pre-flight reads
   the box's real claude login, so on a box whose login has lapsed — the box you most want to run the
   deploy gate on — nine assertions failed for a reason unrelated to resumability. Caught running the gate
-  on the instawp box, whose expired default login was the outage in 0.429.0.
+  on the globex box, whose expired default login was the outage in 0.429.0.
 
 ## [0.429.0] - 2026-09-10
 ### Fixed
 - **A pooled runtime account was disabled for another run's failure, and the whole tenant fell onto a
-  dead box login** (instawp, 2026-09-09 → 09-10; 14 hours, ~14 runs, every one $0 and one turn, no
+  dead box login** (globex, 2026-09-09 → 09-10; 14 hours, ~14 runs, every one $0 and one turn, no
   alert). One claude conversation resumed across two credential dirs leaves the same `<id>.jsonl` under
   each; `findTranscript` searched the server's own `~/.claude` FIRST and returned a stale 19-line copy
   ending in `authentication_failed · Login expired`, from an earlier run. Teardown read that as "this
@@ -1056,8 +1097,8 @@ new version heading in the same commit.
   the way `hostGovernanceDecision`, `fileGovernanceDecision` and `injectionDecision` are. The RETIRE
   direction had no answer at all, and it is the one that kept costing: the blunt `shell.exec`+`risky`
   → ask-owner rule was dropped from the bundled default in **v0.17.0** and went on waking owners on
-  three separate tenants for over a year — instawp (~70 approvals/14d, cleared by hand 2026-07-27),
-  instapods (15 in 30d, **11/11 approved**, cleared by hand 2026-09-07) and expresstech, which still
+  three separate tenants for over a year — globex (~70 approvals/14d, cleared by hand 2026-07-27),
+  northwind (15 in 30d, **11/11 approved**, cleared by hand 2026-09-07) and initech, which still
   carries it. Each was found only by a human auditing the approvals table months late. That
   invisibility was the defect. `src/governance/policy-baseline.ts` adds a **retirement ledger** (each
   entry the rule exactly as it shipped, the version that dropped it, and why) and `baselineDrift()`,
@@ -1069,8 +1110,8 @@ new version heading in the same commit.
   Policy shows each retired rule with its receipt.
 - **Dropping a retired rule is an owner's click, never automatic** (`POST /api/policy/drift/drop`,
   owner-only, removal-by-index re-validated server-side). Deliberate: it LOOSENS governance, and the
-  fleet shows the same rule means opposite things on different boxes — pure noise on instapods (0
-  rejected) and a guardrail somebody is actively using on expresstech (5 rejected of 26). It routes
+  fleet shows the same rule means opposite things on different boxes — pure noise on northwind (0
+  rejected) and a guardrail somebody is actively using on initech (5 rejected of 26). It routes
   through `applyPolicyDocument`, so it snapshots to `policy_revisions`, rewrites the override,
   hot-reloads every running session and is one-click revertable like any edit. The safety property:
   a rule matches the ledger only when **deep-equal** to the shipped signature, so an owner who
@@ -1139,7 +1180,7 @@ new version heading in the same commit.
 ## [0.425.1] - 2026-09-07
 ### Fixed
 - **Writing a shell script with a heredoc read as EXECUTING one, so the gate woke the owner for
-  `cat > drive.sh`.** Every approval instapods raised in 30 days was `shell.exec`, and every one
+  `cat > drive.sh`.** Every approval northwind raised in 30 days was `shell.exec`, and every one
   resolved *approved* — pure false positives. Two were bugs in `sanitizeForIntent`, the pass that
   strips DATA payloads out of a command before intent-matching. (1) Its interpreter test was a
   substring `/\b(bash|sh|…)\b/` over the heredoc opener, and `\bsh\b` matches the *filename*
@@ -1388,7 +1429,7 @@ new version heading in the same commit.
   rides at `input.tools[].tool_slug` - so `args.tool` always read `COMPOSIO_MULTI_EXECUTE_TOOL` and every
   plane keyed on it was blind: `resolveCapability` never fired (`payments.refund`, `email.send`, ...),
   the enricher never set `emailSend` so recipients were never judged, and the approval card said
-  *"Write to Composio multi execute tool"*. Live evidence: an expresstech run sent two customer-facing
+  *"Write to Composio multi execute tool"*. Live evidence: an initech run sent two customer-facing
   Gmail messages, both audited `connector.call` / allow / green / "no rule matched". The gate now unwraps
   the envelope to the real effect before enriching (`src/capabilities/composio-envelope.ts`,
   `gate.composio.unwrapped`) - server-side, so claude-code, codex and opencode are all covered by one
@@ -1409,8 +1450,8 @@ new version heading in the same commit.
 ### Docs
 - **Insights Step 5: "prompt shape" added as a second-signal candidate** (`docs/insights-revisit.md`).
   Agent prompts accrete monotonically through `agent_update` self-edits and nothing ever removes a
-  section: instawp's `onboarding-assistant` went 8.2KB -> 194KB over 15 revisions, `engineer` 7.8KB ->
-  81KB over 34. Because a prompt is re-read every session, instawp spends ~22M tokens/month re-loading
+  section: globex's `onboarding-assistant` went 8.2KB -> 194KB over 15 revisions, `engineer` 7.8KB ->
+  81KB over 34. Because a prompt is re-read every session, globex spends ~22M tokens/month re-loading
   them. Two costs beyond tokens: the prompt's register leaks into the work product (an 81KB
   essay-shaped prompt produced 109 PR comments in 14 days averaging >=1.6KB), and numbers rot in a
   prompt because nothing dates or re-runs them. The signal is already fully recorded in
@@ -1597,7 +1638,7 @@ new version heading in the same commit.
   rule makes Claude escalate any Bash command of that shape to a **human-only** approval — it can't
   statically prove the relative target resolves outside a denied path, so it fails closed ("only you can
   approve running it anyway"). An absolute `cd` doesn't help; the relative *target* is the trigger. That
-  is most of what an agent types, and the escalation outranks us: verified live (instapods session
+  is most of what an agent types, and the escalation outranks us: verified live (northwind session
   `ses_d985eefa4b8c4165`) that the gate hook had already returned `permissionDecision:"allow"` for the
   exact command at 12:28:22 and Claude escalated anyway at 12:28:37 — `permissions.deny` beats a hook
   allow, the same precedence that keeps deny rules in force under `--dangerously-skip-permissions`. So an
@@ -1615,8 +1656,8 @@ new version heading in the same commit.
 - **A session reaped by the idle-interactive janitor is now remembered.** Every other teardown path writes
   an episode — `markEnded` (normal end, and `teardownUnattended` through it), `markCrashed`, and
   `stopSession`, the human kill button. The janitor did its own teardown and skipped it, so an abandoned
-  interactive session simply evaporated. Over 30 days: **3 of 29** janitor-reaped sessions on instapods
-  and **18 of 136** on instawp had an episode, and those came from a `report` earlier in the run, not from
+  interactive session simply evaporated. Over 30 days: **3 of 29** janitor-reaped sessions on northwind
+  and **18 of 136** on globex had an episode, and those came from a `report` earlier in the run, not from
   the reap — ~144 sessions closed with nothing kept. The `max-lifetime` ceiling added in v0.410.5 inherited
   the same gap.
 
@@ -1630,7 +1671,7 @@ new version heading in the same commit.
 - **A deleted session no longer produces a phantom episode.** Audit events outlive the row (the log is
   append-only), so composing from them alone wrote an episode with no task line, attributed to an agent
   that can no longer be named. `writeEpisode` now returns when the session row is gone. Seen live on
-  instawp: one janitor-reaped run whose row had been deleted mid-flight, its activity list still carrying
+  globex: one janitor-reaped run whose row had been deleted mid-flight, its activity list still carrying
   `session.deleted`.
 
 ## [0.414.7] - 2026-09-02
@@ -1652,7 +1693,7 @@ new version heading in the same commit.
   only the ones that WRITE something audit anything. Every read tool — `recall`, `kb_search`, `kb_read`,
   `task_list`, `check_inbox`, `list_capabilities`, `session_history` — recorded nothing at all. Asked in
   2026-09 whether the 77 KB tool schema could be gated per agent, the honest answer was **no**: write-tool
-  usage was measurable (engineer 18 of 31 on instawp, typical agents 5–13) but roughly half the schema was
+  usage was measurable (engineer 18 of 31 on globex, typical agents 5–13) but roughly half the schema was
   invisible, and gating on a measurement that cannot see reads would have stripped the tools agents lean
   on hardest. `src/edge/tool-usage.ts` closes that: the MCP client already stamped `x-aos-tool` on every
   request for latency bucketing, so it now also stamps `x-aos-agent`, and the server counts the pair per
@@ -1661,7 +1702,7 @@ new version heading in the same commit.
 
   **Counters, not events, and never on the hot path.** A row per `(tenant, agent, tool, day)`, not an
   audit event per call — the question is *which tools does this agent use*, not what happened in one call,
-  and auditing reads would roughly double audit volume on a busy tenant (instapods already writes ~33k
+  and auditing reads would roughly double audit volume on a busy tenant (northwind already writes ~33k
   gate events a week). `record()` bumps an in-memory Map; a 60s timer does the writing, per tenant,
   because the DB file is the tenant boundary. A crash loses at most one interval of a histogram — not
   worth a synchronous SQLite write on the one path every agent call passes through. The headers are
@@ -1677,7 +1718,7 @@ new version heading in the same commit.
   "Claude needs you" — a permission prompt, an idle wait, `agent_needs_input` — becomes an inbox card.
   Since **v0.95.0 (2026-07-10)** the `notify` tool registered a *second* `POST /api/notify` **above** it,
   reading `b.session`. Routes match in order, so the tool's route swallowed every hook post, read an empty
-  session, and returned **404** — and the hook is fail-open, so nothing surfaced. Live instapods:
+  session, and returned **404** — and the hook is fail-open, so nothing surfaced. Live northwind:
   `session.notified` fired **0 times in 30 days**, and all 26 notification cards ever came from other
   paths. Retiring `notify` (below) removes the shadow; `scripts/notify-hook-route-test.cjs` posts the
   hook's exact payload and pins that it is handled, so a future duplicate route fails the build instead of
@@ -1729,7 +1770,7 @@ new version heading in the same commit.
 ## [0.414.1] - 2026-09-02
 ### Fixed
 - **The hand-off chain rail stopped scanning the whole session table per node.** `GET /api/sessions/:id/chain`
-  (66 ms average on live instawp, 4,193 sessions) resolved a conversation by `claude_session_id`, its
+  (66 ms average on live globex, 4,193 sessions) resolved a conversation by `claude_session_id`, its
   delegated runs by `spawned_by`, and the caller above it by `tasks.caller_claude_id` — three columns with
   **no index between them**, so every one of those was a full `SELECT *` scan, repeated for the climb and
   again for each node of the descent. Three indexes (`idx_sessions_claude`, `idx_sessions_spawned_by`,
@@ -1739,7 +1780,7 @@ new version heading in the same commit.
 
 ### Added
 - **Event-loop stalls now say what caused them.** The lag sampler reported a **156-second** block on the
-  live instawp tenant and nothing else — no route had a handler time near it, the audit stream had no
+  live globex tenant and nothing else — no route had a handler time near it, the audit stream had no
   burst, the WAL was 26 MB, the disk idle, the journal empty. A number with no subject is not a lead. Every
   long synchronous phase in the process now names itself (`upkeep:auditRetention`, `automations:tick`,
   `reaper:idleSessions`, `janitor:sweep`, `spawn:git fetch`, `spawn:composio-mint`, …), a stall is
@@ -1795,7 +1836,7 @@ new version heading in the same commit.
 ## [0.413.4] - 2026-09-02
 ### Fixed
 - **The Sessions view stopped rebuilding the whole history every six seconds.** `GET /api/sessions` is
-  now the most expensive route on the live instawp tenant (186 ms average, 4,122 rows, **1.29 MB
+  now the most expensive route on the live globex tenant (186 ms average, 4,122 rows, **1.29 MB
   gzipped per call**), and the console's Sessions/Chat views re-fetched all of it every `FULL_LIST_MS`
   — ten times a minute, per open tab, for a list whose live half already arrives every 1.5 s on the
   cheap summary poll. The cadence is now **30 s**, and the reason it could not be raised before is
@@ -1815,7 +1856,7 @@ new version heading in the same commit.
 ### Fixed
 - **The Agents page stopped blocking the whole server for two seconds.** `GET /api/agents/stats` —
   the fleet maturity roll-up the Agents page fetches on mount — measured **1,966 ms average** on the
-  live instawp tenant (576k audit rows) and was, in the process metrics, the slowest handler in the
+  live globex tenant (576k audit rows) and was, in the process metrics, the slowest handler in the
   product by 25×. It counted governed actions by SELECTing every matching audit ROW and JSON.parsing
   each one: 386k rows carrying **238 MB of `data`**, on the single-threaded event loop, every time the
   page opened — so it stalled every OTHER request too. It now aggregates in SQL over a new covering
@@ -1837,7 +1878,7 @@ new version heading in the same commit.
 - **Settings → Memory shows the backend's actual vitals.** The provider collapsed automem's whole
   `/health` body into a single `detail` string, so everything an operator needs during an incident was
   invisible. A by-hand fleet sweep surfaced, from that discarded body: a **775-row store/mirror gap**, an
-  enrichment queue nobody could see, and **25% of instawp's memories truncated at the backend's 2000-char
+  enrichment queue nobody could see, and **25% of globex's memories truncated at the backend's 2000-char
   cap** — none of it in the product. `MemoryHealthResult.diagnostics` now carries round-trip latency,
   backend memory + vector counts, sync status, dependency reachability (falkordb/qdrant), embedding width,
   and the enrichment queue; Settings → Memory renders them beside the existing drift banner. Vectors
@@ -1855,7 +1896,7 @@ new version heading in the same commit.
 - **The resume path could still start an un-authenticated run.** v0.412.0 refuses a launch whose credential
   can't be read, but a *resurrection* never passes through the server's launch path: `attach.sh` re-execs
   `claude-launch.sh` with `RESUME=1`, which sources the persisted env and starts the runtime directly. On
-  instapods that gap produced a session at 05:44Z — 34 minutes after the operator believed the box was
+  northwind that gap produced a session at 05:44Z — 34 minutes after the operator believed the box was
   fixed — that came up `Not logged in`, burned a turn and ended at $0. The launcher now asks the server
   first, over the same loopback + session-secret channel it already uses for `/api/ended`
   (`POST /api/credential-check` → `TerminalManager.checkResumeCredentials`), so detection stays in ONE
@@ -1923,7 +1964,7 @@ new version heading in the same commit.
 
 ## [0.412.0] - 2026-09-02
 ### Fixed
-- **A locked macOS login keychain silently killed every run for 17 hours.** On instapods the login
+- **A locked macOS login keychain silently killed every run for 17 hours.** On northwind the login
   keychain auto-locked overnight (2026-09-01 ~17:30Z); the server kept spawning sessions until the next
   morning. Eight runs, every one **$0 and one turn**, three left `running`, and no alert anywhere — the
   pool badge still showed the usage snapshot taken before the lock, so the console read healthy. Two
@@ -1953,7 +1994,7 @@ new version heading in the same commit.
   *content block* of an assistant message — `[thinking]`, `[tool_use]`, `[tool_use]` — and every one of
   those lines repeats the **same `message.id` with a byte-identical `usage` object**. `readSessionCost`
   summed usage per LINE, so each billed request was counted once per block it happened to emit. On a
-  single live instapods run: **36 usage-bearing lines for 19 distinct message ids**, and the session row
+  single live northwind run: **36 usage-bearing lines for 19 distinct message ids**, and the session row
   read **$4.05** where the agent's own status line showed **$1.88**. Usage is now accumulated once per
   message id; recomputing that run gives exactly $1.88. This inflated `cost_usd`, `input_tokens`,
   `output_tokens`, `cache_read_tokens` and `cache_write_tokens` on every session row, so any spend or
@@ -1967,8 +2008,8 @@ new version heading in the same commit.
 - **The tenant-shared memory pool carries knowledge again, not fleet statistics.** A shared memory reaches
   EVERY agent, and the self-learning pass writes one tenant-scoped digest per pass — *"Fleet self-learning
   (pass 31, since 2026-07-01): 768 sessions, 43% success. Recurring topics: …"* — with nothing retiring
-  it. They accumulated until they **were** the shared pool: **51 of 72 shared memories on instapods, 48 of
-  85 on instawp**. Observed directly while running the loop experiment: an agent with no memories of its
+  it. They accumulated until they **were** the shared pool: **51 of 72 shared memories on northwind, 48 of
+  85 on globex**. Observed directly while running the loop experiment: an agent with no memories of its
   own got a launch preamble that was **6 of 8 slots of fleet statistics** and nothing about its task. Two
   changes. (1) A dreaming digest is now **preamble noise** (`isPreambleNoise`, alongside episodes) on both
   the task-ranked and salience-fallback paths — it stays fully recallable, since an oversight agent asking
@@ -1984,7 +2025,7 @@ new version heading in the same commit.
 - **The session summarizer stopped silently degrading — it now uses the runtime-account pool.** Chasing a
   17.9 s `session_open` in the v0.404.0 tool metrics turned up something worse than a slow tool. That call
   spawns a throwaway `claude -p` (deliberately, so the target session's context is never polluted) and
-  falls back to a deterministic recap when it fails. On live instawp **43 of 97 summaries — 44% — had been
+  falls back to a deterministic recap when it fails. On live globex **43 of 97 summaries — 44% — had been
   falling back**, in one unbroken band from 2026-08-04 to 08-24, and nothing anywhere reported it.
   - **Root cause:** `summarizeConversation` ran on `{...process.env}` — i.e. always the BOX DEFAULT
     account — while every governed launch goes through `applyRuntimeAccount` → `runtimeAccounts.pick()`,
@@ -2015,7 +2056,7 @@ new version heading in the same commit.
 - **A hard age ceiling for detached interactive sessions** (`interactiveMaxHours`, default **168 h**,
   Settings → Concurrency). Every existing timeout measures *idleness*, and `markTurnBusy` stamps
   `last_activity` on **every tool call** — so a session whose agent keeps working never looks idle however
-  old it gets, and none of the idle clocks can reach it. Measured on live instawp *after* the wake-queue
+  old it gets, and none of the idle clocks can reach it. Measured on live globex *after* the wake-queue
   fix had already removed the biggest source of that traffic: **18 sessions still running, 15 interactive,
   at 1007 h / 266 h / 263 h / 166 h / 120 h — every one reporting only 18–24 h idle**, skipped by the 72 h
   reaper on every tick. The oldest had been open **42 days**. Age is the honest question for those. Like
@@ -2026,7 +2067,7 @@ new version heading in the same commit.
 ### Fixed
 - **Memory upkeep now records that it ran, even when it changed nothing.** `runMemoryMaintenance` audited
   only `if (res.pruned || res.merged)`, which made "upkeep is running and finding nothing" indistinguishable
-  from "upkeep is not running at all" — a live instawp check read five days of silence as a broken
+  from "upkeep is not running at all" — a live globex check read five days of silence as a broken
   scheduler when the store was simply clean. Every pass now writes `memory.maintained` with a `noop` flag;
   the `removed` id list is left out of the row (it is only useful to the caller replaying it onto a
   backend, and would bloat every pass). ~1 event/day/tenant against ~32k gate events/week.
@@ -2034,7 +2075,7 @@ new version heading in the same commit.
 ## [0.410.4] - 2026-09-01
 ### Fixed
 - **`GET /api/sessions` stopped costing the box a fifth of its event loop.** Measured on the live
-  instawp tenant (v0.410.3, 4,019 sessions, 598 MB DB) with the v0.404.0 MCP instrumentation: in a
+  globex tenant (v0.410.3, 4,019 sessions, 598 MB DB) with the v0.404.0 MCP instrumentation: in a
   51-minute window that one route was called 3,789 times and burned **654 s of handler time — 21% of a
   single-threaded process** — because the Sessions/Chat views re-fetch the FULL list (3,951 unarchived
   rows, **5.03 MB**) on the shared 1.5 s poll. The traffic was two people with the Sessions tab open.
@@ -2079,7 +2120,7 @@ new version heading in the same commit.
 ## [0.410.2] - 2026-08-31
 ### Fixed
 - **The topic list names subjects again, now that it actually compounds.** v0.402.1 stopped the nightly
-  wipe, and four days of real accumulation showed what the wipe had been masking: instapods' injected
+  wipe, and four days of real accumulation showed what the wipe had been masking: northwind' injected
   guidance read *"the fleet frequently works on: composio, **friday**, **monday**, dataforseo, gmail"* —
   two of five were days of the week, at 33 each, ranked #2 and #3. Compounding didn't create that; a cron
   repeats its title verbatim, so a cadence word outruns real subjects. Four rules, each from a class
@@ -2092,7 +2133,7 @@ new version heading in the same commit.
   fleet "topics") and the domain half (`gmail.com` at count 8) — a customer's identifier has no business
   in every agent's system prompt. Plus the **generated `adjective-animal-NN` pod handle** (`proud-ibis-22`,
   `jolly-owl-72`, `calm-tiger-80`) is no longer an entity. Replayed over the 714 real episodes that
-  produced the bad line, the guidance becomes *"composio, dataforseo, gmail, instapods, instapods.com"* —
+  produced the bad line, the guidance becomes *"composio, dataforseo, gmail, northwind, northwind.com"* —
   all five real. `TOPICS_VERSION` → 5, so both tenants rebuild; the fingerprint guard added in v0.402.1
   caught the un-bumped change on the first run, which is what it was built for.
 
@@ -2239,7 +2280,7 @@ new version heading in the same commit.
   over a store holding none of the tenant's memories. The horizon now keys on a store IDENTITY (backend +
   where its data lives), so an endpoint move reconciles like a backend switch, while a token / ranking /
   preload re-save on the same endpoint still does NOT move it (that would re-migrate migrated rows as
-  duplicates). The `memory.backend.changed` audit event names both stores. Found while moving instapods
+  duplicates). The `memory.backend.changed` audit event names both stores. Found while moving northwind
   off its remote automem pod. Pinned by `scripts/memory-store-switch-test.cjs`.
 
 ## [0.407.0] - 2026-08-30
@@ -2430,7 +2471,7 @@ new version heading in the same commit.
   while it was still LIVE and stopped afterwards had no way back: claiming relaunches nothing, so it never
   got a launch env, which left it non-`resumable` (no Resume) while `claimedBy`/`headless=0` hid Take over
   as well. Opening it plain-attached to a pane that was gone and surfaced tmux's own
-  `can't find session: aos-…` (live instawp run, 2026-08-27).
+  `can't find session: aos-…` (live globex run, 2026-08-27).
   - `canGoInteractive` now splits by liveness: LIVE → an unclaimed unattended run (claim the pane); DEAD →
     any run with a conversation that cannot bring itself back (unattended, or no persisted env). `claimedBy`
     is no longer consulted for a dead run — a claim doesn't revive a dead pane, and `takeoverRun` already
@@ -2452,7 +2493,7 @@ new version heading in the same commit.
   relaunches nothing, so nothing ever wrote the env), and the terminal's Operations menu hid **Reload**
   and **Reload on another account** for it forever — the two items you actually want on a claimed run
   (pick up a newly-connected MCP server; move off an account that hit its usage limit). Seen live on
-  instawp: a claimed run, `headless=0`, a pinned `claude_session_id`, and no Reload.
+  globex: a claimed run, `headless=0`, a pinned `claude_session_id`, and no Reload.
   - Every claude-code launch now persists the env, unattended included; the lanes are told apart by the
     `headless` column, never by the presence of a file.
   - Taking a live run over strips the env's `UNATTENDED` marker, so a later reattach/Reload resurrects it
@@ -2469,7 +2510,7 @@ new version heading in the same commit.
 ### Added
 - **Per-agent context allowlists — `AgentManifest.skills` and `AgentManifest.tools`.** Every
   claude-code agent was handed the entire skills library and every agentos MCP tool, whether it used
-  them or not. On the live instawp fleet that is 50–59 skills materialised per agent out of a 60-skill
+  them or not. On the live globex fleet that is 50–59 skills materialised per agent out of a 60-skill
   library (a *site-monitoring* agent carrying `pptx`, `xlsx`, `marketing-plan` and `aso`) plus all 68
   tool schemas. Both a skill's description and a tool's schema are pinned in the system prompt and
   re-read on **every turn**: measured on one 103-call watchdog run, ~32k of an 85k-token baseline was
@@ -2519,7 +2560,7 @@ new version heading in the same commit.
   the version counter exists precisely so a changed extractor clears the words it used to admit. It was
   not bumped, so `wait`, `c05cl830mnd`, `d3cby9k`, `d2mp41k` and `already-contacted-in-90-days` all
   survived in the live maps — and `wait:3` sat exactly on `MIN_TOPIC_COUNT`, so the guidance line every
-  instawp agent reads still said "the fleet frequently works on: freescout, apache2, **wait**". Bumped to
+  globex agent reads still said "the fleet frequently works on: freescout, apache2, **wait**". Bumped to
   4; both tenants rebuild their map from the current corpus on the next pass. This is the **second** time
   the counter was missed (v0.281.3 tightened `isEntity` the same way), and the warning telling you to bump
   it sits two paragraphs above the constant — so a comment is demonstrably not enough. The insights test
@@ -2530,7 +2571,7 @@ new version heading in the same commit.
 ### Fixed
 - **A finished run is no longer a delivery target for good news.** The wake queue picks a live pane by
   `reachable` — the PANE — which is deliberate, but `report` is the agent saying the RUN is over, and its
-  pane stays reachable regardless. Measured on live instawp over 7 days: **55% of injects (152 of 275)
+  pane stays reachable regardless. Measured on live globex over 7 days: **55% of injects (152 of 275)
   landed in a session that had already reported**, resurrecting it in place — the very thing `dropDone`
   refuses to spawn a claude for. The archetype was a `support-ops` run that reported success at **+152
   seconds** and was then held open **6.5 hours** by ten injects (still `running` 49h later). And the
@@ -2564,7 +2605,7 @@ new version heading in the same commit.
   agent's system prompt via the learned guidance, so a junk token there is a junk token in every prompt.
   The first clean pass after the topic accumulator was fixed surfaced exactly two failure shapes. (1) A
   shouted imperative reads as an **acronym** to `properNouns` (short, all-caps, standing alone), so a
-  prompt writing "WAIT for it to finish" promoted `wait` to a proper noun — instawp told every agent the
+  prompt writing "WAIT for it to finish" promoted `wait` to a proper noun — globex told every agent the
   fleet frequently works on "freescout, apache2, **wait**". Those status words are now stopped. (2)
   `isEntity` admitted anything containing a digit (the rule that keeps `php8`/`v3`), which let opaque
   handles through: the Slack channel id `c05cl830mnd`, site ids `d3cby9k`/`d2mp41k`, and the task slug
@@ -2578,7 +2619,7 @@ new version heading in the same commit.
 - **The launch preamble carries lessons, not a transcript of past assignments.** An episode's text opens
   with the session's task line, so ranking the preamble against the task (v0.399.0) matched episodes
   better than the lessons distilled from them — the bias was systematic, not incidental. Measured over 8
-  realistic agent/task pairs against the live instapods store: **28 of 64 preamble slots (44%) were raw
+  realistic agent/task pairs against the live northwind store: **28 of 64 preamble slots (44%) were raw
   past task prompts**, and `check-resolve-tickets` spent 4 of 8 slots on near-identical replays of one
   daily sweep while the reconciliation lesson it has been recalled on 185 times was crowded out. The
   preamble now over-fetches 4×, drops anything tagged `episode` (or opening `Task:`, for rows predating
@@ -2593,7 +2634,7 @@ new version heading in the same commit.
 - **The launch-time memory preamble is ranked against the task, not the agent's all-time top 8.**
   `MemoryConfig.preload` seeds a cold session with what the agent already knows; it used to run no query
   at all (`ORDER BY importance DESC, last_recalled_at DESC`), so every launch got the same memories
-  whatever the work. On live instapods that put a tenant-shared marketing rule ("Never auto-send email as
+  whatever the work. On live northwind that put a tenant-shared marketing rule ("Never auto-send email as
   the marketing agent", importance 0.95) at the top of the **engineer's** prompt and spent two of eight
   slots on copy rules — and below the top ~70 rows the order was decided almost entirely by the
   tiebreaker, since 893 memories share importance 0.8 and 912 share 0.7. The session's task (first 400
@@ -2609,16 +2650,16 @@ new version heading in the same commit.
 ### Fixed
 - **Agents recalled a paraphrase of their own memories.** A recall backend may transform the text it is
   handed, and automem does: over `MEMORY_CONTENT_SOFT_LIMIT` (500 chars by default) with an LLM
-  configured, it replaces `content` with a ~300-char summary and **discards the original**. instawp's
+  configured, it replaces `content` with a ~300-char summary and **discards the original**. globex's
   average memory is 1305 chars, so **81%** of sampled recall hits existed nowhere in the mirror — a note
-  reading "Bunny edge-rule QA cannot be done on a `*.instawp.site` sandbox — it resolves to the PPU/OVH
+  reading "Bunny edge-rule QA cannot be done on a `*.sandbox.example.com` sandbox — it resolves to the PPU/OVH
   origin and never traverses Bunny's edge…" came back as "Bunny edge-rule QA limitations. Testing on
-  `*.instawp.site` fails…", losing every exact command and `.env` name that made it worth storing. The
+  `*.sandbox.example.com` fails…", losing every exact command and `.env` name that made it worth storing. The
   two stores also disagreed: Dreaming, consolidation and the Memory-hub read the mirror's original while
   agents recalled the summary. `MirroredMemoryProvider.recall` now serves `content` from the mirror
   whenever it holds that id; **ranking, ordering and score stay entirely the backend's**, and a record
   the mirror has never seen passes through untouched, so this can only add fidelity. Backend-agnostic —
-  it holds for any store that rewrites, not just this setting. (instapods was unaffected: no LLM
+  it holds for any store that rewrites, not just this setting. (northwind was unaffected: no LLM
   configured there, so nothing was ever rewritten.)
 
 ### Added
@@ -2637,7 +2678,7 @@ new version heading in the same commit.
 - **Memory upkeep on an external backend pruned only half the store.** `MirroredMemoryProvider.maintain`
   assumed "the backend self-maintains (automem)" and pruned the local mirror alongside it. Reading the
   live stores disproved the assumption — automem's enrichment rewrites and relates memories but does not
-  remove exact duplicates, and one instapods cron's identical episode sat there **177 times** (7% of that
+  remove exact duplicates, and one northwind cron's identical episode sat there **177 times** (7% of that
   tenant's whole memory, one string, ranking in live recall probes). Because the result came from the
   backend, the API also reported `pruned: 0` while mirror rows really did vanish. So turning upkeep on
   made the two stores **diverge**: Dreaming, consolidation and the Memory-hub counts (which read the
@@ -2649,7 +2690,7 @@ new version heading in the same commit.
 - **The self-learning pass wiped its own topic accumulator on every run.** `normalizeState` dropped
   `topicsVersion` on load, so the extractor-version check in `dream()` was true every pass and emptied the
   cumulative topic map before anything read it. The documented "counts merge across passes … sharpens over
-  time" never happened in production: instapods reset on **29 of 46** passes and instawp on **31 of 41**,
+  time" never happened in production: northwind reset on **29 of 46** passes and globex on **31 of 41**,
   discarding **666** and **1760** topic counts, leaving `topics` holding a single day of episodes. With
   `MIN_TOPIC_COUNT = 3` that kept the smaller tenant permanently under the bar — its "the fleet frequently
   works on …" guidance line never fired once in two months, and the fleet Insight every agent recalls read
@@ -2659,7 +2700,7 @@ new version heading in the same commit.
 ### Changed
 - **Session episodes stop polluting the memory they are supposed to teach.** Every finished session
   auto-encodes an episode into its agent's memory — nobody decides to store it, so its quality is
-  entirely a property of the code. A read of the live instapods + instawp stores found three ways it
+  entirely a property of the code. A read of the live northwind + globex stores found three ways it
   was storing noise, all now fixed. (1) The `Task:` line was kept **verbatim**: an unattended run's task
   is a multi-paragraph standing order, so one 1979-char support-sweep prompt filled an entire memory
   (automem caps a memory at 2000 chars) leaving no room for what the run actually did — 419 stored
@@ -2864,7 +2905,7 @@ new version heading in the same commit.
   benchmark runs established that the query cannot mean what it was read to mean, so it is removed
   rather than caveated. Three defects, none fixable from inside a query over `term_sessions`:
   `output_tokens` is ~85% `tool_use` arguments and ~18% thinking, so it barely contains the narration
-  the brief compresses (against the live instapods DB it called terse 28–92% *worse* on four of five
+  the brief compresses (against the live northwind DB it called terse 28–92% *worse* on four of five
   agents — that was tool-use volume); dividing by turns lets the treatment move its own denominator
   (`marketing-manager` read 92% worse per turn and 25% cheaper per session from the same rows); and
   the two arms are a 2026-08-07 cutover rather than a split.
@@ -2899,7 +2940,7 @@ new version heading in the same commit.
   wrong** — every arm gets *more* verbose across turns (slopes +4.2/+6.9/+8.1 tokens per turn) and the
   reinforced arm grows fastest; the gain is flat across turn index (4.2% on turn *one*), so the hook
   buys PROXIMITY, not decay resistance. **The money is not there** — 26.4 output tokens saved against
-  61 input tokens spent nets ~$0.13/month across instapods' 780 terse turns, consistent with the
+  61 input tokens spent nets ~$0.13/month across northwind' 780 terse turns, consistent with the
   ceiling already established (narration is ~15% of output tokens; this moves ~7% of that). And **it
   is the wrong lane** — `UserPromptSubmit` fires on user messages, so the result covers chat/resident
   sessions, while most fleet spend is unattended runs whose turns are driven by tool calls; the
@@ -2959,7 +3000,7 @@ new version heading in the same commit.
   `BACKGROUND_USAGE_STALE_MS` (30 min) than the read path's 10 min. Self-throttling: only
   snapshots past the window are probed, in-flight probes are de-duped and the batch is capped, so
   the ~20s tick costs nothing until a reading actually ages out.
-  Measured on the instawp tenant before the fix: **~20% of inbound support tickets silently
+  Measured on the globex tenant before the fix: **~20% of inbound support tickets silently
   dropped over three days** (including a cancellation and a billing request), every drop on an
   account whose displayed quota was stale. Pinned by `scripts/runtime-usage-refresh-test.cjs` §6.
 
@@ -3387,7 +3428,7 @@ new version heading in the same commit.
 ### Added
 - **`npm run bench:verbosity` — a paired, controlled benchmark for `TERSE_OUTPUT_BRIEF`, and the
   negative result it returned.** `verbositySavings()` compares terse and normal sessions as they
-  happened on a live tenant; run against the real instapods DB it calls terse 28–92% WORSE on four of
+  happened on a live tenant; run against the real northwind DB it calls terse 28–92% WORSE on four of
   five comparable agents. None of that was evidence, for three reasons the query cannot fix from the
   inside: `term_sessions.output_tokens` is ~85% `tool_use` arguments and ~18% thinking (measured over 40
   live transcripts), so it barely contains the narration the brief compresses; dividing by turns lets
@@ -3418,7 +3459,7 @@ new version heading in the same commit.
   "currently…" line and the session activity trail. Pinned by `scripts/activity-classify-test.cjs`.
 ### Documented
 - **`docs/insights-revisit.md` Step 5 gains its top-ranked candidate: "agent shape"** — a card naming
-  delegates that do not need to be agents. Carries the measured case (instawp, 7 days: $8,640 of
+  delegates that do not need to be agents. Carries the measured case (globex, 7 days: $8,640 of
   agent→agent spend vs $1,027 human-started; 815 tasks filed by agents, 3 by humans; one line-question
   → 19 sessions, $600), the skill / sub-agent / agent tier table, and the six signals the OS already
   stores to compute it. Records the two things that make it hard: three agents hand-classified from
@@ -3551,7 +3592,7 @@ new version heading in the same commit.
 - **Memory was reported as ~98% used on a box with plenty free — on every platform.** Both the new sidebar
   chip and the older Settings → System panel derived "used" from `os.freemem()`, which counts only pages
   free *right now*; both kernels deliberately spend spare RAM on reclaimable cache. The Mac Mini read
-  `freemem` 0.08 GB of 24 GB (**98%**) while `memory_pressure` put availability at 59%; instawp would read
+  `freemem` 0.08 GB of 24 GB (**98%**) while `memory_pressure` put availability at 59%; globex would read
   90% used where the kernel reports 46 of 62 GB *available* (26%). Now both read the kernel's own
   availability estimate from one place (`availableBytes()` in `host-metrics.ts`): `MemAvailable` on Linux,
   reclaimable `vm_stat` pages on macOS, cached 5s so open tabs can't exec per poll. The chip's tooltip
@@ -3561,7 +3602,7 @@ new version heading in the same commit.
 ### Added
 - **The audit MIRROR is now bounded — it used to grow with a tenant's whole lifetime.** `audit_events` in
   SQLite is a queryable copy; `JsonlAuditSink` is the append-only system of record (verified on the live
-  box: 4498 per-run files, 211 MB, full payloads). The copy had no age or size bound, so on instawp it
+  box: 4498 per-run files, 211 MB, full payloads). The copy had no age or size bound, so on globex it
   reached **337k rows / 195 MB of a 336 MB DB in 45 days** at ~3 MB/day, entirely open-ended. Two bounds,
   neither of which touches the JSONL:
   - **Retention** (`Settings.auditRetentionDays`, default **90 days**, `0` = keep everything) swept hourly
@@ -3589,7 +3630,7 @@ new version heading in the same commit.
   tenant's task history.** `Automations.dispatchTasks` built its per-agent pile-up guard by calling
   `tm.reachable()` once per row of `spawned_by LIKE 'task:%' AND status IN ('running','done')`, and each
   `reachable()` fork+exec'd `tmux list-sessions`. `done` rows are never deleted, so the loop only ever
-  grew: instawp reached **924 rows (918 long-finished) → ~900 tmux spawns per tick**. tmux itself answered
+  grew: globex reached **924 rows (918 long-finished) → ~900 tmux spawns per tick**. tmux itself answered
   in ~0ms each; the cost was 900 fork+execs on a single-threaded server. Measured on the live box:
   `GET /health` — a route that only reads a version string — ran p50 **0.6ms**, max **9.06s**, with 7.3s
   stalls landing on every :00/:20/:40 boundary. Every governed effect (a gate check, a task write, an MCP
@@ -3621,14 +3662,14 @@ new version heading in the same commit.
   costs a whole governed session.** Some delegates are separate for a reason a sub-agent already
   satisfies: a reviewer, a critic, a second opinion needs its own context and must not see the caller's
   reasoning — and a sub-agent has exactly that, in-process, with no launch, MCP boot, CLAUDE.md reload or
-  tmux pane. Live evidence: instawp's `code-reviewer` is documented in engineer's *own* prompt as
+  tmux pane. Live evidence: globex's `code-reviewer` is documented in engineer's *own* prompt as
   `Agent(subagent_type: code-reviewer)` and **still took 12 task hand-offs in 7 days → 8 sessions, $111**,
   for reviews the sub-agent path performs for a fraction of that. Setting `subagentOnly: true` makes the
   agent lane (`POST /api/tasks/create`) refuse a task hand-off and name the cheap path instead; audited
   `task.subagent_only.refused`. Readable/settable via `GET`/`PATCH /api/agents/:id`.
 - The flag is **deliberately narrow**, and the doc says when NOT to use it: not for a delegate that needs
   its own credentials (a sub-agent runs under the caller's principal and budget), that runs long or on
-  shared infrastructure (it would hold the caller's turn open — instawp's `qa` averages 20 min
+  shared infrastructure (it would hold the caller's turn open — globex's `qa` averages 20 min
   provisioning sandboxes and contending for a devX lock), that must outlive the caller's turn, or that
   must observe work independently over time. Fresh context must be the *only* thing the split buys.
 - Human dispatch from the console is unaffected — a person choosing to run a session is a considered act,
@@ -3639,7 +3680,7 @@ new version heading in the same commit.
 - **An agent can no longer auto-dispatch a task to itself.** `task_create({ assignee:'me',
   autoDispatch:true })` is not delegation — it ends the agent's turn and immediately respawns it with an
   empty context to do work the session it just left was still holding the context for. Measured on the
-  live instawp fleet over 7 days: **104 such tasks, 70 of them dispatched within 2 minutes of being
+  live globex fleet over 7 days: **104 such tasks, 70 of them dispatched within 2 minutes of being
   filed, $1,330** of sessions rebuilding a context their own caller already had. The route now refuses at
   CREATE (so the agent learns inside the turn that can still act on it), writes nothing, and names the
   three real alternatives: do it now, `schedule` it for genuinely later, or file it `autoDispatch:false`
@@ -3654,7 +3695,7 @@ new version heading in the same commit.
 ### Added
 - **`unless` — a webhook filter can now reject a *conjunction*.** v0.358.0 gave `filter` a `when` clause,
   but `when` can only negate one property at a time, and what you actually need to drop is usually a
-  combination. Measured on 100 classifiable FreeScout deliveries (one week, instawp), keyed by the
+  combination. Measured on 100 classifiable FreeScout deliveries (one week, globex), keyed by the
   triggering thread's type + source: `customer api/customer` 0 exits / 26 real, `note web/user` 3 / 20,
   `customer email/customer` 10 / 10, **`note api/user` 15 / 0**, **`message api/user` 3 / 0**. The echo is
   the last two — the agent's own note posted over the API. `source.type != "api"` alone would have killed
@@ -3667,7 +3708,7 @@ new version heading in the same commit.
 - Two ways a payload predicate looks obviously right and is wrong, both hit while building this: the same
   field name at conversation level vs. triggering-thread level means different things (`source.type` is
   `api` for genuine customer submissions too), and `state != "deleted"` drops real work because agents
-  legitimately work merged-away conversations. Plus **shared identities**: instawp's agent posts through
+  legitimately work merged-away conversations. Plus **shared identities**: globex's agent posts through
   the owner's FreeScout token, so `createdBy.id` is the owner's own user for both the echo and anything
   the owner types by hand — filtering on it would have silenced the owner.
 
@@ -3678,7 +3719,7 @@ new version heading in the same commit.
   case-insensitive). The defect it closes: an event-name filter cannot express the **echo**, which is the
   dominant cost on a real hook. The agent posts a note on a ticket → the source emits
   `convo.note.created` → the automation fires → a whole session spawns, reads the thread, finds the note
-  was *its own*, and exits. Measured on instawp's live FreeScout hook over 7 days: **93 of 177 runs (53%)
+  was *its own*, and exits. Measured on globex's live FreeScout hook over 7 days: **93 of 177 runs (53%)
   did no work at all**, **79 of them triggered by the agent's own note**, $224 spent to produce nothing.
   A gate written into the agent's *prompt* cannot fix this — it runs after the spawn it was meant to
   prevent, so it can shorten a session but never avoid one. The decision had to move to the ingress.
@@ -3750,8 +3791,8 @@ new version heading in the same commit.
 - **Removing a runtime account from the console made its name unusable again.** `DELETE
   /api/runtime-accounts/…` drops the row but (rightly) leaves the credential dir on disk, so the next
   guided login for the same name hit the "already holds a login" guard and there was no way out of the
-  console — the operator had to ssh to the box and delete a directory. Hit live on instawp re-adding its
-  `instawp` claude account. The guard now distinguishes the two cases: a dir an account in the pool still
+  console — the operator had to ssh to the box and delete a directory. Hit live on globex re-adding its
+  `globex` claude account. The guard now distinguishes the two cases: a dir an account in the pool still
   points at is refused **by that account's name** (removing it, or choosing another name, is the fix),
   while an **orphaned** dir — no account references it — is moved aside to `<dir>.orphan-<ts>` and the
   login continues into a clean dir. Moved, never deleted: the dir also holds the transcripts of the runs
@@ -3783,7 +3824,7 @@ new version heading in the same commit.
   `terminal/claude-launch.sh` had learned that split; the interactive lane dropped `$TASK`
   unconditionally. So a task re-dispatch with `mode: interactive` resumed the transcript and opened the TUI
   on an **empty composer** — the "you are RESUMING … continue and finish it" prompt was never delivered.
-  Found on instapods 2026-08-17 (`fleet-janitor`, `tsk_5aa0fd20887a2d79`): a healthy claude parked at `❯ `
+  Found on northwind 2026-08-17 (`fleet-janitor`, `tsk_5aa0fd20887a2d79`): a healthy claude parked at `❯ `
   behind a session the console insisted was working.
 - **A launch that never became a turn stops reading as "working".** `createSession` stamps
   `busy_since = created_at` because a launch normally seeds a prompt — but that is a *prediction*, and the
@@ -4029,7 +4070,7 @@ new version heading in the same commit.
 ### Fixed
 - **Claiming a session made it immortal.** The idle-interactive reaper skipped `claimed_by IS NOT NULL`
   rows unconditionally — "a human owns that lifecycle" — but nothing ever expires a claim, so anyone who
-  hit "take over" and then closed the tab left a pane running forever. Live instawp: seven sessions
+  hit "take over" and then closed the tab left a pane running forever. Live globex: seven sessions
   claimed by one member, idle **143–168 h**, skipped by the 72 h reaper every tick for a week. Together
   with their peers they filled the concurrency cap and starved every scheduled run on the tenant for a
   month (see v0.344.0, the other half of the same outage).
@@ -4184,7 +4225,7 @@ new version heading in the same commit.
 
 ### Changed
 - **The sessions list gave two fixed columns to data that mostly isn't there, and the title paid.** On
-  instawp only 41% of sessions record a cost and 41% a duration (32% for task-spawned runs), so `Took`
+  globex only 41% of sessions record a cost and 41% a duration (32% for task-spawned runs), so `Took`
   and `Cost` were `—` on most rows while every session title truncated. `Agent` moved into the title
   cell as a chip (it's short and low-variance, and the chain strip only ever named the *children*, so the
   root's own agent was the one thing a chained row didn't say); `Took` merged into the metrics cell as
@@ -4264,7 +4305,7 @@ new version heading in the same commit.
   condition `needsRefresh` deliberately doesn't distinguish, since a merely-stale token is still usable),
   leaving the env unset exactly as `injectShellSecrets` does for an unresolved key so both tools fall back
   cleanly; the refresh still fires so the next launch is whole. Audited `github.token.expired` /
-  `github.bot_token.expired`. On the live instapods tenant this fired on ~10% of launches
+  `github.bot_token.expired`. On the live northwind tenant this fired on ~10% of launches
   (54 `github.token.stale` events against 554 injections). Note this does NOT rescue a session whose token
   dies *mid-run* — env can't be mutated from outside the process, so a run outliving its token (60 of 611
   in the last 30 days) still needs the `github_refresh` tool.
@@ -4348,7 +4389,7 @@ new version heading in the same commit.
   unless the agent launched a subagent, a forked skill (`/code-review …`), or a `run_in_background`
   command and handed the turn back to be woken when that finishes. Claude Code does wake it, but the
   pane was already gone: the run and its children died mid-work and it never reached `report`. Live
-  case (instapods `ses_11dd20920d30aae4`, $12.34): PR pushed, review forked, "I'll fold in whatever it
+  case (northwind `ses_11dd20920d30aae4`, $12.34): PR pushed, review forked, "I'll fold in whatever it
   finds before closing the task out", reaped 300ms later — the review killed with it, the task left
   `doing` for ten minutes until the stranded sweep poked the caller, which cost another $18.99 to work
   out what had happened. 49 unattended runs were reaped at turn-end with no report in the preceding 14

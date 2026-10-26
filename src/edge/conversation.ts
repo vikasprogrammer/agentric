@@ -51,7 +51,7 @@ export interface ChatAppRef {
 
 /** One entry in the human-readable timeline. */
 export type ChatTurn =
-  | { kind: 'user'; text: string; ts: number }
+  | { kind: 'user'; text: string; ts: number; /** who sent it, when attributed (TerminalManager.attributeTurn) */ speaker?: string }
   | { kind: 'assistant'; text: string; ts: number }
   | {
       kind: 'activity';

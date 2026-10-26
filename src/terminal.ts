@@ -25,6 +25,7 @@ import { exclusionFor } from './connectors/composio-claims';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, RuntimeAccountKind, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets, commandText } from './governance/enricher';
 import { detectPastedCredential, credentialHoldMessage } from './governance/prompt-secrets';
+import { sessionModeDecision, sessionModeNotice, isSessionMode, type SessionMode } from './governance/session-mode';
 import { readExecutedScripts, freshSince, type ScriptBody } from './governance/script-bodies';
 import { protectedReadDecision } from './governance/protected-read';
 import { isolateClaudeConfig } from './edge/config-isolation';
@@ -268,6 +269,27 @@ You can edit your OWN definition, so keep it current instead of repeating the sa
 - Links aren't clickable in this terminal: always print any URL the user must open or copy
   (OAuth/connect links etc.) in full as plain text, not only as a markdown label.`;
 
+/** The `/handoff` slash command every claude-code agent gets (see TerminalManager.handoffSession). */
+const HANDOFF_COMMAND = `---
+description: Hand this work off to a fresh session (frees context, keeps the thread)
+---
+This conversation is getting long. Hand the work off to a fresh session instead of continuing here:
+
+1. Write a handoff note that someone who has NOT read this conversation could act on straight away:
+   - the goal, and who it is for;
+   - where things stand right now;
+   - what is DONE, with exact references (PR and issue links, branches, commits, file paths, ticket and
+     task ids, URLs);
+   - decisions made and why, and anything that was tried and failed;
+   - open questions and anything you are unsure of;
+   - the exact next steps, in order.
+   Bullet points, complete but no padding.
+2. Call the \`handoff\` tool with that note (and a short title if the work has a natural name).
+3. Tell the person the new session's link, then stop working on this task here.
+
+$ARGUMENTS
+`;
+
 /** Whitespace-collapsed, for comparing a submitted prompt with text the server delivered. */
 function normalizePromptText(t: string): string {
   return String(t ?? '').replace(/\s+/g, ' ').trim();
@@ -397,6 +419,8 @@ export interface Session {
    *  server-side (a pending question OR approval for this run) so the console doesn't re-derive it from the
    *  message feed. Only meaningful for a live run (`status === 'running'`). Drives the "blocked" list
    *  filter and the sidebar/overview "waiting on you" treatment. */
+  /** A person's working restriction on this run (governance/session-mode.ts); absent = normal. */
+  mode?: 'draft' | 'readonly';
   blocked?: boolean;
   /** The member id this session ACTS AS (run_as) — distinct from `spawnedBy` provenance. A task- or
    *  chat-triggered run is spawned by `task:`/`automation:` but runs as (and is owned by) a member,
@@ -661,6 +685,7 @@ interface SessionRow {
   output_style: string | null;
   blocked_ms: number | null;
   artifacts: number | null;
+  mode?: string | null;
 }
 interface MessageRow {
   id: string;
@@ -739,7 +764,7 @@ export function parseApprovalIntent(text: string): 'approve' | 'deny' | null {
  *  approvers. Without it a blocking `ask` sits unseen in the console until it times out. */
 /**
  * A choice list rendered for a chat DM: numbered, one per line. An agent's option text OFTEN already
- * carries its own number ("1. Fix disclosure + copy") — live on instapods 2026-09-16 — so a naive prefix
+ * carries its own number ("1. Fix disclosure + copy") — live on northwind 2026-09-16 — so a naive prefix
  * yields "1. 1. Fix …". Strip any leading ordinal before numbering, so the list reads the same whether or
  * not the agent numbered it, and the numbers always match what {@link resolveOptionReply} accepts.
  */
@@ -1443,7 +1468,7 @@ export class TerminalManager {
         //    yet", so retry on a later poll;
         //  - the transcript is never coming. Either it was pruned since (the row is ALREADY priced and
         //    we were only after its shape) or it was never written at all — a run that crashed before
-        //    claude opened one, which on the live instawp tenant is 25 rows of dead `consolidator` /
+        //    claude opened one, which on the live globex tenant is 25 rows of dead `consolidator` /
         //    `qa` sessions, every one of them `cost_usd IS NULL`.
         //
         // The second case used to be handled ONLY when `cost_usd != null`, so those 25 rows re-probed
@@ -3135,6 +3160,23 @@ export class TerminalManager {
   get consoleOrigin(): string { return this.publicOrigin; }
 
   createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning, clickup?: { taskId: string; commentId: string }, telegram?: { chat: string; messageThreadId?: string; messageId: string }): Session {
+    // ONE claude per conversation. A resume of a transcript that a live pane already holds would start a
+    // SECOND claude writing the same transcript in the same folder — the session clash. Every lane that
+    // used to make that decision locally (pokes, chat follow-ups) had grown its own guard; the one that
+    // hadn't was the agent's own `schedule`: on northwind a drain loop's self-scheduled checks fired 16
+    // resumes into a conversation whose interactive session was still open, and the agent took to writing
+    // "00-READ-ME-TWO-SESSIONS.txt" and asking itself to `ps aux | grep 'claude --resume'` before acting.
+    // So the guard lives here, where every resume passes: type the request into the live pane instead
+    // (claude queues it if a turn is mid-flight) and hand back THAT session.
+    if (resumeClaudeId) {
+      const holder = this.liveHolderOf(resumeClaudeId);
+      if (holder) {
+        const typed = this.injectToSession(holder.id, task, true, spawnedBy ?? 'system');
+        this.audit(holder.id, agent, typed.ok ? 'session.resume.redirected' : 'session.resume.clash', { transcript: resumeClaudeId, spawnedBy: spawnedBy ?? null, title, ...(typed.ok ? {} : { error: typed.error }) });
+        const row = typed.ok ? this.db.prepare('SELECT * FROM term_sessions WHERE id = ?').get<SessionRow>(holder.id) : undefined;
+        if (row) return toSession(row);
+      }
+    }
     const id = newId('session');
     const tmux = `aos-${id}`;
     // The conversation this run drives. A thread follow-up passes the PRIOR run's id so the launcher
@@ -3311,7 +3353,7 @@ export class TerminalManager {
    * Mirror {@link launching} onto disk for the ttyd attach wrapper. attach.sh runs in its own process
    * and can't see this Set, so before it existed the wrapper guessed the launch window with a fixed
    * ~3s timer — which is a guess about how fast the box is, and on a loaded host it loses: at load 76
-   * an instawp spawn took 13.3s, the guess expired, and the user got tmux's raw "can't find session"
+   * an globex spawn took 13.3s, the guess expired, and the user got tmux's raw "can't find session"
    * for a run that went on to succeed. With the marker the wrapper waits exactly as long as a launch
    * is actually in flight. Cleared in the launch's `finally` (so a FAILED launch releases it too) and
    * swept at boot by {@link sweepLaunchMarkers}, so the only way to orphan one is `kill -9` mid-launch
@@ -3375,6 +3417,9 @@ export class TerminalManager {
     // Custom output styles are the same filesystem convention (`.claude/output-styles/`), and only the
     // SELECTED one applies — so the whole library is synced and no per-agent allowlist is needed.
     if (caps.outputStyle) this.materializeOutputStyles(o.id, o.agent, manifest.dir);
+    // `/handoff` — the person's way to move a long conversation into a fresh session (see handoffSession).
+    // Same filesystem convention as skills (`.claude/commands/<name>.md`), so claude-code only.
+    if (caps.nativeSkills) this.materializeHandoffCommand(manifest.dir);
     if (caps.nativeSubagents) this.materializeSubagents(o.id, o.agent, manifest);
     // Unattended (automation/cron/task) runs are now an attachable interactive TUI, not `claude -p` — so a
     // human can take one over mid-run by simply attaching (no kill, no resume). The launcher's UNATTENDED
@@ -3472,12 +3517,15 @@ export class TerminalManager {
     // Per-member git: if THIS run's run-as human has linked their own GitHub account, their token
     // OVERRIDES the bot/agent GH_TOKEN — so git push / gh pr are authored as the actual person.
     const asMember = this.injectMemberGithub(env, o.agent, o.actingMember, o.id);
+    // …and keep it CURRENT for the life of the run: `gh` and `git` fetch the member's token from the server
+    // on each call instead of trusting the copy baked into the env at launch (see installLiveGithub).
+    const liveGithub = this.installLiveGithub(env, o.agent, o.actingMember, o.id);
     // Whatever set GH_TOKEN above (member token or agent bot), teach plain `git` to use it too — `gh`
     // reads GH_TOKEN natively but `git push` over HTTPS does not, so without this only half the toolchain
     // authenticates. A github.com-scoped credential helper closes that gap. On a bot run whose App spans
     // several orgs the helper also resolves per REPO, since one bot token only covers one org — but never
     // on a member run, where doing so would re-author that human's commits as the bot.
-    this.configureGitCredentials(env, { multiOrg: !asMember && !!env.AOS_GH_ORGS });
+    this.configureGitCredentials(env, { multiOrg: !asMember && !liveGithub && !!env.AOS_GH_ORGS, live: liveGithub });
     // Phase 2c: granted Host connections' SSH keys → a session ssh_config + ssh/scp PATH shim, so the
     // agent's plain `ssh` authenticates to a host without ever handling the key. (Local-lane only.)
     this.injectHostCredentials(env, o.agent, o.actingMember, o.id);
@@ -3525,7 +3573,7 @@ export class TerminalManager {
       // which quietly made `resumable` ("this id has an env file") double as "this run is attended" — so a
       // headless run taken over while its pane was STILL LIVE stayed non-resumable forever: `claimSession`
       // relaunches nothing, so nothing ever wrote the env, and the console's Reload / Reload-on-another-
-      // account items were permanently hidden for it (live instawp run, 2026-08-27). The two lanes are told
+      // account items were permanently hidden for it (live globex run, 2026-08-27). The two lanes are told
       // apart by the `headless` COLUMN now, never by the presence of this file. Safe on the teardown side:
       // `teardownUnattended` → `markEnded` → `blockResume` drops the stay-stopped sentinel, so a reaped
       // unattended run can't be resurrected behind our back by ttyd's silent auto-reconnect.
@@ -4168,7 +4216,7 @@ export class TerminalManager {
       const claimedCutoff = claimedHours > 0 ? Date.now() - claimedHours * 3600_000 : null;
       // LIFETIME CEILING. Every clock above measures IDLENESS, and `markTurnBusy` stamps `last_activity`
       // on every tool call — so a session whose agent still works never goes idle, however old it gets,
-      // and none of them can ever see it. Live instawp after the wake-queue fix: 15 interactive sessions
+      // and none of them can ever see it. Live globex after the wake-queue fix: 15 interactive sessions
       // `running` at 1007 h / 266 h / 263 h / 166 h / 120 h, every one reporting 18–24 h idle, skipped on
       // every tick. Age answers what idleness cannot. See `interactiveMaxHours`.
       const lifetimeHours = this.os.settings.interactiveMaxHours();
@@ -4220,7 +4268,7 @@ export class TerminalManager {
           // `markEnded` (normal end, and `teardownUnattended` through it), `markCrashed`, and
           // `stopSession` (the human kill button) — but this janitor did its own teardown and skipped it,
           // so an abandoned interactive session evaporated. Measured over 30 days: 3 of 29 reaped
-          // sessions on instapods and 18 of 136 on instawp had an episode, and those came from a `report`
+          // sessions on northwind and 18 of 136 on globex had an episode, and those came from a `report`
           // earlier in the run, not from the reap.
           //
           // The point is NOT recall value — these take the audit branch (no `report` was ever filed), so
@@ -4334,6 +4382,75 @@ export class TerminalManager {
     this.teardownUnattended(sessionId, space, r.tmux, 'turn-end');
   }
 
+  /** Who is about to send the next human turn into a conversation: the console's terminal beacon (Enter),
+   *  the chat composer and the inject box record it here, keyed by CONVERSATION so a composer reply that
+   *  resumes into a new run is still attributed. In memory: it only has to survive until the turn starts. */
+  private typers = new Map<string, { memberId: string; via: 'terminal' | 'composer' | 'inject'; at: number }>();
+  private static readonly TYPER_WINDOW_MS = 2 * 60_000;
+
+  private conversationKey(sessionId: string): string {
+    return this.db.prepare('SELECT claude_session_id FROM term_sessions WHERE id = ?').get<{ claude_session_id: string | null }>(sessionId)?.claude_session_id || sessionId;
+  }
+
+  /** A member is sending into this session (see `typers`). Callers have already checked they may operate it. */
+  noteTyper(sessionId: string, memberId: string, via: 'terminal' | 'composer' | 'inject'): void {
+    this.typers.set(this.conversationKey(sessionId), { memberId, via, at: Date.now() });
+  }
+
+  /**
+   * Attribute a turn that is starting to the person who sent it, and decide what the agent should be told.
+   * Several people can drive one session — mining found members telling agents "post as me, not as
+   * <teammate>" and "which account will you use?" in 14 sessions — and the run-as identity fixed at launch
+   * can't say who is speaking NOW. So each human turn is attributed (audited `turn.speaker`, persisted as
+   * the session's `speaker`), and when the speaker isn't the run-as member, or changed since the last
+   * turn, the agent gets one line of context naming who it is acting for. Returns that line, or null.
+   * Text the server delivered with no person behind it (a poke, an answer) attributes nothing.
+   */
+  attributeTurn(sessionId: string, prompt: string): string | null {
+    try {
+      const key = this.conversationKey(sessionId);
+      const t = this.typers.get(key);
+      const fresh = t && Date.now() - t.at < TerminalManager.TYPER_WINDOW_MS ? t : undefined;
+      if (!fresh) return null;              // server-delivered or unattributable: leave the speaker as it was
+      // A terminal Enter followed by text the SERVER typed (a poke landing a moment later) is the poke, not
+      // the person. Composer/inject text IS server-typed — on that person's behalf — so it attributes.
+      if (fresh.via === 'terminal' && this.isServerText(sessionId, prompt)) return null;
+      this.typers.delete(key);
+      const row = this.db.prepare('SELECT run_as, speaker, agent FROM term_sessions WHERE id = ?').get<{ run_as: string | null; speaker: string | null; agent: string }>(sessionId);
+      if (!row) return null;
+      const m = this.os.team.getMember(fresh.memberId);
+      if (!m) return null;
+      const prev = this.db.prepare("SELECT speaker FROM term_sessions WHERE claude_session_id = ? AND speaker IS NOT NULL ORDER BY updated_at DESC LIMIT 1").get<{ speaker: string }>(key)?.speaker ?? row.speaker;
+      this.db.prepare('UPDATE term_sessions SET speaker = ? WHERE id = ?').run(m.id, sessionId);
+      this.audit(sessionId, m.email, 'turn.speaker', { member: m.id, email: m.email, via: fresh.via, runAs: row.run_as });
+      const runAs = row.run_as ? this.os.team.getMember(row.run_as) : undefined;
+      if (m.id === row.run_as && (!prev || prev === m.id)) return null;
+      const who = `${m.name || m.email} (${m.email}, ${m.role})`;
+      const base = runAs && runAs.id !== m.id ? ` This session was started as ${runAs.name || runAs.email}.` : '';
+      return `[Agentric] This message is from ${who}.${base} Act for ${m.name || m.email} on this turn: anything you post, comment, send or commit on their behalf should go out as them — \`gh\`/\`git\` already use their GitHub account when they have linked one; for any other app, say which account you will use before posting.`;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Name each user turn in a conversation with the person who sent it, from the `turn.speaker` audit of
+   *  every run of the same transcript (matched to the turn's own timestamp). Mutates `turns`. */
+  labelSpeakers(sessionId: string, turns: Array<{ kind: string; ts: number; speaker?: string }>): void {
+    const key = this.conversationKey(sessionId);
+    const ids = this.db.prepare('SELECT id FROM term_sessions WHERE claude_session_id = ? OR id = ?').all<{ id: string }>(key, sessionId).map((r) => r.id);
+    if (!ids.length) return;
+    const marks = this.db.prepare(`SELECT ts, data FROM audit_events WHERE type = 'turn.speaker' AND run_id IN (${ids.map(() => '?').join(',')}) ORDER BY ts`).all<{ ts: number; data: string }>(...ids)
+      .map((r) => { try { const d = JSON.parse(r.data) as { member?: string }; const m = d.member ? this.os.team.getMember(d.member) : undefined; return m ? { ts: r.ts, name: m.name || m.email } : null; } catch { return null; } })
+      .filter((x): x is { ts: number; name: string } => !!x);
+    if (!marks.length) return;
+    for (const t of turns) {
+      if (t.kind !== 'user') continue;
+      // The audit row is written as the turn starts; the transcript stamps the same moment (± a few s).
+      const hit = marks.find((m) => Math.abs(m.ts - t.ts) < 30_000);
+      if (hit) t.speaker = hit.name;
+    }
+  }
+
   /** Text the SERVER put in front of a session's runtime — the opening task and every pane injection
    *  (chat follow-ups, pokes, answers, `/reload-skills`, an attached file's path) — kept briefly so the
    *  UserPromptSubmit hook can tell those apart from what a human typed. Bounded per session and by age;
@@ -4384,6 +4501,116 @@ export class TerminalManager {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * HAND OFF a long conversation to a fresh session. People had invented this by hand — "write a summary
+   * file so I can compact", then "read file …/tmp-session-summary.md and continue" — in 22 sessions across
+   * 7 members in a month, because a compacted context loses detail and a cleared one loses everything. Here
+   * the agent writes the note (it has the context) via `/handoff` → the `handoff` tool, and the OS opens a
+   * NEW session for the same agent, acting as the same person, seeded with that note plus the original
+   * request and a link back. The old session is left as it is; the console shows where the work went.
+   * Carries the parent's working mode. Audited `session.handoff` on both runs.
+   */
+  handoffSession(parentId: string, note: string, opts: { title?: string; by: string }): { ok: boolean; sessionId?: string; url?: string; error?: string } {
+    const p = this.db.prepare('SELECT * FROM term_sessions WHERE id = ?').get<SessionRow>(parentId);
+    if (!p) return { ok: false, error: 'unknown session' };
+    const body = String(note ?? '').trim();
+    if (body.length < 40) return { ok: false, error: 'the handoff note is too short — write the goal, current state, what is done (with links), decisions, and the exact next steps' };
+    const parentUrl = this.sessionUrl(parentId);
+    const original = (p.task || '').trim();
+    const task =
+      `You are picking up work handed off from an earlier session that had grown long: ${parentUrl}\n` +
+      'Its own handoff note is below. Treat it as the current state: do not redo finished work, and verify ' +
+      'anything the note marks as uncertain before you act on it. If the person speaks to you here, they ' +
+      'are continuing the same piece of work.\n\n' +
+      `## Handoff note\n\n${body.slice(0, 20_000)}\n\n` +
+      (original ? `## The earlier session's original request\n\n${original.length > 2000 ? original.slice(0, 2000) + '…' : original}\n` : '');
+    const title = (opts.title?.trim() || `↪ ${p.title}`).slice(0, 120);
+    const child = this.createSession(p.agent, title, task, p.spawned_by ?? undefined, !!p.headless, undefined, undefined, p.run_as ?? undefined);
+    if (isSessionMode(p.mode) && p.mode !== 'normal') this.db.prepare('UPDATE term_sessions SET mode = ? WHERE id = ?').run(p.mode, child.id);
+    this.audit(parentId, opts.by, 'session.handoff', { from: parentId, to: child.id, chars: body.length });
+    this.audit(child.id, opts.by, 'session.handoff', { from: parentId, to: child.id, chars: body.length });
+    return { ok: true, sessionId: child.id, url: this.sessionUrl(child.id) };
+  }
+
+  /** Does this session's runtime have the `/handoff` slash command (claude-code — native `.claude/commands`)? */
+  supportsHandoffCommand(sessionId: string): boolean {
+    const agent = this.sessionAgent(sessionId);
+    const rt = agent ? this.os.agents.get(agent)?.runtime : undefined;
+    return CODING_RUNTIMES[isCodingRuntime(rt) ? rt : 'claude-code'].capabilities.nativeSkills;
+  }
+
+  /** The newest session this one was handed off to, if any. */
+  handoffChild(parentId: string): string | undefined {
+    const row = this.db.prepare("SELECT data FROM audit_events WHERE run_id = ? AND type = 'session.handoff' ORDER BY ts DESC LIMIT 5").all<{ data: string }>(parentId)
+      .map((r) => { try { return JSON.parse(r.data) as { from?: string; to?: string }; } catch { return {}; } })
+      .find((d) => d.from === parentId && d.to);
+    return row?.to;
+  }
+
+  /** Write `.claude/commands/handoff.md` into an agent folder. Idempotent; never fatal. */
+  private materializeHandoffCommand(agentDir: string): void {
+    try {
+      const dir = path.join(agentDir, '.claude', 'commands');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'handoff.md'), HANDOFF_COMMAND);
+    } catch { /* a missing slash command must never block a launch */ }
+  }
+
+  /**
+   * The work this conversation handed off and is waiting on — the console's "Waiting on" strip. A person
+   * driving an interactive session had no way to see that the agent had dispatched QA and was idle until
+   * it came back; globex's busiest member typed "did QA complete?" 75 times in a month. Open tasks whose
+   * caller is this conversation (every run of the same transcript), plus any that finished in the last ten
+   * minutes so the strip can say "came back". `working` = the delegate's run is live right now.
+   */
+  waitingOn(sessionId: string): Array<{ taskId: string; title: string; assignee: string | null; status: string; createdAt: number; updatedAt: number; working: boolean }> {
+    const cs = this.db.prepare('SELECT claude_session_id FROM term_sessions WHERE id = ?').get<{ claude_session_id: string | null }>(sessionId)?.claude_session_id;
+    if (!cs) return [];
+    const rows = this.db.prepare(
+      "SELECT id, title, assignee, status, created_at, updated_at, last_session_id FROM tasks WHERE caller_claude_id = ? AND (status IN ('todo','doing','blocked') OR (status IN ('done','cancelled') AND updated_at > ?)) ORDER BY created_at DESC LIMIT 12",
+    ).all<{ id: string; title: string; assignee: string | null; status: string; created_at: number; updated_at: number; last_session_id: string | null }>(cs, Date.now() - 10 * 60_000);
+    return rows.map((r) => ({
+      taskId: r.id, title: r.title, assignee: r.assignee, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at,
+      working: !!r.last_session_id && (r.status === 'doing' || r.status === 'todo') && this.reachable(r.last_session_id),
+    }));
+  }
+
+  /** A session's working mode (`normal` when unset). */
+  sessionMode(sessionId: string): SessionMode {
+    const m = this.db.prepare('SELECT mode FROM term_sessions WHERE id = ?').get<{ mode: string | null }>(sessionId)?.mode;
+    return isSessionMode(m) ? m : 'normal';
+  }
+
+  /**
+   * Set a session's working mode (draft-only / read-only / normal). Enforced at the gate from the next
+   * action on; a live agent is also TOLD, in its own pane, so it plans around the restriction instead of
+   * discovering it one denial at a time. Audited `session.mode.set`.
+   */
+  setSessionMode(sessionId: string, mode: SessionMode, by: { id: string; email: string; name?: string }): { ok: boolean; mode?: SessionMode; error?: string } {
+    if (!this.hasSession(sessionId)) return { ok: false, error: 'unknown session' };
+    const prev = this.sessionMode(sessionId);
+    this.db.prepare('UPDATE term_sessions SET mode = ? WHERE id = ?').run(mode === 'normal' ? null : mode, sessionId);
+    this.audit(sessionId, by.email, 'session.mode.set', { mode, prev });
+    if (prev !== mode && this.reachable(sessionId)) this.injectToSession(sessionId, sessionModeNotice(mode, by.name || by.email), true, by.email);
+    return { ok: true, mode };
+  }
+
+  /** The live session currently driving this claude transcript, if any — the newest reachable row bound
+   *  to it. `reachable` asks the PANE (see its doc), so a run that reported but still has its REPL counts. */
+  liveHolderOf(claudeSessionId: string): { id: string } | undefined {
+    const rows = this.db.prepare('SELECT id FROM term_sessions WHERE claude_session_id = ? ORDER BY created_at DESC LIMIT 10').all<{ id: string }>(claudeSessionId);
+    return rows.find((r) => this.reachable(r.id));
+  }
+
+  /** Is a person's terminal attached to this session's pane right now? Uses the backend's own client
+   *  check (tmux `list-clients`); `false` when unknown or the row is gone, so callers treat "can't tell"
+   *  as "nobody". */
+  humanAttached(sessionId: string): boolean {
+    const r = this.db.prepare('SELECT tmux, run_as, spawned_by FROM term_sessions WHERE id = ?').get<{ tmux: string; run_as: string | null; spawned_by: string | null }>(sessionId);
+    if (!r) return false;
+    try { return this.backend.hasClient(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux) === true; } catch { return false; }
   }
 
   /**
@@ -4630,7 +4857,7 @@ export class TerminalManager {
    *  But "closed" is not the same as "failed". A pool whose accounts are all at their rate limit is a
    *  capacity condition with a KNOWN reset time, and the box default we then fall through to is, on most
    *  boxes, a login nobody has used since install. Crashing there reports an outage that is really a
-   *  queue: live instawp, 2026-09-17 — 21 of its last 22 `crashed` sessions were this, each card telling
+   *  queue: live globex, 2026-09-17 — 21 of its last 22 `crashed` sessions were this, each card telling
    *  an admin to re-login a credential that was not the problem, while the accounts that WERE the problem
    *  reset themselves within the hour. So a temporary exhaustion parks the run instead (see
    *  {@link queueForCapacity}); only a credential that no clock will fix still crashes. */
@@ -4695,7 +4922,7 @@ export class TerminalManager {
 
   /** How a dead credential reads in one clause. `expiresAt: 0` is not a date — it is what a record with no
    *  token in it stores, and rendering it as one produced "expired on 1970-01-01 00:00 UTC" on every card
-   *  the instawp box raised, which sends an admin looking for an expiry event that never happened. */
+   *  the globex box raised, which sends an admin looking for an expiry event that never happened. */
   private static expiryPhrase(expiredAt: number, dir: string): string {
     return expiredAt > 0
       ? `the login in ${dir} expired on ${new Date(expiredAt).toISOString().slice(0, 16).replace('T', ' ')} UTC and has no refresh token left`
@@ -4725,7 +4952,7 @@ export class TerminalManager {
 
   /** Tell a human, once per cooldown. This is the half the 2026-09-01 incident was missing: the refusal
    *  above makes each run honest, but nothing about a crashed session reaches someone who is not looking.
-   *  The 2026-09-09 instawp outage was the same gap with a different cause — 14 hours of $0 runs on a box
+   *  The 2026-09-09 globex outage was the same gap with a different cause — 14 hours of $0 runs on a box
    *  whose default login had simply expired — so both blocking reasons alert through here. */
   private alertCredentialsBlocked(runtime: CodingRuntimeId, b: CredentialBlock): void {
     const now = Date.now();
@@ -4884,7 +5111,7 @@ export class TerminalManager {
           this.audit(sessionId, agent, 'runtime.account.unusable', { runtime, resident, kinds: CODING_RUNTIMES[runtime].liveCredentialKinds, reason: 'no enabled account of a kind this runtime can launch with — using the box default' });
         } else {
           // The other way a configured pool hands back nothing: every account in it is parked or disabled
-          // right now. Previously silent, which is how instawp spent 14 hours quietly launching onto a box
+          // right now. Previously silent, which is how globex spent 14 hours quietly launching onto a box
           // default nobody had checked. The pre-flight refuses the run when that default is dead; this line
           // says WHY rotation had nothing to offer, which is the question an operator asks next.
           const all = this.os.runtimeAccounts.allLimited(runtime);
@@ -4905,7 +5132,7 @@ export class TerminalManager {
   /**
    * `pick()`, minus any credential-dir account whose login is DEAD — expired with no refresh token left.
    *
-   * Why this exists — instapods, 2026-09-26 → 10-02: the `tools2-new` account's refresh token expired and
+   * Why this exists — northwind, 2026-09-26 → 10-02: the `tools2-new` account's refresh token expired and
    * Claude Code wiped the Keychain record down to `expiresAt: 0`. Nothing took the account out of rotation:
    * `pick()` only knows `enabled` and `status`, and the launch pre-flight that DID see the dead login
    * refused the run rather than moving on. With two accounts handed out least-recently-used, every other
@@ -5009,7 +5236,7 @@ export class TerminalManager {
    *
    * It exists because that call used to run on `{...process.env}`, i.e. always the BOX DEFAULT account,
    * while every governed launch goes through {@link applyRuntimeAccount} and rotates off an exhausted
-   * one. On live instawp that split silently degraded the summarizer for three weeks: `runtime.usage_limited`
+   * one. On live globex that split silently degraded the summarizer for three weeks: `runtime.usage_limited`
    * ran 2026-07-30 → 08-15 and `runtime.account.limited` from 08-04, and across exactly that band 43 of
    * 97 `session.summarized` events came back `via:'fallback'` — sessions kept working on rotated
    * accounts while the summarizer kept calling the limited default and quietly returned the
@@ -5097,7 +5324,7 @@ export class TerminalManager {
         const end = claudeId ? readTranscriptEnd(claudeId, (id) => findTranscript(id, { preferRoot: acctDir })) : undefined;
         // Only evidence written DURING this run describes this run. A copy left in another credential dir
         // by an earlier run of the same conversation is stale by definition, and acting on it is how a
-        // healthy account gets retired for someone else's failure (instawp, 2026-09-09).
+        // healthy account gets retired for someone else's failure (globex, 2026-09-09).
         if (end?.died && end.mtimeMs >= row.created_at) {
           // Hand the classifier the phrase it expects rather than re-deriving here, so the two sources
           // can never disagree about what counts as a limit vs a bad token.
@@ -5136,7 +5363,7 @@ export class TerminalManager {
    * A run under this pool account ended on an auth banner. Park it, then ASK the account itself before
    * retiring it.
    *
-   * Disabling straight off the transcript is what took instawp down on 2026-09-09: the signal was a stale
+   * Disabling straight off the transcript is what took globex down on 2026-09-09: the signal was a stale
    * copy of the conversation from an earlier run under a different credential dir, the account was
    * perfectly valid (weekly 60% used), and disabling it emptied the pool onto a box default whose login
    * really had expired — 14 hours of $0 runs. `findTranscript`'s preferRoot fixes the misread; this fixes
@@ -5360,7 +5587,7 @@ export class TerminalManager {
    *
    * Ranked **against this session's task** when there is one. The first version of this ordered by
    * `importance DESC, last_recalled_at DESC` with no query at all — the same 8 memories on every launch
-   * regardless of the work. On live instapods that put "Never auto-send email as the marketing agent"
+   * regardless of the work. On live northwind that put "Never auto-send email as the marketing agent"
    * (importance 0.95, tenant-shared) at the top of the ENGINEER's prompt, and spent two of eight slots on
    * marketing copy rules; below the top ~70 rows the order was decided almost entirely by the tiebreaker,
    * since 893 memories share importance 0.8 and 912 share 0.7. A head start that ignores the task is a
@@ -5378,7 +5605,7 @@ export class TerminalManager {
    *
    * **Episodes are excluded.** An episode's text OPENS with the session's task line, so a task-shaped
    * query matches episodes better than it matches the lessons distilled from them — measuring 8 realistic
-   * agent/task pairs against the live instapods store, **44% of preamble slots (28/64)** came back as raw
+   * agent/task pairs against the live northwind store, **44% of preamble slots (28/64)** came back as raw
    * past task prompts, and one agent spent 4 of 8 slots on near-identical replays of the same daily sweep
    * while the reconciliation lesson it has been recalled on 185 times was crowded out. Task-ranking made
    * that bias systematic, so the retrieval has to correct for it. Episodes exist for Dreaming and the
@@ -5588,6 +5815,11 @@ export class TerminalManager {
             'use the shared bot token if one exists, else fail to authenticate). If this task needs to push ' +
             'code or open a PR, use `ask` to have an owner or admin set up the GitHub App in one click ' +
             `(**Connections → Creds → GitHub → Create GitHub App**), then ask **${who}** to connect their account.`;
+      } else if (this.os.paths && !this.uidIsolation) {
+        github = '# GitHub credentials stay current\n\n' +
+          '`gh` and `git` fetch your GitHub token fresh on every call, so a token that expired or was ' +
+          'refreshed by another session never breaks you. Never `export GH_TOKEN=<literal>` or paste a token ' +
+          'into a command — just run `gh`/`git`. `github_refresh` is only for a token that still fails.';
       }
     }
     // Multi-org git reach. The company App may be installed on SEVERAL orgs, but the token injected at
@@ -6413,6 +6645,13 @@ export class TerminalManager {
     if (rawCommand) {
       decision = stricterDecision(decision, protectedReadDecision(capability, rawCommand, agentDir, scriptBodies, this.os.paths?.home));
     }
+    // Session mode (governance/session-mode.ts): a person set this run to draft-only or read-only. Engine-
+    // level like the guards above, so it holds whatever the tenant's policy says.
+    const mode = this.sessionMode(sessionId);
+    if (mode !== 'normal') {
+      const writeTargets = Array.isArray(args.writeTargets) ? (args.writeTargets as unknown[]).filter((t): t is string => typeof t === 'string') : [];
+      decision = stricterDecision(decision, sessionModeDecision(mode, capability, typeof args.tool === 'string' ? args.tool : undefined, rawCommand, writeTargets));
+    }
     // The DECISION BRIEF — one human-legible account of this effect (docs/decision-brief-layer-plan.md).
     // Computed once here, next to classify(); it rides on the gate.decision audit row (making the audit
     // trail legible instead of a wall of {tool,input}) and, for a gated action, on the approval card.
@@ -6896,7 +7135,7 @@ export class TerminalManager {
    * needs is in the `ask_human` it raised, which carries the question AND its one-click options. Worse,
    * the two have different lifetimes: ending a run cancels its pending questions (rightly — nobody can
    * answer into a dead pane), so a run that asked, waited, gave up and parked the task left the human a
-   * DM saying "answer the Inbox question" about a card that had just been cancelled. (Live, instapods
+   * DM saying "answer the Inbox question" about a card that had just been cancelled. (Live, northwind
    * 2026-09-16: `tsk_cb76fa3da0309f38` — a well-formed four-option decision, dead two minutes after it
    * was sent.) Reading the question here makes the TASK carry the ask, and the task outlives the run.
    *
@@ -6991,7 +7230,7 @@ export class TerminalManager {
    * Record an agent's PROPOSED task on its session's review card — ONE `task.proposed` card per session,
    * grown as the run files more, never one card per task. The grouping is the point: a busy agent files
    * 5–30 follow-ups in one run, and a card each would rebuild exactly the inbox flood this lane exists to
-   * drain (instawp, 2026-08: ~31 cards a day on one human). A later filing re-marks the card unread so the
+   * drain (globex, 2026-08: ~31 cards a day on one human). A later filing re-marks the card unread so the
    * growth is noticed. Addressed to the run's accountable human (run-as), else the admin tier — the same
    * person a dispatched run of the task would act as. Quiet: no DM, because nothing is blocked on it.
    */
@@ -7212,7 +7451,7 @@ export class TerminalManager {
    *
    * AGGREGATED IN SQL, and scoped to the tasks the caller is actually rendering. The row-by-row version
    * read every `task.chat` message in the tenant with its FULL body to keep only the last one per task:
-   * on live instawp that was 6,879 rows / 12.6 MB materialised per poll, and it shipped **2.07 MB of the
+   * on live globex that was 6,879 rows / 12.6 MB materialised per poll, and it shipped **2.07 MB of the
    * 2.4 MB `/api/tasks` response** — rollups for 1,986 tasks when the board renders 500, each carrying an
    * unclipped body that the card renders as one `truncate`d line.
    *
@@ -7229,7 +7468,7 @@ export class TerminalManager {
     // Read a PREFIX rather than the whole body — the preview is one truncated line. `clipText` collapses
     // whitespace before it counts, and collapsing only ever shortens, so a 4× prefix is what makes the
     // clipped result identical to clipping the full body (it would take >3/4 of the prefix being runs of
-    // whitespace to differ). Verified byte-for-byte against the unclipped path on the live instawp board.
+    // whitespace to differ). Verified byte-for-byte against the unclipped path on the live globex board.
     const body = bodyClip && bodyClip > 0 ? `substr(m.body, 1, ${bodyClip * 4 + 16})` : 'm.body';
 
     const out: Record<string, TaskDiscussionSummary> = {};
@@ -7334,7 +7573,7 @@ export class TerminalManager {
    * that files a fix and an engineer that picks it up both leave runs on the same task, so a card could
    * name `engineer` while a completely different agent's session was the one live on it. Same two sources
    * as `taskRuns` (`task:<id>` provenance + `task_events.session_id`), folded per task in ONE pass rather
-   * than one query per card — measured on the instapods tenant that's ~660 rows for the whole board.
+   * than one query per card — measured on the northwind tenant that's ~660 rows for the whole board.
    *
    * Returns ONLY the multi-agent tasks: with one agent the assignee badge already tells the whole story,
    * so a per-task entry there would be payload that renders nothing.
@@ -10353,9 +10592,17 @@ export class TerminalManager {
    *
    * Written for bash 3.2 + BSD userland (macOS) — no GNU-isms, no arrays.
    */
-  private configureGitCredentials(env: Record<string, string>, opts: { multiOrg?: boolean } = {}): void {
-    if (!env.GH_TOKEN) return;
-    const plain = '!f() { test "$1" = get && printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; }; f';
+  private configureGitCredentials(env: Record<string, string>, opts: { multiOrg?: boolean; live?: boolean } = {}): void {
+    if (!env.GH_TOKEN && !opts.live) return;
+    // Member runs: ask the server for the CURRENT token on every git auth (the same call the `gh` shim
+    // makes), falling back to the launch-time $GH_TOKEN if the server can't answer.
+    const live =
+      '!f() { test "$1" = get || return 0; t=$GH_TOKEN; ' +
+      'if [ -n "$AOS_URL" ] && [ -n "$AOS_SECRET" ]; then ' +
+      'r=$(curl -s --max-time 5 -X POST "$AOS_URL/api/agent/github/token" -H "content-type: application/json" -H "x-aos-secret: $AOS_SECRET" -H "x-aos-tenant: $AOS_TENANT" -d "{\\"session\\":\\"$SESSION\\"}" 2>/dev/null); ' +
+      'case "$r" in *\'"token":"\'*) t=$(printf \'%s\' "$r" | sed -n \'s/.*"token":"\\([^"]*\\)".*/\\1/p\');; esac; fi; ' +
+      'test -n "$t" && printf \'username=x-access-token\\npassword=%s\\n\' "$t"; }; f';
+    const plain = opts.live ? live : '!f() { test "$1" = get && printf "username=x-access-token\\npassword=%s\\n" "$GH_TOKEN"; }; f';
     if (!opts.multiOrg) {
       env.GIT_CONFIG_COUNT = '2';
       env.GIT_CONFIG_KEY_0 = 'credential.https://github.com.helper';
@@ -10383,6 +10630,55 @@ export class TerminalManager {
     // per-org resolution above is dead code.
     env.GIT_CONFIG_KEY_2 = 'credential.https://github.com.useHttpPath';
     env.GIT_CONFIG_VALUE_2 = 'true';
+  }
+
+  /**
+   * Keep a member's GitHub token current for the whole run. The env copy injected at launch dies when the
+   * ~8 h token expires — and sooner when ANOTHER session of the same member refreshes it, because GitHub
+   * rotates on refresh: globex, 2026-10, an engineer run found its token dead because the QA run it had
+   * dispatched refreshed theirs, and declined to refresh back for fear of cutting QA off mid-run. So both
+   * halves of the toolchain now fetch the token at CALL time from `/api/agent/github/token` (which refreshes
+   * once, single-flight, when it's near expiry): a `gh` shim on PATH, and the git credential helper
+   * (`configureGitCredentials({ live })`). Any failure falls back to the launch-time `$GH_TOKEN`.
+   * Only for a run whose identity has a linked GitHub account; local lane only, like the ssh shim.
+   */
+  private installLiveGithub(env: Record<string, string>, agent: string, actingMember: string | undefined, sessionId: string): boolean {
+    if (!actingMember || !this.os.paths || this.uidIsolation) return false;
+    // The run-as member linked GitHub, or the workspace's App can link people (so a teammate who speaks in
+    // this session later may bring their own identity — see githubMemberFor).
+    const ghId = new GithubIdentity(this.os);
+    if (!ghId.load(actingMember) && !ghId.configured()) return false;
+    const binDir = path.join(this.os.paths.connectors, `session-${sessionId}.d`, 'bin');
+    try {
+      fs.mkdirSync(binDir, { recursive: true });
+      const real = this.resolveBin('gh');
+      fs.writeFileSync(path.join(binDir, 'gh'), [
+        '#!/bin/sh',
+        '# Agentric: run gh with the CURRENT GitHub token for this session, not the one from launch.',
+        'if [ -n "$AOS_URL" ] && [ -n "$AOS_SECRET" ]; then',
+        '  r=$(curl -s --max-time 5 -X POST "$AOS_URL/api/agent/github/token" -H "content-type: application/json" -H "x-aos-secret: $AOS_SECRET" -H "x-aos-tenant: $AOS_TENANT" -d "{\\"session\\":\\"$SESSION\\"}" 2>/dev/null)',
+        '  case "$r" in *\'"token":"\'*) t=$(printf \'%s\' "$r" | sed -n \'s/.*"token":"\\([^"]*\\)".*/\\1/p\'); [ -n "$t" ] && GH_TOKEN="$t" && GITHUB_TOKEN="$t" && export GH_TOKEN GITHUB_TOKEN;; esac',
+        'fi',
+        `exec ${real} "$@"`,
+        '',
+      ].join('\n'), { mode: 0o755 });
+    } catch {
+      return false;
+    }
+    if (!(env.PATH ?? '').split(path.delimiter).includes(binDir)) env.PATH = `${binDir}${path.delimiter}${env.PATH ?? process.env.PATH ?? ''}`;
+    env.AOS_SHIM_DIR = binDir;
+    this.audit(sessionId, agent, 'github.token.live', { principal: actingMember });
+    return true;
+  }
+
+  /** Which member's GitHub identity a session's `gh`/`git` should act as right now: the person who sent
+   *  the current turn when they have linked GitHub (a shared session acts for whoever is speaking), else
+   *  the run-as member. */
+  githubMemberFor(sessionId: string): string | undefined {
+    const r = this.db.prepare('SELECT run_as, speaker FROM term_sessions WHERE id = ?').get<{ run_as: string | null; speaker: string | null }>(sessionId);
+    if (!r) return undefined;
+    if (r.speaker && r.speaker !== r.run_as && new GithubIdentity(this.os).load(r.speaker)) return r.speaker;
+    return r.run_as ?? undefined;
   }
 
   /** Find the real `ssh`/`scp` on the PARENT PATH (which never includes a session shim dir), so the
@@ -10445,7 +10741,8 @@ export class TerminalManager {
     }
     // Prepend the shim dir so `ssh`/`scp` resolve to it (the launcher then prepends ~/.local/bin ahead,
     // which won't shadow ssh in practice). Off-lane leaves env.PATH unset → seed from the parent PATH.
-    env.PATH = `${binDir}${path.delimiter}${env.PATH ?? process.env.PATH ?? ''}`;
+    if (!(env.PATH ?? '').split(path.delimiter).includes(binDir)) env.PATH = `${binDir}${path.delimiter}${env.PATH ?? process.env.PATH ?? ''}`;
+    env.AOS_SHIM_DIR = binDir;
   }
 
   /** The JSON policy engine ignores ctx; provide a minimal stand-in to satisfy the type. */
@@ -10476,8 +10773,8 @@ const EPISODE_NOISE = new Set([
   'gate.attempt', 'gate.killswitch', 'approval.resolved',
   'approval.auto_approved', 'episode.stored', 'episode.error',
   // Launch plumbing — every run emits these before the agent has done anything at all, so on their own
-  // they described a session that did NOTHING. Live fleet proof: 72 stored episodes across instapods +
-  // instawp whose whole body was "Activity: 1 github.token.injected." ("Task: cred check - stop",
+  // they described a session that did NOTHING. Live fleet proof: 72 stored episodes across northwind +
+  // globex whose whole body was "Activity: 1 github.token.injected." ("Task: cred check - stop",
   // "Task: teste"). They were recalled 22 times between them, i.e. they displaced real lessons in a
   // top-k recall for nothing.
   'github.token.injected', 'github.bot_token.injected', 'github.token.refreshed', 'github.token.withheld',
@@ -10600,7 +10897,7 @@ export function isEpisodeRecord(r: { content?: string; tags?: string[] }): boole
  *    (pass 31, since 2026-07-01): 768 sessions, 43% success. Recurring topics: …". That is a statistic
  *    ABOUT the fleet, not knowledge FOR the work, and one is written per pass, so they accumulate.
  *
- * Measured on live tenants: the tenant-shared pool was **51 of 72 memories on instapods and 48 of 85 on
+ * Measured on live tenants: the tenant-shared pool was **51 of 72 memories on northwind and 48 of 85 on
  * instawp** — two thirds of everything shared across the fleet — and because shared memories reach every
  * agent, an agent thin on its own memories got a preamble that was **6 of 8 slots of fleet statistics**.
  * Observed directly: a zero-memory agent's launch preamble carried six pass summaries and nothing about
@@ -10660,7 +10957,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined, pausedAt: r.paused_at ?? undefined, pausedBy: r.paused_by ?? undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined, pausedAt: r.paused_at ?? undefined, pausedBy: r.paused_by ?? undefined, mode: r.mode === 'draft' || r.mode === 'readonly' ? r.mode : undefined };
 }
 
 /** One task on a `task.proposed` card. Title/assignee are snapshots from filing; status is hydrated live. */

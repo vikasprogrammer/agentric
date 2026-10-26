@@ -56,7 +56,8 @@ tm.backend.injectText = (_s, tmux, text) => { injected.push({ tmux, text }); ret
 tm.backend.spawn = (_s, o) => { livePanes.add(o.tmuxName); };
 tm.backend.kill = (_s, tmux) => { livePanes.delete(tmux); };
 tm.backend.capturePane = () => '';
-tm.backend.hasClient = () => false;
+const attached = new Set();
+tm.backend.hasClient = (_s, tmux) => attached.has(tmux);
 
 aos.agents.set('caller', { id: 'caller', name: 'Caller', runtime: 'claude-code', dir: HOME });
 aos.team.bootstrapOwner('alice@testco.dev', 'Alice');
@@ -286,6 +287,26 @@ console.log('\n\x1b[1m10) a FINISHED run is not a delivery target for good news\
   const r2 = q.enqueue({ agent: 'caller', transcript: 'cs-fin', runAs: alice.id, source: 'tsk_str', message: '⛔ handed back', title: 'p', kind: 'poke-stranded' });
   assert(r2.ok && r2.via === 'inject' && r2.sessionId === fin, 'a hand-back still injects into the finished pane', r2);
   assert(spawned.filter((x) => x.spawnedBy === 'poke:tsk_str').length === 0, 'and costs no resume');
+}
+
+console.log('\n\x1b[1m10b) a run that dispatched AFTER its report is still waiting — good news reaches it\x1b[0m');
+{
+  idleAgent();
+  // globex 2026-10: an engineer conversation reported once early, then handed QA off 28 times; 26 results
+  // were dropped as `done-no-own-pane` and the human asked "did QA complete?" 75 times.
+  const reported = (id, ts) => aos.audit.append({ ts, runId: id, tenant: aos.tenant, principal: 'caller', type: 'session.reported', data: {} });
+  const master = mkSession('cs-master');
+  reported(master, Date.now() - 600_000);                 // reported ten minutes ago…
+  aos.db.prepare("INSERT INTO tasks (id, tenant, title, status, created_by, updated_by, created_at, updated_at) VALUES ('tsk_after', ?, 'QA', 'done', 'agent:caller', 'agent:qa', ?, ?)").run(aos.tenant, Date.now() - 60_000, Date.now());
+  const r = q.enqueue({ agent: 'caller', transcript: 'cs-master', runAs: alice.id, source: 'tsk_after', message: '✅ qa done', title: 'p', kind: 'poke-done' });
+  assert(r.ok && r.via === 'inject' && r.sessionId === master, '…then dispatched a minute ago: the completion is injected', r);
+  // and a person attached to a reported run makes it a target regardless
+  const att = mkSession('cs-att');
+  reported(att, Date.now());
+  attached.add('aos-' + att);
+  const r2 = q.enqueue({ agent: 'caller', transcript: 'cs-att', runAs: alice.id, source: 'tsk_att', message: '✅ done', title: 'p', kind: 'poke-done' });
+  assert(r2.ok && r2.sessionId === att, 'a reported run with a human attached still gets the completion', r2);
+  attached.clear();
 }
 
 console.log('\n\x1b[1m11) a still-working session is preferred over a finished one\x1b[0m');
