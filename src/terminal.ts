@@ -994,6 +994,10 @@ export class TerminalManager {
    *  "tmux up" can't be read as "nothing is running" — which would let a second turn launch a
    *  competing claude on the same transcript. */
   private readonly launching = new Set<string>();
+  /** Follow-up messages that arrived for a session while it was in {@link launching} — there is no pane
+   *  to type them into yet. Folded into the launch prompt by {@link takeLaunchInbox}; dropped with the
+   *  launch if it fails. */
+  private readonly launchInbox = new Map<string, string[]>();
   /** sessionId → when the gate heartbeat last stamped it. Purely a write throttle (see
    *  {@link BUSY_STAMP_THROTTLE_MS}); the DB is the source of truth and `clearTurnBusy` drops the entry. */
   private readonly busyStamped = new Map<string, number>();
@@ -3262,8 +3266,21 @@ export class TerminalManager {
           this.audit(o.id, o.agent, 'session.launch.failed', { error: e instanceof Error ? e.message : String(e) });
           this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), o.id);
         })
-        .finally(() => { this.launching.delete(o.id); this.markLaunching(o.id, false); });
+        .finally(() => { this.launching.delete(o.id); this.launchInbox.delete(o.id); this.markLaunching(o.id, false); });
     });
+  }
+
+  /**
+   * The launch prompt with any follow-ups queued by {@link deliverToResident} during the launch appended,
+   * oldest first, and the queue emptied. The agent reads them as part of its first turn — the same place
+   * a message typed into a busy pane would have reached it, one turn boundary earlier.
+   */
+  private takeLaunchInbox(sessionId: string, task: string): string {
+    const queued = this.launchInbox.get(sessionId);
+    this.launchInbox.delete(sessionId);
+    if (!queued?.length) return task;
+    const more = queued.map((m) => `- ${m}`).join('\n');
+    return `${task}\n\nFollow-up message${queued.length > 1 ? 's' : ''} from the same conversation, sent while you were starting (oldest first):\n${more}`;
   }
 
   /** Path of a session's "pane is coming up" marker (see {@link markLaunching} / attach.sh). */
@@ -3442,6 +3459,11 @@ export class TerminalManager {
     // Phase 2c: granted Host connections' SSH keys → a session ssh_config + ssh/scp PATH shim, so the
     // agent's plain `ssh` authenticates to a host without ever handling the key. (Local-lane only.)
     this.injectHostCredentials(env, o.agent, o.actingMember, o.id);
+    // Follow-ups that arrived while this launch was in flight. Taken HERE, in the synchronous tail — from
+    // this line to `spawn` nothing awaits, and the `.finally` that clears `launching` runs as a microtask
+    // before any new socket event — so no message can land between the fold and the pane existing.
+    const task = this.takeLaunchInbox(o.id, o.task);
+    if (env.TASK_B64 !== undefined) env.TASK_B64 = Buffer.from(task, 'utf8').toString('base64');
     const launchScript = this.launchScriptFor(runtime);
     if (this.uidIsolation) {
       // Flag on: the launcher writes the files INTO the member's home and sets MCP_CONFIG/COMPANY_FILE/
@@ -3460,7 +3482,7 @@ export class TerminalManager {
         return;
       }
       delete env.TASK_B64;
-      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', launchScript], files: { mcp: mcpJson || undefined, company: companyMd || undefined, task: o.task || undefined }, agentSrc: manifest.dir });
+      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', launchScript], files: { mcp: mcpJson || undefined, company: companyMd || undefined, task: task || undefined }, agentSrc: manifest.dir });
     } else {
       // Flag off: materialise into the app's connectors dir and persist the launch context so the ttyd
       // attach wrapper can resurrect a dead session.
@@ -3475,7 +3497,7 @@ export class TerminalManager {
       // sweep flipped the never-launched row to `crashed`. Passing the task by path keeps the command line
       // tiny regardless of task size; the launcher reads TASK_FILE (falling back to TASK_B64 for old
       // persisted resume envs). Drop TASK_B64 once the file is written so it can't re-inflate the cmdline.
-      const taskFile = this.writeSessionFile(o.id, 'task', o.task);
+      const taskFile = this.writeSessionFile(o.id, 'task', task);
       if (taskFile) { env.TASK_FILE = taskFile; delete env.TASK_B64; }
       // Persist the launch env for EVERY run, unattended ones included. This used to be interactive-only,
       // which quietly made `resumable` ("this id has an env file") double as "this run is attended" — so a
@@ -3579,6 +3601,19 @@ export class TerminalManager {
     if (!row || !this.reachable(sessionId)) return false;
     const body = (text || '').replace(/\r?\n+/g, ' ').trim(); // one-line: a stray newline would submit early
     if (!body) return false;
+    // Launch in flight (a revive, a fresh chat spawn): `reachable` is true but there is no pane to type
+    // into, so `injectText` failed and every caller fell through to spawning a SECOND session on the same
+    // thread — a reply sent within the ~3s boot window of a reaped Slack thread did exactly that. Queue it
+    // instead; the launcher folds it into the prompt it is about to start the agent with.
+    if (this.launching.has(sessionId)) {
+      const q = this.launchInbox.get(sessionId) ?? [];
+      q.push(body);
+      this.launchInbox.set(sessionId, q);
+      this.db.prepare('UPDATE term_sessions SET last_activity = ?, busy_since = COALESCE(busy_since, ?), updated_at = ? WHERE id = ?')
+        .run(Date.now(), Date.now(), Date.now(), sessionId);
+      this.audit(sessionId, this.sessionAgent(sessionId) ?? '', 'chat.delivered', { chars: body.length, turn: 'launching', queued: true });
+      return true;
+    }
     const space = this.spaceFor(row.run_as ?? row.spawned_by);
     const turn: 'idle' | 'busy' | 'blocked' | 'unknown' =
       this.hasPendingHumanBlock(sessionId) ? 'blocked' : this.residentTurnState(space, row.tmux);
