@@ -139,6 +139,46 @@ const run = (cmd, args, env, stdin) => new Promise((resolve) => {
   assert(tm.handoffChild('ses_mode') === h.sessionId, 'the console can find where the work went');
   assert(tm.supportsHandoffCommand('ses_mode') === true, 'claude-code sessions have the /handoff command');
 
+  console.log('\n\x1b[1m5) who is speaking in a shared session\x1b[0m');
+  const bob = aos.team.invite({ email: 'bob@example.com', role: 'member' }).member;
+  aos.db.prepare("INSERT INTO term_sessions (id,agent,title,task,tmux,status,headless,resident,secret,spawned_by,run_as,claude_session_id,created_at,updated_at) VALUES ('ses_shared','engineer','t','review PR 12','aos-ses_shared','running',0,0,'s',?,?,'cs-shared',?,?)").run(alice.id, alice.id, Date.now(), Date.now());
+  live.add('aos-ses_shared');
+  assert(tm.attributeTurn('ses_shared', 'hello') === null, 'no beacon → nothing attributed');
+  tm.noteTyper('ses_shared', alice.id, 'terminal');
+  assert(tm.attributeTurn('ses_shared', 'merge it') === null, 'the run-as member speaking → no extra context');
+  assert(aos.db.prepare("SELECT speaker FROM term_sessions WHERE id='ses_shared'").get().speaker === alice.id, '…but the turn is attributed');
+  tm.noteTyper('ses_shared', bob.id, 'terminal');
+  const ctx = tm.attributeTurn('ses_shared', 'post the comment from my account');
+  assert(typeof ctx === 'string' && /bob@example\.com/.test(ctx) && /started as/.test(ctx), 'a teammate speaking → the agent is told who it acts for', ctx);
+  assert(aos.db.prepare("SELECT COUNT(*) n FROM audit_events WHERE type='turn.speaker' AND run_id='ses_shared'").get().n === 2, 'every attributed turn is audited turn.speaker');
+  // GitHub follows the speaker when they have linked it
+  assert(tm.githubMemberFor('ses_shared') === alice.id, 'speaker without a linked GitHub → run-as identity');
+  gh.save(bob.id, { token: 'ghu_BOB', expiresAt: Date.now() + 8 * hour, login: 'bob', connectedAt: Date.now() });
+  assert(tm.githubMemberFor('ses_shared') === bob.id, 'speaker with a linked GitHub → gh/git act as them');
+  // a poke typed by the server right after someone pressed Enter is not that person speaking
+  tm.noteTyper('ses_shared', alice.id, 'terminal');
+  tm.injectToSession('ses_shared', '✅ Really done: qa finished the task you handed off', true, 'system');
+  assert(tm.attributeTurn('ses_shared', '✅ Really done: qa finished the task you handed off') === null, 'a poke after an Enter is not attributed to the person');
+  // composer text is server-typed on the person's behalf → attributed
+  tm.noteTyper('ses_shared', bob.id, 'composer');
+  tm.injectToSession('ses_shared', 'deploy it on staging', true, 'bob@example.com');
+  assert(typeof tm.attributeTurn('ses_shared', 'deploy it on staging') === 'string', 'composer text sent by a teammate is attributed to them');
+  // the hook turns { context } into claude's additionalContext
+  {
+    const srv2 = http.createServer((req, res) => { let d = ''; req.on('data', (c) => d += c).on('end', () => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, context: '[Agentric] This message is from Bob.' })); }); });
+    await new Promise((r) => srv2.listen(0, '127.0.0.1', r));
+    const hr = await run('/bin/bash', [path.join(ROOT, 'terminal/lifecycle-hook.sh')], { ...process.env, AOS_URL: `http://127.0.0.1:${srv2.address().port}`, SESSION: 'ses_shared', AOS_SECRET: 's', AOS_TENANT: 'testco' }, JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'hi' }));
+    let j = null; try { j = JSON.parse(hr.out); } catch {}
+    assert(j && j.hookSpecificOutput && j.hookSpecificOutput.hookEventName === 'UserPromptSubmit' && /Bob/.test(j.hookSpecificOutput.additionalContext), 'the hook hands the context to claude as additionalContext', hr.out);
+    srv2.close();
+  }
+
+  console.log('\n\x1b[1m6) waiting on\x1b[0m');
+  aos.db.prepare("INSERT INTO tasks (id, tenant, title, status, assignee, caller_claude_id, created_by, updated_by, created_at, updated_at) VALUES ('tsk_qa', ?, 'QA: PR 12', 'doing', 'agent:qa', 'cs-shared', 'agent:engineer', 'agent:engineer', ?, ?)").run(aos.tenant, Date.now(), Date.now());
+  aos.db.prepare("INSERT INTO tasks (id, tenant, title, status, assignee, caller_claude_id, created_by, updated_by, created_at, updated_at) VALUES ('tsk_old', ?, 'QA: PR 9', 'done', 'agent:qa', 'cs-shared', 'agent:engineer', 'agent:qa', ?, ?)").run(aos.tenant, Date.now() - 86400000, Date.now() - 86400000);
+  const w = tm.waitingOn('ses_shared');
+  assert(w.length === 1 && w[0].taskId === 'tsk_qa' && w[0].status === 'doing', 'open hand-offs from this conversation are listed; long-finished ones are not', w);
+
   console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}SESSION TRUST: ${pass}/${pass + fail} passed\x1b[0m`);
   try { fs.rmSync(HOME, { recursive: true, force: true }); fs.rmSync(fakeBin, { recursive: true, force: true }); } catch {}
   process.exit(fail === 0 ? 0 : 1);

@@ -27,7 +27,9 @@
 # path is best-effort and always exits 0. The ONE thing it may do is HOLD a UserPromptSubmit: the prompt
 # rides along, and when the server answers `{ hold: "<why>" }` (a human pasted a credential — see
 # src/governance/prompt-secrets.ts) the hook prints claude's `decision: block`, so the text never reaches
-# the model and the human sees why. Any failure (server down, bad JSON) lets the prompt through.
+# the model and the human sees why. Any failure (server down, bad JSON) lets the prompt through. When the
+# server answers `{ context: "…" }` (the turn was sent by someone other than the run-as member — see
+# TerminalManager.attributeTurn) it is handed to claude as `additionalContext` for that turn.
 #
 # Env: AOS_URL, SESSION, AGENT, AOS_SECRET, AOS_TENANT  (exported when the claude session is launched)
 set -u
@@ -42,8 +44,8 @@ resp=$(printf '%s' "$payload" | curl -s --max-time 10 -X POST "$AOS_URL/api/sess
   -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" --data-binary @- 2>/dev/null) || exit 0
 
 case "$resp" in
-  *'"hold"'*)
-    printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const r=JSON.parse(d);if(typeof r.hold==="string"&&r.hold)process.stdout.write(JSON.stringify({decision:"block",reason:r.hold}))}catch{}})' 2>/dev/null || true
+  *'"hold"'*|*'"context"'*)
+    printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const r=JSON.parse(d);if(typeof r.hold==="string"&&r.hold)process.stdout.write(JSON.stringify({decision:"block",reason:r.hold}));else if(typeof r.context==="string"&&r.context)process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:r.context}}))}catch{}})' 2>/dev/null || true
     ;;
 esac
 exit 0

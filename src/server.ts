@@ -1850,7 +1850,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const hold = tm.holdHumanPrompt(session, b.prompt, 'tui');
       if (hold) return sendJson(res, 200, { ok: true, hold });
     }
+    // Who sent this turn — and, when it isn't the run-as member, one line telling the agent (the hook hands
+    // it to claude as `additionalContext`).
+    const context = b.event === 'UserPromptSubmit' && typeof b.prompt === 'string' ? tm.attributeTurn(session, b.prompt) : null;
     tm.recordLifecycle(session, String(b.event || ''), { reason: String(b.reason || ''), errorType: String(b.errorType || '') });
+    if (context) return sendJson(res, 200, { ok: true, context });
     return sendJson(res, 200, { ok: true });
   }
   // Claude Code Notification hook (notify-hook.sh): the session is blocked waiting on the human
@@ -3739,6 +3743,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!message) return sendJson(res, 400, { error: 'message is required' });
     const held = tm.holdHumanPrompt(id, message, 'reply', me.email);
     if (held) return sendJson(res, 422, { held: true, error: held });
+    tm.noteTyper(id, me.id, 'composer');
     const r = tm.chatSend(id, message, me.id);
     if (r === 'busy') return sendJson(res, 409, { status: 'busy', error: 'the agent is still working on the previous message — resend in a moment' });
     if (r === 'paused') return sendJson(res, 409, { status: 'paused', error: 'this session is paused — resume it to keep talking' });
@@ -3951,6 +3956,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const submit = b.submit === undefined ? true : Boolean(b.submit);
     const held = tm.holdHumanPrompt(id, text, 'inject', me.email);
     if (held) return sendJson(res, 422, { ok: false, held: true, error: held });
+    if (submit) tm.noteTyper(id, me.id, 'inject');
     const r = tm.injectToSession(id, text, submit, me.email);
     return sendJson(res, r.ok ? 200 : 409, r);
   }
@@ -3960,6 +3966,24 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // Hand a session off to a fresh one (the console's "Hand off to a fresh session"). A live agent is asked to
   // run `/handoff` itself — it has the context to write the note; the console then polls GET for the new
   // session. A session that isn't live gets an out-of-band summary of its transcript as the note instead.
+  // What this conversation handed off and is waiting on (the session view's "Waiting on" strip).
+  // The console's terminal reports that THIS member just pressed Enter in a session — how a turn typed in a
+  // shared TUI is attributed to the person who typed it (TerminalManager.attributeTurn). Fire-and-forget.
+  const typedMatch = p.match(/^\/api\/sessions\/([\w-]+)\/typed$/);
+  if (method === 'POST' && typedMatch) {
+    const id = typedMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed' });
+    tm.noteTyper(id, me.id, 'terminal');
+    return sendJson(res, 200, { ok: true });
+  }
+  const waitingMatch = p.match(/^\/api\/sessions\/([\w-]+)\/waiting$/);
+  if (method === 'GET' && waitingMatch) {
+    const id = waitingMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
+    return sendJson(res, 200, { waiting: tm.waitingOn(id) });
+  }
   const handoffMatch = p.match(/^\/api\/sessions\/([\w-]+)\/handoff$/);
   if (handoffMatch && (method === 'GET' || method === 'POST')) {
     const id = handoffMatch[1];

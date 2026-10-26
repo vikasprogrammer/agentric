@@ -4382,6 +4382,57 @@ export class TerminalManager {
     this.teardownUnattended(sessionId, space, r.tmux, 'turn-end');
   }
 
+  /** Who is about to send the next human turn into a conversation: the console's terminal beacon (Enter),
+   *  the chat composer and the inject box record it here, keyed by CONVERSATION so a composer reply that
+   *  resumes into a new run is still attributed. In memory: it only has to survive until the turn starts. */
+  private typers = new Map<string, { memberId: string; via: 'terminal' | 'composer' | 'inject'; at: number }>();
+  private static readonly TYPER_WINDOW_MS = 2 * 60_000;
+
+  private conversationKey(sessionId: string): string {
+    return this.db.prepare('SELECT claude_session_id FROM term_sessions WHERE id = ?').get<{ claude_session_id: string | null }>(sessionId)?.claude_session_id || sessionId;
+  }
+
+  /** A member is sending into this session (see `typers`). Callers have already checked they may operate it. */
+  noteTyper(sessionId: string, memberId: string, via: 'terminal' | 'composer' | 'inject'): void {
+    this.typers.set(this.conversationKey(sessionId), { memberId, via, at: Date.now() });
+  }
+
+  /**
+   * Attribute a turn that is starting to the person who sent it, and decide what the agent should be told.
+   * Several people can drive one session — mining found members telling agents "post as me, not as
+   * <teammate>" and "which account will you use?" in 14 sessions — and the run-as identity fixed at launch
+   * can't say who is speaking NOW. So each human turn is attributed (audited `turn.speaker`, persisted as
+   * the session's `speaker`), and when the speaker isn't the run-as member, or changed since the last
+   * turn, the agent gets one line of context naming who it is acting for. Returns that line, or null.
+   * Text the server delivered with no person behind it (a poke, an answer) attributes nothing.
+   */
+  attributeTurn(sessionId: string, prompt: string): string | null {
+    try {
+      const key = this.conversationKey(sessionId);
+      const t = this.typers.get(key);
+      const fresh = t && Date.now() - t.at < TerminalManager.TYPER_WINDOW_MS ? t : undefined;
+      if (!fresh) return null;              // server-delivered or unattributable: leave the speaker as it was
+      // A terminal Enter followed by text the SERVER typed (a poke landing a moment later) is the poke, not
+      // the person. Composer/inject text IS server-typed — on that person's behalf — so it attributes.
+      if (fresh.via === 'terminal' && this.isServerText(sessionId, prompt)) return null;
+      this.typers.delete(key);
+      const row = this.db.prepare('SELECT run_as, speaker, agent FROM term_sessions WHERE id = ?').get<{ run_as: string | null; speaker: string | null; agent: string }>(sessionId);
+      if (!row) return null;
+      const m = this.os.team.getMember(fresh.memberId);
+      if (!m) return null;
+      const prev = this.db.prepare("SELECT speaker FROM term_sessions WHERE claude_session_id = ? AND speaker IS NOT NULL ORDER BY updated_at DESC LIMIT 1").get<{ speaker: string }>(key)?.speaker ?? row.speaker;
+      this.db.prepare('UPDATE term_sessions SET speaker = ? WHERE id = ?').run(m.id, sessionId);
+      this.audit(sessionId, m.email, 'turn.speaker', { member: m.id, email: m.email, via: fresh.via, runAs: row.run_as });
+      const runAs = row.run_as ? this.os.team.getMember(row.run_as) : undefined;
+      if (m.id === row.run_as && (!prev || prev === m.id)) return null;
+      const who = `${m.name || m.email} (${m.email}, ${m.role})`;
+      const base = runAs && runAs.id !== m.id ? ` This session was started as ${runAs.name || runAs.email}.` : '';
+      return `[Agentric] This message is from ${who}.${base} Act for ${m.name || m.email} on this turn: anything you post, comment, send or commit on their behalf should go out as them — \`gh\`/\`git\` already use their GitHub account when they have linked one; for any other app, say which account you will use before posting.`;
+    } catch {
+      return null;
+    }
+  }
+
   /** Text the SERVER put in front of a session's runtime — the opening task and every pane injection
    *  (chat follow-ups, pokes, answers, `/reload-skills`, an attached file's path) — kept briefly so the
    *  UserPromptSubmit hook can tell those apart from what a human typed. Bounded per session and by age;
@@ -4487,6 +4538,25 @@ export class TerminalManager {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'handoff.md'), HANDOFF_COMMAND);
     } catch { /* a missing slash command must never block a launch */ }
+  }
+
+  /**
+   * The work this conversation handed off and is waiting on — the console's "Waiting on" strip. A person
+   * driving an interactive session had no way to see that the agent had dispatched QA and was idle until
+   * it came back; instawp's busiest member typed "did QA complete?" 75 times in a month. Open tasks whose
+   * caller is this conversation (every run of the same transcript), plus any that finished in the last ten
+   * minutes so the strip can say "came back". `working` = the delegate's run is live right now.
+   */
+  waitingOn(sessionId: string): Array<{ taskId: string; title: string; assignee: string | null; status: string; createdAt: number; updatedAt: number; working: boolean }> {
+    const cs = this.db.prepare('SELECT claude_session_id FROM term_sessions WHERE id = ?').get<{ claude_session_id: string | null }>(sessionId)?.claude_session_id;
+    if (!cs) return [];
+    const rows = this.db.prepare(
+      "SELECT id, title, assignee, status, created_at, updated_at, last_session_id FROM tasks WHERE caller_claude_id = ? AND (status IN ('todo','doing','blocked') OR (status IN ('done','cancelled') AND updated_at > ?)) ORDER BY created_at DESC LIMIT 12",
+    ).all<{ id: string; title: string; assignee: string | null; status: string; created_at: number; updated_at: number; last_session_id: string | null }>(cs, Date.now() - 10 * 60_000);
+    return rows.map((r) => ({
+      taskId: r.id, title: r.title, assignee: r.assignee, status: r.status, createdAt: r.created_at, updatedAt: r.updated_at,
+      working: !!r.last_session_id && (r.status === 'doing' || r.status === 'todo') && this.reachable(r.last_session_id),
+    }));
   }
 
   /** A session's working mode (`normal` when unset). */
@@ -10556,7 +10626,10 @@ export class TerminalManager {
    */
   private installLiveGithub(env: Record<string, string>, agent: string, actingMember: string | undefined, sessionId: string): boolean {
     if (!actingMember || !this.os.paths || this.uidIsolation) return false;
-    if (!new GithubIdentity(this.os).load(actingMember)) return false;
+    // The run-as member linked GitHub, or the workspace's App can link people (so a teammate who speaks in
+    // this session later may bring their own identity — see githubMemberFor).
+    const ghId = new GithubIdentity(this.os);
+    if (!ghId.load(actingMember) && !ghId.configured()) return false;
     const binDir = path.join(this.os.paths.connectors, `session-${sessionId}.d`, 'bin');
     try {
       fs.mkdirSync(binDir, { recursive: true });
@@ -10580,9 +10653,14 @@ export class TerminalManager {
     return true;
   }
 
-  /** Which member's GitHub identity a session's `gh`/`git` should act as right now — its run-as. */
+  /** Which member's GitHub identity a session's `gh`/`git` should act as right now: the person who sent
+   *  the current turn when they have linked GitHub (a shared session acts for whoever is speaking), else
+   *  the run-as member. */
   githubMemberFor(sessionId: string): string | undefined {
-    return this.sessionRunAs(sessionId) ?? undefined;
+    const r = this.db.prepare('SELECT run_as, speaker FROM term_sessions WHERE id = ?').get<{ run_as: string | null; speaker: string | null }>(sessionId);
+    if (!r) return undefined;
+    if (r.speaker && r.speaker !== r.run_as && new GithubIdentity(this.os).load(r.speaker)) return r.speaker;
+    return r.run_as ?? undefined;
   }
 
   /** Find the real `ssh`/`scp` on the PARENT PATH (which never includes a session shim dir), so the
