@@ -4386,6 +4386,15 @@ export class TerminalManager {
     }
   }
 
+  /** Is a person's terminal attached to this session's pane right now? Uses the backend's own client
+   *  check (tmux `list-clients`); `false` when unknown or the row is gone, so callers treat "can't tell"
+   *  as "nobody". */
+  humanAttached(sessionId: string): boolean {
+    const r = this.db.prepare('SELECT tmux, run_as, spawned_by FROM term_sessions WHERE id = ?').get<{ tmux: string; run_as: string | null; spawned_by: string | null }>(sessionId);
+    if (!r) return false;
+    try { return this.backend.hasClient(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux) === true; } catch { return false; }
+  }
+
   /**
    * The rest of the Claude Code turn/session state machine (POST /api/session-event, fired by
    * terminal/lifecycle-hook.sh). `Stop` keeps its own beacon — it carries the unattended teardown

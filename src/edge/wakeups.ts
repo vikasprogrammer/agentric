@@ -255,6 +255,18 @@ export class WakeupQueue {
     return mine ?? last;
   }
 
+  /** When the newest hand-off in this batch was made — the source task's creation time. A caller whose
+   *  last `report` is OLDER than this dispatched the work after reporting, so it is still waiting on it
+   *  (see `deliverBatch`). 0 when no source is a task we know: then any report counts, as before. */
+  private dispatchedAt(pending: Row[]): number {
+    let at = 0;
+    for (const p of pending) {
+      const t = this.db.prepare('SELECT created_at FROM tasks WHERE id = ?').get<{ created_at: number }>(p.source)?.created_at;
+      if (t) at = Math.max(at, t);
+    }
+    return at;
+  }
+
   /** Split an agent's pending wake-ups into delivery batches: one PINNED batch per transcript that has
    *  answers waiting, then every other wake-up together. Answers never coalesce with anything addressed
    *  elsewhere (see "An answer is addressed to ONE conversation" in the module header). */
@@ -300,11 +312,21 @@ export class WakeupQueue {
     // per call against 277k, costing 93% more per run, because the message lands in a transcript that
     // then keeps growing. So a done-only batch treats a finished run as no target at all, and every
     // batch prefers a still-working session over a finished one.
+    //
+    // "Finished" is measured against THIS hand-off, though. A run that dispatched the work AFTER its last
+    // `report` is plainly still waiting for it — it reported once early in a long human-driven session and
+    // kept going. instawp, 2026-10: one engineer conversation handed QA off 28 times after an early report,
+    // 26 of the results were dropped here as `done-no-own-pane`, and the human typed "did QA complete?" 75
+    // times. Fleet-wide that was 206 dropped completions in 30 days whose caller was an interactive
+    // session. So a run counts as finished only when its last report POSTDATES the hand-off, and never
+    // while a person is attached to its terminal.
+    const dispatchedAt = this.dispatchedAt(pending);
     const finished = new Set<string>(
       live.length
         ? this.db
-            .prepare(`SELECT DISTINCT run_id FROM audit_events WHERE type = 'session.reported' AND run_id IN (${live.map(() => '?').join(',')})`)
-            .all<{ run_id: string }>(...live.map((r) => r.id))
+            .prepare(`SELECT run_id, MAX(ts) AS at FROM audit_events WHERE type = 'session.reported' AND run_id IN (${live.map(() => '?').join(',')}) GROUP BY run_id`)
+            .all<{ run_id: string; at: number }>(...live.map((r) => r.id))
+            .filter((r) => r.at > dispatchedAt && !this.tm.humanAttached(r.run_id))
             .map((r) => r.run_id)
         : [],
     );
