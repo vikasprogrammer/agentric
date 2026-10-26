@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetric, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetric, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode, type StandingSuggestion } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState, type Bet, type BetAsset, type BetState, type BetVerdict } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -5934,6 +5934,8 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
     const r = await api.reply(selected, message)
     setBusy(false)
     if (r.status === 'busy') { setErr('The agent is still working — resend in a moment.'); setDraft(message); setPendingUser(''); return }
+    // Held (it carried a credential): give the draft back so the value can be taken out and resent.
+    if (r.held) { setErr(r.error || 'held'); setDraft(message); setPendingUser(''); return }
     if (r.error) { setErr(r.error); setPendingUser(''); return }
     // Sent: begin awaiting a reply (baseline = agent turns so far).
     setLastSent(message)
@@ -9268,6 +9270,45 @@ function PromptShortcutsEditor() {
   )
 }
 
+/** Profile → My context → "you keep typing this". Constraint clauses you've written into several session
+ *  starts (add one to your context and stop retyping it), and the same request to the same agent on
+ *  several days (an automation can send it for you). Server-derived from your own sessions; nothing here
+ *  changes until you add it and save, or set up the automation. */
+function StandingSuggestionsPanel({ suggestions, context, onAdd }: { suggestions: StandingSuggestion[]; context: string; onAdd: (text: string) => void }) {
+  const ctx = suggestions.filter((x) => x.kind === 'context')
+  const routines = suggestions.filter((x) => x.kind === 'routine')
+  const added = (t: string) => context.toLowerCase().includes(t.toLowerCase())
+  return (
+    <div className="space-y-3 rounded-md border border-sky-500/30 bg-sky-500/5 p-3">
+      <div className="flex items-center gap-2 text-sm font-medium"><Lightbulb className="h-4 w-4 text-sky-500" /> You keep typing these</div>
+      {ctx.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs text-muted-foreground">Instructions you've written at the start of several sessions. Add one here and every session that runs as you gets it.</p>
+          {ctx.map((x) => (
+            <div key={x.text} className="flex items-center gap-2 text-sm">
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">“{x.text}”</span>
+              <span className="shrink-0 text-[11px] text-muted-foreground">{x.sessions} sessions · {x.days} days</span>
+              <Button size="sm" variant="outline" className="h-7 shrink-0" disabled={added(x.text)} onClick={() => onAdd(x.text)}>{added(x.text) ? 'Added' : 'Add'}</Button>
+            </div>
+          ))}
+        </div>
+      )}
+      {routines.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs text-muted-foreground">The same request to the same agent on several different days. An automation can start it on a schedule.</p>
+          {routines.map((x) => (
+            <div key={x.agent + x.text} className="flex items-center gap-2 text-sm">
+              <span className="min-w-0 flex-1 truncate font-mono text-xs"><span className="text-muted-foreground">{x.agent}:</span> “{x.text}”</span>
+              <span className="shrink-0 text-[11px] text-muted-foreground">{x.sessions} runs · {x.days} days</span>
+              <a href="#/automations" className="shrink-0 text-xs text-sky-600 hover:underline">Set up an automation</a>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
   me: Member
   prefs: NotificationPrefs
@@ -9281,6 +9322,12 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
   const [identities, setIdentities] = useState<MemberIdentity[]>([])
 
   useEffect(() => { api.myContext().then((r) => { setContext(r.context || ''); setSavedContext(r.context || '') }).catch(() => {}) }, [])
+  // Instructions you keep typing when you start sessions (server-derived, read-only). Re-fetched after a
+  // save, so an added clause drops off the list once it's in your context.
+  const [suggestions, setSuggestions] = useState<StandingSuggestion[]>([])
+  const loadSuggestions = () => api.myContextSuggestions().then((r) => setSuggestions(r.suggestions ?? [])).catch(() => {})
+  useEffect(() => { loadSuggestions() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const addToContext = (text: string) => setContext((c) => (c.trim() ? c.replace(/\s*$/, '') + '\n' : '') + '- ' + text)
   const loadIdentities = () => api.team().then((d) => setIdentities(d.identities?.[me.id] ?? [])).catch(() => {})
   useEffect(() => { loadIdentities() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -9289,6 +9336,7 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
     try {
       const r = await api.saveMyContext(context)
       setContext(r.context); setSavedContext(r.context); setCtxSaved(true); setTimeout(() => setCtxSaved(false), 2000)
+      loadSuggestions()
     } finally { setSavingCtx(false) }
   }
   const toggleEvent = (k: NotifyKind) => onSavePrefs({ ...prefs, events: { ...prefs.events, [k]: !prefs.events[k] } })
@@ -9306,7 +9354,7 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
     { key: 'avatar', done: hasAvatar, label: 'Add a profile picture', hint: 'So teammates recognise you across sessions and the inbox.', to: 'pf-avatar' },
     { key: 'chat', done: hasChat, label: 'Link a chat account (Slack / Discord)', hint: 'A message from you runs its agent as you — and task & approval DMs reach you.', to: 'pf-chat' },
     { key: 'git', done: hasGithub, label: 'Connect your GitHub', hint: 'Agents commit and open PRs under your name, not a shared bot.', to: 'pf-git' },
-    { key: 'context', done: hasContext, label: 'Add your working context', hint: 'Standing preferences injected into every session that runs as you.', to: 'pf-context' },
+    { key: 'context', done: hasContext, label: 'Add your working context', hint: suggestions.some((x) => x.kind === 'context') ? `You've typed the same instruction into ${Math.max(...suggestions.filter((x) => x.kind === 'context').map((x) => x.sessions))} sessions — say it once here instead.` : 'Standing preferences injected into every session that runs as you.', to: 'pf-context' },
   ]
   const doneCount = steps.filter((s) => s.done).length
   const jump = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -9380,6 +9428,7 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
           {ctxSaved && <span className="text-xs text-emerald-600">Saved</span>}
           <span className="ml-auto text-[11px] text-muted-foreground">{context.length.toLocaleString()}/8,000</span>
         </div>
+        {suggestions.length > 0 && <StandingSuggestionsPanel suggestions={suggestions} context={context} onAdd={addToContext} />}
       </section>
 
       {/* Quick Shortcuts — saved canned prompts for the terminal's Quick Shortcuts strip */}
@@ -19235,6 +19284,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
         </div>
         <AgentProposalTrustSettings canEdit={canEdit} />
         <TaskProposalsSettings canEdit={canEdit} />
+        <CommitAttributionSettings canEdit={canEdit} />
       </CardContent>
     </Card>
   )
@@ -19291,6 +19341,41 @@ function AgentProposalTrustSettings({ canEdit }: { canEdit: boolean }) {
           ? <>Above the bar, one agent rewrites another <strong>with no human in the loop</strong> — you're notified after the fact and every edit is a revertable revision. Maturity is hard to reach by design (it's damped by run volume, so it takes ~30+ clean, autonomous runs). Turn the checkbox off to keep every proposal owner-approved.</>
           : <>Every proposal between the floor and 100 waits for an owner who can run the target agent. Nothing is written until they approve.</>}
       </p>
+    </div>
+  )
+}
+
+/** Settings → Runtime → what agents put in the commits and pull requests they author. Default keeps the
+ *  traceability link back to the audited session plus the runtime's own AI trailer; `none` strips both —
+ *  for teams whose commits go out under a person's name on a public repo. */
+function CommitAttributionSettings({ canEdit }: { canEdit: boolean }) {
+  const [mode, setMode] = useState<'session-link' | 'none' | null>(null)
+  const [hint, setHint] = useState('')
+  useEffect(() => { api.commitAttribution().then((r) => { if (!r.error) setMode(r.mode) }).catch(() => {}) }, [])
+  const save = async (v: 'session-link' | 'none') => {
+    const prev = mode
+    setMode(v); setHint('')
+    const r = await api.saveCommitAttribution(v)
+    if (r.error) { setMode(prev); return setHint('⚠ ' + r.error) }
+    setHint('saved — applies from each agent\'s next session'); setTimeout(() => setHint(''), 3000)
+  }
+  if (mode === null) return null
+  return (
+    <div className="space-y-1 border-t pt-4">
+      <label className="text-sm font-medium">Attribution in commits &amp; PRs</label>
+      <p className="text-sm text-muted-foreground">
+        By default an agent adds an <span className="font-mono text-xs">Agentric session: &lt;url&gt;</span> line to each pull request so a
+        reviewer can trace the change back to the run that made it, and Claude Code adds its own{' '}
+        <span className="font-mono text-xs">Co-Authored-By: Claude</span> trailer. Turn both off when commits go out under a person's name or
+        to a public repo, where a link to your console is a leak. The audit trail here is the same either way.
+      </p>
+      <div className="flex items-center gap-3 pt-1">
+        <select value={mode} onChange={(e) => save(e.target.value === 'none' ? 'none' : 'session-link')} disabled={!canEdit} className="rounded-md border bg-background px-2 py-1.5 text-sm">
+          <option value="session-link">Session link + AI trailer (default)</option>
+          <option value="none">None — no AI or Agentric attribution</option>
+        </select>
+        {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+      </div>
     </div>
   )
 }

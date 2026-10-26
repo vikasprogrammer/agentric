@@ -8,6 +8,39 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.464.0] - 2026-10-26
+### Added
+- **Attribution in commits & PRs is now a workspace setting** (Settings → Runtime). Default is unchanged:
+  agents add an `Agentric session: <url>` line to each PR and Claude Code adds its own `Co-Authored-By:
+  Claude` trailer. `None` drops both — the brief asks for no AI/Agentric mention in commits, PRs or ticket
+  comments, and the claude-code launcher writes `attribution: { commit: "", pr: "" }` (plus the deprecated
+  `includeCoAuthoredBy: false`) into the session settings. From the 2026-10-26 fleet chat mining: one
+  member removed the trailer and the session link by hand in 10 sessions in a month, on a public plugin
+  repo where the link points at an internal console. Audited `settings.commitAttribution.updated`.
+  **For admins:** you can now stop agents adding AI attribution and the Agentric session link to commits and pull requests. [Open Settings](#/settings)
+- **A credential typed or pasted into a session is held instead of sent.** The same mining found people
+  pasting live keys into agent chats (X API keys and OAuth tokens, a LinkedIn client secret, an OpenRouter
+  key) on three tenants — each one sent to the model and kept in the transcript. The TUI's
+  UserPromptSubmit hook now forwards the prompt and prints claude's `decision: block` when the server
+  says hold; the console chat composer and inject box refuse the same way (422, draft kept). The message
+  names the safe path (Settings → Secrets, or `secret_request`) and the `[allow-secret]` override.
+  Precision-first (`src/governance/prompt-secrets.ts`): vendor prefixes, private-key armour and values
+  explicitly labelled as secrets only — replayed over all 3,148 human turns in the sample it held the 2
+  real pastes and nothing else. Text the server itself delivered (the launch task, pokes, chat
+  follow-ups, attached-file paths) is never inspected, and any failure lets the prompt through. Audited
+  `prompt.credential.held` with the kind only, never the value. Note: claude still writes the held
+  prompt into the local transcript file; what changes is that it never reaches the model or the API.
+  Pinned by `scripts/prompt-credential-guard-test.cjs`, now in `test:governance`.
+  **For users:** if you paste an API key or password into a session, Agentric now stops it and points you to Settings → Secrets.
+- **"You keep typing these" on your Profile.** Instructions you write at the start of many sessions
+  ("do not edit anything", "do not create any unnecessary tasks") are suggested for your personal
+  context, and the same request to the same agent on several days ("send 15 from ana@ and 10 from
+  sales@") is suggested as an automation (`GET /api/me/context/suggestions`,
+  `src/edge/standing-instructions.ts`). Read-only, from your own console-started sessions in the last
+  30 days. On the sample it surfaced exactly the four members who retype instructions (19–28 sessions
+  each) and nobody else. Pinned by `scripts/standing-instructions-test.cjs`.
+  **For users:** your Profile now lists instructions you keep retyping, so you can save them once. [Open Profile](#/profile)
+
 ## [0.463.4] - 2026-10-26
 ### Fixed
 - **A chat reply sent while its session was still starting spawned a second session.** Reviving a
