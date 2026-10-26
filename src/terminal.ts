@@ -25,6 +25,7 @@ import { exclusionFor } from './connectors/composio-claims';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, RuntimeAccountKind, TaskRun, TaskStatus, TaskWorkers, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets, commandText } from './governance/enricher';
 import { detectPastedCredential, credentialHoldMessage } from './governance/prompt-secrets';
+import { sessionModeDecision, sessionModeNotice, isSessionMode, type SessionMode } from './governance/session-mode';
 import { readExecutedScripts, freshSince, type ScriptBody } from './governance/script-bodies';
 import { protectedReadDecision } from './governance/protected-read';
 import { isolateClaudeConfig } from './edge/config-isolation';
@@ -397,6 +398,8 @@ export interface Session {
    *  server-side (a pending question OR approval for this run) so the console doesn't re-derive it from the
    *  message feed. Only meaningful for a live run (`status === 'running'`). Drives the "blocked" list
    *  filter and the sidebar/overview "waiting on you" treatment. */
+  /** A person's working restriction on this run (governance/session-mode.ts); absent = normal. */
+  mode?: 'draft' | 'readonly';
   blocked?: boolean;
   /** The member id this session ACTS AS (run_as) — distinct from `spawnedBy` provenance. A task- or
    *  chat-triggered run is spawned by `task:`/`automation:` but runs as (and is owned by) a member,
@@ -661,6 +664,7 @@ interface SessionRow {
   output_style: string | null;
   blocked_ms: number | null;
   artifacts: number | null;
+  mode?: string | null;
 }
 interface MessageRow {
   id: string;
@@ -4406,6 +4410,26 @@ export class TerminalManager {
     }
   }
 
+  /** A session's working mode (`normal` when unset). */
+  sessionMode(sessionId: string): SessionMode {
+    const m = this.db.prepare('SELECT mode FROM term_sessions WHERE id = ?').get<{ mode: string | null }>(sessionId)?.mode;
+    return isSessionMode(m) ? m : 'normal';
+  }
+
+  /**
+   * Set a session's working mode (draft-only / read-only / normal). Enforced at the gate from the next
+   * action on; a live agent is also TOLD, in its own pane, so it plans around the restriction instead of
+   * discovering it one denial at a time. Audited `session.mode.set`.
+   */
+  setSessionMode(sessionId: string, mode: SessionMode, by: { id: string; email: string; name?: string }): { ok: boolean; mode?: SessionMode; error?: string } {
+    if (!this.hasSession(sessionId)) return { ok: false, error: 'unknown session' };
+    const prev = this.sessionMode(sessionId);
+    this.db.prepare('UPDATE term_sessions SET mode = ? WHERE id = ?').run(mode === 'normal' ? null : mode, sessionId);
+    this.audit(sessionId, by.email, 'session.mode.set', { mode, prev });
+    if (prev !== mode && this.reachable(sessionId)) this.injectToSession(sessionId, sessionModeNotice(mode, by.name || by.email), true, by.email);
+    return { ok: true, mode };
+  }
+
   /** The live session currently driving this claude transcript, if any — the newest reachable row bound
    *  to it. `reachable` asks the PANE (see its doc), so a run that reported but still has its REPL counts. */
   liveHolderOf(claudeSessionId: string): { id: string } | undefined {
@@ -6453,6 +6477,13 @@ export class TerminalManager {
     // (heredoc bodies included) + the bodies of scripts it runs. Unconditional, deny-only, ssh.exec exempt.
     if (rawCommand) {
       decision = stricterDecision(decision, protectedReadDecision(capability, rawCommand, agentDir, scriptBodies, this.os.paths?.home));
+    }
+    // Session mode (governance/session-mode.ts): a person set this run to draft-only or read-only. Engine-
+    // level like the guards above, so it holds whatever the tenant's policy says.
+    const mode = this.sessionMode(sessionId);
+    if (mode !== 'normal') {
+      const writeTargets = Array.isArray(args.writeTargets) ? (args.writeTargets as unknown[]).filter((t): t is string => typeof t === 'string') : [];
+      decision = stricterDecision(decision, sessionModeDecision(mode, capability, typeof args.tool === 'string' ? args.tool : undefined, rawCommand, writeTargets));
     }
     // The DECISION BRIEF — one human-legible account of this effect (docs/decision-brief-layer-plan.md).
     // Computed once here, next to classify(); it rides on the gate.decision audit row (making the audit
@@ -10751,7 +10782,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined, pausedAt: r.paused_at ?? undefined, pausedBy: r.paused_by ?? undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined, pausedAt: r.paused_at ?? undefined, pausedBy: r.paused_by ?? undefined, mode: r.mode === 'draft' || r.mode === 'readonly' ? r.mode : undefined };
 }
 
 /** One task on a `task.proposed` card. Title/assignee are snapshots from filing; status is hydrated live. */

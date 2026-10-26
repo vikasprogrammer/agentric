@@ -23,6 +23,7 @@ import { exampleCapabilities } from './capabilities/examples';
 import { governedCapabilities } from './capabilities/normalize';
 import { evaluate } from './observability/evaluation';
 import { standingSuggestions } from './edge/standing-instructions';
+import { isSessionMode } from './governance/session-mode';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation, type Session } from './terminal';
 import { normalizeSessionRef, toSessionFtsQuery } from './edge/session-search';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
@@ -3554,6 +3555,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!agent || !task) return sendJson(res, 400, { error: 'agent and task are required' });
     if (!os.team.canRun(me, agent)) return sendJson(res, 403, { error: `you are not assigned to run "${agent}"` });
     const s = tm.createSession(agent, String(b.title || task), task, me.id);
+    // Start restricted ("investigate only" / "draft only") — set before the first tool call can reach the gate.
+    if (isSessionMode(b.mode) && b.mode !== 'normal') tm.setSessionMode(s.id, b.mode, me);
     return sendJson(res, 200, { id: s.id, tmux: s.tmux });
   }
   // ─── Native chat surface (non-technical) — a plain-language window onto a claude-code run, an
@@ -4038,6 +4041,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // Transfer a session to another owner — reassign its run-as (the accountable human). Beyond the view
   // gate, this changes accountability, so restrict it to an owner/admin OR the session's current owner
   // (a member handing off their own run). The target is any real member; the tm method validates it.
+  // Working mode for a session: draft-only (nothing goes out under anyone's name) / read-only (that, plus no
+  // local changes) / normal. Anyone who may operate the session may restrict it; enforced at the gate.
+  const modeMatch = p.match(/^\/api\/sessions\/([\w-]+)\/mode$/);
+  if (method === 'POST' && modeMatch) {
+    const id = modeMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canOperateSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    const b = await readBody(req) as { mode?: unknown };
+    if (!isSessionMode(b.mode)) return sendJson(res, 400, { error: "mode must be 'normal', 'draft' or 'readonly'" });
+    const r = tm.setSessionMode(id, b.mode, me);
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   const transferMatch = p.match(/^\/api\/sessions\/([\w-]+)\/transfer$/);
   if (method === 'POST' && transferMatch) {
     const id = transferMatch[1];

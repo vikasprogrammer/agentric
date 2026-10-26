@@ -91,6 +91,40 @@ const run = (cmd, args, env, stdin) => new Promise((resolve) => {
   assert(fr.status === 'ok' && fr.refreshed === false && fr.blob.token === 'ghu_LAUNCH', 'forceRefresh hands back a just-minted token instead of rotating it', fr);
   assert(tm.installLiveGithub({}, 'engineer', undefined, 'ses_x') === false, 'no run-as member → no shim');
 
+  console.log('\n\x1b[1m3) draft-only / read-only session mode\x1b[0m');
+  const { sessionModeDecision } = require(path.join(ROOT, 'dist/governance/session-mode.js'));
+  const D = (mode, cap, tool, cmd, targets) => sessionModeDecision(mode, cap, tool, cmd || '', targets).effect;
+  assert(D('normal', 'email.send') === 'allow', 'normal mode restricts nothing');
+  const outward = [
+    ['email.send', undefined, ''], ['repo.pr.create', undefined, ''],
+    ['connector.call', 'mcp__composio__CLICKUP_CREATE_TASK_COMMENT', ''], ['connector.call', 'mcp__composio-company__GMAIL_REPLY_TO_THREAD', ''],
+    ['connector.call', 'mcp__agentos__slack_send', ''], ['connector.call', 'mcp__agentos__discord_dm', ''],
+    ['shell.exec', undefined, 'git push origin fix/x'], ['shell.exec', undefined, 'gh pr comment 12 --body "LGTM"'], ['shell.exec', undefined, 'gh pr create --fill'],
+    ['shell.exec', undefined, "curl -X POST https://api.clickup.com/api/v2/task/1/comment -d '{}'"],
+  ];
+  for (const [cap, tool, cmd] of outward) assert(D('draft', cap, tool, cmd) === 'deny', `draft blocks ${tool || cmd || cap}`);
+  const fine = [
+    ['connector.call', 'mcp__composio__CLICKUP_GET_TASK', ''], ['connector.call', 'mcp__agentos__slack_reply', ''], ['connector.call', 'mcp__agentos__task_create', ''],
+    ['shell.exec', undefined, 'gh pr view 12 --comments'], ['shell.exec', undefined, 'curl -s https://example.com/health'], ['shell.exec', undefined, 'git commit -m wip'],
+    ['file.write', undefined, ''],
+  ];
+  for (const [cap, tool, cmd] of fine) assert(D('draft', cap, tool, cmd) === 'allow', `draft allows ${tool || cmd || cap}`);
+  assert(D('readonly', 'file.write', undefined, '', ['/repo/app/x.php']) === 'deny', 'read-only blocks a code edit');
+  assert(D('readonly', 'file.write', undefined, '', [require('os').tmpdir() + '/notes.md']) === 'allow', 'read-only allows a scratch note in the temp dir');
+  for (const cmd of ['git commit -am fix', 'rm -rf build', "sed -i '' s/a/b/ x.php", 'npm install lodash', 'echo hi > src/x.ts', "mysql -e 'UPDATE users SET plan=1'"]) assert(D('readonly', 'shell.exec', undefined, cmd) === 'deny', `read-only blocks: ${cmd}`);
+  for (const cmd of ['git log --oneline -5', 'grep -rn foo src', 'cat x | head > /tmp/out.txt', 'ls 2>/dev/null', 'git diff main...HEAD']) assert(D('readonly', 'shell.exec', undefined, cmd) === 'allow', `read-only allows: ${cmd}`);
+  // through the real gate
+  aos.db.prepare("INSERT INTO term_sessions (id,agent,title,task,tmux,status,headless,resident,secret,spawned_by,run_as,created_at,updated_at) VALUES ('ses_mode','engineer','t','x','aos-ses_mode','running',0,0,'s',?,?,?,?)").run(alice.id, alice.id, Date.now(), Date.now());
+  live.add('aos-ses_mode');
+  const set = tm.setSessionMode('ses_mode', 'draft', { id: alice.id, email: alice.email, name: 'Alice' });
+  assert(set.ok && tm.sessionMode('ses_mode') === 'draft', 'mode is stored');
+  assert(typed.some((t) => t.tmux === 'aos-ses_mode' && /DRAFT-ONLY/.test(t.text)), 'the live agent is told in its pane');
+  const g = tm.gate('ses_mode', 'engineer', 'connector.call', { tool: 'mcp__composio__CLICKUP_CREATE_TASK_COMMENT', input: { task_id: '1', comment_text: 'hi' } }, '');
+  assert(g.decision === 'deny' && /DRAFT-ONLY/.test(g.reason || ''), 'the gate denies a ticket comment in a draft-only session', g);
+  tm.setSessionMode('ses_mode', 'normal', { id: alice.id, email: alice.email });
+  const g2 = tm.gate('ses_mode', 'engineer', 'connector.call', { tool: 'mcp__composio__CLICKUP_GET_TASK', input: { task_id: '1' } }, '');
+  assert(g2.decision !== 'deny', 'back to normal: reads pass', g2);
+
   console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}SESSION TRUST: ${pass}/${pass + fail} passed\x1b[0m`);
   try { fs.rmSync(HOME, { recursive: true, force: true }); fs.rmSync(fakeBin, { recursive: true, force: true }); } catch {}
   process.exit(fail === 0 ? 0 : 1);
