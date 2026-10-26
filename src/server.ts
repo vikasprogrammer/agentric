@@ -2017,7 +2017,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // A delegate whose only reason to exist separately is a FRESH CONTEXT (a reviewer, a critic, a
     // second opinion) does not need a governed session to provide one — a sub-agent already has its own
     // context, cannot see the caller's reasoning, and costs no launch/MCP boot/CLAUDE.md reload/pane.
-    // Live evidence: instawp's `code-reviewer` is documented in engineer's OWN prompt as
+    // Live evidence: globex's `code-reviewer` is documented in engineer's OWN prompt as
     // `Agent(subagent_type: code-reviewer)` and still took 12 task hand-offs in 7 days → 8 sessions,
     // $111, for reviews the sub-agent path performs for a fraction of it.
     // Refused on the agent lane only; a human dispatching from the console is a considered act.
@@ -2044,7 +2044,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // ── Self-dispatch refusal ──────────────────────────────────────────────────────────────────
     // An agent filing an auto-dispatch task for ITSELF is not delegation — it is the agent ending its
     // turn and immediately paying a full context reload to carry on doing what it was already doing.
-    // Measured on the instawp fleet over 7 days: 104 such tasks, 70 of them dispatched within 2 minutes
+    // Measured on the globex fleet over 7 days: 104 such tasks, 70 of them dispatched within 2 minutes
     // of being filed, $1,330 of sessions that rebuilt a context their own caller was still holding.
     //
     // There is no defer here to preserve: `dueAt` is a soft deadline that dispatchable() never reads, so
@@ -2073,7 +2073,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
     // ── Proposed, not filed ────────────────────────────────────────────────────────────────
     // A task an agent files WITHOUT dispatching it is a claim that something is work — and on the live
-    // fleet agents filed ~100% of all tasks (instapods, 14 days: 140 of 140), half of them board items
+    // fleet agents filed ~100% of all tasks (northwind, 14 days: 140 of 140), half of them board items
     // nobody had agreed to. So it lands `proposed`: never dispatched, never claimable, on ONE grouped
     // Inbox card per run for the accountable human to accept or dismiss. The agent is NOT blocked — it
     // gets the id back and carries on. Deliberately untouched: an auto-dispatch hand-off (a caller may be
@@ -3686,6 +3686,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
     const convo = tm.sessionConversation(id);
+    tm.labelSpeakers(id, convo.turns);
     // Resolve the deliverables an activity produced (a Library artifact, a KB page, a hosted app) into
     // viewer-safe preview cards the chat UI renders inline — dropping anything the viewer may not see or
     // that no longer exists. The viewer already passed canViewSession, so their own run's outputs resolve;

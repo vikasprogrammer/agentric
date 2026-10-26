@@ -216,6 +216,7 @@ export function Xterm({
   onStatus,
   onReady,
   onCopy,
+  onSubmit,
 }: {
   /** Absolute or relative ws(s):// URL, incl. the ?arg=… query. If it starts with '/', it's resolved
    *  against the current origin (http→ws, https→wss). */
@@ -229,11 +230,13 @@ export function Xterm({
   onReady?: (h: XtermHandle) => void
   /** Fired after text is successfully written to the clipboard (for a "copied" flash). */
   onCopy?: () => void
+  /** Fired when the person presses Enter in the terminal — lets the console attribute the turn to them. */
+  onSubmit?: () => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   // Latest-callback refs so the socket effect doesn't re-run (and re-attach) when a parent re-renders.
-  const cbs = useRef({ onTitle, onStatus, onReady, onCopy })
-  cbs.current = { onTitle, onStatus, onReady, onCopy }
+  const cbs = useRef({ onTitle, onStatus, onReady, onCopy, onSubmit })
+  cbs.current = { onTitle, onStatus, onReady, onCopy, onSubmit }
   const opts = useRef({ copyOnSelect })
   opts.current = { copyOnSelect }
 
@@ -352,7 +355,7 @@ export function Xterm({
     ws.onopen = () => {
       ws.send(enc.encode(JSON.stringify({ AuthToken: '', columns: term.cols, rows: term.rows })))
       cbs.current.onStatus?.('open')
-      dataDisp = term.onData((d) => send(C_INPUT + d))
+      dataDisp = term.onData((d) => { send(C_INPUT + d); if (d.includes('\r')) cbs.current.onSubmit?.() })
       resizeDisp = term.onResize(({ cols, rows }) => send(C_RESIZE + JSON.stringify({ columns: cols, rows })))
       titleDisp = term.onTitleChange((t) => cbs.current.onTitle?.(t))
       // Nudge a resize so ttyd sizes the pty to our actual layout.

@@ -764,7 +764,7 @@ export function parseApprovalIntent(text: string): 'approve' | 'deny' | null {
  *  approvers. Without it a blocking `ask` sits unseen in the console until it times out. */
 /**
  * A choice list rendered for a chat DM: numbered, one per line. An agent's option text OFTEN already
- * carries its own number ("1. Fix disclosure + copy") — live on instapods 2026-09-16 — so a naive prefix
+ * carries its own number ("1. Fix disclosure + copy") — live on northwind 2026-09-16 — so a naive prefix
  * yields "1. 1. Fix …". Strip any leading ordinal before numbering, so the list reads the same whether or
  * not the agent numbered it, and the numbers always match what {@link resolveOptionReply} accepts.
  */
@@ -1468,7 +1468,7 @@ export class TerminalManager {
         //    yet", so retry on a later poll;
         //  - the transcript is never coming. Either it was pruned since (the row is ALREADY priced and
         //    we were only after its shape) or it was never written at all — a run that crashed before
-        //    claude opened one, which on the live instawp tenant is 25 rows of dead `consolidator` /
+        //    claude opened one, which on the live globex tenant is 25 rows of dead `consolidator` /
         //    `qa` sessions, every one of them `cost_usd IS NULL`.
         //
         // The second case used to be handled ONLY when `cost_usd != null`, so those 25 rows re-probed
@@ -3163,7 +3163,7 @@ export class TerminalManager {
     // ONE claude per conversation. A resume of a transcript that a live pane already holds would start a
     // SECOND claude writing the same transcript in the same folder — the session clash. Every lane that
     // used to make that decision locally (pokes, chat follow-ups) had grown its own guard; the one that
-    // hadn't was the agent's own `schedule`: on instapods a drain loop's self-scheduled checks fired 16
+    // hadn't was the agent's own `schedule`: on northwind a drain loop's self-scheduled checks fired 16
     // resumes into a conversation whose interactive session was still open, and the agent took to writing
     // "00-READ-ME-TWO-SESSIONS.txt" and asking itself to `ps aux | grep 'claude --resume'` before acting.
     // So the guard lives here, where every resume passes: type the request into the live pane instead
@@ -3353,7 +3353,7 @@ export class TerminalManager {
    * Mirror {@link launching} onto disk for the ttyd attach wrapper. attach.sh runs in its own process
    * and can't see this Set, so before it existed the wrapper guessed the launch window with a fixed
    * ~3s timer — which is a guess about how fast the box is, and on a loaded host it loses: at load 76
-   * an instawp spawn took 13.3s, the guess expired, and the user got tmux's raw "can't find session"
+   * an globex spawn took 13.3s, the guess expired, and the user got tmux's raw "can't find session"
    * for a run that went on to succeed. With the marker the wrapper waits exactly as long as a launch
    * is actually in flight. Cleared in the launch's `finally` (so a FAILED launch releases it too) and
    * swept at boot by {@link sweepLaunchMarkers}, so the only way to orphan one is `kill -9` mid-launch
@@ -3573,7 +3573,7 @@ export class TerminalManager {
       // which quietly made `resumable` ("this id has an env file") double as "this run is attended" — so a
       // headless run taken over while its pane was STILL LIVE stayed non-resumable forever: `claimSession`
       // relaunches nothing, so nothing ever wrote the env, and the console's Reload / Reload-on-another-
-      // account items were permanently hidden for it (live instawp run, 2026-08-27). The two lanes are told
+      // account items were permanently hidden for it (live globex run, 2026-08-27). The two lanes are told
       // apart by the `headless` COLUMN now, never by the presence of this file. Safe on the teardown side:
       // `teardownUnattended` → `markEnded` → `blockResume` drops the stay-stopped sentinel, so a reaped
       // unattended run can't be resurrected behind our back by ttyd's silent auto-reconnect.
@@ -4216,7 +4216,7 @@ export class TerminalManager {
       const claimedCutoff = claimedHours > 0 ? Date.now() - claimedHours * 3600_000 : null;
       // LIFETIME CEILING. Every clock above measures IDLENESS, and `markTurnBusy` stamps `last_activity`
       // on every tool call — so a session whose agent still works never goes idle, however old it gets,
-      // and none of them can ever see it. Live instawp after the wake-queue fix: 15 interactive sessions
+      // and none of them can ever see it. Live globex after the wake-queue fix: 15 interactive sessions
       // `running` at 1007 h / 266 h / 263 h / 166 h / 120 h, every one reporting 18–24 h idle, skipped on
       // every tick. Age answers what idleness cannot. See `interactiveMaxHours`.
       const lifetimeHours = this.os.settings.interactiveMaxHours();
@@ -4268,7 +4268,7 @@ export class TerminalManager {
           // `markEnded` (normal end, and `teardownUnattended` through it), `markCrashed`, and
           // `stopSession` (the human kill button) — but this janitor did its own teardown and skipped it,
           // so an abandoned interactive session evaporated. Measured over 30 days: 3 of 29 reaped
-          // sessions on instapods and 18 of 136 on instawp had an episode, and those came from a `report`
+          // sessions on northwind and 18 of 136 on globex had an episode, and those came from a `report`
           // earlier in the run, not from the reap.
           //
           // The point is NOT recall value — these take the audit branch (no `report` was ever filed), so
@@ -4433,6 +4433,24 @@ export class TerminalManager {
     }
   }
 
+  /** Name each user turn in a conversation with the person who sent it, from the `turn.speaker` audit of
+   *  every run of the same transcript (matched to the turn's own timestamp). Mutates `turns`. */
+  labelSpeakers(sessionId: string, turns: Array<{ kind: string; ts: number; speaker?: string }>): void {
+    const key = this.conversationKey(sessionId);
+    const ids = this.db.prepare('SELECT id FROM term_sessions WHERE claude_session_id = ? OR id = ?').all<{ id: string }>(key, sessionId).map((r) => r.id);
+    if (!ids.length) return;
+    const marks = this.db.prepare(`SELECT ts, data FROM audit_events WHERE type = 'turn.speaker' AND run_id IN (${ids.map(() => '?').join(',')}) ORDER BY ts`).all<{ ts: number; data: string }>(...ids)
+      .map((r) => { try { const d = JSON.parse(r.data) as { member?: string }; const m = d.member ? this.os.team.getMember(d.member) : undefined; return m ? { ts: r.ts, name: m.name || m.email } : null; } catch { return null; } })
+      .filter((x): x is { ts: number; name: string } => !!x);
+    if (!marks.length) return;
+    for (const t of turns) {
+      if (t.kind !== 'user') continue;
+      // The audit row is written as the turn starts; the transcript stamps the same moment (± a few s).
+      const hit = marks.find((m) => Math.abs(m.ts - t.ts) < 30_000);
+      if (hit) t.speaker = hit.name;
+    }
+  }
+
   /** Text the SERVER put in front of a session's runtime — the opening task and every pane injection
    *  (chat follow-ups, pokes, answers, `/reload-skills`, an attached file's path) — kept briefly so the
    *  UserPromptSubmit hook can tell those apart from what a human typed. Bounded per session and by age;
@@ -4543,7 +4561,7 @@ export class TerminalManager {
   /**
    * The work this conversation handed off and is waiting on — the console's "Waiting on" strip. A person
    * driving an interactive session had no way to see that the agent had dispatched QA and was idle until
-   * it came back; instawp's busiest member typed "did QA complete?" 75 times in a month. Open tasks whose
+   * it came back; globex's busiest member typed "did QA complete?" 75 times in a month. Open tasks whose
    * caller is this conversation (every run of the same transcript), plus any that finished in the last ten
    * minutes so the strip can say "came back". `working` = the delegate's run is live right now.
    */
@@ -4839,7 +4857,7 @@ export class TerminalManager {
    *  But "closed" is not the same as "failed". A pool whose accounts are all at their rate limit is a
    *  capacity condition with a KNOWN reset time, and the box default we then fall through to is, on most
    *  boxes, a login nobody has used since install. Crashing there reports an outage that is really a
-   *  queue: live instawp, 2026-09-17 — 21 of its last 22 `crashed` sessions were this, each card telling
+   *  queue: live globex, 2026-09-17 — 21 of its last 22 `crashed` sessions were this, each card telling
    *  an admin to re-login a credential that was not the problem, while the accounts that WERE the problem
    *  reset themselves within the hour. So a temporary exhaustion parks the run instead (see
    *  {@link queueForCapacity}); only a credential that no clock will fix still crashes. */
@@ -4904,7 +4922,7 @@ export class TerminalManager {
 
   /** How a dead credential reads in one clause. `expiresAt: 0` is not a date — it is what a record with no
    *  token in it stores, and rendering it as one produced "expired on 1970-01-01 00:00 UTC" on every card
-   *  the instawp box raised, which sends an admin looking for an expiry event that never happened. */
+   *  the globex box raised, which sends an admin looking for an expiry event that never happened. */
   private static expiryPhrase(expiredAt: number, dir: string): string {
     return expiredAt > 0
       ? `the login in ${dir} expired on ${new Date(expiredAt).toISOString().slice(0, 16).replace('T', ' ')} UTC and has no refresh token left`
@@ -4934,7 +4952,7 @@ export class TerminalManager {
 
   /** Tell a human, once per cooldown. This is the half the 2026-09-01 incident was missing: the refusal
    *  above makes each run honest, but nothing about a crashed session reaches someone who is not looking.
-   *  The 2026-09-09 instawp outage was the same gap with a different cause — 14 hours of $0 runs on a box
+   *  The 2026-09-09 globex outage was the same gap with a different cause — 14 hours of $0 runs on a box
    *  whose default login had simply expired — so both blocking reasons alert through here. */
   private alertCredentialsBlocked(runtime: CodingRuntimeId, b: CredentialBlock): void {
     const now = Date.now();
@@ -5093,7 +5111,7 @@ export class TerminalManager {
           this.audit(sessionId, agent, 'runtime.account.unusable', { runtime, resident, kinds: CODING_RUNTIMES[runtime].liveCredentialKinds, reason: 'no enabled account of a kind this runtime can launch with — using the box default' });
         } else {
           // The other way a configured pool hands back nothing: every account in it is parked or disabled
-          // right now. Previously silent, which is how instawp spent 14 hours quietly launching onto a box
+          // right now. Previously silent, which is how globex spent 14 hours quietly launching onto a box
           // default nobody had checked. The pre-flight refuses the run when that default is dead; this line
           // says WHY rotation had nothing to offer, which is the question an operator asks next.
           const all = this.os.runtimeAccounts.allLimited(runtime);
@@ -5114,7 +5132,7 @@ export class TerminalManager {
   /**
    * `pick()`, minus any credential-dir account whose login is DEAD — expired with no refresh token left.
    *
-   * Why this exists — instapods, 2026-09-26 → 10-02: the `tools2-new` account's refresh token expired and
+   * Why this exists — northwind, 2026-09-26 → 10-02: the `tools2-new` account's refresh token expired and
    * Claude Code wiped the Keychain record down to `expiresAt: 0`. Nothing took the account out of rotation:
    * `pick()` only knows `enabled` and `status`, and the launch pre-flight that DID see the dead login
    * refused the run rather than moving on. With two accounts handed out least-recently-used, every other
@@ -5218,7 +5236,7 @@ export class TerminalManager {
    *
    * It exists because that call used to run on `{...process.env}`, i.e. always the BOX DEFAULT account,
    * while every governed launch goes through {@link applyRuntimeAccount} and rotates off an exhausted
-   * one. On live instawp that split silently degraded the summarizer for three weeks: `runtime.usage_limited`
+   * one. On live globex that split silently degraded the summarizer for three weeks: `runtime.usage_limited`
    * ran 2026-07-30 → 08-15 and `runtime.account.limited` from 08-04, and across exactly that band 43 of
    * 97 `session.summarized` events came back `via:'fallback'` — sessions kept working on rotated
    * accounts while the summarizer kept calling the limited default and quietly returned the
@@ -5306,7 +5324,7 @@ export class TerminalManager {
         const end = claudeId ? readTranscriptEnd(claudeId, (id) => findTranscript(id, { preferRoot: acctDir })) : undefined;
         // Only evidence written DURING this run describes this run. A copy left in another credential dir
         // by an earlier run of the same conversation is stale by definition, and acting on it is how a
-        // healthy account gets retired for someone else's failure (instawp, 2026-09-09).
+        // healthy account gets retired for someone else's failure (globex, 2026-09-09).
         if (end?.died && end.mtimeMs >= row.created_at) {
           // Hand the classifier the phrase it expects rather than re-deriving here, so the two sources
           // can never disagree about what counts as a limit vs a bad token.
@@ -5345,7 +5363,7 @@ export class TerminalManager {
    * A run under this pool account ended on an auth banner. Park it, then ASK the account itself before
    * retiring it.
    *
-   * Disabling straight off the transcript is what took instawp down on 2026-09-09: the signal was a stale
+   * Disabling straight off the transcript is what took globex down on 2026-09-09: the signal was a stale
    * copy of the conversation from an earlier run under a different credential dir, the account was
    * perfectly valid (weekly 60% used), and disabling it emptied the pool onto a box default whose login
    * really had expired — 14 hours of $0 runs. `findTranscript`'s preferRoot fixes the misread; this fixes
@@ -5569,7 +5587,7 @@ export class TerminalManager {
    *
    * Ranked **against this session's task** when there is one. The first version of this ordered by
    * `importance DESC, last_recalled_at DESC` with no query at all — the same 8 memories on every launch
-   * regardless of the work. On live instapods that put "Never auto-send email as the marketing agent"
+   * regardless of the work. On live northwind that put "Never auto-send email as the marketing agent"
    * (importance 0.95, tenant-shared) at the top of the ENGINEER's prompt, and spent two of eight slots on
    * marketing copy rules; below the top ~70 rows the order was decided almost entirely by the tiebreaker,
    * since 893 memories share importance 0.8 and 912 share 0.7. A head start that ignores the task is a
@@ -5587,7 +5605,7 @@ export class TerminalManager {
    *
    * **Episodes are excluded.** An episode's text OPENS with the session's task line, so a task-shaped
    * query matches episodes better than it matches the lessons distilled from them — measuring 8 realistic
-   * agent/task pairs against the live instapods store, **44% of preamble slots (28/64)** came back as raw
+   * agent/task pairs against the live northwind store, **44% of preamble slots (28/64)** came back as raw
    * past task prompts, and one agent spent 4 of 8 slots on near-identical replays of the same daily sweep
    * while the reconciliation lesson it has been recalled on 185 times was crowded out. Task-ranking made
    * that bias systematic, so the retrieval has to correct for it. Episodes exist for Dreaming and the
@@ -7117,7 +7135,7 @@ export class TerminalManager {
    * needs is in the `ask_human` it raised, which carries the question AND its one-click options. Worse,
    * the two have different lifetimes: ending a run cancels its pending questions (rightly — nobody can
    * answer into a dead pane), so a run that asked, waited, gave up and parked the task left the human a
-   * DM saying "answer the Inbox question" about a card that had just been cancelled. (Live, instapods
+   * DM saying "answer the Inbox question" about a card that had just been cancelled. (Live, northwind
    * 2026-09-16: `tsk_cb76fa3da0309f38` — a well-formed four-option decision, dead two minutes after it
    * was sent.) Reading the question here makes the TASK carry the ask, and the task outlives the run.
    *
@@ -7212,7 +7230,7 @@ export class TerminalManager {
    * Record an agent's PROPOSED task on its session's review card — ONE `task.proposed` card per session,
    * grown as the run files more, never one card per task. The grouping is the point: a busy agent files
    * 5–30 follow-ups in one run, and a card each would rebuild exactly the inbox flood this lane exists to
-   * drain (instawp, 2026-08: ~31 cards a day on one human). A later filing re-marks the card unread so the
+   * drain (globex, 2026-08: ~31 cards a day on one human). A later filing re-marks the card unread so the
    * growth is noticed. Addressed to the run's accountable human (run-as), else the admin tier — the same
    * person a dispatched run of the task would act as. Quiet: no DM, because nothing is blocked on it.
    */
@@ -7433,7 +7451,7 @@ export class TerminalManager {
    *
    * AGGREGATED IN SQL, and scoped to the tasks the caller is actually rendering. The row-by-row version
    * read every `task.chat` message in the tenant with its FULL body to keep only the last one per task:
-   * on live instawp that was 6,879 rows / 12.6 MB materialised per poll, and it shipped **2.07 MB of the
+   * on live globex that was 6,879 rows / 12.6 MB materialised per poll, and it shipped **2.07 MB of the
    * 2.4 MB `/api/tasks` response** — rollups for 1,986 tasks when the board renders 500, each carrying an
    * unclipped body that the card renders as one `truncate`d line.
    *
@@ -7450,7 +7468,7 @@ export class TerminalManager {
     // Read a PREFIX rather than the whole body — the preview is one truncated line. `clipText` collapses
     // whitespace before it counts, and collapsing only ever shortens, so a 4× prefix is what makes the
     // clipped result identical to clipping the full body (it would take >3/4 of the prefix being runs of
-    // whitespace to differ). Verified byte-for-byte against the unclipped path on the live instawp board.
+    // whitespace to differ). Verified byte-for-byte against the unclipped path on the live globex board.
     const body = bodyClip && bodyClip > 0 ? `substr(m.body, 1, ${bodyClip * 4 + 16})` : 'm.body';
 
     const out: Record<string, TaskDiscussionSummary> = {};
@@ -7555,7 +7573,7 @@ export class TerminalManager {
    * that files a fix and an engineer that picks it up both leave runs on the same task, so a card could
    * name `engineer` while a completely different agent's session was the one live on it. Same two sources
    * as `taskRuns` (`task:<id>` provenance + `task_events.session_id`), folded per task in ONE pass rather
-   * than one query per card — measured on the instapods tenant that's ~660 rows for the whole board.
+   * than one query per card — measured on the northwind tenant that's ~660 rows for the whole board.
    *
    * Returns ONLY the multi-agent tasks: with one agent the assignee badge already tells the whole story,
    * so a per-task entry there would be payload that renders nothing.
@@ -10617,7 +10635,7 @@ export class TerminalManager {
   /**
    * Keep a member's GitHub token current for the whole run. The env copy injected at launch dies when the
    * ~8 h token expires — and sooner when ANOTHER session of the same member refreshes it, because GitHub
-   * rotates on refresh: instawp, 2026-10, an engineer run found its token dead because the QA run it had
+   * rotates on refresh: globex, 2026-10, an engineer run found its token dead because the QA run it had
    * dispatched refreshed theirs, and declined to refresh back for fear of cutting QA off mid-run. So both
    * halves of the toolchain now fetch the token at CALL time from `/api/agent/github/token` (which refreshes
    * once, single-flight, when it's near expiry): a `gh` shim on PATH, and the git credential helper
@@ -10755,8 +10773,8 @@ const EPISODE_NOISE = new Set([
   'gate.attempt', 'gate.killswitch', 'approval.resolved',
   'approval.auto_approved', 'episode.stored', 'episode.error',
   // Launch plumbing — every run emits these before the agent has done anything at all, so on their own
-  // they described a session that did NOTHING. Live fleet proof: 72 stored episodes across instapods +
-  // instawp whose whole body was "Activity: 1 github.token.injected." ("Task: cred check - stop",
+  // they described a session that did NOTHING. Live fleet proof: 72 stored episodes across northwind +
+  // globex whose whole body was "Activity: 1 github.token.injected." ("Task: cred check - stop",
   // "Task: teste"). They were recalled 22 times between them, i.e. they displaced real lessons in a
   // top-k recall for nothing.
   'github.token.injected', 'github.bot_token.injected', 'github.token.refreshed', 'github.token.withheld',
@@ -10879,7 +10897,7 @@ export function isEpisodeRecord(r: { content?: string; tags?: string[] }): boole
  *    (pass 31, since 2026-07-01): 768 sessions, 43% success. Recurring topics: …". That is a statistic
  *    ABOUT the fleet, not knowledge FOR the work, and one is written per pass, so they accumulate.
  *
- * Measured on live tenants: the tenant-shared pool was **51 of 72 memories on instapods and 48 of 85 on
+ * Measured on live tenants: the tenant-shared pool was **51 of 72 memories on northwind and 48 of 85 on
  * instawp** — two thirds of everything shared across the fleet — and because shared memories reach every
  * agent, an agent thin on its own memories got a preamble that was **6 of 8 slots of fleet statistics**.
  * Observed directly: a zero-memory agent's launch preamble carried six pass summaries and nothing about

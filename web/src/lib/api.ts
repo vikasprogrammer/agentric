@@ -422,6 +422,8 @@ export interface Session {
   /** When the session was paused, and by whom. Both set only while `status === 'paused'`. */
   pausedAt?: number
   pausedBy?: string
+  /** A person's working restriction on this run; absent = normal. */
+  mode?: 'draft' | 'readonly'
   /** True when this session can be FORKED — branched into a new independent session that inherits its
    *  full conversation (`claude --resume <parent> --fork-session`). Requires a claude-code runtime and a
    *  persisted conversation. Unlike `resumable`, a finished/headless run is forkable too. */
@@ -1781,7 +1783,7 @@ export interface ChatAppRef {
 
 /** One entry in the non-technical chat timeline (mirrors src/edge/conversation.ts). */
 export type ChatTurn =
-  | { kind: 'user'; text: string; ts: number }
+  | { kind: 'user'; text: string; ts: number; speaker?: string }
   | { kind: 'assistant'; text: string; ts: number }
   | { kind: 'activity'; tool: string; label: string; detail?: string; status: 'running' | 'ok' | 'error'; artifactIds?: string[]; artifacts?: ChatArtifactRef[]; kbPages?: ChatKbRef[]; apps?: ChatAppRef[]; ts: number }
 export interface ConversationResp {
@@ -1829,6 +1831,9 @@ export interface RouterPreviewResp {
   askFallback?: boolean
   error?: string
 }
+
+/** A hand-off the session is waiting on (the "Waiting on" strip). */
+export interface WaitingOn { taskId: string; title: string; assignee: string | null; status: string; createdAt: number; updatedAt: number; working: boolean }
 
 /** One "you keep typing this" suggestion (src/edge/standing-instructions.ts). */
 export interface StandingSuggestion { kind: 'context' | 'routine'; text: string; sessions: number; days: number; agent?: string }
@@ -2080,6 +2085,15 @@ export const api = {
   goInteractive: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/interactive`),
   /** Fork a session into a NEW branch that inherits its full conversation; returns the new session's
    *  id/tmux so the caller can open its terminal. Optional `task` seeds the branch's first instruction. */
+  /** This member just pressed Enter in the session's terminal (attributes the turn to them). */
+  sessionTyped: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/typed`),
+  /** Work this conversation handed off and is waiting on. */
+  sessionWaiting: (id: string) => call<{ waiting?: WaitingOn[]; error?: string }>('GET', `/api/sessions/${id}/waiting`),
+  /** Restrict a session: draft-only / read-only, or back to normal. */
+  setSessionMode: (id: string, mode: 'normal' | 'draft' | 'readonly') => call<{ ok: boolean; mode?: string; error?: string }>('POST', `/api/sessions/${id}/mode`, { mode }),
+  /** Hand a session off to a fresh one. `requested` = the live agent is writing its note (poll `handoffChild`). */
+  handoffSession: (id: string) => call<{ status?: 'requested' | 'created'; sessionId?: string; error?: string }>('POST', `/api/sessions/${id}/handoff`),
+  handoffChild: (id: string) => call<{ sessionId?: string | null; error?: string }>('GET', `/api/sessions/${id}/handoff`),
   forkSession: (id: string, task?: string) => call<{ id?: string; tmux?: string; error?: string }>('POST', `/api/sessions/${id}/fork`, { task }),
   deleteSession: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/sessions/' + id),
   attach: (id: string) => call<{ url?: string; error?: string }>('GET', `/api/sessions/${id}/attach`),

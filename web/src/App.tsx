@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetric, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode, type StandingSuggestion } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetric, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode, type StandingSuggestion, type WaitingOn } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState, type Bet, type BetAsset, type BetState, type BetVerdict } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -410,6 +410,62 @@ const canFork = (s: Session): boolean => Boolean(s.forkable)
  *  terminal so the user lands in the forked conversation ready to steer it down a different path. */
 const forkAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void): void => {
   void api.forkSession(s.id).then((r) => { if (r.tmux) onOpen(r.tmux, s.agent + ' · fork') })
+}
+
+/** Hand a session off to a fresh one, then open the new session. A live agent writes its own note via
+ *  `/handoff` (so we poll for the session it creates); a session that isn't running is summarized by the
+ *  server and the new session comes back at once. `onNote` reports progress/errors to the caller. */
+const handoffAndOpen = async (s: Session, onOpen: (tmux: string, title: string) => void, onNote?: (text: string) => void): Promise<void> => {
+  const r = await api.handoffSession(s.id)
+  if (r.error) { onNote?.('⚠ ' + r.error); return }
+  if (r.sessionId) { onOpen('aos-' + r.sessionId, s.agent + ' · handoff'); return }
+  onNote?.('The agent is writing its handoff note — the new session opens when it is ready.')
+  for (let i = 0; i < 60; i++) {
+    await new Promise((res) => setTimeout(res, 4000))
+    const c = await api.handoffChild(s.id).catch(() => ({ sessionId: null }))
+    if (c.sessionId) { onOpen('aos-' + c.sessionId, s.agent + ' · handoff'); return }
+  }
+  onNote?.('No handoff yet — check the session; the agent may have asked you something.')
+}
+
+/** The "Waiting on" strip + working-mode badge above a live terminal. A person driving a session couldn't
+ *  see that the agent had handed work off and was idle until it came back, so they asked "did QA complete?"
+ *  over and over; this shows each open hand-off with its live state, and the result arrives in the pane on
+ *  its own. Polls every 15 s while the session is open. */
+function SessionStrip({ session }: { session: Session }) {
+  const [waiting, setWaiting] = useState<WaitingOn[]>([])
+  useEffect(() => {
+    let alive = true
+    const load = () => api.sessionWaiting(session.id).then((r) => { if (alive) setWaiting(r.waiting ?? []) }).catch(() => {})
+    load()
+    const t = setInterval(load, 15000)
+    return () => { alive = false; clearInterval(t) }
+  }, [session.id])
+  if (!waiting.length && !session.mode) return null
+  const ago = (ms: number) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 60 ? `${m}m` : `${Math.round(m / 60)}h` }
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 border-b border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] text-neutral-300">
+      {session.mode && (
+        <span className="flex items-center gap-1 rounded bg-amber-900/60 px-1.5 py-0.5 text-amber-200" title={session.mode === 'draft' ? 'Nothing goes out under anyone\'s name — the agent writes the text for you to send' : 'Investigate and report only — no edits, commits, posts or sends'}>
+          <Lock className="h-3 w-3" /> {session.mode === 'draft' ? 'Draft only' : 'Read only'}
+        </span>
+      )}
+      {waiting.length > 0 && <span className="text-neutral-500">Waiting on</span>}
+      {waiting.map((w) => {
+        const finished = w.status === 'done' || w.status === 'cancelled'
+        const who = (w.assignee || '').replace(/^agent:/, '') || 'unassigned'
+        return (
+          <a key={w.taskId} href={'#/tasks/' + w.taskId} title={w.title}
+            className={`flex max-w-[22rem] items-center gap-1 rounded px-1.5 py-0.5 no-underline ${finished ? 'bg-emerald-900/50 text-emerald-200' : w.status === 'blocked' ? 'bg-red-900/50 text-red-200' : 'bg-neutral-800 text-neutral-200'}`}>
+            {finished ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : w.working ? <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" /> : <Clock className="h-3 w-3 shrink-0" />}
+            <span className="shrink-0 font-medium">{who}</span>
+            <span className="truncate text-neutral-400">{w.title}</span>
+            <span className="shrink-0 text-neutral-500">· {finished ? 'came back' : w.status === 'blocked' ? 'blocked' : w.working ? `working ${ago(w.createdAt)}` : `queued ${ago(w.createdAt)}`}</span>
+          </a>
+        )
+      })}
+    </div>
+  )
 }
 
 /** Coarse provenance category of a session, from its raw `spawnedBy` (`automation:`/`task:`/`chat:`
@@ -3183,6 +3239,16 @@ function QuickShortcuts({ session, attachable }: { session: Session; attachable:
   )
 }
 
+/** Tell the server THIS member pressed Enter in a session (throttled) — attributes the turn to them when
+ *  several people share one session. Fire-and-forget. */
+const typedAt = new Map<string, number>()
+const markTyped = (id: string): void => {
+  const now = Date.now()
+  if (now - (typedAt.get(id) ?? 0) < 1500) return
+  typedAt.set(id, now)
+  void api.sessionTyped(id).catch(() => {})
+}
+
 /** The live terminal pane. It asks the server for the attach URL — the shared /terminal/?arg=…
  *  (uid-isolation off) or a per-member /terminal/<space>/?arg=… (on) — and derives the ttyd WebSocket
  *  endpoint from it, which our first-party <Xterm> speaks directly (no iframe). */
@@ -3301,12 +3367,13 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
           <Terminal className="h-3.5 w-3.5" /> {takingOver ? 'taking over…' : 'Take over'}
         </button>
       )}
+      {session && <SessionStrip session={session} />}
       <ImageDropZone session={session} attachable={Boolean(session) && (isLive(session!) || overrideAttach)}
         onActivity={onActivity && session?.id ? () => onActivity(session.id) : undefined}
         fontSize={fontSize} setFontSize={setFontSize} ops={ops} onReload={reload}
         zen={zen} onToggleZen={standalone ? undefined : () => setZen((v) => !v)}
         popoutHref={standalone ? undefined : popoutHref}>
-        <Xterm key={nonce} wsUrl={wsUrl} fontSize={fontSize} copyOnSelect />
+        <Xterm key={nonce} wsUrl={wsUrl} fontSize={fontSize} copyOnSelect onSubmit={session?.id ? () => markTyped(session.id) : undefined} />
       </ImageDropZone>
     </div>
   )
@@ -3971,7 +4038,11 @@ function OperationsMenu({ session, ops, onReload }: { session: Session; ops: Ses
   const { members, me, onOpen, onStop, onPause, onUnpause, onDelete, onTransfer, onActivity } = ops
   const canTransfer = me.role === 'owner' || me.role === 'admin' || session.runAs === me.id
   const transferTargets = canTransfer ? members.filter((m) => m.id !== session.runAs) : []
+  const [note, setNote] = useState('')
+  useEffect(() => { if (!note) return; const t = setTimeout(() => setNote(''), 6000); return () => clearTimeout(t) }, [note])
   return (
+    <>
+    {note && <div className="absolute right-2 top-9 z-20 max-w-xs rounded bg-neutral-800/95 px-2 py-1 text-[11px] text-neutral-100 shadow">{note}</div>}
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
@@ -4019,6 +4090,31 @@ function OperationsMenu({ session, ops, onReload }: { session: Session; ops: Ses
               <span className="text-[10px] text-muted-foreground">branch a new session from this conversation</span>
             </span>
           </DropdownMenuItem>
+        )}
+        {(isLive(session) || session.resumable) && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => { void handoffAndOpen(session, onOpen, (t) => setNote(t)) }}>
+            <Share2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
+            <span className="flex flex-col">
+              <span>Hand off to a fresh session</span>
+              <span className="text-[10px] text-muted-foreground">the agent writes a handoff note · work continues in a new session with a clean context</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+        {isLive(session) && (
+          <>
+            <DropdownMenuSeparator />
+            <div className="px-2 py-1 text-[11px] text-muted-foreground">Working mode</div>
+            {([['normal', 'Normal', 'no restriction'], ['draft', 'Draft only', 'nothing goes out under anyone\'s name · the agent writes the text for you'], ['readonly', 'Read only', 'investigate and report · no edits, commits, posts or sends']] as const).map(([m, label, hint]) => (
+              <DropdownMenuItem key={m} className="gap-2 text-xs" onClick={() => { void api.setSessionMode(session.id, m).then((r) => setNote(r.error ? '⚠ ' + r.error : `Mode: ${label}`)) }}>
+                {(session.mode ?? 'normal') === m ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" /> : <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                <span className="flex flex-col">
+                  <span>{label}</span>
+                  <span className="text-[10px] text-muted-foreground">{hint}</span>
+                </span>
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+          </>
         )}
         {isLive(session) && (
           <DropdownMenuItem className="gap-2 text-xs" onClick={() => onPause(session.id)}>
@@ -4070,6 +4166,7 @@ function OperationsMenu({ session, ops, onReload }: { session: Session; ops: Ses
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+    </>
   )
 }
 
@@ -5523,6 +5620,7 @@ function ChatBubble({ turn, agentIcon }: { turn: Extract<ChatTurn, { kind: 'user
       <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted">
         {mine ? <User className="h-3.5 w-3.5 text-muted-foreground" /> : <AgentIcon icon={agentIcon} className="h-3.5 w-3.5 text-muted-foreground" />}
       </div>
+      {mine && turn.kind === 'user' && turn.speaker && <span className="mt-1 shrink-0 text-[10px] text-muted-foreground">{turn.speaker}</span>}
       <div className={`rounded-2xl px-3.5 py-2 text-sm ${
         asDoc ? 'max-w-[92%] border border-l-2 border-l-primary/30 bg-card text-foreground'
               : `max-w-[80%] ${mine ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}`}>

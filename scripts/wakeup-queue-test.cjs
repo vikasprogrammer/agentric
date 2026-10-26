@@ -292,7 +292,7 @@ console.log('\n\x1b[1m10) a FINISHED run is not a delivery target for good news\
 console.log('\n\x1b[1m10b) a run that dispatched AFTER its report is still waiting — good news reaches it\x1b[0m');
 {
   idleAgent();
-  // instawp 2026-10: an engineer conversation reported once early, then handed QA off 28 times; 26 results
+  // globex 2026-10: an engineer conversation reported once early, then handed QA off 28 times; 26 results
   // were dropped as `done-no-own-pane` and the human asked "did QA complete?" 75 times.
   const reported = (id, ts) => aos.audit.append({ ts, runId: id, tenant: aos.tenant, principal: 'caller', type: 'session.reported', data: {} });
   const master = mkSession('cs-master');
