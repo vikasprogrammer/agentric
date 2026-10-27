@@ -121,9 +121,79 @@ const DAY = 86_400_000;
   const noMetric = await post(`/api/goals/${plain.id}/readings`, { value: 5 });
   assert(!noMetric.ok && /no metric/.test(noMetric.error || ''), 'a goal with no metric refuses readings', noMetric);
   assert(aos.goals.addReading(up.id, Number.NaN, owner.id) === undefined, 'NaN is refused at the store, not stored to poison later verdicts');
+  // The human side takes `at` too, through the same validator — it used to accept a raw epoch with no
+  // bound, so an admin could date a reading ahead of now and freeze the staleness sweep for good.
+  const ownerFuture = await post(`/api/goals/${up.id}/readings`, { value: 1, at: Date.now() + 5 * DAY });
+  assert(!ownerFuture.ok && /future/i.test(ownerFuture.error || ''), 'an owner cannot date a reading into the future either', ownerFuture);
+  const ownerDated = await post(`/api/goals/${up.id}/readings`, { value: 17900, at: '2026-10-01', note: 'GA4, week ending 10-01' });
+  assert(ownerDated.ok === true && new Date(ownerDated.reading.at).toISOString().slice(0, 10) === '2026-10-01', 'and can file a past window by date', ownerDated.reading?.at);
   const detail = await get(`/api/goals/${up.id}`);
   assert(detail.metricStatus && detail.readings.length >= 5, 'the goal detail carries the status + readings for the console');
   assert(aos.goals.events(up.id).some((e) => /measured 18000/.test(e.body || '')), 'a reading also lands on the goal timeline, so a measured goal is never reported "stuck"');
+
+
+  console.log('\n\x1b[1m9) An agent can date a reading to the window it measures (backfill)\x1b[0m');
+  // The bug: `goal_measure` took only goalId/value/note, so an agent that had JUST measured six real
+  // weekly windows filed them all within seconds. `metricStatus` needs a sample SPANNING the metric's
+  // interval, so a live support goal provably 69% of the way to target reported `new`. Dating the
+  // reading is what lets a goal be born with the history somebody already measured.
+  const agentId = [...aos.agents.values()][0].id;
+  const SES = 'ses_measure_at';
+  aos.db.prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, created_at, secret, updated_at, run_as, claude_session_id, headless) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)')
+    .run(SES, agentId, 'run', 'run', `aos-${SES}`, 'running', 'automation:au_x', Date.now(), `sec-${SES}`, Date.now(), owner.id, `claude-${SES}`);
+  const measure = async (body) => (await fetch(base + '/api/goals/measure', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-aos-secret': `sec-${SES}` },
+    body: JSON.stringify({ session: SES, ...body }),
+  })).json();
+  const ymd = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+  const bf = mkGoal('Draft adoption to 85', { name: 'adoption', unit: '%', target: 85, baseline: 55, direction: 'up', everyDays: 7 });
+
+  // Backfilling with no `at` is the OLD behaviour, and it is why the verdict was useless: six readings
+  // that all land now cannot span a 7-day interval however many there are.
+  for (const v of [53.5, 62.5, 58.2, 54.3, 75, 75.6]) await measure({ goalId: bf.id, value: v });
+  const collapsed = aos.goals.metricStatus(bf.id);
+  assert(aos.goals.readings(bf.id).length === 6, 'six readings were accepted', aos.goals.readings(bf.id).length);
+  assert(collapsed.verdict === 'new', 'but same-instant readings still read as `new` — the sample spans no time', collapsed.verdict);
+  assert(collapsed.percent === 69, 'even though the number is provably 69% of the way to target', collapsed.percent);
+
+  // Dated the same way a real backfill would be, the verdict becomes real.
+  const dated = mkGoal('Draft adoption to 85 (dated)', { name: 'adoption', unit: '%', target: 85, baseline: 55, direction: 'up', everyDays: 7 });
+  const weeks = [[49, 53.5], [42, 62.5], [35, 58.2], [28, 54.3], [21, 75], [14, 75.6]];
+  for (const [daysAgo, v] of weeks) {
+    const r = await measure({ goalId: dated.id, value: v, at: ymd(NOW - daysAgo * DAY), note: `week ending ${ymd(NOW - daysAgo * DAY)}` });
+    assert(r.ok === true, `reading for ${ymd(NOW - daysAgo * DAY)} accepted`, r);
+  }
+  const rs = aos.goals.readings(dated.id);
+  assert(new Set(rs.map((r) => ymd(r.at))).size === 6, 'the six readings land on six different days', rs.map((r) => ymd(r.at)));
+  assert(rs.every((r) => Math.abs(r.at - (NOW - weeks.find(([, v]) => v === r.value)[0] * DAY)) < 13 * 3600_000), 'each is dated to its own window (date-only anchored mid-day UTC)');
+  const datedSt = aos.goals.metricStatus(dated.id, NOW);
+  assert(datedSt.verdict === 'measuring', 'NOW the plane can see the trend: verdict is `measuring`', datedSt.verdict);
+  assert(datedSt.readings === 6 && datedSt.first.value === 53.5, '`first` is the oldest WINDOW, not the first row written', { n: datedSt.readings, first: datedSt.first.value });
+
+  console.log('\n\x1b[1m9b) …but it cannot date a reading into the future, or absurdly far back\x1b[0m');
+  // A future reading is the dangerous one: `staleDays` goes negative, so the staleness sweep would never
+  // report that goal unmeasured again — a silent way to make a dead goal look alive forever.
+  const future = await measure({ goalId: dated.id, value: 99, at: ymd(NOW + 3 * DAY) });
+  assert(future.ok !== true && /future/i.test(future.error || ''), 'a future `at` is refused, naming why', future);
+  const ancient = await measure({ goalId: dated.id, value: 1, at: '2015-01-01' });
+  assert(ancient.ok !== true && /years/i.test(ancient.error || ''), 'an `at` further back than the bound is refused', ancient);
+  const garbage = await measure({ goalId: dated.id, value: 1, at: 'last tuesday' });
+  assert(garbage.ok !== true && /YYYY-MM-DD/.test(garbage.error || ''), 'an unparseable `at` is refused rather than silently filed as now', garbage);
+  assert(aos.goals.readings(dated.id).length === 6, 'none of the three refusals wrote a reading', aos.goals.readings(dated.id).length);
+  const stillOk = await measure({ goalId: dated.id, value: 77.1 });
+  assert(stillOk.ok === true, 'omitting `at` still works and means "now"', stillOk);
+
+  console.log('\n\x1b[1m9c) A backfilled reading is legible in the audit trail\x1b[0m');
+  // Readings are append-only and `source` already names the agent, but an agent filing HISTORY reshapes
+  // its own apparent trend, so that has to be visible without diffing timestamps.
+  const evs = aos.db.prepare("SELECT data FROM audit_events WHERE type = 'goal.measured' ORDER BY id").all().map((r) => JSON.parse(r.data));
+  const backfills = evs.filter((d) => d.backfilled === true);
+  assert(backfills.length === 7, 'every dated reading is audited `backfilled: true` — the agent\'s six and the owner\'s one', backfills.length);
+  assert(backfills.filter((d) => d.goalId === dated.id).length === 6, 'six of them are the agent backfill', backfills.length);
+  assert(evs.filter((d) => d.goalId === dated.id && !d.backfilled).length === 1, 'the undated "now" reading is NOT flagged as a backfill');
+  assert(evs.every((d) => typeof d.at === 'number'), 'and every goal.measured event records the date it was filed under');
 
   server.close();
   console.log('\n\x1b[1mX) "Ready to close" asks the NUMBER, not the task list\x1b[0m');
@@ -151,6 +221,7 @@ const DAY = 86_400_000;
   // And the sweep that cards the owner reads the same list, so the card stops too.
   const before = aos.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE session_id = ?").get(`system:goal-ready-${measuredGoal.id}`);
   assert(!before || before.n === 0, 'no "goal is finished" card for the measured goal', before);
+
 
   registry.stopAll();
   fs.rmSync(HOME, { recursive: true, force: true });

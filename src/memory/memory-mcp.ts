@@ -1396,7 +1396,11 @@ const TOOLS = [
       'status stay human-owned. Every reading records that YOU took it, so a number reported by the same ' +
       'agent that did the work is visibly self-reported: prefer measuring from the source of truth over ' +
       'restating what your own run believes it achieved. If the goal has no metric set, say so in your ' +
-      'report rather than inventing one.',
+      'report rather than inventing one. ' +
+      'Pass `at` when the reading measures a window that has already CLOSED — a backfill of history, or a ' +
+      'Monday number filed on Tuesday. It must be in the past. Use it for EVERY backfilled reading: a ' +
+      'verdict needs readings that SPAN the metric\'s interval, so a dozen historical readings all filed ' +
+      'at once are worth nothing and the goal keeps reporting `new`.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1404,6 +1408,11 @@ const TOOLS = [
         goalId: { type: 'string', description: 'The goal whose metric you measured (from `goal_list`).' },
         value: { type: 'number', description: "The measured value, in the metric's own units." },
         note: { type: 'string', description: 'Where the number came from — the query, dashboard or API you read it off.' },
+        at: {
+          type: 'string',
+          description:
+            'The date the reading MEASURES, `YYYY-MM-DD`, when that is not today — the last day of the window. Must be in the past. Omit for a reading of right now.',
+        },
       },
       required: ['goalId', 'value'],
     },
@@ -3189,11 +3198,31 @@ async function goalMeasure(args: Record<string, unknown>): Promise<string> {
   const res = await fetch(AOS_URL + '/api/goals/measure', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, agent: AGENT, goalId, value, note: args.note ? String(args.note) : undefined }),
+    body: JSON.stringify({
+      session: SESSION,
+      agent: AGENT,
+      goalId,
+      value,
+      note: args.note ? String(args.note) : undefined,
+      at: args.at != null && args.at !== '' ? String(args.at) : undefined,
+    }),
   });
-  const d = (await res.json()) as { ok?: boolean; verdict?: string; metric?: string; target?: number | null; error?: string };
+  const d = (await res.json()) as {
+    ok?: boolean;
+    verdict?: string;
+    metric?: string;
+    target?: number | null;
+    error?: string;
+    reading?: { at?: number };
+  };
   if (!d.ok) return `Could not record the reading: ${d.error ?? 'unknown error'}`;
   const target = d.target != null ? `, target ${d.target}` : '';
+  // Echo the date it was filed under when it isn't today, so a backfill loop can tell whether `at` landed
+  // instead of discovering weeks later that every reading shares one timestamp.
+  const dated =
+    d.reading?.at && Date.now() - d.reading.at > 86_400_000
+      ? ` dated ${new Date(d.reading.at).toISOString().slice(0, 10)}`
+      : '';
   const verdict = d.verdict
     ? {
         achieved: 'The goal has now reached its target — a human decides whether to close it or raise the bar.',
@@ -3204,7 +3233,7 @@ async function goalMeasure(args: Record<string, unknown>): Promise<string> {
         new: 'Too few readings yet to say whether it is working.',
       }[d.verdict] ?? ''
     : '';
-  return `Recorded ${value} for ${d.metric ?? 'the metric'}${target}. ${verdict}`.trim();
+  return `Recorded ${value}${dated} for ${d.metric ?? 'the metric'}${target}. ${verdict}`.trim();
 }
 
 async function goalPropose(args: Record<string, unknown>): Promise<string> {
