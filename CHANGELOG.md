@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.467.1] - 2026-10-27
+### Fixed
+- **A browser tab left open no longer keeps a session alive forever.** The idle-interactive janitor skipped
+  any session with a tmux client attached, and "attached" meant only that a client existed — so a forgotten
+  tab (or a ttyd WebSocket that never closed) pinned its session indefinitely. Live initech had one with no
+  keystroke in 15 days, on a 4 GB box where 22 parked sessions had filled RAM and 3.4 GB of swap and made
+  the whole tenant crawl. `hasClient` now takes an `activeSinceMs`, and the janitor counts a client only if
+  it has had input within the idle window; every other caller keeps the plain "is anyone attached" check.
+
 ## [0.467.0] - 2026-10-27
 ### Changed
 - **Cockpit and the chat bot now pick the right agent.** Routing used to be a keyword match against each

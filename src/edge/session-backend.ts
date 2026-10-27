@@ -64,8 +64,11 @@ export interface SessionBackend {
   /** Is a browser terminal currently ATTACHED to `tmuxName` (tmux has ≥1 client on the session)?
    *  Distinguishes "a human is watching this live pane" from "running but unobserved" — the signal the
    *  turn-end/idle reapers use to leave a taken-over run alone. `null` when it can't be determined
-   *  (launcher backend: the member's tmux socket is uid-private) → callers fall back to timeout reaping. */
-  hasClient(space: string, tmuxName: string): boolean | null;
+   *  (launcher backend: the member's tmux socket is uid-private) → callers fall back to timeout reaping.
+   *  `activeSinceMs` counts only a client with input activity at/after that time — "attached" is not
+   *  "in use": a tab left open (or a ttyd WebSocket that never closed) holds a client forever, and live
+   *  initech had one pinning a 4 GB box's session for 15 days with no keystroke since the attach. */
+  hasClient(space: string, tmuxName: string, activeSinceMs?: number): boolean | null;
   /** Snapshot the visible scrollback of `tmuxName` as text (tmux capture-pane, full history), for the
    *  console's "what did this run do" transcript view once its pane is gone. `null` when unavailable
    *  (no such session, or the socket can't be reached). Replaces the old `-p` stdout tee. */
@@ -292,12 +295,16 @@ export class LocalSessionBackend implements SessionBackend {
     return out;
   }
 
-  hasClient(_space: string, tmuxName: string): boolean | null {
+  hasClient(_space: string, tmuxName: string, activeSinceMs?: number): boolean | null {
     // `list-clients -t <session>` prints one line per attached ttyd/xterm client; empty → nobody watching.
-    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-clients', '-t', tmuxName, '-F', '#{client_name}'], { ...TMUX_SYNC, encoding: 'utf8' });
+    // `client_activity` is epoch SECONDS of the client's last input (set at attach, bumped on keys).
+    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-clients', '-t', tmuxName, '-F', '#{client_activity}'], { ...TMUX_SYNC, encoding: 'utf8' });
     if (r.error) return null;              // couldn't poll → unknown (don't reap on a hiccup)
     if (r.status !== 0) return false;      // no such session / no server → nothing attached
-    return (r.stdout || '').split('\n').some(Boolean);
+    const lines = (r.stdout || '').split('\n').filter(Boolean);
+    if (activeSinceMs == null) return lines.length > 0;
+    // An unparseable stamp counts as active — never reap on a format we can't read.
+    return lines.some((l) => { const sec = Number(l); return !Number.isFinite(sec) || sec * 1000 >= activeSinceMs; });
   }
 
   capturePane(_space: string, tmuxName: string): string | null {
@@ -375,7 +382,7 @@ export class LauncherSessionBackend implements SessionBackend {
     return null; // uid-private sockets — the app can't inspect member process trees (a launcher verb later).
   }
 
-  hasClient(_space: string, _tmuxName: string): boolean | null {
+  hasClient(_space: string, _tmuxName: string, _activeSinceMs?: number): boolean | null {
     return null; // uid-private socket — attachment can't be polled from the app (→ timeout-reap fallback).
   }
 
