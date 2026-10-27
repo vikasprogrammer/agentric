@@ -108,7 +108,7 @@ function runClaude(instruction: string, transcript: string, credentials?: Record
 export function runClaudePrompt(
   instruction: string,
   stdin: string,
-  opts: { credentials?: Record<string, string>; model?: string; timeoutMs?: number } = {},
+  opts: { credentials?: Record<string, string>; model?: string; timeoutMs?: number; extraArgs?: string[] } = {},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const home = os.homedir();
@@ -120,6 +120,7 @@ export function runClaudePrompt(
     const env = { ...process.env, PATH: `${path.join(home, '.local', 'bin')}:${process.env.PATH ?? ''}`, ...(opts.credentials ?? {}) };
     const args = ['-p', instruction];
     if (opts.model) args.push('--model', opts.model);
+    if (opts.extraArgs?.length) args.push(...opts.extraArgs);
     const child = execFile(
       'claude',
       args,

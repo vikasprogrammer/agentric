@@ -18,12 +18,12 @@ import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { inboxFileName, TerminalManager } from '../terminal';
 import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDispatchBlock, TaskTimelineEntry } from '../types';
-import { chooseAgent, RouterCandidate } from './router';
+import { chooseAgent, dispatch, routerBrain, RouterCandidate } from './router';
 import { reviewGoals } from './goal-review';
 import { reviewBets } from './bet-review';
 import { reviewLoginExpiry } from './login-expiry';
 import { recordCapabilityGap } from './capability-gap';
-import { classifyIntent, SOCIAL_REPLY } from './intent';
+import { SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
 import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './concierge';
 import { sweepStrandedTasks } from './task-reconcile';
@@ -293,6 +293,8 @@ export interface AddAutomationInput {
 /** The command namespace a chat message may lead with before the agent name: `/agentric <agent> …`, or the
  *  older `/agent-os` / `/agentos`. Exported so the ClickUp ingress strips exactly the same forms. */
 export const CHAT_NAMESPACE_RE = /^(\s*)\/(?:agentric|agent-?os)\s+\/?/i;
+/** A message that OPENS with a `/word` command form. */
+const UNKNOWN_SLASH_RE = /^\s*\/[A-Za-z0-9][\w-]*\b/;
 
 /** "5m ago" / "3h ago" / "2d ago" — for the one-line task status a chat command replies with. */
 function agoLabel(ts: number): string {
@@ -978,7 +980,7 @@ export class Automations {
     // Slack eats a leading `/`, so the roster is quoted WITHOUT one and the alternatives are named —
     // a help list whose every example the reader's client refuses to send is worse than no help list.
     const how = 'Address an agent by name — `<agent>: your request`, `@<agent> …`, or `/agentric <agent> …`';
-    const help = m
+    const help = m && !/^(help|agents|list|roster)$/i.test(m[1])
       ? `I don't have an agent named \`${m[1]}\`. ${how}:\n${list}`
       : `👋 ${how}. Available:\n${list}`;
     return { help };
@@ -1132,8 +1134,24 @@ export class Automations {
     //    off to the read-only concierge / action operator as THREAD-BOUND chat sessions: they do the work
     //    and reply IN-THREAD via the same chat-mirror primitive every chat agent uses (the "poke the
     //    thread"), not a bespoke client poll. `work` routes to the best-fit teammate. Fails safe.
+    // A `/word` that names no agent (`/agents`, `/help`, a typo) is a request for the roster, not free
+    // text to infer an agent from — auto-routing `/agents` used to hand it to whichever agent's
+    // description happened to contain "agents".
+    if (explicit.help && UNKNOWN_SLASH_RE.test(opts.text) && !CHAT_NAMESPACE_RE.test(opts.text)) {
+      return { sessions, agents, reply: explicit.help };
+    }
+
     if (this.os.settings.autoRouteEnabled()) {
-      const intent = classifyIntent(opts.text).intent;
+      // One model call decides intent + agent over the chat-reachable roster (rules fallback without a
+      // model) — the same dispatcher Cockpit uses. Thread-bound throughout: the concierge/operator reply
+      // in-thread via the chat mirror like every chat agent.
+      const text = opts.text.replace(CHAT_NAMESPACE_RE, '$1').trim() || opts.text;
+      const d = await dispatch(this.os, text, {
+        brain: routerBrain(this.os, () => this.tm.outOfBandCredentialEnv()),
+        eligible: (a) => a.chatReachable !== false,
+      });
+      this.os.audit.append({ ts: Date.now(), runId: opts.key, tenant: this.os.tenant, principal: opts.runAs ? `member:${opts.runAs}` : 'chat', type: 'router.dispatched', data: { source: 'chat', via: d.via, intent: d.intent, kind: d.decision?.kind ?? null, agent: d.decision?.kind === 'route' ? d.decision.agentId : null, reason: d.reason ?? null } });
+      const intent = d.intent;
 
       if (intent === 'social') {
         // A bare "hey"/"thanks" — reply conversationally instead of routing or dumping the roster.
@@ -1166,7 +1184,7 @@ export class Automations {
       }
 
       // `work` (or a concierge/operator that couldn't be provisioned) → route to the best-fit teammate.
-      const decision = await chooseAgent(this.os, opts.text);
+      const decision = d.decision ?? await chooseAgent(this.os, text);
       if (decision.kind === 'route') {
         spawn(decision.agentId, opts.extra, { by: decision.method === 'llm' ? 'auto-llm' : 'auto', score: decision.score, runnerUp: decision.runnerUp?.agentId }, opts.text, opts.runAs);
         return { sessions, agents };

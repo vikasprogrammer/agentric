@@ -1814,7 +1814,14 @@ export interface RouterPreviewResp {
   /** `none` only: nothing on the fleet scored at all (as opposed to a match this member can't run), so
    *  the request was logged as a capability gap for the admins. */
   noFit?: boolean
-  method?: 'keyword' | 'embedding' | 'llm'
+  /** `explicit` = the message named the agent (`@engineer …`) — the console launches it without asking. */
+  method?: 'keyword' | 'embedding' | 'llm' | 'explicit'
+  /** Which brain decided: `model` (one LLM call over the roster) or `rules` (keyword fallback, no model). */
+  via?: 'model' | 'rules'
+  /** The dispatcher's one-line why — shown under the pick so a wrong route is easy to spot. */
+  reason?: string
+  /** explicit only: the request with the agent's name stripped — what the agent is handed. */
+  task?: string
   suggested?: RouterCard
   candidates: RouterCard[]
   /** ask only: an inline answer that's ready immediately (band 1 = from live state, or a configured

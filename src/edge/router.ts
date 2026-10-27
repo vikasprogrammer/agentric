@@ -17,6 +17,15 @@
  *   - **LLM tie-break** — on a near-tie, a cheap chat model picks the winner; absent/unsure, we fall
  *     through to disambiguation (asking the human), never a coin-flip.
  *
+ * **The dispatcher (`dispatch`) is the front door now.** The scorer above shipped as the primary path and
+ * proved it can't be one: it routed CONFIDENTLY WRONG on ordinary requests ("fix the login bug and open a
+ * PR" → support, "write a tweet" → the marketing manager over the social-media agent, "my pod is down"
+ * shortlisting three agents none of which was pod-troubleshooter), and a confident route never reached the
+ * LLM, which only ran on a near-tie. So when any model is reachable — the tenant's API key / OpenAI-style
+ * endpoint, else a throwaway `claude -p` on the box's own subscription (the out-of-band lane the summarizer
+ * and drift judge already use) — ONE call decides intent AND agent from the full roster. The regex intent
+ * classifier + keyword scorer remain as the no-model fallback, never as a gate in front of the model.
+ *
  * The design **fails safe**: a confident win routes silently, a near-tie or weak match asks the human
  * to disambiguate, and nothing-scored falls back to the `/agent` help list. A wrong SILENT route is the
  * only bad outcome, and it's gated behind a clear score margin. The router only PICKS an id — the spawn
@@ -25,6 +34,8 @@
 import { isCodingRuntime, AgentManifest, EmbeddingsConfig, RouterConfig } from '../types';
 import { AgentOS } from '../kernel';
 import { resolveLlm, chatComplete } from './llm';
+import { classifyIntent } from './intent';
+import { runClaudePrompt } from './summarize';
 
 export interface RouterCandidate {
   agentId: string;
@@ -38,7 +49,7 @@ export interface RouterCandidate {
 /** The router's verdict for one message. `route` → spawn it; `disambiguate` → ask the human to pick
  *  among `candidates`; `none` → nothing scored, fall back to the help list. */
 export type RouteDecision =
-  | { kind: 'route'; agentId: string; score: number; runnerUp?: RouterCandidate; method: 'keyword' | 'embedding' | 'llm' }
+  | { kind: 'route'; agentId: string; score: number; runnerUp?: RouterCandidate; method: 'keyword' | 'embedding' | 'llm' | 'explicit'; reason?: string }
   | { kind: 'disambiguate'; candidates: RouterCandidate[] }
   | { kind: 'none' };
 
@@ -253,4 +264,184 @@ async function llmPick(os: AgentOS, text: string, agents: AgentManifest[]): Prom
   if (!out) return null;
   const raw = out.replace(/[^A-Za-z0-9_-]/g, '');
   return agents.find((a) => a.id === raw)?.id ?? null;
+}
+
+
+// ── The dispatcher: one model decision for intent + agent ─────────────────────────────────────────────
+
+export type DispatchIntent = 'work' | 'ask' | 'action' | 'social';
+
+/** What to do with one message. `decision` is set for `work`; `surface` for `action`. `via` says which
+ *  brain decided — `model` (one LLM call) or `rules` (regex intent + keyword scorer, the no-model path). */
+export interface Dispatch {
+  intent: DispatchIntent;
+  surface?: 'automations' | 'tasks';
+  decision?: RouteDecision;
+  reason?: string;
+  via: 'model' | 'rules';
+}
+
+/** A text-in/text-out completion. Null on any failure — the caller falls back to the rules path. */
+export type Brain = (system: string, user: string) => Promise<string | null>;
+
+/** The model the CLI brain asks for. Routing is a short classification — Haiku is ample and fast. */
+export const ROUTER_CLI_MODEL = (): string => process.env.AOS_ROUTER_MODEL || 'haiku';
+
+/**
+ * Resolve the dispatcher's brain: the tenant's configured LLM first (an Anthropic key → Messages API; an
+ * OpenAI-compatible endpoint), else a throwaway `claude -p` on the out-of-band credentials — so a
+ * subscription-only box routes with a model too, not by word overlap. `AOS_ROUTER_CLI=0` turns the CLI
+ * lane off. Null → the rules path.
+ */
+export function routerBrain(os: AgentOS, cliCredentials?: () => { vars: Record<string, string> } | null): Brain | null {
+  const llm = resolveLlm(os);
+  if (llm) return (system, user) => chatComplete(llm, [{ role: 'system', content: system }, { role: 'user', content: user }], { maxTokens: 200, temperature: 0, timeoutMs: 12_000 });
+  if (!cliCredentials || process.env.AOS_ROUTER_CLI === '0') return null;
+  return async (system, user) => {
+    try {
+      const cred = cliCredentials();
+      // Tool-less, no user/project settings (a box owner's plugins + prompt hooks must not steer routing),
+      // no MCP, nothing persisted — a pure classification call.
+      const out = await runClaudePrompt(system, user, {
+        credentials: cred?.vars,
+        model: ROUTER_CLI_MODEL(),
+        timeoutMs: 30_000,
+        extraArgs: ['--tools', '', '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence'],
+      });
+      return out.trim() || null;
+    } catch {
+      return null;
+    }
+  };
+}
+
+export const DISPATCH_SYSTEM = [
+  'You are the dispatcher for Agentric, a workspace where a team of AI agents does work for a company.',
+  'Read ONE message from a person and decide what should handle it.',
+  '',
+  'Intents:',
+  '- "work": the person wants something done, investigated, written, fixed, checked, or answered about the',
+  '  company\'s business, product, customers or systems. Pick the single agent whose lane fits best. A question',
+  '  like "which agent should do X?" is also work — pick the agent for X.',
+  '- "ask": a question about this Agentric workspace ITSELF — which agents exist, what agents/sessions/runs are',
+  '  doing, tasks on the board, automations, approvals, costs/spend, how Agentric works. Not questions about the',
+  '  company\'s business (those are work).',
+  '- "action": set up something STANDING — a recurring/scheduled run or a trigger ("every morning…", "whenever a',
+  '  ticket comes in…") → surface "automations"; or file a task on the board for later ("create a task to…") →',
+  '  surface "tasks". Doing something once, now, is work.',
+  '- "social": only a greeting, thanks or small talk with no request in it.',
+  '',
+  'Choosing the agent: judge by what each agent is FOR (its description and examples), not by word overlap.',
+  'Prefer a specialist whose lane clearly covers the request over a generalist; use a generalist when no',
+  'specialist fits. If nothing on the roster could plausibly do it, use null.',
+  'confidence: "high" = clearly this agent\'s lane; "medium" = a good fit, another could also do it; "low" = a guess.',
+  'alternatives: up to 2 OTHER agent ids that could reasonably handle it, best first ([] if none).',
+  '',
+  'Reply with ONLY one JSON object — no prose, no code fence:',
+  '{"intent":"work|ask|action|social","agent":"<id or null>","confidence":"high|medium|low","alternatives":["<id>"],"surface":"automations|tasks|null","reason":"<why, at most 12 words>"}',
+].join('\n');
+
+/** The roster + message the dispatcher reads. Each agent is advertised by everything it says it is for. */
+export function buildDispatchInput(text: string, agents: AgentManifest[], opts: { forceWork?: boolean } = {}): string {
+  const one = (s: string, n: number) => s.replace(/\s+/g, ' ').trim().slice(0, n);
+  const roster = agents.map((a) => {
+    const ex = (a.examplePrompts || []).slice(0, 3).map((e) => `"${one(e, 90)}"`).join(' | ');
+    return `- ${a.id}${a.category ? ` [${a.category}]` : ''}: ${one(a.description || '(no description)', 320)}${ex ? ` — e.g. ${ex}` : ''}`;
+  }).join('\n');
+  const force = opts.forceWork ? '\n\nThe person has asked for an agent to handle this: the intent is "work".' : '';
+  return `Agents:\n${roster}\n\nMessage:\n${text.slice(0, 2000)}${force}`;
+}
+
+interface ParsedDispatch {
+  intent: DispatchIntent;
+  agent: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  alternatives: string[];
+  surface: 'automations' | 'tasks' | null;
+  reason?: string;
+}
+
+/** Parse the dispatcher's reply. Tolerates a code fence or stray prose around the object; drops agent ids
+ *  that aren't on the roster (a hallucinated id must never be spawned). Null → unusable, use the rules. */
+export function parseDispatch(out: string | null | undefined, ids: string[]): ParsedDispatch | null {
+  if (!out) return null;
+  const m = out.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  let j: Record<string, unknown>;
+  try { j = JSON.parse(m[0]); } catch { return null; }
+  const intent = String(j.intent || '').toLowerCase();
+  if (!['work', 'ask', 'action', 'social'].includes(intent)) return null;
+  const known = new Set(ids);
+  const agent = typeof j.agent === 'string' && known.has(j.agent) ? j.agent : null;
+  const conf = String(j.confidence || '').toLowerCase();
+  const alternatives = (Array.isArray(j.alternatives) ? j.alternatives : [])
+    .filter((x): x is string => typeof x === 'string' && known.has(x) && x !== agent)
+    .filter((x, i, arr) => arr.indexOf(x) === i)
+    .slice(0, 2);
+  const surface = j.surface === 'automations' || j.surface === 'tasks' ? j.surface : null;
+  const reason = typeof j.reason === 'string' && j.reason.trim() ? j.reason.trim().slice(0, 160) : undefined;
+  return { intent: intent as DispatchIntent, agent, confidence: conf === 'high' || conf === 'low' ? conf : 'medium', alternatives, surface, reason };
+}
+
+const CONF_SCORE = { high: 0.9, medium: 0.7, low: 0.45 } as const;
+
+/** Map a parsed model reply onto a Dispatch. Pure. A low-confidence pick with alternatives ASKS the human
+ *  (a wrong silent route is the one bad outcome); an action with no usable surface is treated as work. */
+export function toDispatch(p: ParsedDispatch, opts: { forceWork?: boolean } = {}): Dispatch {
+  const intent: DispatchIntent = opts.forceWork ? 'work' : p.intent;
+  if (intent === 'social' || intent === 'ask') return { intent, reason: p.reason, via: 'model' };
+  if (intent === 'action' && p.surface) return { intent, surface: p.surface, reason: p.reason, via: 'model' };
+  const cand = (id: string, score: number): RouterCandidate => ({ agentId: id, score });
+  let decision: RouteDecision;
+  if (p.agent && (p.confidence !== 'low' || p.alternatives.length === 0)) {
+    const runnerUp = p.alternatives[0] ? cand(p.alternatives[0], CONF_SCORE.low) : undefined;
+    decision = { kind: 'route', agentId: p.agent, score: CONF_SCORE[p.confidence], ...(runnerUp ? { runnerUp } : {}), method: 'llm', reason: p.reason };
+  } else {
+    const ids = [p.agent, ...p.alternatives].filter((x): x is string => !!x);
+    decision = ids.length >= 2 ? { kind: 'disambiguate', candidates: ids.slice(0, 3).map((id) => cand(id, CONF_SCORE.low)) }
+      : ids.length === 1 ? { kind: 'route', agentId: ids[0], score: CONF_SCORE.low, method: 'llm', reason: p.reason }
+      : { kind: 'none' };
+  }
+  return { intent: 'work', decision, reason: p.reason, via: 'model' };
+}
+
+/** The agents a message may be routed to: user-facing coding-runtime teammates (never the System
+ *  machinery), narrowed by the caller's own eligibility rule (who can run it / who is chat-reachable). */
+export function routableAgents(os: AgentOS, eligible?: (a: AgentManifest) => boolean): AgentManifest[] {
+  return [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime) && a.category !== 'System' && (!eligible || eligible(a)));
+}
+
+/**
+ * Decide what one message is and who should take it. With a brain: one model call over the full roster
+ * (intent + agent + alternatives + a reason). Without one, or when its reply is unusable: the regex intent
+ * classifier + `chooseAgent`. `forceWork` is the "route to an agent anyway" escape hatch. Never throws.
+ */
+export async function dispatch(
+  os: AgentOS,
+  text: string,
+  opts: { brain?: Brain | null; forceWork?: boolean; eligible?: (a: AgentManifest) => boolean } = {},
+): Promise<Dispatch> {
+  const agents = routableAgents(os, opts.eligible);
+  if (opts.brain && agents.length) {
+    const out = await opts.brain(DISPATCH_SYSTEM, buildDispatchInput(text, agents, opts)).catch(() => null);
+    const parsed = parseDispatch(out, agents.map((a) => a.id));
+    if (parsed) return toDispatch(parsed, opts);
+  }
+  const ci = opts.forceWork ? { intent: 'work' as const } : classifyIntent(text);
+  if (ci.intent === 'action' && ci.surface) return { intent: 'action', surface: ci.surface, via: 'rules' };
+  if (ci.intent === 'social' || ci.intent === 'ask') return { intent: ci.intent, via: 'rules' };
+  return { intent: 'work', decision: await chooseAgent(os, text), via: 'rules' };
+}
+
+/**
+ * An explicitly ADDRESSED agent — `@engineer …`, `/engineer …`, `engineer: …` — returned with the request
+ * that follows. Naming an agent always beats inference. A bare leading word only counts with the colon/
+ * comma form, so "support for X is broken" doesn't address an agent called `support`. Pure.
+ */
+export function addressedAgent(text: string, isAgent: (id: string) => boolean): { agentId: string; rest: string } | null {
+  const t = (text || '').replace(/^\s*[@/](?:agentric|agent-?os)\b[\s:,]*/i, '').trim();
+  const m = t.match(/^(?:[@/]([A-Za-z0-9][\w-]*)\b[\s:,]*|([A-Za-z0-9][\w-]*)\s*[:,]\s*)([\s\S]*)$/);
+  if (!m) return null;
+  const id = m[1] || m[2];
+  return isAgent(id) ? { agentId: id, rest: m[3].trim() } : null;
 }

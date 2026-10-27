@@ -2119,7 +2119,7 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onPause={pauseSession} onUnpause={unpauseSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} doneToday={doneToday} members={members} agents={state?.agents ?? []} maturity={maturity} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} agents={state?.agents ?? []} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
-          {route === 'cockpit' && <CockpitPage sessions={sessions} onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
+          {route === 'cockpit' && <CockpitPage agents={state?.agents ?? []} sessions={sessions} onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
@@ -5643,12 +5643,14 @@ function prettyAgent(id: string): string {
   return id.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-/** Cockpit — the natural-language front door. Type what you need; the intent layer decides:
- *   - work   → the auto-router picks the best-fit agent; you launch it in **Chat or Terminal**.
+/** Cockpit — the natural-language front door. Type what you need; ONE dispatcher call decides:
+ *   - work   → the best-fit agent (with its reason); Enter or a click launches it in **Chat or Terminal**.
+ *              Naming one (`@engineer …`) skips the guess and launches it straight away.
  *   - ask    → a question about the workspace is answered **inline** (no session).
  *   - action → "schedule…/create a task…" deep-links into that primitive's surface.
  *  Every "work" dispatch still runs through the governed chat/terminal spawn (run-as you, gate hook). */
-function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
+function CockpitPage({ agents, sessions, onOpenChat, onOpenTerminal, nav }: {
+  agents: AgentInfo[]
   sessions: Session[]
   onOpenChat: (id: string) => void
   onOpenTerminal: (tmux: string, title?: string) => void
@@ -5669,13 +5671,15 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
     const r = await api.routerPreview(text, force)
     setBusy(false)
     if (r.error) { setErr(r.error); return }
+    // You named the agent — no reason to make you confirm your own choice.
+    if (r.method === 'explicit' && r.suggested) { setPreview(r); void dispatch(r.suggested.id, r.task); return }
     setPreview(r)
     if (r.intent === 'ask' && r.run?.sessionId) setRunId(r.run.sessionId) // concierge answer streams in
   }
 
   // Dispatch the chosen agent in the selected launch mode, using the ORIGINAL message as its task.
-  const dispatch = async (agentId: string) => {
-    const text = draft.trim()
+  const dispatch = async (agentId: string, task?: string) => {
+    const text = (task || draft).trim()
     if (!text || busy) return
     setBusy(true); setErr('')
     if (mode === 'terminal') {
@@ -5691,8 +5695,21 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
     }
   }
 
+  // `@` autocomplete: while the draft is just `@partial`, offer the matching agents.
+  const mentionable = useMemo(() => agents.filter((a) => a.runtime === 'claude-code' && a.category !== 'System'), [agents])
+  const mention = draft.match(/^@([\w-]*)$/)
+  const mentionHits = mention ? mentionable.filter((a) => a.id.toLowerCase().includes(mention[1].toLowerCase())).slice(0, 6) : []
+  const pickMention = (id: string) => setDraft(`@${id} `)
+
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runPreview() }
+    if (e.key === 'Tab' && mentionHits.length) { e.preventDefault(); pickMention(mentionHits[0].id); return }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      if (mentionHits.length) { pickMention(mentionHits[0].id); return }
+      // A pick is already on screen for THIS draft (typing clears it) → Enter launches it.
+      if (preview?.intent !== 'ask' && preview?.intent !== 'action' && preview?.kind === 'route' && preview.suggested) { void dispatch(preview.suggested.id); return }
+      runPreview()
+    }
   }
 
   // An ephemeral System-agent run whose reply we surface inline — the `ask` concierge (band 2b) OR the
@@ -5768,7 +5785,7 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
       <div className="text-center">
         <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-xl bg-primary/10"><Gauge className="h-6 w-6 text-primary" /></div>
         <h2 className="text-lg font-semibold">What do you need?</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Describe it in plain words — I'll route you to the right agent, answer a question, or point you to the right place.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Describe it in plain words — I'll pick the right agent, answer a question, or set it up. Or name one: <code className="rounded bg-muted px-1">@engineer …</code></p>
       </div>
 
       <div className="rounded-xl border bg-card p-2 shadow-sm">
@@ -5777,9 +5794,20 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
           value={draft}
           onChange={(e) => { setDraft(e.target.value); if (preview) setPreview(null) }}
           onKeyDown={onKeyDown}
-          placeholder="e.g. my pod is throwing a 500 after a plugin update — or — which agents are idle? — or — schedule the churn report every morning"
+          placeholder="e.g. my pod is throwing a 500 after a plugin update — or — which agents are idle? — or — @engineer review PR 601"
           className="min-h-[96px] resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
         />
+        {mentionHits.length > 0 && (
+          <div className="mx-1 mb-1 flex flex-col overflow-hidden rounded-lg border">
+            {mentionHits.map((a) => (
+              <button key={a.id} onClick={() => pickMention(a.id)} className="flex items-center gap-2 px-2.5 py-1.5 text-left text-sm hover:bg-muted/60">
+                <AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-foreground/70" />
+                <span className="font-medium">@{a.id}</span>
+                {a.description && <span className="truncate text-xs text-muted-foreground">{a.description}</span>}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-center justify-between px-1 pb-1">
           <span className="text-[11px] text-muted-foreground">Enter to send · Shift+Enter for a new line</span>
           <Button size="sm" disabled={busy || !draft.trim()} onClick={() => runPreview()}>
@@ -5862,8 +5890,9 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
                 <>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
-                    <span>Best match{preview.method === 'llm' ? ' (AI-picked)' : preview.method === 'embedding' ? ' (semantic)' : ''} — press to start in {mode}, or choose another.</span>
+                    <span>{preview.method === 'explicit' ? `Starting in ${mode}…` : <>Best match{preview.method === 'embedding' ? ' (semantic)' : preview.via === 'rules' ? ' (keyword match)' : ''} — Enter to start in {mode}, or choose another.</>}</span>
                   </div>
+                  {preview.reason && preview.method !== 'explicit' && <div className="-mt-1 pl-5 text-xs italic text-muted-foreground">{preview.reason}</div>}
                   {card(preview.suggested, { primary: true })}
                   {preview.candidates.length > 0 && (
                     <div className="flex flex-col gap-2">
@@ -5876,6 +5905,7 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
               {preview.kind === 'disambiguate' && (
                 <>
                   <div className="text-sm text-muted-foreground">A few agents could take this — which one?</div>
+                  {preview.reason && <div className="-mt-1 text-xs italic text-muted-foreground">{preview.reason}</div>}
                   {preview.candidates.map((c) => card(c))}
                 </>
               )}
@@ -21346,10 +21376,10 @@ function IntegrationsSettings({ me }: { me: Member }) {
                 : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">off</Badge>}
             </div>
             <p className="text-xs text-muted-foreground">
-              An <strong>Anthropic API key</strong> lets Cockpit's <strong>ask</strong> tier and the router's near-tie
-              tie-break answer directly via Claude — fast, no session — instead of spawning the concierge agent.
-              Billed to your Anthropic org (separate from any Claude Code subscription). Without a key, the concierge
-              still answers, just slower.
+              An <strong>Anthropic API key</strong> lets Cockpit and the chat front door (<code>@</code>-mentioning the bot)
+              pick the right agent in about a second, and answer workspace questions directly — no session — instead of
+              spawning the concierge agent. Billed to your Anthropic org (separate from any Claude Code subscription).
+              Without a key, routing uses this box's Claude login (a few seconds slower) and the concierge still answers.
             </p>
           </div>
 
