@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.467.2] - 2026-10-27
+
+### Fixed
+- **A goal can be given the history somebody already measured.** `goal_measure` (and the human
+  `POST /api/goals/:id/readings`) now take an optional **`at`** — the date the reading MEASURES,
+  `YYYY-MM-DD` or epoch ms — so a backfill lands on its own window instead of all at once. Without it
+  an agent that had just measured six real weekly windows filed them within 8 seconds, and
+  `metricStatus` correctly refused to read that as a trend: it needs a sample SPANNING the metric's
+  interval, so a live support goal provably 69% of the way to target reported `new` and every new
+  goal started blind for ~3 weeks. Past-only on purpose — a future reading makes `staleDays` negative
+  and would stop the staleness sweep ever reporting that goal unmeasured again, which the human route
+  silently allowed (it took a raw unbounded epoch). Dated readings are audited `backfilled: true`,
+  because an agent filing history is reshaping its own apparent trend.
+  **For admins:** a goal no longer has to wait weeks for a verdict — the agent that measures it can
+  file the past windows it just read, each on its own date.
+
 ## [0.467.1] - 2026-10-27
 ### Fixed
 - **A browser tab left open no longer keeps a session alive forever.** The idle-interactive janitor skipped

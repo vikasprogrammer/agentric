@@ -209,6 +209,32 @@ function readMetric(b: Record<string, unknown>): (Partial<GoalMetric> & { name: 
   };
 }
 
+/** How far back a reading may be dated. Generous — a yearly metric legitimately has old windows — but
+ *  bounded, because one absurd date becomes the `first` reading and poisons every movement figure after it. */
+const READING_BACKFILL_YEARS = 2;
+
+/** Parse a reading's `at`: a `YYYY-MM-DD` date or epoch ms. Returns undefined when absent (= now), or a
+ *  reason string the caller turns into a 400. A date-only string is anchored at 12:00 UTC rather than
+ *  midnight so the reading renders on the day the agent named in every timezone either side of UTC. */
+function readReadingAt(raw: unknown): number | undefined | 'bad' | 'future' | 'ancient' {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  let ms: number;
+  if (typeof raw === 'number') {
+    ms = raw;
+  } else if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) {
+    ms = Date.parse(raw.trim() + 'T12:00:00Z');
+  } else if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+    ms = Number(raw.trim());
+  } else {
+    return 'bad';
+  }
+  if (!Number.isFinite(ms)) return 'bad';
+  const now = Date.now();
+  if (ms > now) return 'future';
+  if (ms < now - READING_BACKFILL_YEARS * 365 * 86_400_000) return 'ancient';
+  return ms;
+}
+
 /** Active goals with no progress (no goal_event) in 7+ days — the Insights Goals tile's "plan"-able list.
  *  Matches the tile's stuck-count query; each can be nudged with the existing strategist plan route. */
 function stuckGoals(os: AgentOS, now = Date.now()): Array<{ id: string; title: string; days: number }> {
@@ -2417,9 +2443,22 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!goal.metric) return sendJson(res, 400, { error: `goal "${goal.title}" has no metric — a human sets what it measures before readings can be recorded` });
     const value = Number(b.value);
     if (!Number.isFinite(value)) return sendJson(res, 400, { error: 'value must be a number' });
-    const reading = os.goals.addReading(goal.id, value, `agent:${agent}`, { note: b.note != null ? String(b.note) : undefined });
+    // `at` dates the reading to the window it MEASURES rather than the moment it was filed — the only way a
+    // goal can be born carrying history somebody has already measured. Without it a backfill lands as N
+    // readings seconds apart, which `metricStatus` correctly refuses to read as a trend: it needs a sample
+    // SPANNING the metric's interval, so a goal provably 69% of the way to target still reports `new` for
+    // its first few weeks (found on a live support goal, 6 real weekly readings inside 8 seconds).
+    const at = readReadingAt(b.at);
+    if (at === 'bad') return sendJson(res, 400, { error: 'at must be a date (YYYY-MM-DD) or epoch milliseconds' });
+    if (at === 'future') return sendJson(res, 400, { error: 'at cannot be in the future — a reading dated ahead of now makes the staleness check negative, so the goal would never be reported unmeasured again' });
+    if (at === 'ancient') return sendJson(res, 400, { error: `at is further back than ${READING_BACKFILL_YEARS} years — that cannot be the window you just measured` });
+    const reading = os.goals.addReading(goal.id, value, `agent:${agent}`, { at, note: b.note != null ? String(b.note) : undefined });
     if (!reading) return sendJson(res, 400, { error: 'could not record the reading' });
-    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'goal.measured', data: { goalId: goal.id, metric: goal.metric.name, value } });
+    // A backfilled reading is flagged in the trail: readings are append-only and `source` already names the
+    // agent, but an agent filing HISTORY is reshaping its own apparent trend, and that should be legible to
+    // a human without diffing timestamps.
+    const backfilled = at !== undefined && Date.now() - at > 86_400_000;
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'goal.measured', data: { goalId: goal.id, metric: goal.metric.name, value, at: reading.at, ...(backfilled ? { backfilled: true } : {}) } });
     const st = os.goals.metricStatus(goal.id);
     return sendJson(res, 200, { ok: true, reading, verdict: st?.verdict, metric: goal.metric.name, target: goal.metric.target ?? null });
   }
@@ -4831,10 +4870,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const rb = await readBody(req);
     const value = Number(rb.value);
     if (!Number.isFinite(value)) return sendJson(res, 400, { error: 'value must be a number' });
-    const at = Number.isFinite(Number(rb.at)) && Number(rb.at) > 0 ? Number(rb.at) : undefined;
+    // Same validator as the agent route. This side already took an `at` but as a raw epoch number with no
+    // bound, so an admin could file a reading dated ahead of now — which makes `staleDays` negative and
+    // stops the staleness sweep ever reporting that goal unmeasured again.
+    const at = readReadingAt(rb.at);
+    if (at === 'bad') return sendJson(res, 400, { error: 'at must be a date (YYYY-MM-DD) or epoch milliseconds' });
+    if (at === 'future') return sendJson(res, 400, { error: 'at cannot be in the future — a reading dated ahead of now would freeze the staleness check' });
+    if (at === 'ancient') return sendJson(res, 400, { error: `at is further back than ${READING_BACKFILL_YEARS} years` });
     const reading = os.goals.addReading(goal.id, value, me.id, { at, note: rb.note != null ? String(rb.note) : undefined });
     if (!reading) return sendJson(res, 400, { error: 'could not record the reading' });
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'goal.measured', data: { goalId: goal.id, metric: goal.metric.name, value } });
+    const backfilled = at !== undefined && Date.now() - at > 86_400_000;
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'goal.measured', data: { goalId: goal.id, metric: goal.metric.name, value, at: reading.at, ...(backfilled ? { backfilled: true } : {}) } });
     return sendJson(res, 200, { ok: true, reading, status: os.goals.metricStatus(goal.id) ?? null });
   }
   const goalPlan = p.match(/^\/api\/goals\/([\w-]+)\/plan$/);
