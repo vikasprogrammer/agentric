@@ -88,6 +88,26 @@ assert(statusOf(zombieAttach) === 'stopped', 'attached client with no input past
 // past the default 72h claim ceiling, so the take-over is abandonment.
 assert(statusOf(claimedStale) === 'stopped', 'claimed take-over idle past the ceiling → stopped');
 assert(statusOf(unattended) === 'running', 'headless=1 unattended → not touched by sweep 3');
+
+// The reap is STAMPED so the console keeps the session in its owner's sidebar — a reaped session is otherwise
+// just `stopped`, indistinguishable from one its human closed, and it vanished from the sidebar on reap.
+{
+  const row = (id) => aos.db.prepare('SELECT reaped_at, reap_reason FROM term_sessions WHERE id=?').get(id);
+  assert(row(stale).reaped_at > 0 && row(stale).reap_reason === 'idle-interactive', 'reaped session is stamped reaped_at + reason', JSON.stringify(row(stale)));
+  assert(row(claimedStale).reap_reason === 'claimed-abandoned', 'claimed reap carries its reason');
+  assert(row(recent).reaped_at == null, 'a session left running carries no stamp');
+  const alice = { id: 'm_alice', role: 'member', email: 'alice@x', name: 'Alice' };
+  const listed = tm.listSessions(undefined, undefined, [stale]).find((x) => x.id === stale);
+  assert(listed && listed.reapedAt > 0 && listed.reapReason === 'idle-interactive', 'listSessions exposes reapedAt/reapReason');
+  // Push the reaped row past the summary's 60-row ended tail: it must still ride the poll the sidebar reads.
+  for (let i = 0; i < 70; i++) mkSession({ status: 'done', created_at: Date.now(), updated_at: Date.now() + 1000 + i });
+  const summaryIds = tm.sessionsSummary(alice).rows.map((x) => x.id);
+  assert(summaryIds.includes(stale), 'summary poll keeps a reaped session even past the ended-tail cap');
+  tm.allowResume(stale);
+  assert(row(stale).reaped_at == null, 're-opening (allowResume) clears the stamp');
+  tm.stopSession(claimedStale, 'm_bob');
+  assert(row(claimedStale).reaped_at == null, 'a deliberate stop clears the stamp');
+}
 assert(statusOf(activeByLastAct) === 'running', 'old but recent last_activity → left running');
 
 console.log('\n\x1b[1m3) disabled (timeout = 0) reaps nothing\x1b[0m');

@@ -1430,6 +1430,15 @@ function migrate(db: Db): void {
   addColumn(db, 'term_sessions', 'paused_at', 'INTEGER');
   addColumn(db, 'term_sessions', 'paused_by', 'TEXT');
 
+  // REAPED_AT: when the idle-interactive janitor closed this session out from under its human (and why —
+  // `idle-interactive` / `claimed-abandoned` / `blocked-timeout` / `max-lifetime`). A reaped session is
+  // otherwise just `stopped`/`done`, indistinguishable from one its human finished, so it fell out of the
+  // sidebar the moment the pane died and the person who walked away could not find their work again. The
+  // console keeps a stamped row in the sidebar until it is re-opened (`allowResume` clears the stamp) or
+  // stopped/closed by a human. Never read by any behavioural check — display only.
+  addColumn(db, 'term_sessions', 'reaped_at', 'INTEGER');
+  addColumn(db, 'term_sessions', 'reap_reason', 'TEXT');
+
   // OPENED_AT: when a human last deliberately brought this session back (attach-resume, unpause, a crashed
   // pane restored by someone attached). The interactive LIFETIME ceiling measures age from here, falling
   // back to `created_at` — measured from `created_at` alone, a session older than the ceiling was reaped

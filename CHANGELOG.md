@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.469.0] - 2026-10-27
+### Changed
+- **A session closed for being idle stays in your sidebar.** The idle janitor frees memory by closing
+  interactive sessions nobody has touched in a while — but a reaped session was then just `stopped`, so it
+  dropped out of the sidebar the moment its pane died, and whoever walked away from it couldn't tell which
+  one they had been working on. The janitor now stamps `reaped_at`/`reap_reason` on the row, the summary
+  poll always carries those rows (past the 60-row ended tail), and the sidebar lists them under **Closed
+  while idle** until they are re-opened (which resumes a resumable one in place and clears the stamp),
+  stopped, or dismissed (per row, or **Clear** for the group — a sidebar-only hide; they stay in All sessions).
+  **For users:** Sessions that close themselves after sitting idle now stay in your sidebar under "Closed while idle" — click one to pick up where you left off.
+
 ## [0.468.0] - 2026-10-27
 ### Changed
 - **Library redesign — a browsable gallery that no longer loads every file up front.** The old page
