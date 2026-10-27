@@ -377,8 +377,16 @@ export class ArtifactStore {
     const a = this.get(id);
     if (!a) return false;
     this.db.prepare('DELETE FROM artifacts WHERE id = ?').run(id);
-    if (this.dir) fs.rmSync(path.join(this.dir, id), { recursive: true, force: true });
+    if (this.dir) {
+      fs.rmSync(path.join(this.dir, id), { recursive: true, force: true });
+      fs.rmSync(path.join(this.dir, '.thumbs', id + '.jpg'), { force: true }); // its Library thumb (edge/artifact-thumbs.ts)
+    }
     return true;
+  }
+
+  /** Where Library thumbnails are cached — beside, never inside, the id-dirs (whose contents are served). */
+  thumbsDir(): string | null {
+    return this.dir ? path.join(this.dir, '.thumbs') : null;
   }
 }
 

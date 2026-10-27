@@ -41,6 +41,7 @@ const ASK_DEADLINE_MIN_H = 1;
 const ASK_DEADLINE_MAX_H = 168;
 import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
+import { artifactThumb } from './edge/artifact-thumbs';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { automationEditBase, buildAutomationEditBrief, planAutomationEdit, planAutomationLifecycle, agentAutomationView, editStateOf, EDITABLE_TYPES, LIFECYCLE_ACTIONS, type AutomationLifecycle } from './edge/automation-edit';
 import { chooseAgent, dispatch, routerBrain, routableAgents, addressedAgent, RouteDecision } from './edge/router';
@@ -7404,6 +7405,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const resolved = os.artifacts.readPath(a.id, url.searchParams.get('file') || undefined);
     if (!resolved) return sendJson(res, 404, { error: 'file not found' });
     return streamArtifactFile(req, res, resolved);
+  }
+  // Library card thumbnail — a small cached WebP/JPEG of an image (or a video's first frame) so the grid
+  // never pulls full-size files to paint a card. Same gate as /raw. Falls back to the raw image when the
+  // box has no encoder, and 404s for a type with nothing to preview (the card then draws its icon).
+  const artThumbMatch = p.match(/^\/api\/artifacts\/([\w-]+)\/thumb$/);
+  if (method === 'GET' && artThumbMatch) {
+    const a = os.artifacts.get(artThumbMatch[1]);
+    if (!a) return sendJson(res, 404, { error: 'not found' });
+    if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam) return sendJson(res, 403, { error: 'forbidden' });
+    const resolved = os.artifacts.readPath(a.id);
+    const thumbs = os.artifacts.thumbsDir();
+    if (!resolved || !thumbs) return sendJson(res, 404, { error: 'file not found' });
+    const t = await artifactThumb(thumbs, a.id, resolved);
+    if (t.kind === 'none') return sendJson(res, 404, { error: 'no preview for this type' });
+    // The console versions the URL (`?v=<bytes>`), so a thumb may be cached hard; an edit changes the URL.
+    res.setHeader('cache-control', 'private, max-age=604800');
+    return streamArtifactFile(req, res, t.kind === 'thumb' ? { absPath: t.absPath, mime: t.mime, filename: 'thumb' } : resolved);
   }
   // Markdown deliverable → PDF, rendered on demand (never stored: the .md stays the source of truth, so
   // an edit can't leave a stale PDF beside it). Same gate as /raw. Markdown only for now — the button

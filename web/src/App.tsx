@@ -8125,12 +8125,15 @@ const mdComponents = {
  * the actual filtering. Shared by the Artifacts gallery and the Knowledge Base. Renders nothing when
  * nothing is filed into a folder yet (a flat, folderless store shows no tree).
  */
-function FolderNav({ paths, selected, onSelect, rootLabel = 'All' }: {
+function FolderNav({ paths, selected, onSelect, rootLabel = 'All', defaultCollapsed = false }: {
   paths: string[]
   selected: string
   onSelect: (path: string) => void
   rootLabel?: string
+  /** Start with every folder closed (a deep tree, e.g. the Library's) — the selected folder's ancestors stay open. */
+  defaultCollapsed?: boolean
 }) {
+  // The nodes the user flipped from the default state (closed→open when `defaultCollapsed`, else open→closed).
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   // Every prefix of every path is a folder node.
   const nodes = new Set<string>()
@@ -8149,7 +8152,9 @@ function FolderNav({ paths, selected, onSelect, rootLabel = 'All' }: {
 
   const Row = ({ node, depth }: { node: string; depth: number }) => {
     const kids = childrenOf(node)
-    const open = !collapsed.has(node)
+    const open = defaultCollapsed
+      ? collapsed.has(node) || selected.startsWith(node + '/')
+      : !collapsed.has(node)
     const active = selected === node
     return (
       <div>
@@ -8200,24 +8205,21 @@ function ArtifactBody({ a }: { a: Artifact }) {
     return () => { live = false }
   }, [a.id])
 
-  if (isImageMime(a.mime)) return <img src={raw} alt={a.title} className="max-h-[70vh] max-w-full rounded-lg border" />
-  if (isVideoMime(a.mime)) return <video src={raw} controls className="max-h-[72vh] w-full rounded-lg border bg-black" />
-  if (isPdfMime(a.mime)) return <iframe src={raw} title={a.title} className="h-[72vh] w-full rounded-lg border" />
+  // Sized for the Library viewer (a full-screen overlay under one header row). The full-size file loads
+  // only here — grid cards use the /thumb route.
+  if (isImageMime(a.mime)) return <img src={raw} alt={a.title} decoding="async" className="max-h-[calc(100vh-7rem)] max-w-full rounded-md object-contain shadow-sm" />
+  if (isVideoMime(a.mime)) return <video src={raw} controls preload="metadata" className="max-h-[calc(100vh-7rem)] max-w-full rounded-md bg-black" />
+  if (isPdfMime(a.mime)) return <iframe src={raw} title={a.title} className="h-[calc(100vh-8.5rem)] w-full rounded-lg border" />
   if (isHtmlArt(a)) return (
     // Sandboxed to a null origin: scripts run (for interactive dashboards/charts) but the page can't
     // reach the parent DOM, the session cookie, or the same-origin API. No allow-same-origin — that
     // would let the frame drop its own sandbox.
-    <div className="space-y-2">
-      <iframe
-        src={raw}
-        title={a.title}
-        sandbox="allow-scripts allow-popups allow-forms"
-        className="h-[72vh] w-full rounded-lg border bg-white"
-      />
-      <div className="text-right">
-        <a href={raw} target="_blank" rel="noreferrer" className="text-xs text-primary underline">Open full page ↗</a>
-      </div>
-    </div>
+    <iframe
+      src={raw}
+      title={a.title}
+      sandbox="allow-scripts allow-popups allow-forms"
+      className="h-[calc(100vh-8.5rem)] w-full rounded-lg border bg-white"
+    />
   )
   if (wantsText) {
     if (text === null) return <div className="text-sm text-muted-foreground">Loading…</div>
@@ -8685,218 +8687,576 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
   )
 }
 
+// ── Library (the deliverables gallery) ─────────────────────────────────────────────────────────
+// Built to stay cheap at hundreds of deliverables: the list endpoint is metadata only, cards render in
+// pages of LIBRARY_PAGE as the sentinel scrolls into view, and a card fetches NOTHING until it is near
+// the viewport — then a server-side thumbnail (`/thumb`, a few KB) for images/videos, or the first ~2 KB
+// of a document (a Range request) for its excerpt. Full files load only in the viewer, one at a time.
+
+type LibraryKind = 'doc' | 'image' | 'video' | 'page' | 'other'
+type LibraryType = 'all' | LibraryKind
+type LibrarySort = 'new' | 'old' | 'name' | 'size'
+const LIBRARY_PAGE = 48
+const LIBRARY_VIEW_KEY = 'aos_library_view'
+const LIBRARY_SORT_KEY = 'aos_library_sort'
+const LIBRARY_TYPES: { key: LibraryType; label: string; icon: LucideIcon }[] = [
+  { key: 'all', label: 'All', icon: Boxes },
+  { key: 'doc', label: 'Docs', icon: FileText },
+  { key: 'image', label: 'Images', icon: ImageIcon },
+  { key: 'video', label: 'Video', icon: Film },
+  { key: 'page', label: 'Pages', icon: FileCode },
+  { key: 'other', label: 'Other', icon: FileIcon },
+]
+const LIBRARY_SORTS: Record<LibrarySort, string> = { new: 'Newest first', old: 'Oldest first', name: 'Name A–Z', size: 'Largest first' }
+
+function libraryKind(a: Artifact): LibraryKind {
+  if (isImageMime(a.mime)) return 'image'
+  if (isVideoMime(a.mime)) return 'video'
+  if (isHtmlArt(a)) return 'page'
+  if (isPdfMime(a.mime) || isMarkdownArt(a) || isTextMime(a.mime)) return 'doc'
+  return 'other'
+}
+/** Text-ish deliverables open in the rendered viewer and can be edited in place. */
+const isTextArt = (a: Artifact) => isMarkdownArt(a) || (isTextMime(a.mime) && !isHtmlArt(a))
+
+function readPref<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  try { const v = localStorage.getItem(key) as T | null; return v && allowed.includes(v) ? v : fallback } catch { return fallback }
+}
+function writePref(key: string, v: string) { try { localStorage.setItem(key, v) } catch { /* private mode */ } }
+
+/** True once `ref` has come within `margin` of the viewport — and stays true, so a card that loaded its
+ *  thumbnail doesn't drop it on scroll-out. Without IntersectionObserver, everything counts as visible. */
+function useInView<T extends Element>(margin = '300px'): [(el: T | null) => void, boolean] {
+  const [seen, setSeen] = useState(false)
+  const obs = useRef<IntersectionObserver | null>(null)
+  const ref = useCallback((el: T | null) => {
+    obs.current?.disconnect()
+    if (!el || seen) return
+    if (typeof IntersectionObserver === 'undefined') { setSeen(true); return }
+    obs.current = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { setSeen(true); obs.current?.disconnect() }
+    }, { rootMargin: margin })
+    obs.current.observe(el)
+  }, [seen, margin])
+  useEffect(() => () => obs.current?.disconnect(), [])
+  return [ref, seen]
+}
+
+/** Document excerpts, keyed by id+size (an edit changes the size, so the cache self-invalidates). */
+const excerptCache = new Map<string, string>()
+function plainExcerpt(md: string, title: string): string {
+  const text = md
+    .replace(/^---\n[\s\S]*?\n---\n/, '')          // front-matter
+    .replace(/```[\s\S]*?(```|$)/g, ' ')            // code fences
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')           // images
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')        // links → text
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, '') // heading/quote/list markers
+    .replace(/[*_`~|]/g, '')
+    .replace(/\n{2,}/g, '\n')
+    .trim()
+  // Most reports open with an H1 that IS the title the card already shows underneath.
+  const [first, ...rest] = text.split('\n')
+  const body = first && first.trim().toLowerCase() === title.trim().toLowerCase() ? rest.join('\n') : text
+  return body.trim().slice(0, 420)
+}
+
+/** A card's visual: thumbnail for images/videos, a text excerpt for docs, a typed tile for the rest.
+ *  Loads nothing until the card nears the viewport. */
+function LibraryThumb({ a, compact = false }: { a: Artifact; compact?: boolean }) {
+  const [ref, seen] = useInView<HTMLDivElement>()
+  const kind = libraryKind(a)
+  const [broken, setBroken] = useState(false)
+  const key = `${a.id}:${a.bytes}`
+  const [excerpt, setExcerpt] = useState<string | null>(() => excerptCache.get(key) ?? null)
+  const wantsExcerpt = !compact && kind === 'doc' && !isPdfMime(a.mime)
+  useEffect(() => {
+    if (!seen || !wantsExcerpt || excerptCache.has(key)) return
+    let live = true
+    fetch(api.artifactRawUrl(a.id), { headers: { Range: 'bytes=0-2047' } })
+      .then((r) => (r.ok ? r.text() : ''))
+      .then((t) => {
+        const raw = isMarkdownArt(a) ? plainExcerpt(t, a.title) : t.slice(0, 420)
+        excerptCache.set(key, raw)
+        if (live) setExcerpt(raw)
+      })
+      .catch(() => { if (live) setExcerpt('') })
+    return () => { live = false }
+  }, [seen, key])
+
+  const tint: Record<LibraryKind, string> = {
+    doc: 'bg-violet-500/5 text-violet-500', image: 'bg-sky-500/5 text-sky-500', video: 'bg-orange-500/5 text-orange-500',
+    page: 'bg-amber-500/5 text-amber-500', other: 'bg-muted text-muted-foreground',
+  }
+  const visual = (kind === 'image' || kind === 'video') && !broken
+  return (
+    <div ref={ref} className={`relative h-full w-full overflow-hidden ${visual ? 'bg-muted/60' : tint[kind]}`}>
+      {visual && seen && (
+        <img
+          src={api.artifactThumbUrl(a.id, a.bytes)}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setBroken(true)}
+          className={`absolute inset-0 h-full w-full ${a.mime.startsWith('image/svg') ? 'object-contain p-3' : 'object-cover object-top'}`}
+        />
+      )}
+      {kind === 'video' && !broken && (
+        <span className="absolute inset-0 flex items-center justify-center">
+          <span className={`flex items-center justify-center rounded-full bg-black/55 ${compact ? 'h-5 w-5' : 'h-9 w-9'}`}><Play className={`${compact ? 'h-2.5 w-2.5' : 'h-4 w-4'} fill-white text-white`} /></span>
+        </span>
+      )}
+      {!visual && (wantsExcerpt && excerpt
+        ? <div className="h-full w-full bg-card p-3 text-[10.5px] leading-[1.45] text-muted-foreground [mask-image:linear-gradient(to_bottom,black_65%,transparent)]">
+            <div className="whitespace-pre-line break-words">{excerpt}</div>
+          </div>
+        : <div className="flex h-full w-full items-center justify-center">
+            <ArtifactIcon a={a} className={compact ? 'h-4 w-4' : 'h-8 w-8 opacity-80'} />
+          </div>)}
+    </div>
+  )
+}
+
+/** Infinite-scroll trigger: asks for the next page as it nears the viewport. Re-observed whenever the
+ *  remaining count changes, so a sentinel still on screen after a page lands fires again. The button is
+ *  the no-IntersectionObserver fallback (and a visible "there's more"). */
+function LoadMore({ left, onMore }: { left: number; onMore: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const more = useRef(onMore)
+  more.current = onMore
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    const o = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) more.current() }, { rootMargin: '600px' })
+    o.observe(el)
+    return () => o.disconnect()
+  }, [left])
+  return (
+    <div ref={ref} className="flex justify-center py-4">
+      <Button size="sm" variant="ghost" onClick={onMore}>Load more ({left} left)</Button>
+    </div>
+  )
+}
+
+/** "Today / Yesterday / This week / <Month Year>" — the date section a row sits under. */
+function libraryBucket(ts: number, now = Date.now()): string {
+  const day = (t: number) => new Date(t).setHours(0, 0, 0, 0)
+  const diff = Math.round((day(now) - day(ts)) / 86_400_000)
+  if (diff <= 0) return 'Today'
+  if (diff === 1) return 'Yesterday'
+  if (diff < 7) return 'This week'
+  return new Date(ts).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+}
+
 function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; nav: (r: Route, detail?: string) => void }) {
-  const [artifacts, setArtifacts] = useState<Artifact[]>([])
+  const [artifacts, setArtifacts] = useState<Artifact[] | null>(null)
   const [enabled, setEnabled] = useState(true)
-  const [agentFilter, setAgentFilter] = useState('')
-  const [folder, setFolder] = useState('')
-  const [hint, setHint] = useState('')
   const [archived, setArchived] = useState<Artifact[]>([])   // the soft-archived set (Insights declutter)
   const [showArchived, setShowArchived] = useState(false)
+  const [q, setQ] = useState('')
+  const [type, setType] = useState<LibraryType>('all')
+  const [agentFilter, setAgentFilter] = useState('')
+  const [folder, setFolder] = useState('')
+  const [sort, setSortState] = useState<LibrarySort>(() => readPref(LIBRARY_SORT_KEY, ['new', 'old', 'name', 'size'] as const, 'new'))
+  const [view, setViewState] = useState<'grid' | 'list'>(() => readPref(LIBRARY_VIEW_KEY, ['grid', 'list'] as const, 'grid'))
+  const setSort = (s: LibrarySort) => { setSortState(s); writePref(LIBRARY_SORT_KEY, s) }
+  const setView = (v: 'grid' | 'list') => { setViewState(v); writePref(LIBRARY_VIEW_KEY, v) }
+  const [limit, setLimit] = useState(LIBRARY_PAGE)
+  const [hint, setHint] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
 
-  const load = () => api.artifacts().then((r) => { setArtifacts(r.artifacts ?? []); setEnabled(r.enabled !== false) })
+  const load = () => api.artifacts().then((r) => { setArtifacts(r.artifacts ?? []); setEnabled(r.enabled !== false) }).catch(() => setArtifacts([]))
   const loadArchived = () => api.artifacts(true).then((r) => setArchived(r.artifacts ?? [])).catch(() => {})
   useEffect(() => { load(); loadArchived() }, [])
-  const unarchive = async (id: string) => { const r = await api.unarchiveArtifact(id); if (r.error) return setHint('⚠ ' + r.error); loadArchived(); load() }
+  const flash = (m: string) => { setHint(m); setTimeout(() => setHint(''), 4000) }
+
+  // `/` jumps to search, like most file browsers — unless you're already typing somewhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || t?.closest('input,textarea,[contenteditable="true"]')) return
+      e.preventDefault(); searchRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const all = artifacts ?? []
+  const source = showArchived ? archived : all
+  const needle = q.trim().toLowerCase()
+  const inFolder = (f: string) => folder === '' || f === folder || f.startsWith(folder + '/')
+  // Everything but the type filter — so each type chip can show how many it would leave.
+  const base = source.filter((a) =>
+    (!agentFilter || a.agent === agentFilter) && inFolder(a.folder || '') &&
+    (!needle || [a.title, a.filename, a.description ?? '', a.agent, a.folder].some((s) => s.toLowerCase().includes(needle))))
+  const typeCounts = base.reduce((m, a) => { const k = libraryKind(a); m[k] = (m[k] ?? 0) + 1; return m }, {} as Partial<Record<LibraryKind, number>>)
+  const shown = useMemo(() => {
+    const list = base.filter((a) => type === 'all' || libraryKind(a) === type)
+    const by: Record<LibrarySort, (x: Artifact, y: Artifact) => number> = {
+      new: (x, y) => y.createdAt - x.createdAt,
+      old: (x, y) => x.createdAt - y.createdAt,
+      name: (x, y) => (x.title || x.filename).localeCompare(y.title || y.filename),
+      size: (x, y) => y.bytes - x.bytes,
+    }
+    return list.sort(by[sort])
+  }, [source, needle, agentFilter, folder, type, sort])
+  // A new query/filter starts from the first page again.
+  useEffect(() => { setLimit(LIBRARY_PAGE) }, [needle, agentFilter, folder, type, sort, showArchived])
+  const page = shown.slice(0, limit)
+
+  const agentCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const a of source) m.set(a.agent, (m.get(a.agent) ?? 0) + 1)
+    return [...m.entries()].sort((x, y) => x[0].localeCompare(y[0]))
+  }, [source])
 
   // The URL is the source of truth for the open artifact: `#/artifacts/<id>` deep-links to one
   // deliverable (shareable, back/forward, and the Inbox 'artifact' card links straight here).
   const sel = permalink || undefined
-  const agents = Array.from(new Set(artifacts.map((a) => a.agent))).sort()
-  const inFolder = (f: string) => folder === '' || f === folder || f.startsWith(folder + '/')
-  const shown = artifacts.filter((a) => (!agentFilter || a.agent === agentFilter) && inFolder(a.folder || ''))
-  const selected = artifacts.find((a) => a.id === sel)
+  const selected = sel ? (all.find((a) => a.id === sel) ?? archived.find((a) => a.id === sel)) : undefined
+  const idx = selected ? shown.findIndex((a) => a.id === selected.id) : -1
+  const open = (a: Artifact) => nav('artifacts', a.id)
+  const close = () => nav('artifacts')
+  const step = (d: number) => { if (idx < 0) return; const next = shown[idx + d]; if (next) open(next) }
+  const canManage = (a: Artifact) => me.role === 'owner' || me.role === 'admin' || a.source === me.id
 
-  const remove = async (id: string) => {
+  const remove = async (a: Artifact) => {
     if (!confirm('Delete this deliverable? Its snapshotted file is permanently removed (the audit log is kept).')) return
-    const r = await api.deleteArtifact(id)
-    if (r.error) { setHint('⚠ ' + r.error); return }
-    if (sel === id) nav('artifacts')
-    load()
+    const r = await api.deleteArtifact(a.id)
+    if (r.error) return flash('⚠ ' + r.error)
+    if (sel === a.id) { const next = shown[idx + 1] ?? shown[idx - 1]; next ? open(next) : close() }
+    load(); loadArchived()
   }
-
   const move = async (a: Artifact) => {
     const to = window.prompt('Move to folder (e.g. reports/2024; nest with "/", blank = root):', a.folder || '')
     if (to === null) return
     const r = await api.moveArtifact(a.id, to.trim())
-    if (r.error || !r.ok) { setHint('⚠ ' + (r.error ?? 'move failed')); return }
+    if (r.error || !r.ok) return flash('⚠ ' + (r.error ?? 'move failed'))
     load()
   }
-
   const share = async (a: Artifact, patch: { team?: boolean; public?: boolean }) => {
     const r = await api.shareArtifact(a.id, patch)
-    if (r.error || !r.ok) { setHint('⚠ ' + (r.error ?? 'share failed')); return }
+    if (r.error || !r.ok) return flash('⚠ ' + (r.error ?? 'share failed'))
     load()
   }
+  const unarchive = async (a: Artifact) => {
+    const r = await api.unarchiveArtifact(a.id)
+    if (r.error) return flash('⚠ ' + r.error)
+    loadArchived(); load()
+  }
 
-  // In-place editing of a text/markdown deliverable. `editing` holds the id being edited; the draft is
-  // seeded from the artifact's current bytes. Switching the selected artifact cancels any open edit.
-  const [editing, setEditing] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
-  const [saving, setSaving] = useState(false)
-  useEffect(() => { setEditing(null) }, [sel])
-  const startEdit = async (a: Artifact) => {
-    setHint('')
-    try {
-      const t = await fetch(api.artifactRawUrl(a.id)).then((r) => r.text())
-      setDraft(t); setEditing(a.id)
-    } catch { setHint('⚠ could not load file for editing') }
-  }
-  const saveEdit = async () => {
-    if (!editing) return
-    setSaving(true)
-    const r = await api.editArtifact(editing, draft)
-    setSaving(false)
-    if (r.error || !r.ok) { setHint('⚠ ' + (r.error ?? 'save failed')); return }
-    setEditing(null); load()
-  }
+  const bucketCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    if (sort === 'new' || sort === 'old') for (const a of shown) { const k = libraryBucket(a.createdAt); m.set(k, (m.get(k) ?? 0) + 1) }
+    return m
+  }, [shown, sort])
+  const filtered = !!(needle || agentFilter || folder || type !== 'all')
+  const clearFilters = () => { setQ(''); setAgentFilter(''); setFolder(''); setType('all') }
+  const dated = sort === 'new' || sort === 'old'
+
+  if (artifacts === null) return <div className="text-sm text-muted-foreground">Loading…</div>
 
   return (
     <div className="space-y-3">
       <p className="max-w-3xl text-sm text-muted-foreground">
-        Deliverables your agents have published — PDFs, Markdown, images. Each is a snapshot taken at
-        publish time. {me.role === 'member' ? 'You see deliverables from sessions you started.' : 'Owners and admins see every deliverable.'}
+        Deliverables your agents have published — reports, images, pages. Each is a snapshot taken at
+        publish time. {me.role === 'member' ? 'You see deliverables from your sessions plus anything shared with the workspace.' : 'Owners and admins see every deliverable.'}
         {!enabled && <span className="text-amber-600"> (no data home configured — publishing is disabled)</span>}
       </p>
 
-      {archived.length > 0 && (
-        <div className="rounded-lg border bg-muted/20 p-2 text-xs">
-          <button onClick={() => setShowArchived((v) => !v)} className="flex items-center gap-1.5 font-medium text-muted-foreground hover:text-foreground">
-            <Package className="h-3.5 w-3.5" />{archived.length} archived {showArchived ? '▾' : '▸'}
-          </button>
-          {showArchived && (
-            <ul className="mt-2 space-y-1">
-              {archived.map((a) => (
-                <li key={a.id} className="flex items-center gap-2">
-                  <ArtifactIcon a={a} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="truncate text-muted-foreground">{a.title}</span>
-                  <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{a.agent}</span>
-                  <button onClick={() => unarchive(a.id)} className="shrink-0 text-[11px] text-primary underline underline-offset-2">Restore</button>
-                </li>
-              ))}
-            </ul>
-          )}
+      {/* toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[200px] flex-1 sm:max-w-sm">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search title, file, agent…  ( / )" className="h-8 pl-7 pr-7 text-sm" />
+          {q && <button onClick={() => setQ('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" title="clear"><X className="h-3.5 w-3.5" /></button>}
         </div>
-      )}
+        {agentCounts.length > 1 && (
+          <Select value={agentFilter || 'all'} onValueChange={(v) => setAgentFilter(!v || v === 'all' ? '' : v)}>
+            <SelectTrigger className="h-8 w-[170px] text-xs"><SelectValue>{(v) => (v && v !== 'all' ? v : 'All agents')}</SelectValue></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All agents</SelectItem>
+              {agentCounts.map(([ag, n]) => <SelectItem key={ag} value={ag}>{ag} <span className="ml-1 text-muted-foreground">{n}</span></SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
+        <Select value={sort} onValueChange={(v) => setSort((v ?? 'new') as LibrarySort)}>
+          <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue>{(v) => LIBRARY_SORTS[(v ?? 'new') as LibrarySort]}</SelectValue></SelectTrigger>
+          <SelectContent>
+            {(Object.keys(LIBRARY_SORTS) as LibrarySort[]).map((k) => <SelectItem key={k} value={k}>{LIBRARY_SORTS[k]}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <div className="ml-auto flex items-center rounded-md border p-0.5">
+          <button onClick={() => setView('grid')} className={`rounded p-1 ${view === 'grid' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`} title="Grid"><LayoutGrid className="h-4 w-4" /></button>
+          <button onClick={() => setView('list')} className={`rounded p-1 ${view === 'list' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`} title="List"><List className="h-4 w-4" /></button>
+        </div>
+      </div>
 
-      {agents.length > 1 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button onClick={() => setAgentFilter('')} className={`rounded-full border px-2.5 py-0.5 text-xs ${agentFilter === '' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>All</button>
-          {agents.map((ag) => (
-            <button key={ag} onClick={() => setAgentFilter(ag)} className={`rounded-full border px-2.5 py-0.5 text-xs ${agentFilter === ag ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>{ag}</button>
-          ))}
-        </div>
-      )}
+      {/* type chips */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {LIBRARY_TYPES.map(({ key, label, icon: Icon }) => {
+          const n = key === 'all' ? base.length : (typeCounts[key] ?? 0)
+          if (key !== 'all' && n === 0 && type !== key) return null
+          return (
+            <button key={key} onClick={() => setType(key)} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition ${type === key ? 'border-primary bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}>
+              <Icon className="h-3 w-3" />{label}<span className="opacity-70">{n}</span>
+            </button>
+          )
+        })}
+        {filtered && <button onClick={clearFilters} className="ml-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">Clear filters</button>}
+        <span className="ml-auto text-xs text-muted-foreground">{shown.length} {shown.length === 1 ? 'item' : 'items'}</span>
+      </div>
       {hint && <div className="font-mono text-xs text-muted-foreground">{hint}</div>}
 
-      <div className="grid gap-3 lg:grid-cols-[minmax(260px,340px)_1fr]">
-        {/* gallery list */}
-        <div className="space-y-2">
-          <FolderNav paths={artifacts.map((a) => a.folder || '')} selected={folder} onSelect={setFolder} rootLabel="All artifacts" />
-          {folder && <div className="flex items-center gap-1 px-0.5 text-[11px] text-muted-foreground"><Folder className="h-3 w-3" /><span className="font-mono">{folder}/</span><button className="ml-auto underline hover:text-foreground" onClick={() => setFolder('')}>clear</button></div>}
-          {shown.length === 0 && <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{folder ? <>No artifacts in <span className="font-mono">{folder}/</span>.</> : <>No artifacts yet. When an agent calls its <span className="font-mono">publish</span> tool, the deliverable shows up here.</>}</div>}
-          {shown.map((a) => {
-            const active = a.id === sel
-            return (
-              <a key={a.id} href={navHref('artifacts', a.id)} onClick={onNavClick(() => nav('artifacts', a.id))} className={`block w-full overflow-hidden rounded-lg border text-left text-foreground no-underline transition hover:border-primary/50 ${active ? 'border-primary ring-1 ring-primary/30' : ''}`}>
-                <div className="flex items-start gap-2.5 p-2.5">
-                  {isImageMime(a.mime)
-                    ? <img src={api.artifactRawUrl(a.id)} alt="" className="h-10 w-10 shrink-0 rounded border object-cover" />
-                    : isVideoMime(a.mime)
-                    ? <span className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded border bg-black">
-                        <video src={`${api.artifactRawUrl(a.id)}#t=0.1`} preload="metadata" muted className="h-full w-full object-cover" />
-                        <Play className="absolute h-3.5 w-3.5 fill-white/90 text-white/90" />
-                      </span>
-                    : <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-muted"><ArtifactIcon a={a} className="h-4 w-4 text-muted-foreground" /></span>}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{a.title}</div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-                      <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{a.agent}</Badge>
-                      <span className="truncate font-mono">{a.filename}</span>
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-muted-foreground">{fmtSize(a.bytes)}{a.costUsd != null ? ` · ${fmtCost(a.costUsd)}` : ''} · {new Date(a.createdAt).toLocaleString()}</div>
-                  </div>
-                </div>
-              </a>
-            )
-          })}
-        </div>
+      <div className="grid gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
+        {/* sidebar: folders + archive */}
+        <aside className="space-y-2 md:sticky md:top-2 md:max-h-[calc(100vh-6rem)] md:self-start md:overflow-y-auto">
+          <FolderNav paths={source.map((a) => a.folder || '')} selected={folder} onSelect={setFolder} rootLabel={showArchived ? 'All archived' : 'All deliverables'} defaultCollapsed />
+          {(archived.length > 0 || showArchived) && (
+            <button onClick={() => { setShowArchived((v) => !v); setFolder(''); if (sel) close() }} className={`flex w-full items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs ${showArchived ? 'border-primary bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>
+              <Package className="h-3.5 w-3.5" />{showArchived ? '← Back to Library' : 'Archived'}
+              {!showArchived && <span className="ml-auto text-[10px] opacity-60">{archived.length}</span>}
+            </button>
+          )}
+        </aside>
 
-        {/* preview */}
+        {/* main */}
         <div className="min-w-0">
-          {selected ? (
-            <Card>
-              <CardContent className="space-y-3 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2"><ArtifactIcon a={selected} className="h-4 w-4 shrink-0 text-muted-foreground" /><span className="truncate text-sm font-medium">{selected.title}</span></div>
-                    {selected.description && <div className="mt-0.5 text-xs text-muted-foreground">{selected.description}</div>}
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-                      <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{selected.agent}</Badge>
-                      <span className="font-mono">{selected.filename}</span>
-                      {selected.folder && <span className="inline-flex items-center gap-0.5"><Folder className="h-3 w-3" /><span className="font-mono">{selected.folder}/</span></span>}
-                      <span>· {fmtSize(selected.bytes)}</span>
-                      {selected.costUsd != null && <span>· <span title="Generation cost">{fmtCost(selected.costUsd)}</span></span>}
-                      <span>· session <span className="font-mono">{selected.sessionId}</span></span>
-                      {selected.sharedTeam && <Badge variant="outline" className="gap-1 px-1.5 py-0 text-[10px] font-normal"><Users className="h-3 w-3" />Workspace</Badge>}
-                      {selected.public && <Badge variant="outline" className="gap-1 px-1.5 py-0 text-[10px] font-normal"><Globe className="h-3 w-3" />Public</Badge>}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 gap-2">
-                    {/* md/text open in the rendered full-screen viewer (#/view/<id>); binary/native types
-                        (image/pdf/video/html) open their raw URL, which the browser renders full-screen itself. */}
-                    <a href={(isMarkdownArt(selected) || (isTextMime(selected.mime) && !isHtmlArt(selected))) ? `#/view/${selected.id}` : api.artifactRawUrl(selected.id)} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="secondary"><ExternalLink className="mr-1 h-4 w-4" />Open</Button></a>
-                    <a href={api.artifactRawUrl(selected.id)} download={selected.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
-                    {/* Markdown only: the server renders it, so the promise on the button is one the
-                        renderer can keep. Other types already download as themselves. */}
-                    {isMarkdownArt(selected) && (
-                      <a href={api.artifactPdfUrl(selected.id)}><Button size="sm" variant="secondary" title="Render this Markdown as a PDF"><FileText className="mr-1 h-4 w-4" />PDF</Button></a>
-                    )}
-                    {(me.role === 'owner' || me.role === 'admin' || selected.source === me.id) && (
-                      <>
-                        {(isMarkdownArt(selected) || (isTextMime(selected.mime) && !isHtmlArt(selected))) && editing !== selected.id && (
-                          <Button size="sm" variant="ghost" onClick={() => startEdit(selected)} title="Edit content"><Pencil className="h-4 w-4" /></Button>
-                        )}
-                        <Button size="sm" variant="ghost" onClick={() => move(selected)} title="Move to a folder"><FolderPlus className="h-4 w-4" /></Button>
-                        <Button size="sm" variant="ghost" className="text-destructive" onClick={() => remove(selected.id)}><Trash2 className="h-4 w-4" /></Button>
-                      </>
-                    )}
-                  </div>
-                </div>
-                {(me.role === 'owner' || me.role === 'admin' || selected.source === me.id) && (
-                  <div className="space-y-2 rounded-md border bg-muted/30 p-2.5 text-xs">
-                    <label className="flex cursor-pointer items-start gap-2">
-                      <input type="checkbox" className="mt-0.5" checked={!!selected.sharedTeam} onChange={(e) => share(selected, { team: e.target.checked })} />
-                      <span className="inline-flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />Shared with workspace<span className="text-muted-foreground">— everyone on the team sees it in the Library</span></span>
-                    </label>
-                    <label className="flex cursor-pointer items-start gap-2">
-                      <input type="checkbox" className="mt-0.5" checked={!!selected.public} onChange={(e) => share(selected, { public: e.target.checked })} />
-                      <span className="inline-flex items-center gap-1.5"><Globe className="h-3.5 w-3.5" />Public link<span className="text-muted-foreground">— anyone with the URL can view, no login required</span></span>
-                    </label>
-                    {selected.shareUrl && <CopyLink link={selected.shareUrl} />}
-                    {selected.shareUrl && selected.shareExpiresAt && (
-                      <div className="flex items-center gap-1 text-[11px] text-muted-foreground"><Clock className="h-3 w-3" />Link auto-revokes {new Date(selected.shareExpiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ({fmtRelDays(selected.shareExpiresAt)}) — re-toggle to renew.</div>
-                    )}
-                  </div>
-                )}
-                {editing === selected.id ? (
-                  <div className="space-y-2">
-                    <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} className="h-[60vh] w-full font-mono text-xs leading-relaxed" />
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" disabled={saving} onClick={saveEdit}><Save className="mr-1 h-4 w-4" />{saving ? 'Saving…' : 'Save'}</Button>
-                      <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
-                      <span className="text-[11px] text-muted-foreground">Editing <span className="font-mono">{selected.filename}</span> — overwrites the published file (existing links keep working).</span>
-                    </div>
-                  </div>
-                ) : (
-                  <ArtifactBody a={selected} />
-                )}
-              </CardContent>
-            </Card>
+          {shown.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
+              {filtered
+                ? <>Nothing matches. <button onClick={clearFilters} className="text-primary underline underline-offset-2">Clear filters</button></>
+                : showArchived ? 'Nothing archived.'
+                : <>No deliverables yet. When an agent calls its <span className="font-mono">publish</span> tool, it shows up here.</>}
+            </div>
           ) : (
-            <div className="flex h-48 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">Select an artifact to preview it.</div>
+            <div className="space-y-5">
+              {(() => {
+                // Split the visible page into date sections (only when sorted by date — a name/size sort
+                // would scatter one section's items across the page).
+                const groups: { label: string; items: Artifact[] }[] = []
+                for (const a of page) {
+                  const label = dated ? libraryBucket(a.createdAt) : ''
+                  const last = groups[groups.length - 1]
+                  if (last && last.label === label) last.items.push(a); else groups.push({ label, items: [a] })
+                }
+                return groups.map((g) => (
+                  <section key={g.label || 'all'}>
+                    {g.label && <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">{g.label} <span className="font-normal normal-case opacity-60">· {bucketCounts.get(g.label) ?? g.items.length}</span></h3>}
+                    {view === 'grid' ? (
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(190px,1fr))]">
+                        {g.items.map((a) => (
+                          <a key={a.id} href={navHref('artifacts', a.id)} onClick={onNavClick(() => open(a))}
+                            className={`group flex flex-col overflow-hidden rounded-lg border bg-card text-foreground no-underline transition hover:border-primary/50 hover:shadow-sm ${a.id === sel ? 'border-primary ring-1 ring-primary/30' : ''}`}>
+                            <div className="relative aspect-[4/3] overflow-hidden border-b"><div className="absolute inset-0"><LibraryThumb a={a} /></div></div>
+                            <div className="min-w-0 space-y-0.5 p-2.5">
+                              <div className="line-clamp-2 text-[13px] font-medium leading-snug" title={a.title}>{a.title || a.filename}</div>
+                              <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                <span className="truncate">{a.agent}</span>
+                                <span className="shrink-0">· {timeAgo(a.createdAt)}</span>
+                                {a.sharedTeam && <Users className="ml-auto h-3 w-3 shrink-0" aria-label="shared with workspace" />}
+                                {a.public && <Globe className={`${a.sharedTeam ? '' : 'ml-auto'} h-3 w-3 shrink-0`} aria-label="public link" />}
+                              </div>
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="divide-y overflow-hidden rounded-lg border bg-card">
+                        {g.items.map((a) => (
+                          <a key={a.id} href={navHref('artifacts', a.id)} onClick={onNavClick(() => open(a))}
+                            className={`flex items-center gap-3 px-2.5 py-1.5 text-foreground no-underline transition hover:bg-muted/50 ${a.id === sel ? 'bg-primary/5' : ''}`}>
+                            <div className="h-8 w-8 shrink-0 overflow-hidden rounded border"><LibraryThumb a={a} compact /></div>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm">{a.title || a.filename}</div>
+                              <div className="truncate font-mono text-[11px] text-muted-foreground">{a.folder ? `${a.folder}/` : ''}{a.filename}</div>
+                            </div>
+                            <span className="hidden w-36 shrink-0 truncate text-xs text-muted-foreground sm:block">{a.agent}</span>
+                            <span className="hidden w-16 shrink-0 text-right text-xs tabular-nums text-muted-foreground md:block">{fmtSize(a.bytes)}</span>
+                            <span className="w-20 shrink-0 text-right text-xs text-muted-foreground" title={new Date(a.createdAt).toLocaleString()}>{new Date(a.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                            {showArchived && canManage(a) && (
+                              <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); unarchive(a) }} className="shrink-0 text-[11px] text-primary underline underline-offset-2">Restore</button>
+                            )}
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                ))
+              })()}
+              {limit < shown.length && <LoadMore left={shown.length - limit} onMore={() => setLimit((l) => l + LIBRARY_PAGE)} />}
+            </div>
           )}
         </div>
+      </div>
+
+      {selected && (
+        <ArtifactViewer
+          a={selected}
+          position={idx >= 0 ? { index: idx, total: shown.length } : undefined}
+          onClose={close}
+          onPrev={idx > 0 ? () => step(-1) : undefined}
+          onNext={idx >= 0 && idx < shown.length - 1 ? () => step(1) : undefined}
+          canManage={canManage(selected)}
+          onMove={() => move(selected)}
+          onDelete={() => remove(selected)}
+          onShare={(patch) => share(selected, patch)}
+          onRestore={selected.archivedAt ? () => unarchive(selected) : undefined}
+          onSaved={load}
+          onFlash={flash}
+          nav={nav}
+        />
+      )}
+    </div>
+  )
+}
+
+/** The Library's full-screen viewer: one deliverable at a time over the grid, ←/→ to page through the
+ *  current (filtered, sorted) set, Esc to close. Preview on the left, details + sharing on the right. */
+function ArtifactViewer({ a, position, onClose, onPrev, onNext, canManage, onMove, onDelete, onShare, onRestore, onSaved, onFlash, nav }: {
+  a: Artifact
+  position?: { index: number; total: number }
+  onClose: () => void
+  onPrev?: () => void
+  onNext?: () => void
+  canManage: boolean
+  onMove: () => void
+  onDelete: () => void
+  onShare: (patch: { team?: boolean; public?: boolean }) => void
+  onRestore?: () => void
+  onSaved: () => void
+  onFlash: (m: string) => void
+  nav: (r: Route, detail?: string) => void
+}) {
+  // In-place editing of a text/markdown deliverable; switching artifacts cancels an open edit.
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [info, setInfo] = useState(() => readPref('aos_library_info', ['1', '0'] as const, '1') === '1')
+  const toggleInfo = () => setInfo((v) => { writePref('aos_library_info', v ? '0' : '1'); return !v })
+  useEffect(() => { setEditing(false) }, [a.id])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement | null)?.closest('input,textarea,select,[contenteditable="true"]')) return
+      if (e.key === 'Escape') { e.preventDefault(); onClose() }
+      else if (e.key === 'ArrowLeft' && onPrev) { e.preventDefault(); onPrev() }
+      else if (e.key === 'ArrowRight' && onNext) { e.preventDefault(); onNext() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, onPrev, onNext])
+  useEffect(() => {
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prev }
+  }, [])
+
+  const startEdit = async () => {
+    try { setDraft(await fetch(api.artifactRawUrl(a.id)).then((r) => r.text())); setEditing(true) } catch { onFlash('⚠ could not load file for editing') }
+  }
+  const saveEdit = async () => {
+    setSaving(true)
+    const r = await api.editArtifact(a.id, draft)
+    setSaving(false)
+    if (r.error || !r.ok) return onFlash('⚠ ' + (r.error ?? 'save failed'))
+    setEditing(false); onSaved()
+  }
+  const raw = api.artifactRawUrl(a.id)
+  // md/text open in the rendered full-screen viewer (#/view/<id>); binary/native types
+  // (image/pdf/video/html) open their raw URL, which the browser renders full-screen itself.
+  const openHref = isTextArt(a) ? `#/view/${a.id}` : raw
+  const media = isImageMime(a.mime) || isVideoMime(a.mime)
+
+  return (
+    <div className="fixed inset-0 z-40 flex flex-col bg-background" role="dialog" aria-modal="true" aria-label={a.title}>
+      <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+        <Button size="sm" variant="ghost" className="gap-1 px-2" onClick={onClose} title="Back to the Library (Esc)"><ArrowLeft className="h-4 w-4" /><span className="hidden sm:inline">Library</span></Button>
+        <ArtifactIcon a={a} className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 truncate text-sm font-medium">{a.title || a.filename}</span>
+        {a.archivedAt && <Badge variant="secondary" className="shrink-0 text-[10px]">archived</Badge>}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {position && <span className="mr-1 hidden text-xs tabular-nums text-muted-foreground sm:inline">{position.index + 1} / {position.total}</span>}
+          <Button size="icon" variant="ghost" className="h-8 w-8" disabled={!onPrev} onClick={onPrev} title="Previous (←)"><ChevronRight className="h-4 w-4 rotate-180" /></Button>
+          <Button size="icon" variant="ghost" className="h-8 w-8" disabled={!onNext} onClick={onNext} title="Next (→)"><ChevronRight className="h-4 w-4" /></Button>
+          <span className="mx-1 h-5 w-px bg-border" />
+          <a href={openHref} target="_blank" rel="noopener noreferrer" className={buttonVariants({ size: 'sm', variant: 'ghost' }) + ' gap-1 px-2'} title="Open in a new tab"><ExternalLink className="h-4 w-4" /><span className="hidden md:inline">Open</span></a>
+          <a href={raw} download={a.filename} className={buttonVariants({ size: 'sm', variant: 'ghost' }) + ' gap-1 px-2'} title="Download"><Download className="h-4 w-4" /><span className="hidden md:inline">Download</span></a>
+          {/* Markdown only: the server renders it, so the promise on the button is one the renderer can keep. */}
+          {isMarkdownArt(a) && <a href={api.artifactPdfUrl(a.id)} className={buttonVariants({ size: 'sm', variant: 'ghost' }) + ' gap-1 px-2'} title="Render this Markdown as a PDF"><FileText className="h-4 w-4" /><span className="hidden md:inline">PDF</span></a>}
+          {canManage && isTextArt(a) && !editing && <Button size="icon" variant="ghost" className="h-8 w-8" onClick={startEdit} title="Edit content"><Pencil className="h-4 w-4" /></Button>}
+          <Button size="icon" variant="ghost" className={`h-8 w-8 ${info ? 'text-foreground' : 'text-muted-foreground'}`} onClick={toggleInfo} title={info ? 'Hide details' : 'Show details'}>{info ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}</Button>
+          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onClose} title="Close (Esc)"><X className="h-4 w-4" /></Button>
+        </div>
+      </header>
+
+      <div className="flex min-h-0 flex-1">
+        <main className={`min-w-0 flex-1 overflow-auto ${media ? 'flex items-center justify-center bg-muted/40 p-4' : 'p-4 sm:p-6'}`}>
+          {editing ? (
+            <div className="mx-auto max-w-4xl space-y-2">
+              <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} className="h-[70vh] w-full font-mono text-xs leading-relaxed" />
+              <div className="flex items-center gap-2">
+                <Button size="sm" disabled={saving} onClick={saveEdit}><Save className="mr-1 h-4 w-4" />{saving ? 'Saving…' : 'Save'}</Button>
+                <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+                <span className="text-[11px] text-muted-foreground">Overwrites the published file — existing links keep working.</span>
+              </div>
+            </div>
+          ) : (
+            <div key={a.id} className={media ? 'flex max-h-full max-w-full items-center justify-center' : isTextArt(a) ? 'mx-auto max-w-4xl [overflow-wrap:anywhere]' : 'h-full'}>
+              <ArtifactBody a={a} />
+            </div>
+          )}
+        </main>
+
+        {info && (
+          <aside className="hidden w-80 shrink-0 space-y-4 overflow-y-auto border-l p-4 text-xs lg:block">
+            <div className="space-y-1">
+              <div className="text-sm font-medium leading-snug">{a.title || a.filename}</div>
+              {a.description && <div className="whitespace-pre-line text-muted-foreground">{a.description}</div>}
+            </div>
+            <dl className="grid grid-cols-[72px_1fr] gap-x-2 gap-y-1.5">
+              <dt className="text-muted-foreground">Agent</dt><dd className="truncate">{a.agent}</dd>
+              <dt className="text-muted-foreground">File</dt><dd className="break-all font-mono">{a.filename}</dd>
+              <dt className="text-muted-foreground">Folder</dt><dd className="break-all font-mono">{a.folder ? `${a.folder}/` : '—'}</dd>
+              <dt className="text-muted-foreground">Size</dt><dd>{fmtSize(a.bytes)}</dd>
+              {a.costUsd != null && <><dt className="text-muted-foreground">Cost</dt><dd>{fmtCost(a.costUsd)}</dd></>}
+              <dt className="text-muted-foreground">Published</dt><dd>{new Date(a.createdAt).toLocaleString()}</dd>
+              <dt className="text-muted-foreground">Session</dt>
+              <dd><a href={navHref('sessions', a.sessionId)} onClick={onNavClick(() => nav('sessions', a.sessionId))} className="font-mono text-primary underline-offset-2 hover:underline">{a.sessionId}</a></dd>
+            </dl>
+
+            {canManage && (
+              <div className="space-y-2 border-t pt-3">
+                <div className="font-medium text-muted-foreground">Sharing</div>
+                <label className="flex cursor-pointer items-start gap-2">
+                  <input type="checkbox" className="mt-0.5" checked={!!a.sharedTeam} onChange={(e) => onShare({ team: e.target.checked })} />
+                  <span><span className="inline-flex items-center gap-1 font-medium"><Users className="h-3.5 w-3.5" />Workspace</span><br /><span className="text-muted-foreground">Everyone on the team sees it in the Library.</span></span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-2">
+                  <input type="checkbox" className="mt-0.5" checked={!!a.public} onChange={(e) => onShare({ public: e.target.checked })} />
+                  <span><span className="inline-flex items-center gap-1 font-medium"><Globe className="h-3.5 w-3.5" />Public link</span><br /><span className="text-muted-foreground">Anyone with the URL can view — no login.</span></span>
+                </label>
+                {a.shareUrl && <CopyLink link={a.shareUrl} />}
+                {a.shareUrl && a.shareExpiresAt && (
+                  <div className="flex items-center gap-1 text-[11px] text-muted-foreground"><Clock className="h-3 w-3" />Auto-revokes {new Date(a.shareExpiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ({fmtRelDays(a.shareExpiresAt)}) — re-toggle to renew.</div>
+                )}
+              </div>
+            )}
+            {!canManage && (a.sharedTeam || a.public) && (
+              <div className="flex flex-wrap gap-1.5 border-t pt-3">
+                {a.sharedTeam && <Badge variant="outline" className="gap-1 font-normal"><Users className="h-3 w-3" />Workspace</Badge>}
+                {a.public && <Badge variant="outline" className="gap-1 font-normal"><Globe className="h-3 w-3" />Public</Badge>}
+              </div>
+            )}
+
+            {canManage && (
+              <div className="flex flex-wrap gap-2 border-t pt-3">
+                {onRestore && <Button size="sm" variant="secondary" onClick={onRestore}>Restore to Library</Button>}
+                <Button size="sm" variant="outline" className="gap-1" onClick={onMove}><FolderPlus className="h-3.5 w-3.5" />Move</Button>
+                <Button size="sm" variant="outline" className="gap-1 text-destructive" onClick={onDelete}><Trash2 className="h-3.5 w-3.5" />Delete</Button>
+              </div>
+            )}
+          </aside>
+        )}
       </div>
     </div>
   )
