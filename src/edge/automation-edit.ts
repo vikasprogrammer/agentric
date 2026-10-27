@@ -139,6 +139,63 @@ export function planAutomationEdit(
   return { before, after, changes, preview: lines.join('\n') };
 }
 
+/**
+ * The lifecycle lane of `automation_propose` — pause, resume or delete an existing automation. Same
+ * propose-don't-apply contract as an edit: the agent can't flip a trigger on or off, or remove it, with no
+ * human in the loop, because a run that switches off the job that spawns it (or deletes a teammate's job)
+ * is exactly the unreviewed self-modification the edit lane exists to prevent.
+ *
+ * Refused up front when it would do nothing (pausing a paused automation) and for `once` one-shots, which
+ * have their own lane (`unschedule`) and fire at most once anyway.
+ */
+export type AutomationLifecycle = 'pause' | 'resume' | 'delete';
+export const LIFECYCLE_ACTIONS: ReadonlyArray<AutomationLifecycle> = ['pause', 'resume', 'delete'];
+
+export function planAutomationLifecycle(current: Automation, action: AutomationLifecycle): { preview: string } | { error: string } {
+  if (current.type === 'once') return { error: 'a one-shot schedule isn\'t paused or deleted by proposal — cancel it with `unschedule`' };
+  if (action === 'pause' && !current.enabled) return { error: `"${current.name}" is already paused` };
+  if (action === 'resume' && current.enabled) return { error: `"${current.name}" is already running — nothing to resume` };
+  const trigger = current.type === 'cron' ? `cron \`${current.schedule ?? ''}\`` : `${current.type}${current.filter ? ` \`${current.filter}\`` : ''}`;
+  const line = action === 'pause'
+    ? `pause: "${current.name}" (${trigger}) stops firing until it's resumed — its configuration is kept`
+    : action === 'resume'
+      ? `resume: "${current.name}" (${trigger}) starts firing again`
+      : `delete: "${current.name}" (${trigger}) is removed for good — its past runs stay in Sessions`;
+  return { preview: line };
+}
+
+/** How an agent sees one automation in `automation_list` / `automation_get`. Credentials (`secret`,
+ *  `signingSecret`, the hook URL) never appear; the task prompt is clipped unless `full`. */
+export interface AgentAutomationView {
+  id: string;
+  name: string;
+  agentId: string;
+  type: Automation['type'];
+  trigger: string;
+  mode: Automation['mode'];
+  enabled: boolean;
+  runAs: string;
+  createdBy: string;
+  task: string;
+  lastFiredAt?: number;
+  runAt?: number;
+}
+
+export function agentAutomationView(a: Automation, label: (memberId: string) => string, full = false): AgentAutomationView {
+  const trigger = a.type === 'cron' ? `cron ${a.schedule ?? ''}`
+    : a.type === 'once' ? `once at ${a.runAt ? new Date(a.runAt).toISOString() : '?'}`
+      : `${a.type} ${a.filter || '(any event)'}`;
+  const createdBy = !a.createdBy ? 'unknown'
+    : a.createdBy.startsWith('agent:') || a.createdBy === 'automation' ? a.createdBy : label(a.createdBy);
+  const task = full || a.task.length <= 160 ? a.task : a.task.slice(0, 160) + '…';
+  return {
+    id: a.id, name: a.name, agentId: a.agentId, type: a.type, trigger, mode: a.mode, enabled: a.enabled,
+    runAs: a.runAs ? label(a.runAs) : 'company identity', createdBy, task,
+    ...(a.lastFiredAt ? { lastFiredAt: a.lastFiredAt } : {}),
+    ...(a.type === 'once' && a.runAt ? { runAt: a.runAt } : {}),
+  };
+}
+
 /** One recent run of the automation, as the brief shows it. */
 export interface BriefRun { title?: string; status: string; createdAt: number; summary?: string }
 
@@ -179,7 +236,7 @@ export function buildAutomationEditBrief(a: Automation, opts: { memberName: stri
       ? `1. They said what they want: "${opts.note.trim()}". Restate the change in one line, and ask only if something is genuinely ambiguous.`
       : `1. Ask what they want to change, in one short question. If they want ideas, ground them in the configuration and the recent runs above (use \`session_open\` on a run if you need detail) — don't invent problems.`,
     `2. Show the concrete change before proposing it — for a task prompt, the full revised text; for a schedule, the cron expression AND what it means in words.`,
-    `3. When they agree, call \`automation_propose\` with \`editOf: "${a.id}"\`, ONLY the fields that change (${fields}), and a one-line \`rationale\`. \`task\` replaces the WHOLE prompt, so send the complete revised text, never a fragment. The trigger type and the agent can't be changed by an edit — if they need that, propose a new automation instead and say the old one should then be deleted.`,
+    `3. When they agree, call \`automation_propose\` with \`editOf: "${a.id}"\`, ONLY the fields that change (${fields}), and a one-line \`rationale\`. \`task\` replaces the WHOLE prompt, so send the complete revised text, never a fragment. The trigger type and the agent can't be changed by an edit — if they need that, propose a new automation instead, then propose deleting the old one (\`action: "delete"\`). To pause or resume it, use \`action: "pause"\` / \`"resume"\` with the same \`editOf\`.`,
     opts.canApprove
       ? `4. The edit is a DRAFT until it's approved on the Automations page — ${opts.memberName} can approve it there. Tell them that; don't claim it's applied.`
       : `4. The edit is a DRAFT until an owner/admin approves it on the Automations page. Tell ${opts.memberName} that; don't claim it's applied.`,

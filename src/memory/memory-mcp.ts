@@ -778,6 +778,39 @@ const TOOLS = [
     },
   },
   {
+    name: 'automation_list',
+    description:
+      'List the AUTOMATIONS (cron schedules and event triggers that spawn agent sessions) — so you can find ' +
+      'the id to change one with `automation_propose({ editOf })`, or check whether a job already exists ' +
+      'before proposing a new one. Default scope `mine` = automations that run YOU; `all` = every automation ' +
+      'in the workspace. Each line shows id, name, trigger, enabled/paused, who it runs as, and the start of ' +
+      'its task prompt. Read-only.',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        scope: { type: 'string', enum: ['mine', 'all'], description: 'mine (default) = automations that run you; all = the whole workspace.' },
+        query: { type: 'string', description: 'Case-insensitive text match over name, task prompt, agent and filter.' },
+        type: { type: 'string', enum: ['cron', 'once', 'webhook', 'composio', 'slack', 'discord', 'telegram', 'clickup'], description: 'Only this trigger type.' },
+      },
+    },
+  },
+  {
+    name: 'automation_get',
+    description:
+      'Read ONE automation in full — its complete task prompt (send the whole revised text when you propose ' +
+      'a `task` edit), trigger, mode, run-as identity, next run, its last 5 runs, and any change already ' +
+      'awaiting review. Pass the id from `automation_list` (an exact name also works). Read-only.',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: { type: 'string', description: 'The automation id (or its exact name).' } },
+      required: ['id'],
+    },
+  },
+  {
     name: 'automation_propose',
     description:
       'Propose a new AUTOMATION for a human to approve — a recurring/triggered job that spawns an agent ' +
@@ -798,7 +831,9 @@ const TOOLS = [
       'EDITING AN EXISTING AUTOMATION: pass `editOf` (its id) and ONLY the fields that change — name, ' +
       'schedule (cron), filter (event triggers), mode, runAs ("" = company identity) or task (replaces the ' +
       'WHOLE prompt, so send the full revised text). The trigger type and agent can\'t be changed by an edit. ' +
-      'Same governance: the edit is a draft on a review card and the automation is untouched until approved.',
+      'Same governance: the edit is a draft on a review card and the automation is untouched until approved. ' +
+      'PAUSE / RESUME / DELETE: pass `editOf` and `action` ("pause" | "resume" | "delete") plus a `rationale` — ' +
+      'also a draft a human approves. Find ids with `automation_list`; read the full config with `automation_get`.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -812,7 +847,8 @@ const TOOLS = [
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'headless (unattended, default for event triggers) or interactive.' },
         runAs: { type: 'string', description: 'Optional member (id or email) the fired session should ACT AS, so THEIR personal connectors — e.g. their own Composio Gmail — are injected. Omit to run as the company identity (shared connectors only). Suggest this whenever the task uses a person\'s personal apps.' },
         rationale: { type: 'string', description: 'Why this automation is worth running (or, for an edit, why the change) — the approver reads this to decide.' },
-        editOf: { type: 'string', description: 'The id of an EXISTING automation to edit instead of creating a new one. Send only the fields that change; name and task are then optional.' },
+        editOf: { type: 'string', description: 'The id of an EXISTING automation to edit (or pause/resume/delete) instead of creating a new one — see automation_list. For an edit, send only the fields that change; name and task are then optional.' },
+        action: { type: 'string', enum: ['pause', 'resume', 'delete'], description: 'With `editOf`: propose pausing it (stops firing, config kept), resuming a paused one, or deleting it for good. Omit for a create or a field edit.' },
       },
       required: [],
     },
@@ -2348,10 +2384,62 @@ async function workflowPropose(args: Record<string, unknown>): Promise<string> {
     : `Could not propose the workflow: ${d.error ?? 'unknown error'}`;
 }
 
+type AgentAutomation = { id: string; name: string; agentId: string; type: string; trigger: string; mode: string; enabled: boolean; runAs: string; createdBy: string; task: string; lastFiredAt?: number; nextRunAt?: number };
+const isoMinute = (t?: number) => (t ? new Date(t).toISOString().replace(/:\d\d\.\d+Z$/, 'Z') : undefined);
+
+async function automationList(args: Record<string, unknown>): Promise<string> {
+  const u = new URL(AOS_URL + '/api/agent/automations/list');
+  u.searchParams.set('session', SESSION);
+  if (args.scope) u.searchParams.set('scope', String(args.scope));
+  if (args.query) u.searchParams.set('q', String(args.query));
+  if (args.type) u.searchParams.set('type', String(args.type));
+  const res = await fetch(u, { headers: H() });
+  const d = (await res.json()) as { scope?: string; total?: number; automations?: AgentAutomation[]; truncated?: boolean; error?: string };
+  if (!res.ok) return `Could not list automations: ${d.error ?? res.status}`;
+  const rows = d.automations ?? [];
+  if (!rows.length) {
+    return d.scope === 'all' || !d.total
+      ? 'No automations match. Propose one with automation_propose.'
+      : `No automations run you${args.query || args.type ? ' that match' : ''} — ${d.total} exist in the workspace; pass scope:"all" to see them.`;
+  }
+  const lines = rows.map((a) => [
+    `- ${a.id} · ${a.enabled ? 'enabled' : 'PAUSED'} · ${a.name}`,
+    `  ${a.trigger} → runs \`${a.agentId}\` as ${a.runAs}, ${a.mode}${a.nextRunAt ? ` · next ${isoMinute(a.nextRunAt)}` : ''}${a.lastFiredAt ? ` · last fired ${isoMinute(a.lastFiredAt)}` : ''}`,
+    `  task: ${a.task.replace(/\s+/g, ' ')}`,
+  ].join('\n'));
+  return lines.join('\n') + (d.truncated ? '\n(first 50 shown — narrow with query/type)' : '') +
+    '\n\nautomation_get <id> for the full prompt + recent runs; automation_propose({ editOf, … }) to change one, or with action pause/resume/delete.';
+}
+
+async function automationGet(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim();
+  if (!id) return 'automation_get needs an id (see automation_list).';
+  const u = new URL(AOS_URL + '/api/agent/automations/get');
+  u.searchParams.set('session', SESSION);
+  u.searchParams.set('id', id);
+  const res = await fetch(u, { headers: H() });
+  const d = (await res.json()) as { automation?: AgentAutomation; runs?: Array<{ id: string; title?: string; status: string; createdAt: number; summary?: string }>; pending?: Array<{ id: string; by: string; kind: string; changes?: string[] }>; error?: string };
+  if (!res.ok || !d.automation) return d.error ?? 'Automation not found.';
+  const a = d.automation;
+  const runs = d.runs ?? [];
+  const pending = d.pending ?? [];
+  return [
+    `${a.name} (${a.id}) — ${a.enabled ? 'enabled' : 'PAUSED'}`,
+    `- trigger: ${a.trigger}${a.nextRunAt ? ` (next ${isoMinute(a.nextRunAt)})` : ''}`,
+    `- agent: ${a.agentId} · mode: ${a.mode} · runs as: ${a.runAs} · created by: ${a.createdBy}`,
+    `- task prompt (verbatim):`,
+    '```', a.task, '```',
+    `Recent runs: ${runs.length ? '' : 'none visible to you'}`,
+    ...runs.map((r) => `- ${isoMinute(r.createdAt)} · ${r.status}${r.title ? ` · ${r.title}` : ''}${r.summary ? ` — ${r.summary}` : ''} (${r.id})`),
+    ...(pending.length ? ['Awaiting review:', ...pending.map((p) => `- ${p.kind}${p.changes?.length ? ` (${p.changes.join(', ')})` : ''} proposed by ${p.by}`)] : []),
+  ].join('\n');
+}
+
 async function automationPropose(args: Record<string, unknown>): Promise<string> {
   const name = String(args.name ?? '').trim();
   const task = String(args.task ?? '').trim();
   const editOf = String(args.editOf ?? '').trim();
+  if (args.action) return automationProposeLifecycle(editOf, String(args.action), args);
   if (editOf) return automationProposeEdit(editOf, args);
   if (!name || !task) return 'automation_propose needs a name and a task (the prompt the automation runs) — or `editOf` to change an existing automation.';
   const res = await fetch(AOS_URL + '/api/agent/automation/propose', {
@@ -2372,6 +2460,20 @@ async function automationPropose(args: Record<string, unknown>): Promise<string>
   return d.ok
     ? `Automation proposed${d.preview ? ` (${d.preview})` : ''} — it's a DRAFT in the owner/admin inbox for review. It is NOT created and will never fire until a human approves it.`
     : `Could not propose the automation: ${d.error ?? 'unknown error'}`;
+}
+
+/** The pause/resume/delete lane of `automation_propose`. */
+async function automationProposeLifecycle(editOf: string, action: string, args: Record<string, unknown>): Promise<string> {
+  if (!editOf) return `To ${action} an automation, pass its id as editOf (find it with automation_list).`;
+  const res = await fetch(AOS_URL + '/api/agent/automation/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, agent: AGENT, editOf, action, rationale: args.rationale != null ? String(args.rationale) : undefined }),
+  });
+  const d = (await res.json()) as { ok?: boolean; preview?: string; error?: string };
+  return d.ok
+    ? `Proposed — ${d.preview ?? action}.\n\nIt's a DRAFT on a review card in Automations — nothing changes until an owner/admin approves it.`
+    : `Could not propose that: ${d.error ?? 'unknown error'}`;
 }
 
 /** The edit lane of `automation_propose`: fields are forwarded only when the agent SENT them (an empty
@@ -3824,6 +3926,8 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'skill_propose' ? await skillPropose(args)
         : name === 'skill_get' ? await skillGet(args)
         : name === 'policy_propose' ? await policyPropose(args)
+        : name === 'automation_list' ? await automationList(args)
+        : name === 'automation_get' ? await automationGet(args)
         : name === 'automation_propose' ? await automationPropose(args)
         : name === 'workflow_propose' ? await workflowPropose(args)
         : name === 'host_propose' ? await hostPropose(args)

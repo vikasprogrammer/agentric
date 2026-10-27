@@ -922,11 +922,15 @@ export interface AutomationEditFields {
   before?: Record<string, unknown>;
   after?: Record<string, unknown>;
   changes?: string[];
+  /** Set on a pause/resume/delete proposal (see {@link TerminalManager.postAutomationLifecycleProposal});
+   *  such a card carries no `after`, and approving it toggles or removes `editOf` instead of updating it. */
+  lifecycle?: 'pause' | 'resume' | 'delete';
 }
 function editFieldsOf(a: Record<string, unknown>): AutomationEditFields {
   if (a.edit !== true || typeof a.editOf !== 'string') return {};
   return {
     editOf: a.editOf,
+    ...(a.lifecycle === 'pause' || a.lifecycle === 'resume' || a.lifecycle === 'delete' ? { lifecycle: a.lifecycle } : {}),
     base: typeof a.base === 'string' ? a.base : undefined,
     before: a.before && typeof a.before === 'object' ? (a.before as Record<string, unknown>) : undefined,
     after: a.after && typeof a.after === 'object' ? (a.after as Record<string, unknown>) : undefined,
@@ -8852,6 +8856,32 @@ export class TerminalManager {
     });
     this.audit(sessionId, agent, 'automation.edit.proposed', { automation: edit.editOf, name, changes: edit.changes });
     return { ok: true, preview: edit.preview };
+  }
+
+  /**
+   * An agent proposes to PAUSE, RESUME or DELETE an existing automation. The server has already checked the
+   * action makes sense against the live automation (`planAutomationLifecycle`); this posts the review card.
+   * It rides the `automation.proposed` card like an edit (`edit` + `editOf`, `specs: [current]` so older
+   * readers still parse it), with `lifecycle` telling the approve route what to do. `base` pins the
+   * configuration so a delete can't remove a version a human re-edited after the agent looked at it.
+   */
+  postAutomationLifecycleProposal(sessionId: string, agent: string, p: { editOf: string; action: 'pause' | 'resume' | 'delete'; base: string; before: Record<string, unknown>; spec: ProposedAutomation; preview: string }, rationale?: string): { ok: boolean; preview?: string; error?: string } {
+    const open = this.db.prepare(`SELECT id, args FROM messages WHERE type = 'automation.proposed' AND status = 'open' AND agent = ?`).all<{ id: string; args: string | null }>(agent);
+    if (open.length >= 10) return { ok: false, error: 'you already have 10 open automation proposals awaiting review — wait for a human to act on them first' };
+    if (open.some((o) => {
+      try { const a = JSON.parse(o.args || '{}') as { editOf?: string; lifecycle?: string }; return a.editOf === p.editOf && a.lifecycle === p.action; } catch { return false; }
+    })) return { ok: false, error: `a proposal from you to ${p.action} this automation is already awaiting review` };
+    const name = String(p.before.name ?? p.spec.name);
+    const verb = p.action === 'pause' ? 'Pause' : p.action === 'resume' ? 'Resume' : 'Delete';
+    this.postReviewCard({
+      type: 'automation.proposed', sessionId, agent,
+      title: `${verb} automation proposed — ${name}`,
+      body: (rationale?.trim() || `${agent} proposes to ${p.action} the "${name}" automation.`) + `\n\n${p.preview}`,
+      args: { edit: true, editOf: p.editOf, lifecycle: p.action, base: p.base, before: p.before, specs: [p.spec], spec: p.spec, preview: p.preview, ...(rationale ? { rationale } : {}) },
+      summary: rationale?.trim() || `${agent} proposes to ${p.action} the "${name}" automation.`,
+    });
+    this.audit(sessionId, agent, `automation.${p.action}.proposed`, { automation: p.editOf, name });
+    return { ok: true, preview: p.preview };
   }
 
   /** Validate + normalise ONE proposed automation, returning its stored shape and its preview line. */

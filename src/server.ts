@@ -42,7 +42,7 @@ const ASK_DEADLINE_MAX_H = 168;
 import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
-import { automationEditBase, buildAutomationEditBrief, planAutomationEdit, EDITABLE_TYPES } from './edge/automation-edit';
+import { automationEditBase, buildAutomationEditBrief, planAutomationEdit, planAutomationLifecycle, agentAutomationView, editStateOf, EDITABLE_TYPES, LIFECYCLE_ACTIONS, type AutomationLifecycle } from './edge/automation-edit';
 import { chooseAgent } from './edge/router';
 import { recordCapabilityGap } from './edge/capability-gap';
 import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
@@ -958,6 +958,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const agent = tm.sessionAgent(session);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    // `action` = pause / resume / delete an existing automation — the lifecycle lane. Same card, same
+    // human approval; checked against the live automation now so a no-op (pausing a paused one) is
+    // refused here rather than shown to a reviewer.
+    if (b.action != null && String(b.action).trim() && String(b.action) !== 'edit') {
+      const action = String(b.action).trim() as AutomationLifecycle;
+      if (!LIFECYCLE_ACTIONS.includes(action)) return sendJson(res, 400, { ok: false, error: `action must be one of ${LIFECYCLE_ACTIONS.join(', ')} (or omit it to create/edit)` });
+      const ref = String(b.editOf ?? '').trim();
+      if (!ref) return sendJson(res, 400, { ok: false, error: `to ${action} an automation, pass its id as editOf (find it with automation_list)` });
+      const target = autos.get(ref);
+      if (!target) return sendJson(res, 404, { ok: false, error: `no automation "${ref}" — check the id with automation_list` });
+      const plan = planAutomationLifecycle(target, action);
+      if ('error' in plan) return sendJson(res, 400, { ok: false, error: plan.error });
+      const before = editStateOf(target);
+      const out = tm.postAutomationLifecycleProposal(session, agent, {
+        editOf: target.id, action, base: automationEditBase(target), before: { ...before, enabled: target.enabled },
+        spec: { agentId: target.agentId, type: target.type as ProposedAutomation['type'], ...before } as ProposedAutomation, preview: plan.preview,
+      }, b.rationale != null ? String(b.rationale) : undefined);
+      return sendJson(res, out.ok ? 200 : 400, { ...out, lifecycle: action });
+    }
     // `editOf` = an EDIT to an existing automation (the "Edit with agent" lane): only the fields the agent
     // sent change, merged over the live automation and validated now, so a proposal that could not be
     // applied is refused here rather than at approve time.
@@ -988,6 +1007,47 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     };
     const out = tm.proposeAutomation(session, agent, spec, b.rationale != null ? String(b.rationale) : undefined);
     return sendJson(res, out.ok ? 200 : 400, out);
+  }
+
+  // `automation_list` / `automation_get` — the READ side of the automation lanes, so an agent in any session
+  // (not just one opened by "Edit with agent…") can find the id it needs for `automation_propose({ editOf })`.
+  // Read-only and credential-free (`agentAutomationView` drops the webhook key, signing secret and hook URL);
+  // the console already shows every member the whole list, so the default scope narrows to the caller's
+  // OWN automations for relevance, not secrecy. Runs in `get` follow session visibility: the caller's own
+  // agent's runs, else what the run-as member could see in the console, else none.
+  if (method === 'GET' && (p === '/api/agent/automations/list' || p === '/api/agent/automations/get')) {
+    const session = url.searchParams.get('session') || '';
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const label = (id: string) => os.team.getMember(id)?.name || os.team.getMember(id)?.email || id;
+    if (p === '/api/agent/automations/get') {
+      const ref = (url.searchParams.get('id') || '').trim();
+      const a = autos.get(ref) ?? autos.list().find((x) => x.name.toLowerCase() === ref.toLowerCase());
+      if (!a) return sendJson(res, 404, { error: `no automation "${ref}" — list them with automation_list` });
+      const runAsId = tm.sessionRunAs(session);
+      const viewer = runAsId ? os.team.getMember(runAsId) : undefined;
+      const runs = a.agentId === agent ? tm.listRunsFor(`automation:${a.id}`) : viewer ? tm.listRunsFor(`automation:${a.id}`, viewer) : [];
+      return sendJson(res, 200, {
+        automation: { ...agentAutomationView(a, label, true), nextRunAt: nextRunAtFor(a) },
+        runs: runs.sort((x, y) => y.createdAt - x.createdAt).slice(0, 5).map((r) => ({ id: r.id, title: r.title, status: r.outcome && r.outcome !== 'unknown' ? `${r.status}/${r.outcome}` : r.status, createdAt: r.createdAt, summary: r.summary ? clipText(r.summary, 200) : undefined })),
+        pending: tm.openAutomationProposals().filter((pr) => pr.editOf === a.id).map((pr) => ({ id: pr.id, by: pr.agent, kind: pr.lifecycle ?? 'edit', changes: pr.changes })),
+      });
+    }
+    const scope = url.searchParams.get('scope') === 'all' ? 'all' : 'mine';
+    const q = (url.searchParams.get('q') || '').trim().toLowerCase();
+    const type = (url.searchParams.get('type') || '').trim();
+    const all = autos.list();
+    const rows = all
+      .filter((a) => scope === 'all' || a.agentId === agent)
+      .filter((a) => !type || a.type === type)
+      .filter((a) => !q || `${a.name}\n${a.task}\n${a.agentId}\n${a.filter ?? ''}`.toLowerCase().includes(q))
+      .sort((x, y) => Number(y.enabled) - Number(x.enabled) || x.name.localeCompare(y.name));
+    return sendJson(res, 200, {
+      scope, total: all.length,
+      automations: rows.slice(0, 50).map((a) => ({ ...agentAutomationView(a, label), nextRunAt: nextRunAtFor(a) })),
+      truncated: rows.length > 50,
+    });
   }
 
   // `workflow_propose` — the multi-part sibling: several automations reviewed and approved as ONE unit (a
@@ -3214,6 +3274,35 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         if (!m) return sendJson(res, 400, { error: `unknown member "${raw}" for runAs` });
         runAs = m.id;
       }
+    }
+    // A LIFECYCLE proposal pauses, resumes or deletes the automation it names. Same ownership rule as the
+    // console's toggle/delete. A delete also refuses if the configuration moved since the proposal (the
+    // agent asked to remove what it saw, not whatever a human has since turned it into); pause/resume
+    // don't, and they are idempotent — the human may already have flipped it by hand.
+    if (card.lifecycle && card.editOf) {
+      const target = autos.get(card.editOf);
+      if (!target) {
+        if (card.lifecycle === 'delete') {
+          tm.setAutomationProposalStatus(autoPropApprove[1], 'approved');
+          return sendJson(res, 200, { ok: true, deleted: true, already: true });
+        }
+        return sendJson(res, 409, { error: 'the automation this proposal targets no longer exists — reject the proposal' });
+      }
+      if (!canManageAuto(me, target)) return sendJson(res, 403, { error: `you can only ${card.lifecycle} automations you created` });
+      if (card.lifecycle === 'delete') {
+        if (card.base && card.base !== automationEditBase(target)) {
+          return sendJson(res, 409, { error: 'the automation was changed after this delete was proposed — reject it and ask the agent again if it should still go' });
+        }
+        autos.remove(target.id);
+        tm.setAutomationProposalStatus(autoPropApprove[1], 'approved');
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.delete.approved', data: { by: me.email, agent: card.agent, id: target.id, name: target.name } });
+        return sendJson(res, 200, { ok: true, deleted: true, id: target.id });
+      }
+      const updated = autos.update(target.id, { enabled: card.lifecycle === 'resume' });
+      if (!updated) return sendJson(res, 409, { error: 'the automation this proposal targets no longer exists' });
+      tm.setAutomationProposalStatus(autoPropApprove[1], 'approved');
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: `automation.${card.lifecycle}.approved`, data: { by: me.email, agent: card.agent, id: target.id, name: target.name } });
+      return sendJson(res, 200, { ok: true, edited: true, automation: automationView(updated, req, true), automations: [automationView(updated, req, true)] });
     }
     // An EDIT proposal updates the automation it names instead of creating one. It is held to the same
     // ownership rule as a console edit (owner, or the member who created it), and refuses if the

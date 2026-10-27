@@ -13875,7 +13875,7 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
           <Card key={pr.id} className="border-amber-200">
             <CardContent className="space-y-2 p-3">
               <div className="flex flex-wrap items-center gap-1.5">
-                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{pr.editOf ? `edit · ${pr.spec.type}` : partsOf(pr).length > 1 ? `workflow · ${partsOf(pr).length}` : pr.spec.type}</Badge>
+                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{pr.lifecycle ? `${pr.lifecycle} · ${pr.spec.type}` : pr.editOf ? `edit · ${pr.spec.type}` : partsOf(pr).length > 1 ? `workflow · ${partsOf(pr).length}` : pr.spec.type}</Badge>
                 <span className="text-sm font-medium">{pr.workflow || (pr.editOf ? (pr.before?.name || pr.spec.name) : pr.spec.name)}</span>
                 <span className="text-[11px] text-muted-foreground">
                   {partsOf(pr).length > 1
@@ -13898,7 +13898,8 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
                 </details>
               )}
               {pr.rationale && <p className="text-[11px] italic text-muted-foreground">“{pr.rationale}”</p>}
-              <div className="flex flex-wrap items-center gap-2">
+              {/* Run-as only matters when approving changes what fires; a pause/resume/delete leaves it alone. */}
+              {!pr.lifecycle && <div className="flex flex-wrap items-center gap-2">
                 <label className="text-[11px] text-muted-foreground" title="The fired session acts as this member, so their personal connectors (e.g. their own Composio Gmail) are injected. Company identity = shared company account only.">Run as</label>
                 <Select value={runAsFor(pr) || '__company'} onValueChange={(v) => setRunAsEdit((m) => ({ ...m, [pr.id]: v && v !== '__company' ? v : '' }))}>
                   <SelectTrigger className="h-7 w-[180px] text-xs"><SelectValue /></SelectTrigger>
@@ -13907,9 +13908,9 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
                     {members.map((mm) => (<SelectItem key={mm.id} value={mm.id}>{mm.name || mm.email}</SelectItem>))}
                   </SelectContent>
                 </Select>
-              </div>
+              </div>}
               <div className="flex items-center gap-2">
-                <Button size="sm" disabled={!!busy} onClick={() => approve(pr)}>{pr.editOf ? 'Approve edit' : <>Approve &amp; enable</>}</Button>
+                <Button size="sm" variant={pr.lifecycle === 'delete' ? 'destructive' : 'default'} disabled={!!busy} onClick={() => approve(pr)}>{pr.lifecycle === 'delete' ? 'Approve delete' : pr.lifecycle === 'pause' ? 'Approve pause' : pr.lifecycle === 'resume' ? 'Approve resume' : pr.editOf ? 'Approve edit' : <>Approve &amp; enable</>}</Button>
                 <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => reject(pr.id)}>Reject</Button>
                 {hint && busy === '' && <span className="text-[11px] text-amber-600">{hint}</span>}
               </div>

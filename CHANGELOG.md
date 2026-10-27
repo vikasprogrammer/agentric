@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.466.0] - 2026-10-27
+### Added
+- **Agents can find, edit, pause, resume and delete automations from any session.** Editing an
+  automation used to need the console's **Edit with agent…** button, because that was the only way an
+  agent learned an automation's id. Two read-only tools fix that. `automation_list` lists the
+  automations that run the agent, or every automation with `scope:"all"`. `automation_get` returns one
+  automation's full prompt, its next run, its last 5 runs and anything already awaiting review. Neither
+  tool ever shows a webhook key or signing secret. `automation_propose({ editOf, action })` adds
+  `pause` / `resume` / `delete`. They use the same review card as an edit, and nothing changes until an
+  owner/admin who manages the automation approves. A delete is refused if a person changed the
+  automation after the proposal was made. Pinned in `scripts/automation-edit-proposal-test.cjs`.
+  **For users:** you can ask any agent to reschedule, pause or remove one of its automations, from chat
+  or a session. It drafts the change and you approve it on the Automations page. [Open Automations](#/automations)
+
 ## [0.465.0] - 2026-10-26
 ### Fixed
 - **Results of delegated work were being dropped in exactly the sessions where a person was waiting.**
