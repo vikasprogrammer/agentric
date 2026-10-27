@@ -4257,7 +4257,9 @@ export class TerminalManager {
           // every tick. Only applies when we can poll liveness (local backend); null → fall through as before.
           if (terminal && alive && !alive.has(r.tmux)) continue;
           const space = this.spaceFor(r.run_as ?? r.spawned_by);
-          if (this.backend.hasClient(space, r.tmux) === true) continue; // someone's attached — it's in use
+          // Someone's attached AND has typed within the idle window — it's in use. A client with no input
+          // since the idle cutoff is a forgotten tab, not a human watching.
+          if (this.backend.hasClient(space, r.tmux, idleCutoff) === true) continue;
           // Blocked on a person: leave it — unless nobody has answered inside the ceiling above, at which
           // point it is abandoned, not waiting.
           let reason = overLifetime ? 'max-lifetime' : r.claimed_by ? 'claimed-abandoned' : 'idle-interactive';

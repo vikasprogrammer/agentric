@@ -35,7 +35,8 @@ aos.settings.setInteractiveMaxHours(0);
 // Stub the backend so the sweep is deterministic without a real tmux server.
 let attached = new Set();               // tmux names with a "client" attached
 const killed = [];
-tm.backend.hasClient = (_space, tmux) => attached.has(tmux);
+const clientActivity = new Map();      // tmux name → ms of the attached client's last input (unset = just now)
+tm.backend.hasClient = (_space, tmux, since) => attached.has(tmux) && (since == null || (clientActivity.get(tmux) ?? Date.now()) >= since);
 tm.backend.kill = (_space, tmux) => { killed.push(tmux); };
 // Every session's pane reports ALIVE by default. `reapIdleSessions` runs crash detection first (sweep 0),
 // so a stub returning an empty set marks every row `crashed` before the idle sweeps ever look at it — the
@@ -70,6 +71,8 @@ aos.settings.setUnattendedNoProgressMinutes(0);
 const stale = mkSession({ created_at: Date.now() - 96 * H });                 // 4 days idle → reap
 const recent = mkSession({ created_at: Date.now() - 2 * H });                 // 2h → keep
 const attachedStale = mkSession({ created_at: Date.now() - 96 * H, tmux: 'aos-ATTACHED' }); attached.add('aos-ATTACHED'); // in use → keep
+// A forgotten tab: a client is attached but hasn't typed since the attach 15 days ago (live initech).
+const zombieAttach = mkSession({ created_at: Date.now() - 360 * H, tmux: 'aos-ZOMBIE' }); attached.add('aos-ZOMBIE'); clientActivity.set('aos-ZOMBIE', Date.now() - 360 * H);
 const claimedStale = mkSession({ created_at: Date.now() - 96 * H, claimed_by: 'm_bob' }); // claim went stale → reap
 const unattended = mkSession({ created_at: Date.now() - 96 * H, headless: 1 });   // sweep-2 territory, not sweep 3 → keep here
 const activeByLastAct = mkSession({ created_at: Date.now() - 96 * H, last_activity: Date.now() - 1 * H }); // recent turn → keep
@@ -80,6 +83,7 @@ assert(statusOf(stale) === 'stopped', 'detached 4-day-idle member session → st
 assert(killed.includes('aos-' + stale), 'its pane was killed');
 assert(statusOf(recent) === 'running', 'recent (2h) session → left running');
 assert(statusOf(attachedStale) === 'running', 'attached session (client present) → left running');
+assert(statusOf(zombieAttach) === 'stopped', 'attached client with no input past the idle window (forgotten tab) → stopped');
 // Was 'left running' — an unconditional exemption, and the leak this file now pins against. 96h idle is
 // past the default 72h claim ceiling, so the take-over is abandonment.
 assert(statusOf(claimedStale) === 'stopped', 'claimed take-over idle past the ceiling → stopped');
