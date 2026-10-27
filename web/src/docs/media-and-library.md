@@ -10,14 +10,24 @@ When an agent finishes something worth keeping, it **publishes** it to the Libra
 its report in your Inbox. The Library is the durable gallery of those snapshots — nothing an agent
 made for you gets lost in a terminal scrollback.
 
-What you get in the preview pane depends on the file:
+**Browsing.** The Library opens as a grid of cards — image thumbnails, the opening lines of each
+report — grouped by day (Today, Yesterday, This week, then by month). Narrow it with the **search** box
+(press `/`), the **type** chips (Docs · Images · Video · Pages · Other), the **agent** picker, or the
+**folder** tree on the left; sort by date, name or size; switch to a compact **list** with the toggle
+on the right. It loads as you scroll, and a card only fetches its small thumbnail when it comes into
+view, so a Library of hundreds stays quick. Archived deliverables sit behind **Archived** under the
+folders, each with a **Restore**.
+
+**Viewing.** Click a card to open it full-screen. **← / →** step through the current (filtered) set,
+**Esc** returns to the grid, and the details panel on the right holds sharing, move and delete. What
+the viewer shows depends on the file:
 
 - **HTML** — a dashboard, report, or one-off page an agent built renders as a **live page**, not raw
-  source, with an **Open full page ↗** link to view it standalone. (It runs sandboxed — interactive
-  HTML/JS works, but the page can't touch your session or the console around it.)
+  source; **Open** views it standalone. (It runs sandboxed — interactive HTML/JS works, but the page
+  can't touch your session or the console around it.)
 - **PDF** — rendered inline.
-- **Images / video** — shown in the gallery with the **cost** of generating them.
-- **Text / markdown / data** — shown as content.
+- **Images / video** — full size, with the **cost** of generating them.
+- **Text / markdown / data** — shown as formatted content (Markdown can also download as a PDF).
 
 Deliverables are read-only snapshots; re-running an agent publishes a new one rather than overwriting.
 

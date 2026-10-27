@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.468.0] - 2026-10-27
+### Changed
+- **Library redesign — a browsable gallery that no longer loads every file up front.** The old page
+  fetched every image at FULL size (a live tenant's PNGs run to ~2 MB) and every video's metadata just
+  to paint 40px list icons, with no search or paging. It is now a card grid with search (`/`), type
+  chips with counts, an agent picker, sort (date/name/size), grid/list toggle (remembered), a
+  collapsed-by-default folder tree, date sections, and infinite scroll in pages of 48. Cards fetch
+  nothing until they near the viewport: images/videos get a new cached thumbnail route
+  `GET /api/artifacts/:id/thumb` (`src/edge/artifact-thumbs.ts` — ffmpeg, then macOS `sips`, JPEG with
+  alpha flattened onto white, ≤2 encoders box-wide, cached in `<artifacts>/.thumbs/`, falls back to the
+  raw image when the box has neither tool); documents show their opening lines from a 2 KB Range
+  request. Opening a card is a full-screen viewer with ←/→ through the filtered set, Esc back, and a
+  details panel holding sharing/move/delete/restore. Measured on a copy of a 230-item Library: first
+  paint fetches 12 small excerpts instead of every file; a 527 KB PNG card costs 19 KB.
+  **For users:** The Library is now a proper gallery — search it, filter by type or agent, flip
+  through deliverables with the arrow keys, and it stays fast however much your agents publish.
+  [Open the Library](#/artifacts)
+
 ## [0.467.2] - 2026-10-27
 
 ### Fixed

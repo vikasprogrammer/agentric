@@ -2559,6 +2559,9 @@ export const api = {
   editArtifact: (id: string, content: string) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('PUT', `/api/artifacts/${id}/content`, { content }),
   /** Direct URL to an artifact's bytes (for <img>/<iframe>/download). `file` selects a sibling (sites). */
   artifactRawUrl: (id: string, file?: string) => `/api/artifacts/${id}/raw${file ? `?file=${encodeURIComponent(file)}` : ''}`,
+  /** Small cached preview (image, or a video's first frame) for Library cards. `v` (the byte size) busts
+   *  the browser cache after an edit, since the route is cached hard. */
+  artifactThumbUrl: (id: string, v?: number) => `/api/artifacts/${id}/thumb${v != null ? `?v=${v}` : ''}`,
   /** Markdown artifacts only — the server renders the PDF on demand and sends it as an attachment. */
   artifactPdfUrl: (id: string) => `/api/artifacts/${id}/pdf`,
 
