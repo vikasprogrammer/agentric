@@ -4,7 +4,8 @@
  * What must hold: proposing changes nothing; the edit merges only the fields sent; a proposal that could
  * not be applied is refused when made; approval updates THAT automation (never creates a second one);
  * a human edit made while the proposal waited blocks approval instead of being silently reverted; and the
- * "Edit with agent" route opens a session briefed with the live config and the editOf id.
+ * "Edit with agent" route opens a session briefed with the live config and the editOf id. Plus the read
+ * side (automation_list / automation_get — credential-free, secret-gated) and the pause/resume/delete lane.
  *
  * Isolated home; no ttyd.
  */
@@ -107,6 +108,68 @@ const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${
   console.log('\n\x1b[1m5) Creating still works as before\x1b[0m');
   const create = await propose({ name: 'Weekly', task: 'weekly thing', type: 'cron', schedule: '0 9 * * 1' });
   assert(create.ok && !create.edit, 'a proposal without editOf is still a create proposal', create);
+
+  console.log('\n\x1b[1m6) automation_list / automation_get let any session find an automation\x1b[0m');
+  const odir = path.join(aos.paths.userAgents, 'backup');
+  fs.mkdirSync(odir, { recursive: true });
+  const om = { ...manifest, id: 'backup', description: 'backup', principal: 'svc-backup' };
+  fs.writeFileSync(path.join(odir, 'agent.json'), JSON.stringify(om));
+  fs.writeFileSync(path.join(odir, 'CLAUDE.md'), '# backup\n');
+  aos.registerAgent({ ...om, dir: odir });
+  const other = autos.add({ agentId: 'backup', name: 'Nightly backup', type: 'cron', schedule: '0 2 * * *', task: 'Back it up.', createdBy: owner.id });
+  const sget = async (p) => { const r = await fetch(base + p, { headers: secret ? { 'x-aos-secret': secret } : {} }); return { status: r.status, ...(await r.json()) }; };
+  const mine = await sget(`/api/agent/automations/list?session=${session.id}`);
+  assert(mine.scope === 'mine' && mine.automations.every((a) => a.agentId === 'reporter'), 'default scope lists only automations that run the caller', mine);
+  assert(mine.automations.some((a) => a.id === auto.id), 'and includes them by id');
+  assert(!JSON.stringify(mine).includes(hook.secret || 'no-secret-here') && mine.automations.every((a) => !('secret' in a) && !('hookUrl' in a) && !('signingSecret' in a)), 'credentials never appear in the agent view', mine.automations.find((a) => a.id === hook.id));
+  const everyone = await sget(`/api/agent/automations/list?session=${session.id}&scope=all`);
+  assert(everyone.automations.some((a) => a.id === other.id), 'scope=all includes another agent\'s automation', everyone.automations.map((a) => a.id));
+  const q = await sget(`/api/agent/automations/list?session=${session.id}&scope=all&q=backup`);
+  assert(q.automations.length === 1 && q.automations[0].id === other.id, 'query narrows by text', q.automations);
+  const one = await sget(`/api/agent/automations/get?session=${session.id}&id=${auto.id}`);
+  assert(one.automation && one.automation.task === 'Post the digest twice.' && one.automation.trigger === 'cron 0 8 * * 1-5', 'get returns the full prompt and trigger', one.automation);
+  assert(Array.isArray(one.runs) && Array.isArray(one.pending), 'with recent runs and pending proposals', one);
+  const byName = await sget(`/api/agent/automations/get?session=${session.id}&id=nightly%20backup`);
+  assert(byName.automation && byName.automation.id === other.id, 'an exact name resolves too', byName);
+  const anon = await fetch(base + `/api/agent/automations/list?session=${session.id}`);
+  assert(!secret || anon.status === 403, 'a call without the session secret is refused', anon.status);
+
+  console.log('\n\x1b[1m7) Pause / resume / delete are proposals a human approves\x1b[0m');
+  const pause = await propose({ editOf: auto.id, action: 'pause', rationale: 'holiday week' });
+  assert(pause.ok && pause.lifecycle === 'pause' && /pause:/.test(pause.preview || ''), 'a pause is proposed', pause);
+  assert(autos.get(auto.id).enabled === true, 'and the automation still runs until approved');
+  const dupPause = await propose({ editOf: auto.id, action: 'pause' });
+  assert(!dupPause.ok && /already awaiting review/.test(dupPause.error || ''), 'a duplicate pause is deduped', dupPause);
+  const noResume = await propose({ editOf: auto.id, action: 'resume' });
+  assert(!noResume.ok && /already running/.test(noResume.error || ''), 'resuming an enabled automation is refused as a no-op', noResume);
+  const badAction = await propose({ editOf: auto.id, action: 'explode' });
+  assert(!badAction.ok && badAction.status === 400, 'an unknown action is refused', badAction);
+  const noId = await propose({ action: 'delete' });
+  assert(!noId.ok && /editOf/.test(noId.error || ''), 'an action without editOf is refused', noId);
+  const pauseCard = (await get('/api/automations/proposals')).proposals.find((p) => p.editOf === auto.id && p.lifecycle === 'pause');
+  assert(pauseCard, 'the card surfaces with its lifecycle', pauseCard);
+  const pauseOk = await post(`/api/automations/proposals/${pauseCard.id}/approve`, {});
+  assert(pauseOk.ok && autos.get(auto.id).enabled === false, 'approving pauses it', pauseOk);
+  assert(autos.get(auto.id).task === 'Post the digest twice.', 'without touching its configuration');
+  const resume = await propose({ editOf: auto.id, action: 'resume' });
+  const resumeCard = (await get('/api/automations/proposals')).proposals.find((p) => p.editOf === auto.id && p.lifecycle === 'resume');
+  const resumeOk = await post(`/api/automations/proposals/${resumeCard.id}/approve`, {});
+  assert(resume.ok && resumeOk.ok && autos.get(auto.id).enabled === true, 'a resume round-trips', resumeOk);
+
+  const del = await propose({ editOf: hook.id, action: 'delete', rationale: 'replaced by slack trigger' });
+  assert(del.ok && /delete:/.test(del.preview || ''), 'a delete is proposed', del);
+  assert(autos.get(hook.id), 'and nothing is removed yet');
+  autos.update(hook.id, { task: 'Handle it carefully.' }); // a human edits it while the delete waits
+  const delCard = (await get('/api/automations/proposals')).proposals.find((p) => p.editOf === hook.id && p.lifecycle === 'delete');
+  const delStale = await post(`/api/automations/proposals/${delCard.id}/approve`, {});
+  assert(delStale.status === 409 && autos.get(hook.id), 'a delete is refused if the automation changed since', delStale);
+  await post(`/api/automations/proposals/${delCard.id}/reject`, {});
+  const del2 = await propose({ editOf: hook.id, action: 'delete' });
+  const del2Card = (await get('/api/automations/proposals')).proposals.find((p) => p.editOf === hook.id && p.lifecycle === 'delete');
+  const delOk = await post(`/api/automations/proposals/${del2Card.id}/approve`, {});
+  assert(del2.ok && delOk.ok && delOk.deleted && !autos.get(hook.id), 'approving a fresh delete removes it', delOk);
+  const types = aos.db.prepare(`SELECT type FROM audit_events WHERE type LIKE 'automation.%.approved' OR type LIKE 'automation.%.proposed'`).all().map((r) => r.type);
+  assert(['automation.pause.approved', 'automation.resume.approved', 'automation.delete.approved', 'automation.delete.proposed'].every((t) => types.includes(t)), 'each step is audited', [...new Set(types)]);
 
   server.close();
   registry.stopAll();

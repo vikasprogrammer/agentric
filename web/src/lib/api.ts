@@ -1180,6 +1180,8 @@ export interface AutomationProposal {
   before?: Partial<ProposedAutomationSpec>
   after?: Partial<ProposedAutomationSpec>
   changes?: string[]
+  /** Set when the proposal PAUSES, RESUMES or DELETES `editOf` rather than changing its fields. */
+  lifecycle?: 'pause' | 'resume' | 'delete'
 }
 /** An agent-proposed edit to ANOTHER agent's listing / CLAUDE.md, awaiting owner sign-off. `fields` holds
  *  only the changed keys (the delta); `claudeMd`, when present, is the full replacement system prompt. */

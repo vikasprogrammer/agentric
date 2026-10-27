@@ -385,7 +385,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 63 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 71 always-on tools
   + 13 conditional (chat-reply / egress / media / multi-org `github_token`, each exposed only when its
   env flag is set; full list in `docs/agent-mcp-tools.md`). Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):
@@ -493,7 +493,7 @@ Key modules:
   per goal and only when the verdict CHANGES (guard = the `goal.reviewed` audit event). The response is
   the existing Plan button — `metricBrief` puts the verdict in the strategist's prompt in words, so a
   flat goal is told to try a DIFFERENT approach rather than file more of the same. Agents report the
-  number; the metric, its target and the goal's status stay human-owned. Workflows: `workflow_propose` — 1–6 automations that make up one ongoing FUNCTION, on ONE
+  number; the metric, its target and the goal's status stay human-owned. Automations: `automation_list`/`automation_get` (find + read any automation, credential-free) feed `automation_propose({ editOf })` — field edits, or `action: pause|resume|delete` — all propose-don't-apply on one `automation.proposed` card. Workflows: `workflow_propose` — 1–6 automations that make up one ongoing FUNCTION, on ONE
   `automation.proposed` card approved as a unit (all-or-nothing: a part `Automations.add` rejects rolls
   the earlier ones back). Shares the validator/card/queue-cap/routes with the one-part
   `automation_propose`; proposes TRIGGERS only — the judgment stays in each part's `task` prompt, so a
