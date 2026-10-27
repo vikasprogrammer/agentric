@@ -435,6 +435,11 @@ export interface Session {
    *  ("paused 2h ago by …"); every behavioural check reads `status`, never these. */
   pausedAt?: number;
   pausedBy?: string;
+  /** When (and why) the idle janitor closed this session — set only on a session that was reaped while
+   *  its human was away, cleared when it is re-opened or deliberately stopped. The console keeps such a
+   *  session in the sidebar so the person can find what they were working on. */
+  reapedAt?: number;
+  reapReason?: string;
   /** Last time the session's status changed (report/end/stop/resume/crash); = createdAt until the
    *  first transition. Lets the sessions list sort by recent activity, not just creation. */
   updatedAt: number;
@@ -672,6 +677,8 @@ interface SessionRow {
   archived_at?: number | null;
   paused_at: number | null;
   paused_by: string | null;
+  reaped_at?: number | null;
+  reap_reason?: string | null;
   busy_since: number | null;
   /** Last turn-END (or delivery) stamp. Paired with `busy_since` it says whether the CURRENT turn is
    *  still in flight — see {@link TerminalManager.isWorking}. */
@@ -1409,6 +1416,7 @@ export class TerminalManager {
    */
   sessionsSummary(viewer?: Member, taskClip?: number): { rows: Session[]; doneToday: number } {
     const ENDED_CAP = 60;
+    const REAPED_CAP = 50;
     // Live = every running row + every row whose tmux pane is alive (a `done` interactive session can keep
     // an attachable pane). aliveNames() is null on the launcher backend / a failed poll → status alone
     // (we never claim liveness we couldn't verify).
@@ -1424,7 +1432,13 @@ export class TerminalManager {
       ? this.db.prepare(`SELECT id FROM term_sessions WHERE archived_at IS NULL AND status != 'running' AND (spawned_by = ? OR run_as = ?) ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?`).all<{ id: string }>(viewer.id, viewer.id, ENDED_CAP)
       : this.db.prepare(`SELECT id FROM term_sessions WHERE archived_at IS NULL AND status != 'running' ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?`).all<{ id: string }>(ENDED_CAP)
     ).map((r) => r.id);
-    const ids = [...new Set([...liveIds, ...endedIds])];
+    // Sessions the idle janitor closed under the viewer — the sidebar keeps these until they're re-opened or
+    // dismissed, however far back the ended tail above has scrolled. Interactive only (unattended runs end
+    // on their own and were never the viewer's working surface); capped so a long absence stays bounded.
+    const reapedIds = viewer
+      ? this.db.prepare(`SELECT id FROM term_sessions WHERE archived_at IS NULL AND reaped_at IS NOT NULL AND headless = 0 AND (spawned_by = ? OR run_as = ?) ORDER BY reaped_at DESC LIMIT ?`).all<{ id: string }>(viewer.id, viewer.id, REAPED_CAP).map((r) => r.id)
+      : [];
+    const ids = [...new Set([...liveIds, ...endedIds, ...reapedIds])];
     const rows = ids.length ? this.listSessions(viewer, taskClip, ids) : [];
     const t0 = new Date();
     t0.setHours(0, 0, 0, 0);
@@ -4286,7 +4300,9 @@ export class TerminalManager {
           this.writeEpisode(r.id, r.agent, terminal ? undefined : 'stopped');
           this.backend.kill(space, r.tmux);
           // Preserve a completed session's outcome — only a still-running one becomes 'stopped'.
-          this.db.prepare("UPDATE term_sessions SET status = ?, busy_since = NULL, updated_at = ? WHERE id = ?").run(terminal ? r.status : 'stopped', Date.now(), r.id);
+          // Stamp the reap so the console keeps this session in its owner's sidebar — they walked away
+          // from it, they did not finish it, and without the stamp it reads exactly like one they closed.
+          this.db.prepare("UPDATE term_sessions SET status = ?, busy_since = NULL, updated_at = ?, reaped_at = ?, reap_reason = ? WHERE id = ?").run(terminal ? r.status : 'stopped', Date.now(), Date.now(), reason, r.id);
           this.cancelPendingQuestions(r.id, 'system');
           this.cancelPendingApprovals(r.id, 'system');
           this.blockResume(r.id); // stay reaped against a ttyd auto-reconnect; a deliberate Resume clears it
@@ -10043,6 +10059,8 @@ export class TerminalManager {
       this.db.prepare("UPDATE term_sessions SET status = 'stopped', busy_since = NULL, paused_at = NULL, paused_by = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
       if (r.status === 'queued') { this.capacityQueue.delete(sessionId); this.resolveQueuedCard(sessionId); }
     }
+    // A human stopping it is a decision to be done with it — it no longer needs keeping in the sidebar.
+    this.db.prepare('UPDATE term_sessions SET reaped_at = NULL, reap_reason = NULL WHERE id = ? AND reaped_at IS NOT NULL').run(sessionId);
     this.clearNotifications(sessionId);
     // The agent that asked is now dead — no one can answer its open questions or act on its approvals.
     // Cancel both so they leave "Needs you" and become dismissable, rather than hanging forever.
@@ -10390,6 +10408,8 @@ export class TerminalManager {
   /** Clear the stop sentinel — a human deliberately re-opened/resumed this session, so let attach.sh
    *  resurrect it again. No-op if it was never stopped. Idempotent. */
   allowResume(sessionId: string): void {
+    // Re-opened → no longer an abandoned session waiting to be found; the sidebar shows it as live again.
+    try { this.db.prepare('UPDATE term_sessions SET reaped_at = NULL, reap_reason = NULL WHERE id = ? AND reaped_at IS NOT NULL').run(sessionId); } catch { /* display-only stamp */ }
     const p = this.stopMarkerPath(sessionId);
     if (!p) return;
     try { fs.rmSync(p, { force: true }); } catch { /* best-effort */ }
@@ -10989,7 +11009,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined, pausedAt: r.paused_at ?? undefined, pausedBy: r.paused_by ?? undefined, mode: r.mode === 'draft' || r.mode === 'readonly' ? r.mode : undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, outputStyle: r.output_style ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined, pausedAt: r.paused_at ?? undefined, pausedBy: r.paused_by ?? undefined, reapedAt: r.reaped_at ?? undefined, reapReason: r.reap_reason ?? undefined, mode: r.mode === 'draft' || r.mode === 'readonly' ? r.mode : undefined };
 }
 
 /** One task on a `task.proposed` card. Title/assignee are snapshots from filing; status is hydrated live. */

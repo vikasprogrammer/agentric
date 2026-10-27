@@ -360,6 +360,13 @@ function SessionInsights({ s, chain = 0, className = '' }: { s: Session; chain?:
  *  session is just "open", not "resume". Attended runs only: an unattended run also carries an env now,
  *  but its human entry point is Take over (which resurrects it AND claims it), not a bare Resume that
  *  would hand it straight back to the turn-end reaper. */
+/** Why the idle janitor closed a session, for the sidebar's "Closed while idle" tooltip. */
+const reapReasonText = (r?: string): string =>
+  r === 'max-lifetime' ? 'Closed after reaching its maximum lifetime'
+    : r === 'blocked-timeout' ? 'Closed after waiting on an answer for too long'
+      : r === 'claimed-abandoned' ? 'Closed after the person who took it over went quiet'
+        : 'Closed after sitting idle'
+
 const canResume = (s: Session): boolean => Boolean(s.resumable) && !s.headless && !isLive(s) && !isPaused(s)
 
 /** Resume a stopped session from the console: lift the server-side stop-block, THEN open/focus its
@@ -1925,6 +1932,16 @@ function Console({ me }: { me: Member }) {
     })
   // Sidebar shows live sessions plus the open one even if it ended; past runs live on All sessions.
   const navLive = mySessions.filter(isLive)
+  // ...plus every session the idle janitor closed while I was away. Reaping frees the box's memory, but to
+  // the person who walked off it reads as their work vanishing — they finished nothing, and without this
+  // the row left the sidebar the moment its pane died. They stay (newest reap first) until re-opened —
+  // which resumes a resumable one in place — or closed here, which only hides them from this browser.
+  const navIdleClosed = mySessions
+    .filter((s) => s.reapedAt && !s.headless && !isLive(s) && s.tmux !== selected?.tmux)
+    .sort((a, b) => (b.reapedAt ?? 0) - (a.reapedAt ?? 0))
+  const dismissIdleClosed = (tmuxes: string[]) => {
+    const n = new Set(hiddenTabs); for (const t of tmuxes) n.add(t); persistHiddenTabs(n)
+  }
   // Signals the collapsed rail surfaces (the expanded sidebar shows them per-row / per-label):
   // how many of MY sessions are blocked on me, and whether the Inbox has anything unread at all.
   const waitingMine = mySessions.filter((s) => waiting.has(s.id)).length
@@ -1935,14 +1952,15 @@ function Console({ me }: { me: Member }) {
   // opacity-0 (so hovering doesn't reflow the title) and reveals on row hover / keyboard focus / while
   // open. Same RowActionsMenu the sessions list and grid cards use, minus Activity (its inspect panel
   // lives inside SessionsPage).
-  const renderNavSession = (s: Session) => {
+  const renderNavSession = (s: Session, idleClosed = false) => {
     const active = selected?.tmux === s.tmux && route === 'sessions'
     return (
       <div key={s.id} className={`group/nav flex w-full items-center rounded-md ${active ? 'bg-muted' : 'hover:bg-muted'}`}>
         <a
           href={navHref('sessions', s.tmux)}
           onClick={onNavClick(() => openTerminal(s.tmux, s.agent + ' · ' + s.id))}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 pl-2 text-left no-underline text-foreground"
+          title={idleClosed ? `${reapReasonText(s.reapReason)} ${s.reapedAt ? timeAgo(s.reapedAt) + ' ago' : ''}. ${s.resumable ? 'Open it to pick up where you left off.' : 'Open it to read what it did.'}` : undefined}
+          className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 pl-2 text-left no-underline text-foreground ${idleClosed && !active ? 'opacity-70' : ''}`}
         >
           <SessionStatus s={s} />
           <span className="min-w-0 flex-1">
@@ -1957,6 +1975,16 @@ function Console({ me }: { me: Member }) {
             <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
           </span>
         </a>
+        {idleClosed && (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-6 w-6 shrink-0 text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover/nav:opacity-100"
+            title="remove from sidebar (still in All sessions)"
+            aria-label="remove from sidebar"
+            onClick={() => dismissIdleClosed([s.tmux])}
+          ><X className="h-3.5 w-3.5" /></Button>
+        )}
         <RowActionsMenu
           session={s}
           members={members}
@@ -2051,15 +2079,24 @@ function Console({ me }: { me: Member }) {
               <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className="h-5 w-5 text-emerald-600" onClick={onNavClick(() => nav('agents'))} title="spawn an agent"><Plus className="h-3.5 w-3.5" /></Button>
             </div>
           </div>
-          {navLive.length === 0 && !selectedEndedNav && (
+          {navLive.length === 0 && !selectedEndedNav && navIdleClosed.length === 0 && (
             <div className="text-xs text-muted-foreground">
               {mySessions.length === 0 ? 'No sessions yet.' : 'No live sessions.'} <a href={navHref('agents')} className="text-primary underline" onClick={onNavClick(() => nav('agents'))}>Spawn an agent</a>.
             </div>
           )}
           <div className="space-y-0.5">
-            {navLive.map(renderNavSession)}
-            {selectedEndedNav && renderNavSession(selectedEndedNav)}
+            {navLive.map((s) => renderNavSession(s))}
+            {selectedEndedNav && renderNavSession(selectedEndedNav, Boolean(selectedEndedNav.reapedAt && !selectedEndedNav.headless))}
           </div>
+          {navIdleClosed.length > 0 && (
+            <>
+              <div className="mb-1 mt-3 flex items-center justify-between" title="Closed automatically after sitting idle, to free memory. Nothing was lost — open one to pick up where you left off.">
+                <span className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-muted-foreground"><Moon className="h-3 w-3" /> Closed while idle</span>
+                <button type="button" className="text-[11px] text-muted-foreground hover:text-foreground" onClick={() => dismissIdleClosed(navIdleClosed.map((s) => s.tmux))} title="remove these from the sidebar (still in All sessions)">Clear</button>
+              </div>
+              <div className="space-y-0.5">{navIdleClosed.map((s) => renderNavSession(s, true))}</div>
+            </>
+          )}
         </div>
 
         {/* Bottom: Manage flyout + profile (fixed) */}

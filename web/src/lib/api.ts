@@ -422,6 +422,10 @@ export interface Session {
   /** When the session was paused, and by whom. Both set only while `status === 'paused'`. */
   pausedAt?: number
   pausedBy?: string
+  /** When (and why) the idle janitor closed this session while its human was away. Cleared once it is
+   *  re-opened or deliberately stopped. The sidebar keeps a stamped session so it can be found again. */
+  reapedAt?: number
+  reapReason?: 'idle-interactive' | 'claimed-abandoned' | 'blocked-timeout' | 'max-lifetime' | string
   /** A person's working restriction on this run; absent = normal. */
   mode?: 'draft' | 'readonly'
   /** True when this session can be FORKED — branched into a new independent session that inherits its
