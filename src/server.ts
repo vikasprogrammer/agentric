@@ -43,9 +43,9 @@ import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/co
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { automationEditBase, buildAutomationEditBrief, planAutomationEdit, planAutomationLifecycle, agentAutomationView, editStateOf, EDITABLE_TYPES, LIFECYCLE_ACTIONS, type AutomationLifecycle } from './edge/automation-edit';
-import { chooseAgent } from './edge/router';
+import { chooseAgent, dispatch, routerBrain, routableAgents, addressedAgent, RouteDecision } from './edge/router';
 import { recordCapabilityGap } from './edge/capability-gap';
-import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
+import { SOCIAL_REPLY } from './edge/intent';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerAsk } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
@@ -3698,41 +3698,54 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const a = os.agents.get(id);
       return { id, description: a?.description || '', category: a?.category, icon: a?.icon, score };
     };
-    const fleet = () =>
-      [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime) && a.category !== 'System' && runnable(a.id)).map((a) => card(a.id));
-    // The `work` responder: the agent-routing decision, filtered to what this member can run.
-    const respondWork = async (askFallback?: boolean) => {
-      const decision = await chooseAgent(os, text);
-      const base = { intent: 'work' as const, askFallback: askFallback || undefined };
+    const fleet = () => routableAgents(os, (a) => runnable(a.id)).map((a) => card(a.id));
+
+    // Naming an agent (`@engineer …`, `/engineer …`, `engineer: …`) beats every inference — the console
+    // launches it straight away instead of second-guessing a person who already said who they want.
+    const addressed = addressedAgent(text, (id) => { const a = os.agents.get(id); return !!a && isCodingRuntime(a.runtime) && a.category !== 'System'; });
+    if (addressed) {
+      if (!runnable(addressed.agentId)) return sendJson(res, 403, { error: `you can't run ${addressed.agentId}` });
+      return sendJson(res, 200, { intent: 'work', kind: 'route', method: 'explicit', suggested: card(addressed.agentId), candidates: [], task: addressed.rest || text });
+    }
+
+    // One model call decides intent AND agent over the roster THIS member can run (rules fallback when no
+    // model is reachable). See `dispatch` in src/edge/router.ts.
+    const brain = routerBrain(os, () => tm.outOfBandCredentialEnv());
+    const d = await dispatch(os, text, { brain, forceWork: b.force === 'work', eligible: (a) => runnable(a.id) });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: `member:${me.id}`, type: 'router.dispatched', data: { source: 'cockpit', via: d.via, intent: d.intent, kind: d.decision?.kind ?? null, agent: d.decision?.kind === 'route' ? d.decision.agentId : null, reason: d.reason ?? null } });
+
+    // The `work` responder: the agent-routing decision. Scores are only shown for the keyword scorer —
+    // a model pick has no meaningful percentage, and inventing one would read as precision it doesn't have.
+    const respondWork = (decision: RouteDecision, askFallback?: boolean) => {
+      const base = { intent: 'work' as const, askFallback: askFallback || undefined, via: d.via, reason: d.reason };
+      const sc = (n?: number) => (d.via === 'model' ? undefined : n);
       if (decision.kind === 'route' && runnable(decision.agentId)) {
         const alts = [decision.runnerUp?.agentId].filter((x): x is string => !!x && runnable(x));
-        return sendJson(res, 200, { ...base, kind: 'route', method: decision.method, suggested: card(decision.agentId, decision.score), candidates: alts.map((id) => card(id)) });
+        return sendJson(res, 200, { ...base, kind: 'route', method: decision.method, suggested: card(decision.agentId, sc(decision.score)), candidates: alts.map((id) => card(id)) });
       }
       if (decision.kind === 'disambiguate') {
         const list = decision.candidates.filter((c) => runnable(c.agentId));
-        if (list.length >= 2) return sendJson(res, 200, { ...base, kind: 'disambiguate', candidates: list.map((c) => card(c.agentId, c.score)) });
-        if (list.length === 1) return sendJson(res, 200, { ...base, kind: 'route', method: 'keyword', suggested: card(list[0].agentId, list[0].score), candidates: [] });
+        if (list.length >= 2) return sendJson(res, 200, { ...base, kind: 'disambiguate', candidates: list.map((c) => card(c.agentId, sc(c.score))) });
+        if (list.length === 1) return sendJson(res, 200, { ...base, kind: 'route', method: d.via === 'model' ? 'llm' : 'keyword', suggested: card(list[0].agentId, sc(list[0].score)), candidates: [] });
       }
-      // Nothing scored at all → a capability gap: no agent on this fleet matches the request. Recorded
-      // (audit + a rolling admin card) so misses accumulate into a list of agents worth building. A
-      // routed-but-not-runnable agent, or a disambiguation the member can't run, is a PERMISSIONS
-      // outcome, not a missing capability — it lands here too, and must not be recorded as a gap.
+      // Nothing fits → a capability gap: no agent on this fleet matches the request. Recorded (audit + a
+      // rolling admin card) so misses accumulate into a list of agents worth building. A routed-but-not-
+      // runnable agent is a PERMISSIONS outcome, not a missing capability — it lands here too, and must
+      // not be recorded as a gap.
       if (decision.kind === 'none' && !askFallback) recordCapabilityGap(os, tm, { text, requester: me.id, source: 'cockpit' });
       return sendJson(res, 200, { ...base, kind: 'none', noFit: decision.kind === 'none' || undefined, candidates: fleet() });
     };
 
-    const intent = b.force === 'work' ? { intent: 'work' as const } : classifyIntent(text);
-
     // A bare greeting / thanks → a friendly reply, rendered inline like an `ask` answer (no session).
-    if (intent.intent === 'social') {
+    if (d.intent === 'social') {
       return sendJson(res, 200, { intent: 'ask', answer: SOCIAL_REPLY, source: 'state' });
     }
 
-    if (intent.intent === 'action' && intent.surface) {
-      return sendJson(res, 200, { intent: 'action', surface: intent.surface });
+    if (d.intent === 'action' && d.surface) {
+      return sendJson(res, 200, { intent: 'action', surface: d.surface, reason: d.reason });
     }
 
-    if (intent.intent === 'ask') {
+    if (d.intent === 'ask') {
       // Band 1 (state lookup) + Band 2a (direct LLM), shared with the Slack/Discord front door.
       const inline = await answerAsk(os, tm, autos, me, text);
       if (inline) return sendJson(res, 200, { intent: 'ask', answer: inline.answer, source: inline.source });
@@ -3746,10 +3759,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         const s = tm.createSession(CONCIERGE_ID, chatTitle(text, CONCIERGE_ID), text, `chat:${me.id}`, true, undefined, undefined, me.id, undefined, false);
         return sendJson(res, 200, { intent: 'ask', run: { sessionId: s.id }, source: 'concierge' });
       }
-      return respondWork(true); // last resort — couldn't provision the concierge
+      return respondWork(await chooseAgent(os, text), true); // last resort — couldn't provision the concierge
     }
 
-    return respondWork();
+    return respondWork(d.decision ?? { kind: 'none' });
   }
 
   // Cockpit `action` execution (Phase 3): the member explicitly clicked "Set it up" on a detected action

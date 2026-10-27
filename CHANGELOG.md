@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.467.0] - 2026-10-27
+### Changed
+- **Cockpit and the chat bot now pick the right agent.** Routing used to be a keyword match against each
+  agent's description, and it only asked a model when the match was a near-tie — so a confident wrong match
+  ("fix the login bug and open a PR" → support, "write a tweet" → the marketing manager, "my pod is down"
+  shortlisting three agents that weren't pod-troubleshooter) went straight through. Now ONE model call
+  reads the whole roster and decides both what the message is (work / workspace question / set-up / small
+  talk) and which agent fits, with a one-line reason and up to two alternatives (`dispatch` in
+  `src/edge/router.ts`). It uses the tenant's Anthropic key or OpenAI-style endpoint, else a throwaway
+  `claude -p --model haiku` on the box's own Claude login (tool-less, no user settings or plugins), so a
+  subscription-only box gets it too; the keyword path remains only as the no-model fallback. On the
+  instapods roster it went from 8/18 to 18/18 on a probe set (~1s with a key, ~3s via the CLI). Low
+  confidence still asks you to pick, and a hallucinated agent id is never spawned. Every decision is
+  audited as `router.dispatched`; `AOS_ROUTER_CLI=0` turns the CLI lane off.
+- **Naming an agent always wins.** In Cockpit, `@engineer …` (or `/engineer …`, `engineer: …`) launches
+  that agent straight away with no model call, and typing `@` autocompletes agent names. In chat,
+  `/agents` / `/help` reply with the roster and a mistyped `/name` says so — previously Discord routed
+  `/agents` to `social-listener`.
+  **For users:** Type what you need in Cockpit, or @mention the bot in Slack/Discord, and the right agent
+  picks it up — with a line saying why. Name one yourself with `@agent-name …` to skip the guess.
+  [Open Cockpit](#/cockpit)
+
 ## [0.466.0] - 2026-10-27
 ### Added
 - **Agents can find, edit, pause, resume and delete automations from any session.** Editing an
