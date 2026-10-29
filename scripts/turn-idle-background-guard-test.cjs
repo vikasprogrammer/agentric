@@ -154,6 +154,28 @@ const noTranscript = mkSession({});
 tm.markTurnIdle(noTranscript);
 assert(killed.includes('aos-' + noTranscript), 'no transcript to read → fails OPEN and tears down (never a stuck pane)');
 
+console.log('\n\x1b[1m2b) a human speaking into an unattended run claims it\x1b[0m');
+// instapods ses_4e3c7256 (2026-10-29): the task run reported, the owner typed a follow-up into its
+// terminal, and the turn-end after the agent's reply tore the pane down under them.
+const alice = aos.team.invite({ email: 'alice@example.com', role: 'owner' }).member;
+const aliceId = alice.id;
+// A bundled claude-code agent (a scratch home has no `engineer`) — claiming needs an attachable runtime.
+const talkedTo = mkSession({ status: 'done', agent: 'agent-author' }, [{ type: 'assistant', message: { content: [{ type: 'text', text: 'PRs open.' }] } }]);
+tm.noteTyper(talkedTo, aliceId, 'terminal');
+tm.attributeTurn(talkedTo, 'also update the rollout plan with the canary host');
+const claimedRow = aos.db.prepare('SELECT claimed_by, headless, status FROM term_sessions WHERE id=?').get(talkedTo);
+assert(claimedRow.claimed_by === 'alice@example.com' && claimedRow.headless === 0, 'a human turn claims the run (sticky, attended)');
+assert(claimedRow.status === 'running', '…and a run that had already reported is live again');
+const claimEv = events(talkedTo).find((e) => e.type === 'session.claimed');
+assert(claimEv && JSON.parse(claimEv.data).via === 'human-turn', '…audited session.claimed via human-turn');
+tm.markTurnIdle(talkedTo);
+assert(!killed.includes('aos-' + talkedTo), 'the reply\'s turn-end does NOT tear it down');
+
+const poked = mkSession({}, [{ type: 'assistant', message: { content: [{ type: 'text', text: 'waiting' }] } }]);
+tm.attributeTurn(poked, '✅ Really done: qa finished the task you handed off');
+tm.markTurnIdle(poked);
+assert(killed.includes('aos-' + poked), 'server-delivered text (no human typed) does not claim — still torn down at turn-end');
+
 console.log('\n\x1b[1m3) the unattended prompt brief\x1b[0m');
 for (const tool of ['task_wait', 'ask', 'schedule', 'task_create', 'report'])
   assert(UNATTENDED_TURN_BRIEF.includes(tool), `names \`${tool}\` — an agent told "don't wait" needs the alternative`);

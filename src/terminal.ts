@@ -3905,7 +3905,7 @@ export class TerminalManager {
    * stay-stopped sentinel so a re-open resurrects cleanly. Idempotent: claiming an already-claimed or an
    * interactive session is a no-op success. Returns an error only for an unknown / non-claude-code run.
    */
-  claimSession(sessionId: string, by: string): { ok: boolean; error?: string } {
+  claimSession(sessionId: string, by: string, via?: string): { ok: boolean; error?: string } {
     const row = this.db.prepare('SELECT agent, claimed_by FROM term_sessions WHERE id = ?')
       .get<{ agent: string; claimed_by: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
@@ -3933,7 +3933,7 @@ export class TerminalManager {
     // relaunches nothing, so patch the file in place.
     this.attendLaunchEnv(sessionId);
     // No kill, no relaunch — the live pane keeps streaming; the caller opens ttyd and attaches to it.
-    this.audit(sessionId, by, 'session.claimed', { agent: row.agent });
+    this.audit(sessionId, by, 'session.claimed', { agent: row.agent, ...(via ? { via } : {}) });
     return { ok: true };
   }
 
@@ -4438,13 +4438,19 @@ export class TerminalManager {
       // the person. Composer/inject text IS server-typed — on that person's behalf — so it attributes.
       if (fresh.via === 'terminal' && this.isServerText(sessionId, prompt)) return null;
       this.typers.delete(key);
-      const row = this.db.prepare('SELECT run_as, speaker, agent FROM term_sessions WHERE id = ?').get<{ run_as: string | null; speaker: string | null; agent: string }>(sessionId);
+      const row = this.db.prepare('SELECT run_as, speaker, agent, headless, claimed_by FROM term_sessions WHERE id = ?').get<{ run_as: string | null; speaker: string | null; agent: string; headless: number; claimed_by: string | null }>(sessionId);
       if (!row) return null;
       const m = this.os.team.getMember(fresh.memberId);
       if (!m) return null;
       const prev = this.db.prepare("SELECT speaker FROM term_sessions WHERE claude_session_id = ? AND speaker IS NOT NULL ORDER BY updated_at DESC LIMIT 1").get<{ speaker: string }>(key)?.speaker ?? row.speaker;
       this.db.prepare('UPDATE term_sessions SET speaker = ? WHERE id = ?').run(m.id, sessionId);
       this.audit(sessionId, m.email, 'turn.speaker', { member: m.id, email: m.email, via: fresh.via, runAs: row.run_as });
+      // A person just spoke into an UNATTENDED run, so it is a conversation now, not a job — and the
+      // turn-end reaper (`markTurnIdle`) would otherwise close it the moment the agent answered, while the
+      // person is reading the answer (instapods ses_4e3c7256: the run reported, the owner typed a follow-up,
+      // and the reply's turn-end killed the pane). Claim it exactly as the Take over button would: sticky,
+      // attended, the human owns its lifecycle; the interactive idle reaper still bounds an abandoned one.
+      if (row.headless && !row.claimed_by) this.claimSession(sessionId, m.email, 'human-turn');
       const runAs = row.run_as ? this.os.team.getMember(row.run_as) : undefined;
       if (m.id === row.run_as && (!prev || prev === m.id)) return null;
       const who = `${m.name || m.email} (${m.email}, ${m.role})`;

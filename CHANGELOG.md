@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.469.1] - 2026-10-29
+### Fixed
+- **Talking to an unattended run no longer gets it closed under you.** A task- or automation-dispatched
+  run is torn down at the end of each turn (the Stop-hook reaper), unless a human has taken it over. But
+  typing into its terminal didn't count as taking it over, so the agent's reply to your follow-up was its
+  last act: the pane closed as soon as it answered (instapods `ses_4e3c7256` — the run reported, the owner
+  asked for one more change, and the reply's turn-end reaped it). A human turn into an unattended run
+  (terminal, composer or inject — anything `turn.speaker` attributes to a person) now claims it exactly as
+  **Take over** does: sticky, attended, audited `session.claimed {via: human-turn}`. Server-delivered text
+  (pokes, answers) still claims nothing, so a run nobody spoke to closes at turn-end as before.
+  **For users:** If you reply to an agent that was running on its own, the session now stays open for the rest of your conversation instead of closing as soon as the agent answers.
+
 ## [0.469.0] - 2026-10-27
 ### Changed
 - **A session closed for being idle stays in your sidebar.** The idle janitor frees memory by closing
