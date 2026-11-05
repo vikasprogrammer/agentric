@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.469.4] - 2026-11-10
+### Fixed
+- **The terminal toolbar no longer covers the agent's own controls.** The font stepper, Help, Pop out,
+  Focus, Files, Operations and Attach file buttons floated over the terminal's top row, which is where
+  Claude Code puts clickable controls of its own — the `/diff` panel ("No changes this session") has its
+  only close button, a ✕, top-right, so it could not be closed by mouse. The buttons now sit in a strip
+  above the terminal.
+  **For users:** the session terminal's buttons now sit above the terminal instead of on top of it, so
+  nothing in the agent's screen is hidden behind them.
+
 ## [0.469.3] - 2026-11-10
 ### Fixed
 - **A resumed session no longer comes up "Not logged in" or as a blank conversation after a runtime account
