@@ -1626,7 +1626,9 @@ const TOOLS = [
       'description, category, model, effort, example prompts, or icon). This is how you self-improve: when ' +
       "you notice a recurring gap in your instructions or a better way to describe what you do, refine it " +
       'here. Read your current prompt with agent_get FIRST, then prefer claudeMdEdits/claudeMdAppend over ' +
-      'retyping the whole document — a hand-retyped claudeMd silently loses whatever you forget. Takes ' +
+      'retyping the whole document — a hand-retyped claudeMd silently loses whatever you forget. Your ' +
+      'CLAUDE.md has a 40,000-char budget: an edit that grows it past that is refused (shrinking is always ' +
+      'fine), so put procedures in skills, reference in the KB and one-off facts in memory. Takes ' +
       'effect on your next session. Every edit is snapshotted — inspect them with agent_history and undo ' +
       'with agent_revert. You can only edit yourself (the id defaults to you); to edit ANOTHER agent, use ' +
       'agent_propose_update.',
@@ -3328,7 +3330,7 @@ async function agentGet(args: Record<string, unknown>): Promise<string> {
   const d = (await res.json()) as {
     ok?: boolean; id?: string; self?: boolean; description?: string; category?: string; icon?: string;
     model?: string; effort?: string; outputStyle?: string; examplePrompts?: string[];
-    claudeMd?: string; chars?: number; baseHash?: string; latestRev?: number | null; error?: string;
+    claudeMd?: string; chars?: number; budget?: number; budgetNote?: string; baseHash?: string; latestRev?: number | null; error?: string;
   };
   if (!d.ok) return `Could not read that agent: ${d.error ?? 'unknown error'}`;
   const meta = [
@@ -3338,7 +3340,8 @@ async function agentGet(args: Record<string, unknown>): Promise<string> {
     d.model ? `model: ${d.model}` : null,
     d.effort ? `effort: ${d.effort}` : null,
     d.examplePrompts?.length ? `starter prompts: ${d.examplePrompts.map((p) => `"${p}"`).join(', ')}` : null,
-    `CLAUDE.md: ${d.chars} chars${d.latestRev ? ` · latest rev ${d.latestRev}` : ''}`,
+    `CLAUDE.md: ${d.chars} chars${d.budget ? ` of a ${d.budget}-char budget` : ''}${d.latestRev ? ` · latest rev ${d.latestRev}` : ''}`,
+    d.budgetNote ? `⚠ ${d.budgetNote}` : null,
     `baseHash: ${d.baseHash}  ← pass this as baseHash when you edit, so a stale copy is refused instead of clobbering`,
   ].filter(Boolean).join('\n');
   return `${meta}\n\n----- CLAUDE.md (verbatim) -----\n${d.claudeMd ?? ''}\n----- end CLAUDE.md -----\n\nTo change part of this, use claudeMdEdits (anchored) or claudeMdAppend — NOT a hand-retyped claudeMd.`;

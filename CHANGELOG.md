@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.470.0] - 2026-11-10
+### Added
+- **An agent's CLAUDE.md has a size budget.** Self-improvement only ever appends — an agent that learns a
+  lesson writes it into its own prompt and nothing consolidates — so on globex `onboarding-assistant`
+  reached 400k chars over 34 self-edits and `qa` 98k over 61, against a fleet median near 11k, and every
+  run paid for every rule ever written (past Claude Code's 150k instruction budget the CLI also warns on
+  each launch). `agent_update` and `agent_propose_update` now refuse an edit that GROWS a prompt past
+  40,000 chars (`CLAUDE_MD_BUDGET`, `assessClaudeMdSize` in `src/state/agent-edit.ts`); shrinking is always
+  accepted, so an already-oversized prompt can be trimmed back, and `confirmRewrite` does not override it.
+  The refusal says where the content belongs (procedure → a skill, reference → the KB, one-off fact →
+  memory); `agent_get`, dry runs and successful edits carry a note at ≥80% of the budget or over it.
+  Proposals are checked before any lane, so neither a maturity tier nor an approval card waves the growth
+  through. Owners editing in the console are not capped. Audited `agent.claudemd.over_budget`.
+  **For admins:** agents can no longer grow their own instructions past 40,000 characters — an
+  oversized agent has to move material into skills, the Knowledge Base or memory before adding more.
+
 ## [0.469.6] - 2026-11-10
 ### Fixed
 - **The deploy gate no longer depends on whether the box itself is signed in to Claude** (#900). Launch-path

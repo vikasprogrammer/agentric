@@ -17,7 +17,7 @@ import { containedPath, mimeOf } from './state/artifacts';
 import { clipText } from './state/session-activity';
 import { ProgressPosition } from './state/session-progress';
 import { computeAgentStat } from './state/agent-stats';
-import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
+import { agentEditable, applyAgentEdit, assessClaudeMdEdit, assessClaudeMdSize, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
 import { listConnectedAccounts } from './connectors/composio';
 import { activeToolkits, resolveIdentities } from './connectors/composio-identity';
@@ -9091,7 +9091,7 @@ export class TerminalManager {
    * particular target both force the gated lane whatever the tier says — the two shapes where "a trusted
    * agent meant well" and "a teammate's prompt was just clobbered" are indistinguishable from the score.
    */
-  proposeAgentUpdate(sessionId: string, proposer: string, body: Record<string, unknown>): { ok: boolean; preview?: string; applied?: boolean; rev?: number | null; maturity?: number; outcome?: string; message?: string; error?: string; conflict?: boolean; baseHash?: string; bytesBefore?: number; bytesAfter?: number; droppedHeadings?: string[]; destructive?: boolean } {
+  proposeAgentUpdate(sessionId: string, proposer: string, body: Record<string, unknown>): { ok: boolean; preview?: string; applied?: boolean; rev?: number | null; maturity?: number; outcome?: string; message?: string; error?: string; conflict?: boolean; baseHash?: string; bytesBefore?: number; bytesAfter?: number; droppedHeadings?: string[]; destructive?: boolean; overBudget?: boolean; budget?: number } {
     const target = String(body.id ?? '').trim().toLowerCase();
     if (!target) return { ok: false, outcome: 'refused', error: 'id (the agent to edit) is required' };
     if (target === proposer) return { ok: false, outcome: 'refused', error: 'use agent_update to edit your own listing' };
@@ -9111,6 +9111,13 @@ export class TerminalManager {
     const resolved = resolveClaudeMd(current, body);
     if (!resolved.ok) return { ok: false, outcome: 'refused', error: resolved.error };
     const risk = resolved.text !== undefined ? assessClaudeMdEdit(current, resolved.text) : undefined;
+    // ── the size budget — same rule as the self lane, checked before ANY lane (a human approving a card
+    // would otherwise wave through the growth the self lane refuses) ──
+    const size = resolved.text !== undefined ? assessClaudeMdSize(current, resolved.text) : undefined;
+    if (size?.over) {
+      this.audit(sessionId, proposer, 'agent.claudemd.over_budget', { agent: target, lane: 'proposal', bytesBefore: current.length, bytesAfter: size.chars, budget: size.budget });
+      return { ok: false, outcome: 'refused', overBudget: true, bytesBefore: current.length, bytesAfter: size.chars, budget: size.budget, error: size.error!.replace('refused: this would grow the CLAUDE.md', `refused: this would grow "${target}"'s CLAUDE.md`) };
+    }
     // Only the fields actually present become the delta; store them verbatim on the card for the approve route.
     const fields: Record<string, unknown> = {};
     for (const k of ['description', 'category', 'model', 'effort', 'icon'] as const) {

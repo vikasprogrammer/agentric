@@ -165,6 +165,61 @@ export function assessClaudeMdEdit(before: string, after: string): ClaudeMdRisk 
   return { bytesBefore, bytesAfter, removedPct, droppedHeadings, destructive, reason: parts.join(' and ') || undefined };
 }
 
+/**
+ * The size budget for an agent's CLAUDE.md, in characters (Claude Code's own unit).
+ *
+ * Self-improvement only ever APPENDS: an agent that learns a lesson writes it into its prompt, and nothing
+ * ever consolidates. On globex that grew `onboarding-assistant` to 400k chars over 34 self-edits and `qa`
+ * to 98k over 61, while the fleet median sits near 11k. Past Claude Code's 150k instruction budget the CLI
+ * warns on every launch, and well before that every run pays for every rule ever written, most of them
+ * one-off incidents. So an agent-driven edit may not GROW a prompt past this budget. Shrinking is always
+ * allowed (that's the way back under), and a human editing in the console is not capped: the budget is a
+ * brake on the append-only loop, not on an owner.
+ */
+export const CLAUDE_MD_BUDGET = 40_000;
+/** Above this share of the budget a successful edit carries a "consolidate soon" note. */
+export const CLAUDE_MD_BUDGET_WARN = 0.8;
+
+export interface ClaudeMdSize {
+  chars: number;
+  budget: number;
+  /** The edit grows the prompt past the budget — refuse it. */
+  over: boolean;
+  /** Sentence for the refusal. */
+  error?: string;
+  /** Sentence to append to a success/dry-run/read message, when the result is near or over budget. */
+  note?: string;
+}
+
+const WHERE_IT_BELONGS =
+  'Move what does not need to be in front of you on EVERY run out of the prompt: a repeatable procedure → ' +
+  'a skill (skill_propose), reference material or long examples → a KB page (kb_write) with a one-line ' +
+  'pointer here, a one-off fact or incident → memory (remember). Then merge rules that say the same thing ' +
+  'and delete dated incident notes whose lesson is already a rule.';
+
+/** Size verdict for a CLAUDE.md change (`before` → `after`), or for a read (`before === after`). */
+export function assessClaudeMdSize(before: string, after: string): ClaudeMdSize {
+  const chars = after.length;
+  const budget = CLAUDE_MD_BUDGET;
+  const fmt = (n: number) => n.toLocaleString('en-US');
+  const over = chars > budget && chars > before.length;
+  if (over) {
+    return {
+      chars, budget, over,
+      error: `refused: this would grow the CLAUDE.md to ${fmt(chars)} chars, over the ${fmt(budget)}-char budget ` +
+        `(currently ${fmt(before.length)}). Edits that shrink it are always accepted. ${WHERE_IT_BELONGS} ` +
+        `Then make your change in the space that frees up, or use claudeMdEdits to REPLACE an existing rule rather than adding one.`,
+    };
+  }
+  let note: string | undefined;
+  if (chars > budget) {
+    note = `CLAUDE.md is ${fmt(chars)} chars — still ${fmt(chars - budget)} over the ${fmt(budget)}-char budget, so it cannot grow until it is trimmed. ${WHERE_IT_BELONGS}`;
+  } else if (chars > budget * CLAUDE_MD_BUDGET_WARN) {
+    note = `CLAUDE.md is ${fmt(chars)} chars, ${Math.round((chars / budget) * 100)}% of the ${fmt(budget)}-char budget — consolidate before adding more; past the budget, edits that grow it are refused.`;
+  }
+  return { chars, budget, over, note };
+}
+
 /** `−1,234 / +56` — the diff stat a human reads at a glance on an approval card. */
 export function diffStat(risk: ClaudeMdRisk): string {
   const delta = risk.bytesAfter - risk.bytesBefore;

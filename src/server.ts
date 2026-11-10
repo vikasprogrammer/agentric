@@ -100,7 +100,7 @@ import { MAX_LIVE_BETS, MAX_LIVE_BETS_CEILING, resolveLiveBetCap } from './state
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
-import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, manifestToSnapshot, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
+import { agentEditable, applyAgentEdit, assessClaudeMdEdit, assessClaudeMdSize, contentHash, diffStat, manifestToSnapshot, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 
 /** Sum busy + idle CPU tick counters across all cores (for a sampled utilization %). */
 function cpuTicks(): { idle: number; total: number } {
@@ -2710,6 +2710,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       model: snap.model, effort: snap.effort, outputStyle: snap.outputStyle,
       examplePrompts: snap.examplePrompts,
       claudeMd: snap.claudeMd, chars: snap.claudeMd.length,
+      budget: assessClaudeMdSize(snap.claudeMd, snap.claudeMd).budget,
+      budgetNote: assessClaudeMdSize(snap.claudeMd, snap.claudeMd).note,
       baseHash: contentHash(snap.claudeMd),
       latestRev: revs[0]?.rev ?? null,
     });
@@ -2743,6 +2745,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const resolved = resolveClaudeMd(before.claudeMd, b);
     if (!resolved.ok) return sendJson(res, 200, { ok: false, outcome: 'refused', error: resolved.error });
     const risk = resolved.text !== undefined ? assessClaudeMdEdit(before.claudeMd, resolved.text) : undefined;
+    const size = resolved.text !== undefined ? assessClaudeMdSize(before.claudeMd, resolved.text) : undefined;
     const fields: Record<string, unknown> = {};
     for (const k of ['description', 'category', 'model', 'effort', 'icon', 'outputStyle', 'examplePrompts', 'shellSecrets', 'skills', 'tools'] as const) {
       if (k in b) fields[k] = b[k];
@@ -2756,8 +2759,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, 200, {
         ok: true, id, outcome: 'dry_run', fields: Object.keys(fields),
         ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter, droppedHeadings: risk.droppedHeadings, destructive: risk.destructive } : {}),
-        message: `Dry run — nothing was written. This would change ${Object.keys(fields).join(', ')}${risk ? `; CLAUDE.md ${diffStat(risk)}` : ''}${risk?.destructive ? `. It is DESTRUCTIVE (${risk.reason}) and would be REFUSED unless you pass confirmRewrite: true` : ''}.`,
+        message: `Dry run — nothing was written. This would change ${Object.keys(fields).join(', ')}${risk ? `; CLAUDE.md ${diffStat(risk)}` : ''}${risk?.destructive ? `. It is DESTRUCTIVE (${risk.reason}) and would be REFUSED unless you pass confirmRewrite: true` : ''}.${size?.over ? ` It would be REFUSED: ${size.error!.replace(/^refused: /, '')}` : size?.note ? ` ${size.note}` : ''}`,
       });
+    }
+    // ── the size budget: self-improvement only appends, so growth past the budget is refused ──
+    // No override flag on purpose — confirmRewrite exists because a big deletion can be deliberate, while
+    // growing past the budget is never the only way to make a change (replace a rule, move one out).
+    if (size?.over) {
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.claudemd.over_budget', data: { agent: id, lane: 'self', bytesBefore: before.claudeMd.length, bytesAfter: size.chars, budget: size.budget } });
+      return sendJson(res, 200, { ok: false, outcome: 'refused', overBudget: true, bytesBefore: before.claudeMd.length, bytesAfter: size.chars, budget: size.budget, error: size.error });
     }
     // ── the shrink guard: an accidental fragment looks exactly like this ──
     if (risk?.destructive && b.confirmRewrite !== true) {
@@ -2777,7 +2787,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ok: true, id, rev: out.rev, outcome: 'applied',
       ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter } : {}),
       baseHash: resolved.text !== undefined ? contentHash(resolved.text) : contentHash(before.claudeMd),
-      message: `Applied to your listing "${id}" (${Object.keys(fields).join(', ')})${risk ? ` — CLAUDE.md ${diffStat(risk)}` : ''}.${undo} The next session you run will use it.`,
+      message: `Applied to your listing "${id}" (${Object.keys(fields).join(', ')})${risk ? ` — CLAUDE.md ${diffStat(risk)}` : ''}.${undo} The next session you run will use it.${size?.note ? ` ${size.note}` : ''}`,
     });
   }
   // Agent reads its OWN revision history (self-scoped) — pick a rev to revert to.
