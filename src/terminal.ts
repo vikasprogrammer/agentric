@@ -53,7 +53,7 @@ import { readSessionCost } from './edge/session-cost';
 import { readTranscriptEnd } from './edge/outcome';
 import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF, WAITING_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
-import { readConversation, readConversationBounded, findTranscript, registerTranscriptRoot, Conversation } from './edge/conversation';
+import { readConversation, readConversationBounded, findTranscript, registerTranscriptRoot, transcriptInRoot, claudeConfigDir, Conversation } from './edge/conversation';
 import { digestConversation, sessionConsoleUrl, toSessionFtsQuery, SESSION_TEXT_READ_HEAD, SESSION_TEXT_READ_MAX, SESSION_TEXT_REREAD_MS } from './edge/session-search';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
@@ -1245,6 +1245,99 @@ export class TerminalManager {
    *  invisible for the lifetime of the process. Cheap (one small query) and idempotent. */
   private refreshTranscriptRoots(): void {
     try { for (const dir of this.os.runtimeAccounts.configDirs()) registerTranscriptRoot(dir); } catch { /* pool is optional */ }
+    // ARCHIVED credential dirs too. Re-adding an account under a name whose dir is still on disk moves that
+    // dir aside to `<name>.orphan-<ts>` (runtime-login.ts) — and with it every transcript of every run made
+    // under the old login. No pool row points there any more, so without this those conversations became
+    // unreachable: instawp, 2026-11-10, a 4-day, 102-turn session re-opened as a blank conversation under
+    // its own id because its transcript had been moved aside one minute earlier.
+    if (!this.os.paths) return;
+    const base = path.join(this.os.paths.home, 'runtime-accounts');
+    let runtimes: string[];
+    try { runtimes = fs.readdirSync(base); } catch { return; }
+    for (const rt of runtimes) {
+      let names: string[];
+      try { names = fs.readdirSync(path.join(base, rt)); } catch { continue; }
+      for (const n of names) if (/\.orphan-\d+$/.test(n)) registerTranscriptRoot(path.join(base, rt, n));
+    }
+  }
+
+  /**
+   * Move a resume off a credential dir that can no longer sign in. Credentials bind ONCE, at launch:
+   * `session-<id>.env` pins `CLAUDE_CONFIG_DIR` to the account the run started on, and every resurrect
+   * replays that file. So an account removed from the pool, disabled, or re-added and never finished kept
+   * receiving its old sessions — each one coming up "Not logged in · Please run /login" while two healthy
+   * accounts sat idle (instawp, 2026-11-10). Called from the same `RESUME=1` hook as staging, BEFORE the
+   * credential pre-flight, so a resume lands on a usable account instead of being refused or stranded.
+   *
+   * Leaves alone: the box default (no dir), a dir whose pool account is healthy, and a locked keychain
+   * (box-wide — no other account would fare better; the pre-flight reports it). Returns the new dir, having
+   * rewritten the launch env and the row, or null to resume as-is.
+   */
+  repinResumeAccount(sessionId: string, configDir: string): string | null {
+    try {
+      if (!configDir) return null;
+      const agent = this.sessionAgent(sessionId);
+      if (!agent) return null;
+      const manifest = this.os.agents.get(agent);
+      const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
+      const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+      const owner = this.os.runtimeAccounts.list().find((a) => a.runtime === runtime && a.kind === 'oauth' && a.configDir && real(a.configDir) === real(configDir));
+      const state = credentialReadiness(runtime, configDir);
+      if (!state.ok && state.reason === 'keychain_locked') return null;
+      const why = !owner ? 'not in the account pool' : !owner.enabled ? 'account disabled' : !state.ok ? `credential ${state.reason}` : null;
+      if (!why) return null;
+      const acct = this.pickUsableAccount(runtime, { kinds: ['oauth'], exclude: owner ? [owner.name] : [] }, sessionId, agent);
+      if (!acct?.configDir || real(acct.configDir) === real(configDir)) return null;
+      const resolved = this.credentialEnvFor(acct, runtime, sessionId, agent);
+      if (!resolved || !this.rewriteLaunchEnv(sessionId, runtime, resolved.vars)) return null;
+      const from = this.db.prepare('SELECT runtime_account a FROM term_sessions WHERE id = ?').get<{ a: string | null }>(sessionId)?.a ?? null;
+      this.db.prepare('UPDATE term_sessions SET runtime_account = ? WHERE id = ?').run(acct.name, sessionId);
+      this.audit(sessionId, agent, 'runtime.account.rotated', { runtime, from, to: acct.name, kind: acct.kind, via: resolved.varName, reason: `resume: ${why}` });
+      return acct.configDir;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Make sure a resume finds its conversation. Called by `claude-launch.sh` (loopback, session secret) on
+   * EVERY `RESUME=1` launch — browser reattach, Reload, a server-launched resume — right before
+   * `claude --resume`, because the transcript lives under `$CLAUDE_CONFIG_DIR/projects/` and nothing else
+   * guarantees the dir the resume will run under is the one that holds it. When it doesn't, claude finds
+   * "no conversation", the launcher falls back to `--session-id` and the human gets a BLANK conversation
+   * re-seeded with the original prompt — under the same id, so it looks like a resume that lost its memory.
+   *
+   * Copies the newest copy from any known root (pool dirs, archived dirs, the box default) into the target.
+   * Never overwrites a copy the target already has, and only ever writes into a dir the server itself
+   * vouches for (a pool account's dir or the box default): the route is reachable with a session secret an
+   * agent holds, so a client-supplied path must never become a write target.
+   */
+  stageResumeTranscript(sessionId: string, configDir: string): 'present' | 'staged' | 'missing' | 'skipped' {
+    try {
+      const row = this.db.prepare('SELECT agent, claude_session_id FROM term_sessions WHERE id = ?')
+        .get<{ agent: string; claude_session_id: string | null }>(sessionId);
+      if (!row?.claude_session_id) return 'skipped';
+      const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+      const target = configDir || claudeConfigDir();
+      let pool: string[] = [];
+      try { pool = this.os.runtimeAccounts.configDirs(); } catch { /* pool is optional */ }
+      if (![claudeConfigDir(), ...pool].some((d) => real(d) === real(target))) return 'skipped';
+      if (transcriptInRoot(target, row.claude_session_id)) return 'present';
+      this.refreshTranscriptRoots();
+      const src = findTranscript(row.claude_session_id);
+      if (!src) {
+        this.audit(sessionId, row.agent, 'session.transcript.missing', { claudeSessionId: row.claude_session_id, dir: target });
+        return 'missing';
+      }
+      const destDir = path.join(target, 'projects', path.basename(path.dirname(src)));
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.copyFileSync(src, path.join(destDir, `${row.claude_session_id}.jsonl`));
+      registerTranscriptRoot(target);
+      this.audit(sessionId, row.agent, 'session.transcript.staged', { from: src, to: destDir });
+      return 'staged';
+    } catch {
+      return 'skipped';
+    }
   }
 
   /** The launcher "space" (member-uid identity) a session runs in: the spawning member, or a shared
