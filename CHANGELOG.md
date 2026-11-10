@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.469.6] - 2026-11-10
+### Fixed
+- **The deploy gate no longer depends on whether the box itself is signed in to Claude** (#900). Launch-path
+  tests isolated the data home but not `~/.claude`, so the credential pre-flight checked the machine's real
+  default login. On instawp it had long been dead (every real run uses a pool account), so
+  `launch-window-test` saw a refused launch and `make-live.sh` blocked a correct build.
+  `npm run test:governance` now runs the chain (`test:governance:run`) under a scratch `CLAUDE_CONFIG_DIR`
+  holding a well-formed placeholder credential (`scripts/governance-isolated.cjs`). Tests that set their
+  own still override it.
+
 ## [0.469.5] - 2026-11-10
 ### Fixed
 - **Agents no longer load the software checkout's own CLAUDE.md.** Claude Code walks up from the cwd and
