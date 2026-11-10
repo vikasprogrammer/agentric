@@ -29,7 +29,7 @@ delete process.env.AGENT_OS_SECRET_KEY;
 let pass = 0, fail = 0;
 const assert = (c, name, d) => c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${name}`)) : (fail++, console.log(`  \x1b[31m✗ ${name}\x1b[0m${d !== undefined ? ' — ' + JSON.stringify(d).slice(0, 400) : ''}`));
 
-const { resolveClaudeMd, assessClaudeMdEdit, contentHash } = require(path.join(ROOT, 'dist/state/agent-edit.js'));
+const { resolveClaudeMd, assessClaudeMdEdit, assessClaudeMdSize, CLAUDE_MD_BUDGET, contentHash } = require(path.join(ROOT, 'dist/state/agent-edit.js'));
 
 const PROMPT = [
   '# Release orchestrator',
@@ -110,6 +110,22 @@ console.log('\n\x1b[1m2) scoring the damage — what separates "added a section"
 {
   assert(contentHash(PROMPT) === contentHash(PROMPT) && contentHash(PROMPT) !== contentHash(PROMPT + ' '),
     'contentHash is stable and sensitive to a one-byte change');
+}
+
+console.log('\n\x1b[1m2b) the size budget — self-improvement only appends\x1b[0m');
+{
+  const big = 'x'.repeat(CLAUDE_MD_BUDGET - 10);
+  const s1 = assessClaudeMdSize(big, big + 'y'.repeat(100));
+  assert(s1.over && /budget/.test(s1.error) && /skill_propose/.test(s1.error), 'growing past the budget is refused, and the error says where content belongs', s1);
+  const huge = 'x'.repeat(CLAUDE_MD_BUDGET * 10);
+  const s2 = assessClaudeMdSize(huge, huge.slice(1000));
+  assert(!s2.over && /over the/.test(s2.note), 'an over-budget prompt may always SHRINK (the way back under), with a note', s2);
+  const s3 = assessClaudeMdSize(huge, huge);
+  assert(!s3.over, 'an unchanged over-budget prompt is not refused (e.g. a description-only edit)', s3);
+  const s4 = assessClaudeMdSize('a', 'x'.repeat(Math.round(CLAUDE_MD_BUDGET * 0.9)));
+  assert(!s4.over && /consolidate/.test(s4.note), 'near the budget a successful edit carries a consolidate note', s4);
+  const s5 = assessClaudeMdSize('a', 'small prompt');
+  assert(!s5.over && !s5.note, 'a normal-sized prompt gets no note at all', s5);
 }
 
 console.log('\n\x1b[1m3) the self-edit route end to end (agent_get → agent_update)\x1b[0m');
@@ -194,6 +210,29 @@ console.log('\n\x1b[1m3) the self-edit route end to end (agent_get → agent_upd
   const baseline = hist.revisions[hist.revisions.length - 1];
   assert(baseline.claudeChars > 0, 'including a baseline of the pre-edit state', baseline);
 
+  // ── the size budget on the self lane ──
+  const sizeFresh = await call('/api/agents/get', {});
+  const padded = sizeFresh.claudeMd + '\n' + 'z'.repeat(CLAUDE_MD_BUDGET);
+  const dryBig = await call('/api/agents/update', { claudeMd: padded, dryRun: true });
+  assert(dryBig.ok && dryBig.outcome === 'dry_run' && /REFUSED/.test(dryBig.message), 'dryRun says an over-budget edit would be refused', dryBig.message);
+  const grow = await call('/api/agents/update', { claudeMdAppend: 'z'.repeat(CLAUDE_MD_BUDGET) });
+  assert(!grow.ok && grow.overBudget && grow.budget === CLAUDE_MD_BUDGET, 'a self-edit that grows the prompt past the budget is REFUSED', grow);
+  assert(!diskOf(EDITOR).includes('zzzz'), 'and nothing was written');
+  const grow2 = await call('/api/agents/update', { claudeMdAppend: 'z'.repeat(CLAUDE_MD_BUDGET), confirmRewrite: true });
+  assert(!grow2.ok && grow2.overBudget, 'confirmRewrite does not override the budget', grow2);
+  // A prompt that is ALREADY over (written before the cap existed) can still be trimmed, and agent_get flags it.
+  const bloated = '# Editor\n\n## Method\n\nDo the work.\n\n' + 'old incident note\n'.repeat(Math.ceil(CLAUDE_MD_BUDGET / 17) + 500);
+  fs.writeFileSync(path.join(aos.paths.userAgents, EDITOR, 'CLAUDE.md'), bloated);
+  const gotBig = await call('/api/agents/get', {});
+  assert(gotBig.budget === CLAUDE_MD_BUDGET && /over the/.test(gotBig.budgetNote || ''), 'agent_get reports an over-budget prompt', gotBig.budgetNote);
+  const trim = await call('/api/agents/update', { claudeMd: bloated.slice(0, bloated.length - 'old incident note\n'.length * 100) });
+  assert(trim.ok && trim.outcome === 'applied' && /over the/.test(trim.message), 'an over-budget prompt can shrink, and the reply says it is still over', trim);
+  const stillGrow = await call('/api/agents/update', { claudeMdAppend: '## New rule\n\nOne more.' });
+  assert(!stillGrow.ok && stillGrow.overBudget, 'but it cannot grow again until it is under', stillGrow);
+  const desc = await call('/api/agents/update', { description: 'still editable' });
+  assert(desc.ok, 'a description-only edit is unaffected by an over-budget prompt', desc);
+  fs.writeFileSync(path.join(aos.paths.userAgents, EDITOR, 'CLAUDE.md'), sizeFresh.claudeMd);
+
   console.log('\n\x1b[1m4) the cross-agent lane — shape overrides the maturity tier\x1b[0m');
   // Force the top tier for this proposer, so ONLY the shape guards can stop an auto-apply.
   aos.settings.setAgentProposalTrust({ minMaturity: 0, autoApplyAt: 0, autoApply: true }, 'test');
@@ -236,6 +275,12 @@ console.log('\n\x1b[1m3) the self-edit route end to end (agent_get → agent_upd
   const dry2 = tm.proposeAgentUpdate(session.id, EDITOR, { id: TARGET, rationale: 'just checking', claudeMd: 'tiny', dryRun: true });
   assert(dry2.ok && dry2.outcome === 'dry_run' && dry2.destructive, 'dryRun reports a destructive cross-agent edit', dry2);
   assert(tm.openAgentUpdateProposals().length === openBefore, 'and posts no card');
+
+  // The budget applies to proposals too — refused before any lane, so neither a tier nor a human card waves it through.
+  const openBefore2 = tm.openAgentUpdateProposals().length;
+  const bigProp = tm.proposeAgentUpdate(session.id, EDITOR, { id: TARGET, rationale: 'a huge addition', claudeMdAppend: 'q'.repeat(CLAUDE_MD_BUDGET) });
+  assert(!bigProp.ok && bigProp.overBudget && new RegExp(TARGET).test(bigProp.error), 'a proposal that grows the target past the budget is refused', bigProp);
+  assert(tm.openAgentUpdateProposals().length === openBefore2 && !diskOf(TARGET).includes('qqqq'), 'and neither applies nor queues a card');
 
   server.close();
   console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);

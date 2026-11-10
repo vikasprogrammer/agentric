@@ -483,7 +483,7 @@ Key modules:
   that target: maturity predicts intent, not correctness of transcription). Both tools echo the
   **server-composed `message`** rather than writing their own outcome sentence — an MCP process outlives
   a server upgrade, which is how a live session reported "NOTHING changes until an owner approves" about
-  an already-applied edit. Pinned by `scripts/agent-edit-guard-test.cjs`. Goal metrics (outcome, not activity): `goal_measure` — records one measured READING of a goal's metric
+  an already-applied edit. Both lanes also refuse an edit that GROWS a prompt past `CLAUDE_MD_BUDGET` (40k chars; shrinking always allowed, humans in the console uncapped) — self-improvement only appends, and globex reached 400k. Pinned by `scripts/agent-edit-guard-test.cjs`. Goal metrics (outcome, not activity): `goal_measure` — records one measured READING of a goal's metric
   into `goal_readings`. `goals` gained `metric*` columns (name/unit/target/baseline/direction/everyDays);
   `GoalStore.metricStatus` turns readings into a deterministic verdict (`measuring`/`flat`/`regressing`/
   `achieved`/`unmeasured`/`new`) that needs a SAMPLE (≥3 readings) spanning the metric's own interval and
