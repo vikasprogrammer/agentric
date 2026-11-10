@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.469.5] - 2026-11-10
+### Fixed
+- **Agents no longer load the software checkout's own CLAUDE.md.** Claude Code walks up from the cwd and
+  loads every ancestor CLAUDE.md, and the default data home (`./data`) sits INSIDE the checkout — so on any
+  box installed that way every agent also loaded the repo's ~83k-char maintainer notes. On globex that
+  pushed `qa`'s 98k prompt to 181k chars, over Claude Code's 150k instruction budget ("2 instruction files
+  add up to 181.2k chars"), and every run on every agent paid ~20k tokens for text written for us, not
+  them. `terminal/claude-launch.sh` now writes `claudeMdExcludes` for each ancestor's
+  `CLAUDE.md`/`CLAUDE.local.md`/`.claude/CLAUDE.md`/`.claude/rules/**` (logical and physical path), so an
+  agent's instructions are its own CLAUDE.md plus the composed system prompt and nothing else. Verified
+  against claude 2.1.322: a planted ancestor instruction is followed without the setting and absent with
+  it, while the agent's own CLAUDE.md still loads.
+
 ## [0.469.4] - 2026-11-10
 ### Fixed
 - **The terminal toolbar no longer covers the agent's own controls.** The font stepper, Help, Pop out,
