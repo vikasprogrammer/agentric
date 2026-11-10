@@ -285,6 +285,12 @@ function isDeadCredential(runtime: CodingRuntimeId, dir: string, now = Date.now(
   if (runtime !== 'claude-code') return null;
   const rec = readCredentialRecord(dir);
   const o = rec?.claudeAiOauth ?? rec;
+  // A record that carries NO login at all — neither an access nor a refresh token — is dead, not "no stated
+  // expiry". Claude also keeps MCP-server OAuth in this file, so an account dir whose sign-in never finished
+  // (re-added, abandoned at the browser step) still has a `.credentials.json`, holding only `mcpOAuth`.
+  // Reading that as healthy let every resume pinned to it come up "Not logged in · Please run /login"
+  // (instawp, 2026-11-10). 0 = "no token in it", which expiryPhrase already words correctly.
+  if (rec && typeof rec === 'object' && !o?.accessToken && !o?.refreshToken) return 0;
   const exp = o?.expiresAt;
   if (typeof exp !== 'number' || exp > now) return null;   // no stated expiry, or still valid
   // `exp` is returned as-is and may be 0 — the live instawp box default literally carried `expiresAt: 0`

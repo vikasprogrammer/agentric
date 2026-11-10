@@ -83,7 +83,8 @@ export interface Conversation {
   found: boolean;
 }
 
-const claudeConfigDir = (): string => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+/** The config dir the SERVER's own claude would use — the box default a run with no pooled account writes under. */
+export const claudeConfigDir = (): string => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
 /** Extra config dirs to search beyond the server's own. A session launched under a ROTATION-POOL account
  *  runs with `CLAUDE_CONFIG_DIR=<account dir>`, so claude writes its transcript under THAT dir's
@@ -96,6 +97,18 @@ const extraRoots = new Set<string>();
 /** Declare a credential dir whose `projects/` may hold session transcripts. Idempotent; ignores empties. */
 export function registerTranscriptRoot(dir: string | undefined | null): void {
   if (dir) extraRoots.add(dir);
+}
+
+/** The copy of `<claudeSessionId>.jsonl` under ONE root's `projects/`, if it has one. */
+export function transcriptInRoot(root: string, claudeSessionId: string): string | undefined {
+  const projects = path.join(root, 'projects');
+  let dirs: string[];
+  try { dirs = fs.readdirSync(projects); } catch { return undefined; }
+  for (const d of dirs) {
+    const candidate = path.join(projects, d, `${claudeSessionId}.jsonl`);
+    try { if (fs.statSync(candidate).isFile()) return candidate; } catch { /* not in this project dir */ }
+  }
+  return undefined;
 }
 
 /**

@@ -396,6 +396,37 @@ preflight_credentials() {
   dim "Fix the credential (Settings → Runtime → Runtime accounts), then reopen this session."
   return 1
 }
+# RESUME preparation — BEFORE the credential pre-flight, because it can change which credential dir we
+# run under. Two ways a resume used to go wrong with nothing in the server's path to notice (attach.sh
+# resurrects in pure shell):
+#   1. ACCOUNT. Credentials bind once, at launch: the persisted env pins CLAUDE_CONFIG_DIR to the account
+#      the run started on. Remove, disable or re-add that account and every resume still went there and
+#      came up "Not logged in · Please run /login". The server moves it to a usable pool account and hands
+#      back the new dir.
+#   2. TRANSCRIPT. `claude --resume` only looks under $CLAUDE_CONFIG_DIR/projects/. If the conversation is
+#      elsewhere (a re-added account's old dir is moved aside to `<name>.orphan-*`, or the run moved
+#      accounts), claude finds nothing, we fall back to `--session-id` below and the human gets a BLANK
+#      conversation under the same id. The server copies it into place.
+# Fails open: no AOS_URL, an unreachable server or any odd answer resumes exactly as before.
+prepare_resume() {
+  [ -n "${AOS_URL:-}" ] && [ -n "${SESSION:-}" ] || return 0
+  local body out dir
+  body=$(node -e 'console.log(JSON.stringify({session:process.argv[1],configDir:process.argv[2]||""}))' \
+    "$SESSION" "${CLAUDE_CONFIG_DIR:-}" 2>/dev/null) || return 0
+  out=$(curl -s -m 15 -X POST "$AOS_URL/api/resume-prepare" -H 'content-type: application/json' \
+    -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" -d "$body" 2>/dev/null) || return 0
+  dir=$(printf '%s' "$out" | node -e '
+    let s = "";
+    process.stdin.on("data", (d) => { s += d; });
+    process.stdin.on("end", () => { try { const j = JSON.parse(s); if (j && typeof j.configDir === "string") process.stdout.write(j.configDir); } catch {} });' 2>/dev/null) || return 0
+  if [ -n "$dir" ] && [ -d "$dir" ]; then
+    export CLAUDE_CONFIG_DIR="$dir"
+    dim "runtime account: the session's login is unusable — resuming on $(basename "$dir")"
+  fi
+  return 0
+}
+if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then prepare_resume; fi
+
 if [ "$RESUMED_FROM_ENV" = "1" ] && ! preflight_credentials; then
   # Hold the pane open rather than exiting: ttyd re-dials the instant a pane dies, which would spin this
   # same refusal in a loop. A shell lets the human read the reason and close the tab.

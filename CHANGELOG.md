@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.469.3] - 2026-11-10
+### Fixed
+- **A resumed session no longer comes up "Not logged in" or as a blank conversation after a runtime account
+  is re-added.** Three gaps, one incident (instawp: an expired account was re-added under the same name and
+  every session that had run on it broke):
+  1. *The conversation was stranded.* Re-adding moved the old credential dir aside to `<name>.orphan-<ts>`,
+     taking every transcript made under it, and nothing pointed there afterwards. `claude --resume` found no
+     conversation and the launcher fell back to a fresh one under the same id (a 4-day, 102-turn session
+     re-opened blank). Archived dirs are now transcript roots, and every resume copies the conversation into
+     the dir it will run under when it isn't already there. It never overwrites a copy in place and writes
+     only into a pool dir or the box default.
+  2. *The resume stayed on a dead account.* Credentials bind at launch, and every resurrect replayed the
+     same `CLAUDE_CONFIG_DIR` even after that account left the pool, was disabled or lost its login. Two
+     healthy accounts sat idle meanwhile. A resume now moves to a usable pool account first (rewriting the
+     launch env so later resurrects follow, audited `runtime.account.rotated` with `reason: resume: …`).
+  3. *An empty login read as healthy.* Claude keeps MCP OAuth in `.credentials.json` too, so a re-added
+     account whose sign-in never finished had a credentials file holding no sign-in. That now counts as
+     dead, so the launch and resume pre-flights and the account picker stop treating it as usable.
+  Both resume steps run in one fail-open loopback call made by every `RESUME=1` launch before the credential
+  pre-flight (`POST /api/resume-prepare`, session secret), so browser reattach, Reload and server-launched
+  resumes are all covered. Audits `session.transcript.staged` / `session.transcript.missing`. Pinned by
+  `scripts/resume-transcript-stage-test.cjs`.
+  **For users:** Re-opening an old session after an admin re-signs-in a Claude account now picks up your conversation on a working account, instead of asking you to /login or starting over.
+
 ## [0.469.1] - 2026-10-29
 ### Fixed
 - **Talking to an unattended run no longer gets it closed under you.** A task- or automation-dispatched

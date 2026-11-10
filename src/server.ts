@@ -1985,6 +1985,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const blocked = tm.checkResumeCredentials(session, String(b.configDir || ''), runtime);
     return sendJson(res, 200, blocked ? { ok: false, ...blocked } : { ok: true });
   }
+  // Prepare a resume (claude-launch.sh, every RESUME=1, BEFORE the credential check): move it off a
+  // credential dir that can no longer sign in (`repinResumeAccount`), then stage the transcript into the dir
+  // it will run under (`stageResumeTranscript`). A returned `configDir` is the launcher's new
+  // CLAUDE_CONFIG_DIR. Fails OPEN: any non-answer resumes exactly as before.
+  if (method === 'POST' && p === '/api/resume-prepare') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const moved = tm.repinResumeAccount(session, String(b.configDir || ''));
+    const transcript = tm.stageResumeTranscript(session, moved ?? String(b.configDir || ''));
+    return sendJson(res, 200, { ok: true, transcript, ...(moved ? { configDir: moved } : {}) });
+  }
   if (method === 'POST' && p === '/api/resumed') {
     const b = await readBody(req);
     const session = String(b.session || '');
