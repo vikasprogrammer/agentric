@@ -246,9 +246,40 @@ fi
 # wins over user settings, and project/local `false` wins even over managed settings, so the safe
 # direction holds. NOT `disableRemoteControl` — that kills the feature outright, and a human who has
 # attached to a session in the browser terminal should still be able to type `/rc` deliberately.
+# ANCESTOR CLAUDE.md FILES ARE NOT THIS AGENT'S INSTRUCTIONS. Claude Code walks UP from the cwd and
+# loads every CLAUDE.md / CLAUDE.local.md / .claude/CLAUDE.md / .claude/rules/ it finds. An agent's
+# instructions are its OWN CLAUDE.md plus the composed system prompt (Company context, briefs) — nothing
+# above the agent folder is meant to reach it. But the default data home is `./data`, i.e. INSIDE the
+# software checkout, so on any such box every agent also loaded the repo's own maintainer CLAUDE.md
+# (~83k chars of dev notes): live on globex it pushed a 98k-char agent prompt to 181k, over Claude Code's
+# 150k instruction budget, and every run on every agent paid ~20k tokens for text written for us.
+# `claudeMdExcludes` (picomatch against the absolute path; User/Project/Local types only) names each
+# ancestor's instruction files — both the logical and the physical path, since claude opens the
+# workspace by its real path (the macOS /var → /private/var symlink). A path holding a JSON- or
+# glob-significant character is skipped rather than risk a broken settings file.
+CLAUDE_MD_EXCLUDES=""
+_aos_add_ancestor_excludes() {
+  local d="$1" parent
+  while :; do
+    parent="$(dirname "$d")"
+    [ "$parent" = "$d" ] && break
+    d="$parent"
+    case "$d" in *[\"\\\*\?\[\]\{\}\(\)\!]*) continue ;; esac
+    local base="${d%/}"
+    for f in CLAUDE.md CLAUDE.local.md .claude/CLAUDE.md '.claude/rules/**'; do
+      CLAUDE_MD_EXCLUDES="$CLAUDE_MD_EXCLUDES${CLAUDE_MD_EXCLUDES:+, }\"$base/$f\""
+    done
+  done
+}
+_aos_add_ancestor_excludes "$(pwd -L)"
+_AOS_PHYS="$(pwd -P)"
+[ "$_AOS_PHYS" != "$(pwd -L)" ] && _aos_add_ancestor_excludes "$_AOS_PHYS"
+CLAUDE_MD_EXCLUDES_LINE=""
+[ -n "$CLAUDE_MD_EXCLUDES" ] && CLAUDE_MD_EXCLUDES_LINE="  \"claudeMdExcludes\": [ $CLAUDE_MD_EXCLUDES ],"
 cat > .claude/aos-settings.json <<JSON
 {
 $OUTPUT_STYLE_LINE
+$CLAUDE_MD_EXCLUDES_LINE
 $ATTRIBUTION_LINE
   "remoteControlAtStartup": false,
   "crossSessionInbound": "refuse",
