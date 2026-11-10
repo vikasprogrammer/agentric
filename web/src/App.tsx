@@ -3803,10 +3803,13 @@ function ImageDropZone({ session, attachable, children, onActivity, fontSize, se
   }, [toast])
 
   return (
-    <div ref={wrapRef} className="relative flex min-h-0 w-full flex-1" onMouseDown={() => onActivity?.()}>
-      {children}
-      {/* top-left: terminal font-size stepper + a help button (shortcuts / quirks) */}
-      <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
+    <div ref={wrapRef} className="relative flex min-h-0 w-full flex-1 flex-col" onMouseDown={() => onActivity?.()}>
+      {/* Toolbar strip ABOVE the terminal, never floating over it. Claude Code's TUI puts clickable
+          controls in its own top row (the `/diff` panel's only close button is a ✕ top-right), and an
+          overlaid toolbar hid them with no way to reach them by mouse. */}
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-1.5 bg-neutral-950 px-2 py-1">
+      {/* left: terminal font-size stepper + a help button (shortcuts / quirks) */}
+      <div className="flex items-center gap-1.5">
         <div className="flex items-center overflow-hidden rounded bg-neutral-800/90 text-neutral-200 shadow">
           <button
             className="px-2 py-1 text-xs leading-none hover:bg-neutral-700 disabled:opacity-40"
@@ -3828,8 +3831,8 @@ function ImageDropZone({ session, attachable, children, onActivity, fontSize, se
         {session?.id && <QuickShortcuts session={session} attachable={Boolean(attachable)} />}
       </div>
       <TerminalHelpModal open={help} onClose={() => setHelp(false)} />
-      {/* top-right session toolbar: distraction-free + popout, browse the agent's folder + attach a file */}
-      <div className="absolute right-2 top-2 z-10 flex items-center gap-1.5">
+      {/* right: session toolbar — distraction-free + popout, browse the agent's folder + attach a file */}
+      <div className="flex items-center gap-1.5">
         {popoutHref && (
           <a
             href={popoutHref} target="_blank" rel="noreferrer"
@@ -3885,6 +3888,8 @@ function ImageDropZone({ session, attachable, children, onActivity, fontSize, se
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = '' }} />
         </label>
       </div>
+      </div>
+      <div className="relative flex min-h-0 w-full flex-1">{children}</div>
       {/* drag overlay — raised ON TOP of the iframe (z-30, interactive) only while a file-drag is in
           progress, so it catches the drop the iframe would otherwise swallow */}
       {drag && (
