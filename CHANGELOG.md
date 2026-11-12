@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.470.1] - 2026-11-12
+### Fixed
+- **New agents are born on the tenant's own ruleset, and a hand edit to `agent.json` no longer gets
+  reverted** (#903, #904). Every creation path (console, `agent_create`, manifest import, catalog install,
+  the seeded `agent-author`, and the System agents) hardcoded `policyContext: 'default@v3'`, so on a tenant
+  whose enforced ruleset has another id each new agent logged a false `policyContextMismatch` drift warning.
+  They now stamp `os.policy.id`. The obvious workaround, editing `agent.json` by hand, didn't stick either:
+  every writer (self-edit, cross-agent apply, console config, revert, duplicate) built the next manifest
+  from the in-memory copy and wrote it over disk, silently dropping the hand edit. They now merge onto the
+  manifest on disk (`onDiskManifest` in `src/state/agent-edit.ts`), which is what a rescan or restart
+  would load anyway. Pinned by `scripts/agent-manifest-disk-test.cjs`.
+- **`agent_create` can declare `shellSecrets`.** The create route already accepted them but the tool
+  schema didn't, so an agent building a teammate that needs a shell credential had no way to say so. It
+  declares intent only: injection is still governed by the vault grant.
+
 ## [0.470.0] - 2026-11-10
 ### Added
 - **An agent's CLAUDE.md has a size budget.** Self-improvement only ever appends — an agent that learns a
