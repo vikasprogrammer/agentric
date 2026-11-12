@@ -100,7 +100,7 @@ import { MAX_LIVE_BETS, MAX_LIVE_BETS_CEILING, resolveLiveBetCap } from './state
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
-import { agentEditable, applyAgentEdit, assessClaudeMdEdit, assessClaudeMdSize, contentHash, diffStat, manifestToSnapshot, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
+import { agentEditable, applyAgentEdit, assessClaudeMdEdit, assessClaudeMdSize, contentHash, diffStat, manifestToSnapshot, onDiskManifest, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 
 /** Sum busy + idle CPU tick counters across all cores (for a sampled utilization %). */
 function cpuTicks(): { idle: number; total: number } {
@@ -281,7 +281,8 @@ function troubledAutomations(os: AgentOS, now = Date.now()): Array<{ id: string;
 
 
 /** Re-apply a full snapshot to disk (agent.json + CLAUDE.md) and re-register — the shared revert primitive. */
-function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSnapshot): AgentManifest {
+function applyAgentSnapshot(os: AgentOS, live: AgentManifest, snap: AgentConfigSnapshot): AgentManifest {
+  const ag = onDiskManifest(live); // keep out-of-band edits to fields a snapshot doesn't carry
   const next: AgentManifest = {
     ...ag,
     description: snap.description, category: snap.category, icon: snap.icon,
@@ -2668,7 +2669,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const manifest: AgentManifest = {
       id, version: '1.0.0', description,
       ...(category ? { category } : {}),
-      principal: `svc-${id}`, policyContext: 'default@v3', runtime: 'claude-code',
+      principal: `svc-${id}`, policyContext: os.policy.id, runtime: 'claude-code',
       ...tuning,
       ...(examplePrompts ? { examplePrompts } : {}),
       ...(shellSecrets ? { shellSecrets } : {}),
@@ -5385,7 +5386,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       description,
       ...(category ? { category } : {}),
       principal: `svc-${id}`,
-      policyContext: 'default@v3',
+      // The ruleset this tenant actually ENFORCES — a hardcoded bundled label births every agent with a
+      // policyContextMismatch drift warning on any tenant whose ruleset is named differently.
+      policyContext: os.policy.id,
       runtime,
       ...tuning,
       ...(examplePrompts ? { examplePrompts } : {}),
@@ -5456,7 +5459,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       description: typeof m.description === 'string' ? m.description.trim() : '',
       ...(category ? { category } : {}),
       principal: `svc-${id}`,
-      policyContext: 'default@v3',
+      // The ruleset this tenant actually ENFORCES — a hardcoded bundled label births every agent with a
+      // policyContextMismatch drift warning on any tenant whose ruleset is named differently.
+      policyContext: os.policy.id,
       runtime: 'claude-code',
       ...(tErr ? {} : tuning),
       ...(examplePrompts ? { examplePrompts } : {}),
@@ -5519,7 +5524,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     if (!os.paths) return sendJson(res, 400, { error: 'installing agents requires a data home' });
     try {
-      const manifest = installAgentFromCatalog(os.paths.bundledAgents, os.paths.userAgents, agentInstall[1]);
+      const manifest = installAgentFromCatalog(os.paths.bundledAgents, os.paths.userAgents, agentInstall[1], os.policy.id);
       os.registerAgent(manifest);
       // Installing a built-in clears any deletion tombstone, so it seeds normally again on future boots.
       os.settings.unsuppressBuiltin(manifest.id, me.email);
@@ -5553,7 +5558,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const folder = path.join(os.paths.userAgents, newId);
     if (fs.existsSync(folder)) return sendJson(res, 409, { error: `folder "${newId}" already exists in the agents home` });
     fs.cpSync(src.dir, folder, { recursive: true });
-    const next: AgentManifest = { ...src, id: newId, principal: `svc-${newId}` };
+    const next: AgentManifest = { ...onDiskManifest(src), id: newId, principal: `svc-${newId}` };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(folder, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent({ ...next, dir: folder });
@@ -5625,8 +5630,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const agentConfig = p.match(/^\/api\/agents\/([\w.-]+)\/config$/);
   if (agentConfig && (method === 'GET' || method === 'PUT')) {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    const ag = os.agents.get(agentConfig[1]);
-    if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
+    const live = os.agents.get(agentConfig[1]);
+    if (!live?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
+    // Build on the on-disk manifest so a PUT doesn't revert an out-of-band agent.json edit.
+    const ag = onDiskManifest(live);
     if (!isCodingRuntime(ag.runtime)) return sendJson(res, 400, { error: 'runtime tuning applies to CLI-backed agents only' });
     if (method === 'GET') {
       // `runtimes` lets the console render the picker (and its per-runtime model suggestions +
@@ -5691,7 +5698,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
     const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, outputStyle: tuning.outputStyle, examplePrompts: prompts, shellSecrets, skills, tools, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
-    fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
+    fs.writeFileSync(path.join(live.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
     const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, before.claudeMd), 'edited config', me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, outputStyle: tuning.outputStyle, category, shellSecrets: shellSecrets ?? [], skills: skills ?? [], tools: tools ?? [], netMode: netMode ?? 'open', rev } });

@@ -292,6 +292,10 @@ available to any agent. Creating an agent **definition escalates nothing**: the 
 every side effect through the gate, and only a **human** can run or assign it (spawn is role-gated). So
 it follows the same **auto-apply + audited** posture as `kb_write` / `task_create` — no approval card —
 emitting `agent.created` with `principal: agent:<id>`. Guard: strict id validation + collision check.
+The new agent's `policyContext` is the tenant's enforced ruleset (`os.policy.id`), never a hardcoded
+label. An optional `shellSecrets` (vault KEY names) declares the env vars the agent needs in its shell;
+it declares intent only — the value is injected only when the vault grants that key to the agent, the
+same as a console-declared `shellSecrets`, so it widens nothing.
 
 `agent_update` / `agent_history` / `agent_revert` are the **self-improvement** loop — an agent refining
 its OWN listing (description, starter prompts, category, icon, tuning) and CLAUDE.md system prompt when it

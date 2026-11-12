@@ -22,8 +22,10 @@ export const CONCIERGE_ID = 'concierge';
 export const OPERATOR_ID = 'operator';
 
 /** Provision + register a System agent from its manifest + persona. Idempotent; safe to call on demand. */
-function ensureSystemAgent(os: AgentOS, manifest: AgentManifest, claudeMd: string): void {
-  if (os.agents.get(manifest.id)?.dir) return;
+function ensureSystemAgent(os: AgentOS, declared: AgentManifest, claudeMd: string): void {
+  if (os.agents.get(declared.id)?.dir) return;
+  // Stamp the ruleset this tenant enforces, not the bundled label (else: a drift warning every boot).
+  const manifest: AgentManifest = { ...declared, policyContext: os.policy.id };
   const base = os.paths?.userAgents ?? path.join(process.cwd(), 'data', 'agents');
   const dir = path.join(base, manifest.id);
   fs.mkdirSync(dir, { recursive: true });

@@ -95,13 +95,20 @@ export function readAgentCatalog(catalogDir: string | undefined, userAgentsDir: 
 /** Deep-copy a catalog agent's folder into the data home and return its manifest tagged with the new
  *  (home) folder. Pure filesystem — the caller registers it live + audits. Throws if the id isn't in the
  *  catalog or a folder already exists in the home (installed already). */
-export function installAgentFromCatalog(catalogDir: string | undefined, userAgentsDir: string, id: string): AgentManifest {
+export function installAgentFromCatalog(catalogDir: string | undefined, userAgentsDir: string, id: string, policyContext?: string): AgentManifest {
   if (!catalogDir) throw new Error('no agent catalog is configured');
   const manifest = readCatalogManifest(catalogDir, id);
   if (!manifest) throw new Error(`"${id}" is not in the agent library`);
   const dest = path.join(userAgentsDir, manifest.id);
   if (fs.existsSync(dest)) throw new Error(`an agent named "${manifest.id}" already exists`);
   fs.cpSync(path.join(catalogDir, id), dest, { recursive: true });
+  // The catalog ships the bundled ruleset label; an installed copy should name the ruleset this tenant
+  // actually enforces, or it is born with a policyContextMismatch drift warning.
+  if (policyContext && manifest.policyContext !== policyContext) {
+    const { dir: _dir, ...onDisk } = { ...manifest, policyContext };
+    fs.writeFileSync(path.join(dest, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
+    return { ...manifest, policyContext, dir: dest };
+  }
   return { ...manifest, dir: dest };
 }
 
@@ -125,7 +132,7 @@ export function seedBuiltinAgents(os: AgentOS): void {
       continue;
     }
     try {
-      const manifest = installAgentFromCatalog(catalogDir, os.paths.userAgents, id);
+      const manifest = installAgentFromCatalog(catalogDir, os.paths.userAgents, id, os.policy.id);
       os.registerAgent(manifest);
     } catch (e) {
       console.error(`[agents] could not seed built-in "${id}": ${e instanceof Error ? e.message : e}`);

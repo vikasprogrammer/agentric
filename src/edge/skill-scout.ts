@@ -88,9 +88,10 @@ export class SkillScout {
     const dir = path.join(base, SCOUT_ID);
     fs.mkdirSync(dir, { recursive: true });
     const manifestPath = path.join(dir, 'agent.json');
-    if (!fs.existsSync(manifestPath)) fs.writeFileSync(manifestPath, JSON.stringify(MANIFEST, null, 2));
+    const manifest = { ...MANIFEST, policyContext: this.os.policy.id }; // the enforced ruleset, not the bundled label
+    if (!fs.existsSync(manifestPath)) fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
     if (!fs.existsSync(path.join(dir, 'CLAUDE.md'))) fs.writeFileSync(path.join(dir, 'CLAUDE.md'), CLAUDE_MD);
-    this.os.registerAgent({ ...MANIFEST, dir });
+    this.os.registerAgent({ ...manifest, dir });
   }
 }
 

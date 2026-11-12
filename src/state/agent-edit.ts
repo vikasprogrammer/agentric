@@ -35,6 +35,25 @@ export function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentCo
   };
 }
 
+/**
+ * The agent's manifest as it stands ON DISK — exactly what a rescan (`AgentOS.rescanAgents`) or a restart
+ * would register, since disk is the source of truth for a folder-backed agent. Every writer of
+ * `agent.json` builds its next manifest on THIS rather than on the in-memory copy: an out-of-band edit
+ * (a hand-added `shellSecrets`, a corrected `policyContext`) never reached memory, so writing
+ * `{ ...inMemory }` back silently reverted it on the next self-edit. Falls back to the in-memory manifest
+ * when there's no folder, no file, or it doesn't parse as this agent — the edit then behaves as before.
+ */
+export function onDiskManifest(ag: AgentManifest): AgentManifest {
+  if (!ag.dir) return ag;
+  try {
+    const disk = JSON.parse(fs.readFileSync(path.join(ag.dir, 'agent.json'), 'utf8')) as AgentManifest;
+    if (!disk || typeof disk !== 'object' || disk.id !== ag.id) return ag;
+    return { ...disk, dir: ag.dir };
+  } catch {
+    return ag;
+  }
+}
+
 /** Read the agent's current on-disk snapshot (manifest fields + CLAUDE.md), to record as the "before". */
 export function readAgentSnapshot(ag: AgentManifest): AgentConfigSnapshot {
   const file = ag.dir ? path.join(ag.dir, 'CLAUDE.md') : '';
@@ -236,10 +255,12 @@ export function diffStat(risk: ClaudeMdRisk): string {
  */
 export function applyAgentEdit(
   os: AgentOS,
-  ag: AgentManifest,
+  live: AgentManifest,
   fields: Record<string, unknown>,
   opts: { summary: string; author: string },
 ): { ok: true; rev: number | null; target: string } | { ok: false; error: string } {
+  // Merge onto the manifest on DISK, not the in-memory copy — see onDiskManifest.
+  const ag = onDiskManifest(live);
   // NB: no `runtime` arg — same as the self-edit and approve routes this shares. An agent-proposed model
   // is validated by the CLI at launch, not here, so the three lanes stay behaviourally identical. The
   // output-style ALLOWLIST is passed though, because nothing downstream validates it: a name the CLI

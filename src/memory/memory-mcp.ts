@@ -1585,7 +1585,7 @@ const TOOLS = [
     description:
       'Create a brand-new agent in this workspace and register it live (no restart) — the way to turn a ' +
       'role into a real, governed teammate. You supply its id, description, and CLAUDE.md (its system ' +
-      'prompt), plus optional category/model/effort/icon/example prompts. The new agent appears in the ' +
+      'prompt), plus optional category/model/effort/icon/example prompts/shellSecrets. The new agent appears in the ' +
       'console under its category and can then be run or assigned by a human. Use this when someone asks ' +
       'you to build or spin up an agent for a job.',
     inputSchema: {
@@ -1600,6 +1600,10 @@ const TOOLS = [
         effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Reasoning effort override. Omit → inherit the workspace default.' },
         examplePrompts: { type: 'array', items: { type: 'string' }, description: '2–3 clickable starter tasks shown on the agent\'s spawn card.' },
         icon: { type: 'string', description: 'A lucide icon name from the built-in library (e.g. "Bot", "Wrench", "Megaphone"). Omit → default glyph.' },
+        shellSecrets: {
+          type: 'array', items: { type: 'string' },
+          description: 'Vault secret KEYS the new agent needs as shell env vars (e.g. ["GH_TOKEN", "DB_RO_PASS"]), exported into its shell at launch so a plain CLI authenticates. Declares intent only — the value is injected only if the vault grants that key to the agent; nothing is widened. Omit → none.',
+        },
       },
       required: ['id', 'description', 'claudeMd'],
     },
@@ -3298,6 +3302,7 @@ async function agentCreate(args: Record<string, unknown>): Promise<string> {
       effort: args.effort !== undefined ? String(args.effort) : undefined,
       examplePrompts: Array.isArray(args.examplePrompts) ? args.examplePrompts.map(String) : undefined,
       icon: args.icon !== undefined ? String(args.icon) : undefined,
+      shellSecrets: Array.isArray(args.shellSecrets) ? args.shellSecrets.map(String) : undefined,
     }),
   });
   const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
