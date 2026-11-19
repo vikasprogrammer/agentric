@@ -507,13 +507,25 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
 
   // Shared, process-wide upkeep timers — each fans out across every tenant runtime.
   // Idle GC (A5): reclaim idle members' uids/ttyds. No-op under the local backend, so always-on is safe.
-  const reaper = setInterval(() => registry.forEach((rt) => {
+  // Connector-file retention runs on the same sweep but only every 10 min — one readdir per tenant per pass.
+  let lastConnectorPrune = 0;
+  const reaper = setInterval(() => {
+   const pruneDue = Date.now() - lastConnectorPrune >= 10 * 60_000;
+   if (pruneDue) lastConnectorPrune = Date.now();
+   registry.forEach((rt) => {
+    if (pruneDue) {
+      try {
+        const pr = requestMetrics.phase('reaper:connectorFiles', () => rt.tm.pruneConnectorFiles());
+        if (pr.sessions) rt.os.audit.append({ ts: Date.now(), runId: '-', tenant: rt.os.tenant, principal: 'system', type: 'connectors.pruned', data: { sessions: pr.sessions, files: pr.files } });
+      } catch { /* retention must never crash the sweep */ }
+    }
     try { requestMetrics.phase('reaper:idleSpaces', () => rt.tm.reapIdleSpaces()); } catch { /* never let the sweep crash */ }
     try { requestMetrics.phase('reaper:idleSessions', () => rt.tm.reapIdleSessions()); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
     // The inverse of the reaper: runs parked because every runtime account was rate-limited, launched as
     // soon as one resets. Same 60s cadence, because a limit reset is only ever known to the minute.
     try { requestMetrics.phase('reaper:capacityQueue', () => rt.tm.retryCapacityQueue()); } catch { /* a parked launch must never crash the sweep */ }
-  }), 60_000);
+   });
+  }, 60_000);
   reaper.unref?.();
   // Process janitor: reap ttyd/tmux left behind pointing at tmux sockets that no longer exist, plus agent
   // shells reparented to init by a dead tool call (see ProcessJanitor). Process-wide, not per-tenant — it
@@ -523,6 +535,14 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     const live = new Set<string>();
     registry.forEach((rt) => { if (rt.os.paths?.tmuxSocket) live.add(rt.os.paths.tmuxSocket); });
     return live;
+  }, (connectors, id) => {
+    // Only the tenant that owns this connectors folder may answer; a folder no live tenant owns (a test
+    // harness, a removed tenant) stays unknown → never reaped.
+    let answer: boolean | null = null;
+    registry.forEach((rt) => {
+      if (answer === null && rt.os.paths && path.resolve(rt.os.paths.connectors) === path.resolve(connectors)) answer = rt.tm.sessionPaneAlive(id);
+    });
+    return answer;
   });
   // Tool-usage flush. Counters accumulate in memory on the request path and land here — one write per
   // tenant per interval instead of one per agent tool call. 60s bounds what a crash loses to a single
@@ -537,10 +557,10 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   const janitorTimer = setInterval(() => {
     try {
       const r = requestMetrics.phase('janitor:sweep', () => janitor.sweep());
-      if (r.ttyd === 0 && r.tmux === 0 && r.shell === 0) return;
+      if (r.ttyd === 0 && r.tmux === 0 && r.shell === 0 && r.claude === 0) return;
       const os = registry.default()?.os;
-      console.log(`  [janitor] reaped ${r.ttyd} orphaned ttyd + ${r.tmux} orphaned tmux (unreachable sockets) + ${r.shell} orphaned agent shells (reparented to init)`);
-      if (os) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'orphan.reaped', data: { ttyd: r.ttyd, tmux: r.tmux, shell: r.shell, pending: r.pending } });
+      console.log(`  [janitor] reaped ${r.ttyd} orphaned ttyd + ${r.tmux} orphaned tmux (unreachable sockets) + ${r.shell} orphaned agent shells (reparented to init) + ${r.claude} pane-less claude`);
+      if (os) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'orphan.reaped', data: { ttyd: r.ttyd, tmux: r.tmux, shell: r.shell, claude: r.claude, pending: r.pending } });
     } catch { /* never let the janitor crash the process */ }
   }, 5 * 60_000);
   janitorTimer.unref?.();

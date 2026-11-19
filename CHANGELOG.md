@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.471.0] - 2026-11-19
+### Fixed
+- **A busy console can no longer starve the server: the sessions poll stops reading the whole connectors
+  folder.** `resumableIds` listed every file in `<home>/connectors/` on each `/api/sessions/summary` (the
+  console's 1.5s poll). On live globex that folder had reached 61k files / 677 MB, so each poll cost ~50ms.
+  With eight people's tabs open, plus a box that was also CPU- and swap-starved, `/health` stopped answering
+  and requests queued 460 deep. The summary path now stats only the ≤ few hundred rows it returns; the full
+  list reads the folder once and reuses it until the folder changes.
+### Added
+- **Connector-file retention.** Nothing but an explicit session delete ever removed a launch's files, and
+  `.mcp.json` carries each run's resolved connector credentials (`.env` its session secret), so months of
+  stale credential copies sat on disk. A session that ended more than 30 days ago, and whose pane is gone,
+  now keeps only `session-<id>.log` (the run's record). The sweep runs every 10 min, at most 500 sessions a
+  pass, and logs `connectors.pruned` to the audit trail. Past that point an old session is no longer one-click
+  resumable; Take over still revives it from its conversation id.
+- **The process janitor reaps a `claude` whose pane is gone.** On globex a member stopped a session 35s in.
+  The pane died but the `claude` inside ignored the hangup and ran for 70 days, reaching 23 GB RSS and
+  filling swap. Six more were found the same day, 8–50 days old at ~300 MB each. Neither the session reaper
+  (it reaps panes) nor the shell predicate (the parent was still alive) could see them. The janitor now
+  identifies a session's `claude` by its `--mcp-config …/session-<id>.mcp.json`. It asks the tenant that owns
+  that folder whether the pane is alive, and reaps on a definite "no" seen on two sweeps past the 10-min
+  grace; unknown liveness is never a kill. Counted as `claude` in `orphan.reaped`.
+
 ## [0.470.1] - 2026-11-12
 ### Fixed
 - **New agents are born on the tenant's own ruleset, and a hand edit to `agent.json` no longer gets

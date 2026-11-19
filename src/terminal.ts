@@ -69,6 +69,10 @@ const WARM_CONFIRM_MS = 12_000;
  *  for minutes; one still "busy" after this is wedged, and protecting it would mean never reclaiming
  *  its pane. */
 const MID_TURN_MAX_MS = 2 * 3600_000;
+/** How long an ENDED session keeps its launch files (see `TerminalManager.pruneConnectorFiles`). */
+export const CONNECTOR_FILE_RETENTION_DAYS = 30;
+/** Sessions pruned per pass — bounds the synchronous unlinks one pass costs the event loop (~6 files each). */
+const CONNECTOR_PRUNE_MAX_SESSIONS = 500;
 /** How long the LAUNCH-TIME `busy_since` prediction may stand before we stop believing a turn started.
  *  `createSession` stamps `busy_since = created_at` because a launch normally seeds a prompt — but that
  *  is a PREDICTION, not evidence, and the runtime has plenty of ways to open without ever running a turn
@@ -1468,7 +1472,9 @@ export class TerminalManager {
     // Outcome + governance counts: cheap indexed lookups off the audit stream (unlike cost, which parses
     // a transcript), so this isn't budgeted — terminal rows are stamped once, live rows re-tallied.
     this.stampInsights(visible);
-    const resumable = this.resumableIds();
+    // By-id fetch (the 1.5s summary poll, ≤ a few hundred rows) → one stat per VISIBLE row; the full list
+    // → one readdir, memoized on the folder's mtime. See resumableIds.
+    const resumable = this.resumableIds(ids ? visible.map((r) => r.id) : undefined);
     // One query resolves the whole list's blocked-on-human state (a pending ask/approval), instead of a
     // per-row check — so the console gets an authoritative `blocked` without re-deriving it from the feed.
     const blocked = this.blockedSessionIds();
@@ -2299,26 +2305,54 @@ export class TerminalManager {
     try { return { file, mtime: Math.floor(fs.statSync(file).mtimeMs) }; } catch { return {}; }
   }
 
+  /** {@link resumableIds}' full-folder scan, keyed on the connectors folder's mtime. */
+  private resumableMemo: { mtimeMs: number; ids: Set<string> } | null = null;
+
   /**
    * Session ids that have a persisted launch env (`session-<id>.env`) — i.e. a session the ttyd attach
    * wrapper can resurrect via `claude --resume` (see `writeEnvFile`/`terminal/attach.sh`). Every
    * claude-code launch writes one, unattended included; runtimes with no resurrect env (and sessions
-   * predating that change) are absent and correctly report `resumable:false`. One readdir serves the
-   * whole list; no data home (demo/tests) → nothing resumable.
+   * predating that change) are absent and correctly report `resumable:false`. No data home (demo/tests) →
+   * nothing resumable.
+   *
+   * This used to readdir the whole folder on EVERY call, and it is on the console's 1.5s summary poll. The
+   * folder is never emptied (until {@link pruneConnectorFiles}), so on live globex it held 61k files and the
+   * scan cost ~50ms a call; with eight people's tabs open that alone kept the event loop busy enough that,
+   * under CPU contention, `/health` stopped answering (2026-11-19).
    */
-  private resumableIds(): Set<string> {
-    const ids = new Set<string>();
-    if (!this.os.paths) return ids;
+  private resumableIds(only?: string[]): Set<string> {
+    if (!this.os.paths) return new Set();
+    const dir = this.os.paths.connectors;
+    // A known, bounded id set: stat just those. `only` is always DB-sourced ids (the visible rows), never
+    // request input, so it can't be steered into a path outside the folder.
+    if (only) {
+      const ids = new Set<string>();
+      for (const id of only) if (fs.existsSync(path.join(dir, `session-${id}.env`))) ids.add(id);
+      return ids;
+    }
+    // The whole list: one readdir, reused until the folder's mtime moves (any file created, removed or
+    // renamed into it bumps it; rewriting a file in place does not, and doesn't change which ids are
+    // resumable either).
+    let mtimeMs: number;
     try {
-      for (const f of fs.readdirSync(this.os.paths.connectors)) {
+      mtimeMs = fs.statSync(dir).mtimeMs;
+    } catch {
+      return new Set(); // connectors dir may not exist yet — nothing resumable
+    }
+    if (this.resumableMemo && this.resumableMemo.mtimeMs === mtimeMs) return this.resumableMemo.ids;
+    const ids = new Set<string>();
+    try {
+      for (const f of fs.readdirSync(dir)) {
         const m = /^session-(.+)\.env$/.exec(f);
         if (m) ids.add(m[1]);
       }
     } catch {
-      /* connectors dir may not exist yet — nothing resumable */
+      return ids;
     }
+    this.resumableMemo = { mtimeMs, ids };
     return ids;
   }
+
 
   /**
    * The per-member inbox visibility rule. owner/admin see everything; a member sees what THEY
@@ -10554,6 +10588,83 @@ export class TerminalManager {
     } catch {
       /* dir may not exist yet — nothing to clean */
     }
+  }
+
+  /**
+   * Connector-file RETENTION. Every launch writes `session-<id>.{mcp.json,company.md,task,env,…}` (plus a
+   * `.d/` dir for ssh-capable runs) and nothing removed them except an explicit session DELETE, so the folder
+   * only grew: live globex reached 61k files / 677 MB across 11k sessions, and `resumableIds` read the whole
+   * folder on every console poll. Worse than the size, `.mcp.json` carries each run's RESOLVED connector
+   * credentials and `.env` its session secret — months of stale credential copies sitting on disk.
+   *
+   * So a session that ENDED (done / stopped / crashed) more than {@link CONNECTOR_FILE_RETENTION_DAYS} ago,
+   * and whose pane is not alive, loses everything except `session-<id>.log` — the pane snapshot the console
+   * and `session_open` fall back to for a run with no transcript, i.e. the record of what happened. A file
+   * whose session row no longer exists goes on the same clock, measured by its own mtime.
+   *
+   * What it costs: past retention the session stops being one-click `resumable` (no `.env` for attach.sh).
+   * Take-over still revives it — that path relaunches from `claude_session_id` in the DB and writes fresh
+   * files — so nothing is lost but the shortcut.
+   *
+   * One readdir per pass, at most `maxSessions` sessions unlinked, so a first pass over a large backlog is
+   * spread across several ticks instead of stalling one. Never throws.
+   */
+  pruneConnectorFiles(nowMs = Date.now(), maxSessions = CONNECTOR_PRUNE_MAX_SESSIONS): { sessions: number; files: number } {
+    const out = { sessions: 0, files: 0 };
+    if (!this.os.paths) return out;
+    const dir = this.os.paths.connectors;
+    const cutoff = nowMs - CONNECTOR_FILE_RETENTION_DAYS * 86_400_000;
+    let names: string[];
+    try { names = fs.readdirSync(dir); } catch { return out; }
+    const byId = new Map<string, string[]>();
+    for (const f of names) {
+      const m = /^session-([A-Za-z0-9_-]+)\.(.+)$/.exec(f);
+      if (!m || m[2] === 'log') continue; // the run's record — kept
+      const list = byId.get(m[1]);
+      if (list) list.push(f); else byId.set(m[1], [f]);
+    }
+    if (!byId.size) return out;
+    // Liveness unknown (launcher backend / failed poll) → prune nothing: a terminal row can still hold a pane.
+    const alive = this.backend.aliveNames();
+    if (!alive) return out;
+    const ids = [...byId.keys()];
+    const rows = new Map<string, { status: string; at: number; tmux: string }>();
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      for (const r of this.db.prepare(`SELECT id, status, tmux, COALESCE(updated_at, created_at) AS at FROM term_sessions WHERE id IN (${chunk.map(() => '?').join(',')})`).all<{ id: string; status: string; tmux: string; at: number }>(...chunk)) {
+        rows.set(r.id, r);
+      }
+    }
+    for (const [id, files] of byId) {
+      if (out.sessions >= maxSessions) break;
+      const r = rows.get(id);
+      if (r) {
+        if (r.status !== 'done' && r.status !== 'stopped' && r.status !== 'crashed') continue;
+        if (r.at >= cutoff || alive.has(r.tmux) || this.launching.has(id)) continue;
+      } else {
+        // No row (deleted session, or a file a harness left behind): age by the newest file's own mtime.
+        let newest = 0;
+        for (const f of files) { try { newest = Math.max(newest, fs.statSync(path.join(dir, f)).mtimeMs); } catch { /* gone */ } }
+        if (!newest || newest >= cutoff || alive.has(`aos-${id}`)) continue;
+      }
+      for (const f of files) {
+        try { fs.rmSync(path.join(dir, f), { recursive: true, force: true }); out.files++; } catch { /* best-effort */ }
+      }
+      out.sessions++;
+    }
+    return out;
+  }
+
+  /**
+   * Is session `id`'s tmux pane alive? `null` when liveness can't be known (launcher backend, failed poll).
+   * The process janitor asks this about a `claude` process it found carrying this session's `--mcp-config`:
+   * `false` means nothing can ever attach to, gate-check or reap that process through a pane again.
+   */
+  sessionPaneAlive(id: string): boolean | null {
+    const alive = this.backend.aliveNames();
+    if (!alive) return null;
+    const r = this.db.prepare('SELECT tmux FROM term_sessions WHERE id = ?').get<{ tmux: string }>(id);
+    return alive.has(r?.tmux ?? `aos-${id}`);
   }
 
   private audit(sessionId: string, principal: string, type: string, data: Record<string, unknown>): void {
