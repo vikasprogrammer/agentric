@@ -99,6 +99,37 @@ export function registerTranscriptRoot(dir: string | undefined | null): void {
   if (dir) extraRoots.add(dir);
 }
 
+/**
+ * Whether a transcript file holds any conversation at all — one `user` or `assistant` entry. A copy can
+ * exist with none (only metadata lines, or empty), and that copy is a trap: `claude --resume <id>` answers
+ * "No conversation found", while `claude --session-id <id>` refuses the id as "already in use" because
+ * the file exists. The launcher tries one then the other, so the session can never be reopened.
+ * `undefined` = could not read it: callers must treat that as "may hold turns", never as empty, because
+ * "empty" licenses setting the file aside. Reads a small first chunk, then 64 KB ones, stopping at the
+ * first hit, so a long transcript costs one small read.
+ */
+export function transcriptHasTurns(file: string): boolean | undefined {
+  const re = /"type"\s*:\s*"(?:user|assistant)"/;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, 'r');
+    let buf = Buffer.allocUnsafe(8 * 1024);
+    let tail = '';
+    let n: number;
+    while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
+      const text = tail + buf.subarray(0, n).toString('utf8');
+      if (re.test(text)) return true;
+      tail = text.slice(-64); // a match split across two chunks
+      if (buf.length < 64 * 1024) buf = Buffer.allocUnsafe(64 * 1024);
+    }
+    return false;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
 /** The copy of `<claudeSessionId>.jsonl` under ONE root's `projects/`, if it has one. */
 export function transcriptInRoot(root: string, claudeSessionId: string): string | undefined {
   const projects = path.join(root, 'projects');
@@ -130,6 +161,9 @@ export function transcriptInRoot(root: string, claudeSessionId: string): string 
  *
  * So: gather every copy and answer with the one that actually describes the run being asked about —
  * `preferRoot` (the credential dir the run used) when it has a copy, else the most recently modified.
+ * Among copies OUTSIDE the preferred root, one with no conversation in it ({@link transcriptHasTurns})
+ * describes nothing, so a copy that may hold turns beats it. The preferred root still wins outright:
+ * `preferRoot` is how account-blame callers judge a run by its OWN copy, never another account's.
  */
 export function findTranscript(claudeSessionId: string, opts: { preferRoot?: string } = {}): string | undefined {
   const wanted = `${claudeSessionId}.jsonl`;
@@ -154,7 +188,11 @@ export function findTranscript(claudeSessionId: string, opts: { preferRoot?: str
     }
   }
   if (!hits.length) return undefined;
-  const pool = hits.some((h) => h.preferred) ? hits.filter((h) => h.preferred) : hits;
+  let pool = hits.some((h) => h.preferred) ? hits.filter((h) => h.preferred) : hits;
+  if (pool.length > 1) {
+    const withTurns = pool.filter((h) => transcriptHasTurns(h.file) !== false);
+    if (withTurns.length) pool = withTurns;
+  }
   return pool.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a)).file;
 }
 

@@ -53,7 +53,7 @@ import { readSessionCost } from './edge/session-cost';
 import { readTranscriptEnd } from './edge/outcome';
 import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF, WAITING_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
-import { readConversation, readConversationBounded, findTranscript, registerTranscriptRoot, transcriptInRoot, claudeConfigDir, Conversation } from './edge/conversation';
+import { readConversation, readConversationBounded, findTranscript, registerTranscriptRoot, transcriptInRoot, transcriptHasTurns, claudeConfigDir, Conversation } from './edge/conversation';
 import { digestConversation, sessionConsoleUrl, toSessionFtsQuery, SESSION_TEXT_READ_HEAD, SESSION_TEXT_READ_MAX, SESSION_TEXT_REREAD_MS } from './edge/session-search';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
@@ -1312,7 +1312,8 @@ export class TerminalManager {
    * re-seeded with the original prompt — under the same id, so it looks like a resume that lost its memory.
    *
    * Copies the newest copy from any known root (pool dirs, archived dirs, the box default) into the target.
-   * Never overwrites a copy the target already has, and only ever writes into a dir the server itself
+   * Never overwrites a copy the target already has, unless that copy holds no conversation and another
+   * root's copy does (the empty one is renamed aside, not deleted). Only ever writes into a dir the server itself
    * vouches for (a pool account's dir or the box default): the route is reachable with a session secret an
    * agent holds, so a client-supplied path must never become a write target.
    */
@@ -1326,17 +1327,39 @@ export class TerminalManager {
       let pool: string[] = [];
       try { pool = this.os.runtimeAccounts.configDirs(); } catch { /* pool is optional */ }
       if (![claudeConfigDir(), ...pool].some((d) => real(d) === real(target))) return 'skipped';
-      if (transcriptInRoot(target, row.claude_session_id)) return 'present';
+      // A copy that holds no conversation is not "present": `claude --resume` says "No conversation found",
+      // the `--session-id` fallback says "already in use", and the session can never reopen. Look past it —
+      // but only when it is KNOWN empty; an unreadable copy may be the newest real conversation.
+      const existing = transcriptInRoot(target, row.claude_session_id);
+      if (existing && transcriptHasTurns(existing) !== false) return 'present';
       this.refreshTranscriptRoots();
       const src = findTranscript(row.claude_session_id);
+      if (existing && (!src || transcriptHasTurns(src) !== true)) return 'present';
       if (!src) {
         this.audit(sessionId, row.agent, 'session.transcript.missing', { claudeSessionId: row.claude_session_id, dir: target });
         return 'missing';
       }
-      const destDir = path.join(target, 'projects', path.basename(path.dirname(src)));
+      const destDir = existing ? path.dirname(existing) : path.join(target, 'projects', path.basename(path.dirname(src)));
+      const dest = path.join(destDir, `${row.claude_session_id}.jsonl`);
       fs.mkdirSync(destDir, { recursive: true });
-      fs.copyFileSync(src, path.join(destDir, `${row.claude_session_id}.jsonl`));
+      // Copy FIRST, then swap: a failure part-way must never leave the path empty, because then the
+      // `--session-id` fallback starts a blank conversation there and the real one stays hidden for good.
+      const tmp = `${dest}.staging-${Date.now()}`;
+      fs.copyFileSync(src, tmp);
+      let aside: string | undefined;
+      try {
+        if (existing) {
+          aside = `${existing}.empty-${Date.now()}`;
+          fs.renameSync(existing, aside); // set aside, never deleted
+        }
+        fs.renameSync(tmp, dest);
+      } catch (e) {
+        if (aside) try { fs.renameSync(aside, existing!); } catch { /* best effort */ }
+        try { fs.unlinkSync(tmp); } catch { /* already gone */ }
+        throw e;
+      }
       registerTranscriptRoot(target);
+      if (aside) this.audit(sessionId, row.agent, 'session.transcript.empty-replaced', { empty: aside, from: src });
       this.audit(sessionId, row.agent, 'session.transcript.staged', { from: src, to: destDir });
       return 'staged';
     } catch {

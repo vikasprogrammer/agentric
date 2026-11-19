@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.471.1] - 2026-11-19
+### Fixed
+- **A session whose transcript copy is empty can be reopened again.** If the credential dir a resume runs
+  under held a copy of the conversation with no turns in it, while the real conversation sat in another
+  root (an archived `<name>.orphan-*` dir), the session could never be reopened. Resume staging read the
+  empty copy as "present" and copied nothing. `claude --resume` then answered "No conversation found", and
+  the `--session-id` fallback answered "Session ID … is already in use" because the file existed. Staging
+  now looks past a copy KNOWN to hold no conversation: it copies the real one in first, then renames the
+  empty copy aside (`.empty-<ts>`, never deleted), audited `session.transcript.empty-replaced`. An
+  unreadable copy is treated as possibly real and left alone. `findTranscript` ranks a copy with turns
+  above one without, so the console's conversation view stops reading the empty copy too; a caller's
+  `preferRoot` (account blame) still wins outright.
+  The holding prompt's **[r]** key now runs the same resume preparation; before this, pressing it could
+  never recover a moved or empty transcript.
+
 ## [0.471.0] - 2026-11-19
 ### Fixed
 - **A busy console can no longer starve the server: the sessions poll stops reading the whole connectors
