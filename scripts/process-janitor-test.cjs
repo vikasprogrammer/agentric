@@ -119,8 +119,51 @@ function harness(rows, liveSockets = []) {
   const realKill = process.kill;
   process.kill = () => { throw new Error('must not signal anything'); };
   try {
-    assert.deepStrictEqual(j.sweep(), { ttyd: 0, tmux: 0, shell: 0, pending: 0 }, 'a failed ps is a no-op sweep');
+    assert.deepStrictEqual(j.sweep(), { ttyd: 0, tmux: 0, shell: 0, claude: 0, pending: 0 }, 'a failed ps is a no-op sweep');
   } finally { process.kill = realKill; }
 }
 
-console.log('✓ process janitor: orphaned agent shells reaped; live tenants, other uids and in-flight tool calls untouched');
+// ------------------------------------------------- pane-less claude (2026-11-19, globex: 70 days, 23 GB)
+{
+  const CONN = '/home/u/tools/agent-os/data/connectors';
+  const agentArgv = (id, extra = '') => `claude --session-id 0faa17b3 --settings .claude/aos-settings.json --mcp-config ${CONN}/session-${id}.mcp.json --strict-mcp-config ${extra}`;
+  const got = parseProcessTable(table(
+    row(300, 77, agentArgv('ses_dead')),
+    row(301, 77, agentArgv('ses_live')),
+    row(302, 77, 'claude -p --tools "" --strict-mcp-config --no-session-persistence'),   // router one-shot: no session config
+    row(303, 77, agentArgv('ses_dead'), OLD, 502),                                     // another uid
+  ), UID, SELF);
+  const c = got.find((x) => x.pid === 300);
+  assert.deepStrictEqual([c.kind, c.session, c.connectors], ['claude', 'ses_dead', CONN], 'session + folder parsed off --mcp-config');
+  assert.deepStrictEqual(got.map((x) => x.pid).sort(), [300, 301], 'a claude with no session MCP config, or another uid, is never a candidate');
+
+  const answers = { ses_dead: false, ses_live: true, ses_unknown: null };
+  const asked = [];
+  const sent = [];
+  const j = new ProcessJanitor(() => new Set(), (conn, id) => { asked.push(`${conn}|${id}`); return answers[id]; });
+  j.scan = () => parseProcessTable(table(
+    row(300, 77, agentArgv('ses_dead')),
+    row(301, 77, agentArgv('ses_live')),
+    row(304, 77, agentArgv('ses_unknown')),
+    row(305, 77, agentArgv('ses_dead'), YOUNG),
+  ), UID, SELF);
+  const realKill = process.kill;
+  process.kill = (pid, sig) => { sent.push(`${pid}:${sig}`); };
+  try {
+    let r = j.sweep();
+    assert.deepStrictEqual([r.claude, sent.length], [0, 0], 'first sighting of a pane-less claude is a strike');
+    r = j.sweep();
+    assert.strictEqual(r.claude, 1, 'second sighting reaps the pane-less claude');
+    assert.deepStrictEqual(sent, ['300:SIGTERM'], 'only the dead-pane, past-grace process is signalled — live pane, unknown liveness and a young one are not');
+  } finally { process.kill = realKill; }
+  assert.ok(asked.includes(`${CONN}|ses_dead`), 'the owning tenant is asked by connectors folder + session id');
+
+  // No pane oracle (the old constructor) → the claude kind is never reaped.
+  const j2 = new ProcessJanitor(() => new Set());
+  j2.scan = () => parseProcessTable(table(row(300, 77, agentArgv('ses_dead'))), UID, SELF);
+  process.kill = () => { throw new Error('must not signal without a pane oracle'); };
+  try { j2.sweep(); const r = j2.sweep(); assert.strictEqual(r.claude, 0, 'unknown liveness is never a kill'); }
+  finally { process.kill = realKill; }
+}
+
+console.log('✓ process janitor: orphaned agent shells + pane-less claude reaped; live tenants, other uids and in-flight tool calls untouched');

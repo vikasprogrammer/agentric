@@ -37,6 +37,17 @@
  * exec's, so its argv is `node …`, not the snapshot line, and it is never a candidate. Reaping the orphaned
  * *shell* also does not kill such a child — the child has its own pid and reparents independently.
  *
+ * **Pane-less agents (`claude`)** — one layer further up, and the one that took globex down on
+ * 2026-11-19. A `claude` whose tmux pane is gone: a member pressed stop 35 s into a session, `stopSession`
+ * killed the pane, and the `claude` inside ignored the hangup and kept running — for **70 days**, growing to
+ * **23 GB RSS** until the box's swap was full and the server stopped answering. Six more were found the same
+ * day (~300 MB each, 8–50 days old). Neither the session reaper (it reaps PANES; this one had none) nor the
+ * shell predicate (its parent, the pane's launcher, was still alive) could see them. The predicate: our uid,
+ * a `claude` argv carrying `--mcp-config <dir>/session-<id>.mcp.json` (minted per session by the launcher),
+ * and the owning tenant answering `false` to "is that session's pane alive" — `null` (liveness unknown, or a
+ * folder no live tenant owns) is never a kill. A pane-less `claude` cannot be attached to, gated through a
+ * human, resumed or reaped by any row-driven path, so it is unreachable by definition.
+ *
  * Killing a zombie tmux server may kill a claude still running inside it. That work is already unreachable
  * — no attach, no gate, no recovery — so reaping is right, but the caller MUST audit the count: a janitor
  * that quietly cleans up after a leak hides the leak.
@@ -61,15 +72,20 @@ export interface OrphanSweepResult {
   tmux: number;
   /** Orphaned agent shells (claude-code Bash-tool shells reparented to init) killed this sweep. */
   shell: number;
+  /** `claude` processes whose session pane is gone, killed this sweep. */
+  claude: number;
   /** Candidates seen missing but not yet killed (first strike, or inside the age grace). */
   pending: number;
 }
 
 export interface Candidate {
   pid: number;
-  kind: 'ttyd' | 'tmux' | 'shell';
-  /** The tmux socket for `ttyd`/`tmux`. Empty for `shell`, whose predicate is PPID, not a socket. */
+  kind: 'ttyd' | 'tmux' | 'shell' | 'claude';
+  /** The tmux socket for `ttyd`/`tmux`. Empty for `shell`/`claude`, whose predicates aren't a socket. */
   socket: string;
+  /** `claude` only: the session id and the connectors folder its `--mcp-config` lives in. */
+  session?: string;
+  connectors?: string;
   ageMs: number;
 }
 
@@ -83,10 +99,15 @@ export class ProcessJanitor {
    * @param liveSockets sockets currently claimed by a live runtime; never reaped even if the path check
    *                    somehow disagrees. Called fresh each sweep so a newly built tenant is respected.
    */
-  constructor(private readonly liveSockets: () => Set<string>) {}
+  constructor(
+    private readonly liveSockets: () => Set<string>,
+    /** `claude` predicate: is session `id`'s pane alive, asked of the tenant owning `connectors`?
+     *  `null` = unknown / no such tenant → never reaped. Omitted → the `claude` kind is never reaped. */
+    private readonly paneAlive: (connectors: string, id: string) => boolean | null = () => null,
+  ) {}
 
   sweep(): OrphanSweepResult {
-    const out: OrphanSweepResult = { ttyd: 0, tmux: 0, shell: 0, pending: 0 };
+    const out: OrphanSweepResult = { ttyd: 0, tmux: 0, shell: 0, claude: 0, pending: 0 };
     let candidates: Candidate[];
     try {
       candidates = this.scan();
@@ -97,7 +118,11 @@ export class ProcessJanitor {
     const nextStrikes = new Set<number>();
     const nextTermed = new Set<number>();
     for (const c of candidates) {
-      if (c.kind !== 'shell') {
+      if (c.kind === 'claude') {
+        let alive: boolean | null = null;
+        try { alive = this.paneAlive(c.connectors ?? '', c.session ?? ''); } catch { alive = null; }
+        if (alive !== false) continue;                        // alive, or we can't tell — not ours to kill
+      } else if (c.kind !== 'shell') {
         // Socket-backed kinds: reachable ⇒ not our business. An orphaned shell holds no socket; being
         // reparented to init IS its unreachability proof, so it skips straight to the age/strike guards.
         if (live.has(c.socket)) continue;                     // a running tenant owns it
@@ -172,6 +197,13 @@ export function parseProcessTable(stdout: string, uid: number, self: number): Ca
     const socket = ttyd?.[1] ?? tmux?.[1];
     if (socket) {
       out.push({ pid, kind: ttyd ? 'ttyd' : 'tmux', socket, ageMs });
+      continue;
+    }
+    // A claude-code agent process, identified by the per-session MCP config its launcher minted. Whether it
+    // is orphaned is the TENANT's call (is that session's pane alive?) — see ProcessJanitor.sweep.
+    const agent = args.match(/(?:^|\/)claude\s.*--mcp-config\s+(\S+)\/session-([A-Za-z0-9_-]+)\.mcp\.json(?:\s|$)/);
+    if (agent) {
+      out.push({ pid, kind: 'claude', socket: '', session: agent[2], connectors: agent[1], ageMs });
       continue;
     }
     // An agent shell is a candidate ONLY once reparented to init: with a live parent it is a tool call in
