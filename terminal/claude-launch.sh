@@ -597,6 +597,9 @@ while true; do
   IFS= read -rsn1 key || { sleep 2; continue; }   # blocked read is fine; EOF/detached → idle, no spin
   case "$key" in
     r|R)
+      # Same preparation as a fresh resume: [r] reopens the conversation under whatever dir we hold, and
+      # without this a transcript that was moved or left empty is never staged, so [r] fails forever.
+      [ -n "${CLAUDE_SESSION_ID:-}" ] && prepare_resume
       notify_resumed
       claude --resume "${CLAUDE_SESSION_ID:-}" "${COMMON_ARGS[@]}" \
         || claude --session-id "${CLAUDE_SESSION_ID:-}" "${COMMON_ARGS[@]}" "$TASK"
