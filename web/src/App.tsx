@@ -19146,6 +19146,8 @@ function SoftwarePanel({ me }: { me: Member }) {
 /** Settings → Secrets — the encrypted-at-rest vault. Credentials are sealed (AES-256-GCM) under the
  *  workspace master key and read only INSIDE the gateway by capabilities; agents never see raw values.
  *  The console can set/replace/delete a secret but can never read one back — only its key + provenance. */
+const SECRETS_PAGE_SIZE = 25
+
 function SecretsSettings({ me, agents }: { me: Member; agents: AgentInfo[] }) {
   const [secrets, setSecrets] = useState<SecretMeta[]>([])
   const [loading, setLoading] = useState(true)
@@ -19156,7 +19158,17 @@ function SecretsSettings({ me, agents }: { me: Member; agents: AgentInfo[] }) {
   const [hint, setHint] = useState('')
   const [openRow, setOpenRow] = useState<string | null>(null)
   const [requests, setRequests] = useState<SecretRequest[]>([])
+  const [query, setQuery] = useState('')
+  const [page, setPage] = useState(0)
   const canEdit = me.role === 'owner' || me.role === 'admin'
+  // A tenant can hold 100+ secrets; filter by key/principal/updater and show one page at a time.
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? secrets.filter((s) => s.key.toLowerCase().includes(q) || s.principal.toLowerCase().includes(q) || (s.updatedBy ?? '').toLowerCase().includes(q))
+    : secrets
+  const pageCount = Math.max(1, Math.ceil(filtered.length / SECRETS_PAGE_SIZE))
+  const curPage = Math.min(page, pageCount - 1)
+  const visible = filtered.slice(curPage * SECRETS_PAGE_SIZE, (curPage + 1) * SECRETS_PAGE_SIZE)
 
   const refresh = () => api.secrets().then((r) => { if (!r.error) setSecrets(r.secrets); setLoading(false) }).catch(() => setLoading(false))
   const loadRequests = () => api.secretRequests().then((r) => setRequests(r.requests ?? [])).catch(() => setRequests([]))
@@ -19236,10 +19248,20 @@ function SecretsSettings({ me, agents }: { me: Member; agents: AgentInfo[] }) {
 
       <Card>
         <CardContent className="p-0">
+          {!loading && secrets.length > 0 && (
+            <div className="flex items-center gap-3 border-b px-4 py-2.5">
+              <Input value={query} onChange={(e) => { setQuery(e.target.value); setPage(0) }}
+                placeholder="Filter by key, principal or updated-by…" className="h-8 max-w-xs text-xs" />
+              <span className="text-[11px] text-muted-foreground">
+                {q ? `${filtered.length} of ${secrets.length}` : `${secrets.length}`} secret{(q ? filtered.length : secrets.length) === 1 ? '' : 's'}
+              </span>
+            </div>
+          )}
           {loading ? <p className="p-4 text-sm text-muted-foreground">Loading…</p>
             : secrets.length === 0 ? <p className="p-4 text-sm text-muted-foreground">No secrets stored yet.</p>
+            : filtered.length === 0 ? <p className="p-4 text-sm text-muted-foreground">No secrets match “{query.trim()}”.</p>
             : <div className="divide-y">
-                {secrets.map((s) => {
+                {visible.map((s) => {
                   const rid = `${s.principal}:${s.key}`
                   const assigned = s.agents ?? []
                   const open = openRow === rid
@@ -19291,6 +19313,16 @@ function SecretsSettings({ me, agents }: { me: Member; agents: AgentInfo[] }) {
                   )
                 })}
               </div>}
+          {!loading && pageCount > 1 && (
+            <div className="flex items-center justify-between border-t px-4 py-2 text-[11px] text-muted-foreground">
+              <span>{curPage * SECRETS_PAGE_SIZE + 1}–{Math.min((curPage + 1) * SECRETS_PAGE_SIZE, filtered.length)} of {filtered.length}</span>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={curPage === 0} onClick={() => setPage(curPage - 1)}>Previous</Button>
+                <span>Page {curPage + 1} / {pageCount}</span>
+                <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={curPage >= pageCount - 1} onClick={() => setPage(curPage + 1)}>Next</Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
