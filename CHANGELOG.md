@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.472.1] - 2026-11-20
+### Fixed
+- **Settings → Secrets is filterable and paginated.** The vault list rendered every secret in one
+  column (globex holds 133), with no way to find one key. It now shows 25 per page with a filter over
+  key, principal and updated-by; the agent-assignment picker and delete work per row as before.
+  **For admins:** Settings → Secrets now has a filter box and shows 25 secrets per page. [Open Secrets](#/settings/secrets)
+
 ## [0.472.0] - 2026-11-20
 ### Added
 - **Two-factor sign-in (TOTP) for console members, with a reminder until it's on.** Login is magic-link,
