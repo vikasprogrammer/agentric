@@ -14,6 +14,8 @@ import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLe
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // magic links valid for 7 days
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // login cookie valid for 30 days
+const MFA_PENDING_TTL_MS = 10 * 60 * 1000; // a half-signed-in session (link used, 2FA code not yet typed)
+export const MFA_MAX_ATTEMPTS = 5; // wrong codes per pending session before it is destroyed
 const MEMBER_CONTEXT_MAX = 8000; // cap a member's personal context so it can't dominate every prompt
 
 interface MemberRow {
@@ -250,6 +252,8 @@ export class TeamStore {
     }
     // Drop their external-account links so a freed id can be re-mapped to someone else cleanly.
     this.db.prepare('DELETE FROM member_identities WHERE member_id = ?').run(id);
+    // Their 2FA enrolment — a member re-invited under the same email starts fresh, not with a stale secret.
+    this.db.prepare('DELETE FROM member_mfa WHERE member_id = ?').run(id);
     this.db.prepare('DELETE FROM members WHERE id = ?').run(id);
     return { ok: true };
   }
@@ -314,8 +318,12 @@ export class TeamStore {
     return inv ? { email: inv.email, role: inv.role } : null;
   }
 
-  /** Consume a magic-link token: activate the member and mint a session. Null if invalid/expired. */
-  acceptToken(tok: string): { member: Member; sid: string } | null {
+  /**
+   * Consume a magic-link token: activate the member and mint a session. Null if invalid/expired.
+   * When `mfaRequired(memberId)` says the member has two-factor on, the session is minted PENDING —
+   * resolveSession refuses it until completeMfa swaps it for a full one (see POST /api/auth/2fa/verify).
+   */
+  acceptToken(tok: string, opts: { mfaRequired?: (memberId: string) => boolean } = {}): { member: Member; sid: string; mfaPending: boolean } | null {
     const now = Date.now();
     const inv = this.db
       .prepare('SELECT * FROM invites WHERE token = ? AND accepted_at IS NULL AND expires_at > ?')
@@ -325,22 +333,64 @@ export class TeamStore {
     const member = this.getMemberByEmail(inv.email);
     if (!member) return null;
     if (member.status !== 'active') this.db.prepare('UPDATE members SET status = ? WHERE id = ?').run('active', member.id);
-    return { member: { ...member, status: 'active' }, sid: this.createSession(member.id) };
+    const mfaPending = !!opts.mfaRequired?.(member.id);
+    return { member: { ...member, status: 'active' }, sid: this.createSession(member.id, { mfaPending }), mfaPending };
   }
 
-  createSession(memberId: string): string {
+  createSession(memberId: string, opts: { mfaPending?: boolean } = {}): string {
     const sid = token();
     const now = Date.now();
+    const pending = opts.mfaPending ? 1 : 0;
     this.db
-      .prepare('INSERT INTO auth_sessions (sid, member_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
-      .run(tokenAtRest(sid), memberId, now, now + SESSION_TTL_MS);
+      .prepare('INSERT INTO auth_sessions (sid, member_id, created_at, expires_at, mfa_pending) VALUES (?, ?, ?, ?, ?)')
+      .run(tokenAtRest(sid), memberId, now, now + (pending ? MFA_PENDING_TTL_MS : SESSION_TTL_MS), pending);
     return sid;
+  }
+
+  // ── two-factor: the pending (half-signed-in) session ────────────────────────────
+  /** The member behind a PENDING session (magic link used, 2FA code still owed), or undefined. */
+  resolvePendingSession(sid: string): Member | undefined {
+    if (!sid) return undefined;
+    const row = this.db
+      .prepare('SELECT member_id FROM auth_sessions WHERE sid = ? AND mfa_pending = 1 AND expires_at > ?')
+      .get<{ member_id: string }>(tokenAtRest(sid), Date.now());
+    return row ? this.getMember(row.member_id) : undefined;
+  }
+  /** Count one wrong code against a pending session; destroys it at MFA_MAX_ATTEMPTS. Returns guesses left. */
+  recordMfaFailure(sid: string): number {
+    const at = tokenAtRest(sid);
+    this.db.prepare('UPDATE auth_sessions SET mfa_attempts = mfa_attempts + 1 WHERE sid = ? AND mfa_pending = 1').run(at);
+    const row = this.db.prepare('SELECT mfa_attempts FROM auth_sessions WHERE sid = ?').get<{ mfa_attempts: number }>(at);
+    const left = Math.max(0, MFA_MAX_ATTEMPTS - (row?.mfa_attempts ?? MFA_MAX_ATTEMPTS));
+    if (left === 0) this.destroySession(sid);
+    return left;
+  }
+  /** The code checked out: retire the pending session and mint a FRESH full one (no id reuse across the
+   *  privilege change). Returns the new sid, or null if the pending session is gone. */
+  completeMfa(sid: string): string | null {
+    const m = this.resolvePendingSession(sid);
+    if (!m) return null;
+    this.destroySession(sid);
+    return this.createSession(m.id);
+  }
+  /** Sign a member out everywhere (2FA reset / disable by an admin). */
+  destroyMemberSessions(memberId: string): void {
+    this.db.prepare('DELETE FROM auth_sessions WHERE member_id = ?').run(memberId);
+  }
+  /** Whether THIS login already showed (and had dismissed) the enable-2FA reminder. */
+  sessionNagSeen(sid: string): boolean {
+    if (!sid) return false;
+    const row = this.db.prepare('SELECT nag_seen FROM auth_sessions WHERE sid = ?').get<{ nag_seen: number }>(tokenAtRest(sid));
+    return !!row?.nag_seen;
+  }
+  markSessionNagSeen(sid: string): void {
+    if (sid) this.db.prepare('UPDATE auth_sessions SET nag_seen = 1 WHERE sid = ?').run(tokenAtRest(sid));
   }
   resolveSession(sid: string): Member | undefined {
     if (!sid) return undefined;
     const now = Date.now();
     const row = this.db
-      .prepare('SELECT member_id, expires_at, last_seen_at FROM auth_sessions WHERE sid = ? AND expires_at > ?')
+      .prepare('SELECT member_id, expires_at, last_seen_at FROM auth_sessions WHERE sid = ? AND expires_at > ? AND mfa_pending = 0')
       .get<{ member_id: string; expires_at: number; last_seen_at: number | null }>(tokenAtRest(sid), now);
     if (!row) return undefined;
     // Sliding window: bump the 30-day expiry on activity so a daily-active user never hits the hard
@@ -366,7 +416,7 @@ export class TeamStore {
   presence(): { memberId: string; lastSeenAt: number }[] {
     return this.db
       .prepare(
-        'SELECT member_id AS memberId, MAX(last_seen_at) AS lastSeenAt FROM auth_sessions WHERE last_seen_at IS NOT NULL AND expires_at > ? GROUP BY member_id',
+        'SELECT member_id AS memberId, MAX(last_seen_at) AS lastSeenAt FROM auth_sessions WHERE last_seen_at IS NOT NULL AND expires_at > ? AND mfa_pending = 0 GROUP BY member_id',
       )
       .all<{ memberId: string; lastSeenAt: number }>(Date.now());
   }

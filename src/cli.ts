@@ -6,6 +6,7 @@
  *   agent-os invite <email> [role] create a magic-link for a teammate (role: admin|member)
  *   agent-os login-link <email>    print a fresh login link for an existing member (recovery)
  *   agent-os members               list workspace members and their roles
+ *   agent-os 2fa-reset <email>     turn off a member's two-factor (lost device — last-resort recovery)
  *   agent-os demo                  run the scripted governance demo in the terminal
  *   agent-os help                  show this help
  */
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
     case 'invite':
     case 'login-link':
     case 'members':
+    case '2fa-reset':
       team(cmd, rest);
       break;
     case 'tenant':
@@ -157,7 +159,8 @@ function team(cmd: string, rest: string[]): void {
   if (cmd === 'members') {
     const members = os.team.listMembers();
     if (!members.length) return console.log('no members yet — run `agent-os serve` once to seed the owner.');
-    for (const m of members) console.log(`  ${m.role.padEnd(6)} ${m.email.padEnd(28)} ${m.status.padEnd(8)} ${m.id}`);
+    const mfa = new Set(os.mfa.enabledMemberIds());
+    for (const m of members) console.log(`  ${m.role.padEnd(6)} ${m.email.padEnd(28)} ${m.status.padEnd(8)} ${(mfa.has(m.id) ? '2fa' : '-').padEnd(4)} ${m.id}`);
     return;
   }
 
@@ -177,6 +180,21 @@ function team(cmd: string, rest: string[]): void {
     }
     const { member, token } = os.team.invite({ email, role });
     console.log(`invited ${member.email} as ${member.role}. Magic link (valid 7 days):\n  ${link(token)}`);
+    return;
+  }
+
+  if (cmd === '2fa-reset') {
+    // The box-side escape hatch for an owner locked out by a lost authenticator AND lost recovery
+    // codes (nobody left in the console who can reset them). Shell access to the box = already trusted.
+    const m = os.team.getMemberByEmail(email);
+    if (!m) {
+      console.log(`no member with email ${email}.`);
+      process.exitCode = 1;
+      return;
+    }
+    os.mfa.disable(m.id);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'cli', type: 'auth.2fa.reset', data: { member: m.id, email: m.email, via: 'cli' } });
+    console.log(`two-factor turned off for ${m.email}. Sign in with a fresh link: agent-os login-link ${m.email}`);
     return;
   }
 
@@ -351,6 +369,7 @@ function usage(): void {
   invite <email> [role] mint a magic-link to invite a teammate (role: admin | member)
   login-link <email>    print a fresh login link for an existing member (recovery)
   members               list workspace members and their roles
+  2fa-reset <email>     turn off a member's two-factor sign-in (lost device + lost recovery codes)
   deps                   check the native tools sessions need (tmux/ttyd/claude/git) + their freshness
   deps update <bin>      upgrade an npm-installed tool in place (e.g. deps update claude)
   install-deps           install the missing native tools via the box's package manager

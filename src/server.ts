@@ -736,15 +736,26 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendHtml(res, 200, acceptLandingHtml(peek.email, token, os.settings.branding().accentColor));
   }
   if (method === 'POST' && p === '/accept') {
-    const accepted = os.team.acceptToken(url.searchParams.get('token') || '');
+    // A member with two-factor on gets a PENDING session: the cookie is set, but resolveSession refuses
+    // it until POST /api/auth/2fa/verify swaps it for a full one — so a leaked link alone signs no one in.
+    const accepted = os.team.acceptToken(url.searchParams.get('token') || '', { mfaRequired: (id) => os.mfa.enabled(id) });
     if (!accepted) return redirect(res, '/?login=invalid');
+    if (accepted.mfaPending) {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: accepted.member.email, type: 'auth.2fa.challenged', data: { member: accepted.member.id } });
+    }
     res.writeHead(302, { location: '/', 'set-cookie': sessionCookie(accepted.sid) });
     res.end();
     return;
   }
   if (method === 'GET' && p === '/api/auth/me') {
     const m = memberFor(os, req);
-    if (!m) return sendJson(res, 401, { error: 'not authenticated' });
+    if (!m) {
+      // Half signed in (link used, 2FA code owed): still a 401 — nginx's auth_request and every gate
+      // treat it as logged out — but the console learns to ask for the code instead of a new link.
+      const pending = os.team.resolvePendingSession(parseCookies(req)['aos_sid'] || '');
+      if (pending) return sendJson(res, 401, { error: 'two-factor code required', mfaRequired: true, email: pending.email });
+      return sendJson(res, 401, { error: 'not authenticated' });
+    }
     // Sliding session: re-stamp the cookie on every app load (the SPA GETs this on mount) so an active
     // user's 30-day browser cookie never lapses. Pairs with the DB-side slide in TeamStore.resolveSession
     // — restamping the cookie alone would outlive the server row, sliding the row alone would outlive the
@@ -755,7 +766,36 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     res.writeHead(200, headers);
     // navPins + agentPins ride along on the auth payload (not a separate fetch) so the sidebar's pinned layout is
     // known at first shell paint — no flash of the default nav before a follow-up request lands.
-    res.end(JSON.stringify({ member: m, navPins: os.team.navPins(m.id), agentPins: os.team.agentPins(m.id) }));
+    // twoFactor.nag: whether to show the "turn on two-factor" reminder now (workspace cadence policy).
+    const twoFactor = { enabled: os.mfa.enabled(m.id), nag: os.mfa.nagDue(m.id, os.settings.twoFactorPolicy(), os.team.sessionNagSeen(sid || '')) };
+    res.end(JSON.stringify({ member: m, navPins: os.team.navPins(m.id), agentPins: os.team.agentPins(m.id), twoFactor }));
+    return;
+  }
+  // Second step of a 2FA sign-in: the pending cookie + a 6-digit authenticator code (or a recovery
+  // code) → a fresh full session. Public by necessity (the caller isn't signed in yet); bounded by
+  // MFA_MAX_ATTEMPTS per pending session (then it's destroyed and a new link is needed) and per IP.
+  if (method === 'POST' && p === '/api/auth/2fa/verify') {
+    const sid = parseCookies(req)['aos_sid'] || '';
+    const pending = os.team.resolvePendingSession(sid);
+    if (!pending) return sendJson(res, 401, { error: 'Sign-in expired — request a fresh link', expired: true });
+    if (!allowMfaAttempt(req)) return sendJson(res, 429, { error: 'Too many attempts — wait a few minutes' });
+    const b = await readBody(req);
+    const r = os.mfa.verify(pending.id, String(b.code ?? ''));
+    if (!r.ok) {
+      const remaining = os.team.recordMfaFailure(sid);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: pending.email, type: 'auth.2fa.failed', data: { member: pending.id, remaining } });
+      if (remaining === 0) {
+        res.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'set-cookie': clearCookie() });
+        res.end(JSON.stringify({ error: 'Too many wrong codes — request a fresh sign-in link', expired: true }));
+        return;
+      }
+      return sendJson(res, 401, { error: 'That code is not right', remaining });
+    }
+    const full = os.team.completeMfa(sid);
+    if (!full) return sendJson(res, 401, { error: 'Sign-in expired — request a fresh link', expired: true });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: pending.email, type: 'auth.2fa.verified', data: { member: pending.id, via: r.via, recoveryRemaining: r.recoveryRemaining } });
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'set-cookie': sessionCookie(full) });
+    res.end(JSON.stringify({ ok: true, via: r.via, recoveryRemaining: r.recoveryRemaining }));
     return;
   }
   // Per-tenant console branding (accent colour + favicon badge). PUBLIC + display-only (no secrets):
@@ -3187,6 +3227,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       members: os.team.listMembers(),
       assignments,
       identities: os.team.identitiesByMember(), // member id → external accounts (chat run-as join keys)
+      twoFactor: os.mfa.enabledMemberIds(), // member ids with 2FA on — the Team page's adoption badge
       agents, // owner sees ALL to assign access; admins never see owner-only agents
     });
   }
@@ -3209,6 +3250,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!role) return sendJson(res, 400, { error: 'valid role required' });
     const updated = os.team.setRole(teamRole[1], role);
     return sendJson(res, updated ? 200 : 404, updated ?? { error: 'not found' });
+  }
+  // Reset a member's two-factor (lost phone + lost recovery codes). Admins reset members; only an owner
+  // resets an admin/owner; nobody resets themselves here (that's the code-gated self-service disable).
+  // Their next sign-in is link-only, and the reminder resumes.
+  const team2fa = p.match(/^\/api\/team\/([\w-]+)\/2fa$/);
+  if (method === 'DELETE' && team2fa) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const target = os.team.getMember(team2fa[1]);
+    if (!target) return sendJson(res, 404, { error: 'not found' });
+    if (target.id === me.id) return sendJson(res, 400, { error: 'turn off your own two-factor from your Profile' });
+    if (target.role !== 'member' && me.role !== 'owner') return sendJson(res, 403, { error: 'only an owner can reset an admin or owner' });
+    os.mfa.disable(target.id);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'auth.2fa.reset', data: { member: target.id, email: target.email } });
+    return sendJson(res, 200, { ok: true });
   }
   const teamLink = p.match(/^\/api\/team\/([\w-]+)\/login-link$/);
   if (method === 'POST' && teamLink) {
@@ -4354,6 +4409,51 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
   // This member's own notification preferences (which session events ping them, toasts/sound/DM). Per
   // person, not workspace-wide — every role reads/writes their OWN, so it's not admin-gated.
+  // ── two-factor sign-in, self-service (src/governance/mfa.ts) ──
+  // Enrolment is two-step so a half-finished setup never locks anyone out: setup mints a PENDING secret
+  // (QR + text), enable proves the app has it. Changing an enrolled device, turning it off and
+  // regenerating recovery codes all require a current code — a hijacked browser session alone can't
+  // strip the second factor.
+  if (method === 'GET' && p === '/api/me/2fa') {
+    return sendJson(res, 200, { ...os.mfa.status(me.id), policy: os.settings.twoFactorPolicy() });
+  }
+  if (method === 'POST' && p === '/api/me/2fa/setup') {
+    const b = await readBody(req);
+    if (os.mfa.enabled(me.id) && !os.mfa.verify(me.id, String(b.code ?? '')).ok) {
+      return sendJson(res, 403, { error: 'Enter a current code from your authenticator to move it to a new device' });
+    }
+    return sendJson(res, 200, os.mfa.beginSetup(me.id, me.email));
+  }
+  if (method === 'POST' && p === '/api/me/2fa/enable') {
+    const b = await readBody(req);
+    const out = os.mfa.confirmSetup(me.id, String(b.code ?? ''));
+    if (!out) return sendJson(res, 400, { error: 'That code is not right (or setup expired — start again)' });
+    os.team.markSessionNagSeen(parseCookies(req)['aos_sid'] || '');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'auth.2fa.enabled', data: { member: me.id } });
+    return sendJson(res, 200, { ok: true, recoveryCodes: out.recoveryCodes, ...os.mfa.status(me.id) });
+  }
+  if (method === 'POST' && p === '/api/me/2fa/disable') {
+    const b = await readBody(req);
+    if (!os.mfa.verify(me.id, String(b.code ?? '')).ok) return sendJson(res, 403, { error: 'That code is not right' });
+    os.mfa.disable(me.id);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'auth.2fa.disabled', data: { member: me.id, by: 'self' } });
+    return sendJson(res, 200, { ok: true, ...os.mfa.status(me.id) });
+  }
+  if (method === 'POST' && p === '/api/me/2fa/recovery') {
+    const b = await readBody(req);
+    if (!os.mfa.verify(me.id, String(b.code ?? '')).ok) return sendJson(res, 403, { error: 'That code is not right' });
+    const codes = os.mfa.regenerateRecovery(me.id);
+    if (!codes) return sendJson(res, 400, { error: 'two-factor is not on' });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'auth.2fa.recovery.regenerated', data: { member: me.id } });
+    return sendJson(res, 200, { ok: true, recoveryCodes: codes, ...os.mfa.status(me.id) });
+  }
+  // "Not now" on the reminder: quiet for the rest of THIS login, and restarts the every-N-days clock.
+  if (method === 'POST' && p === '/api/me/2fa/nag/dismiss') {
+    os.mfa.dismissNag(me.id);
+    os.team.markSessionNagSeen(parseCookies(req)['aos_sid'] || '');
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (method === 'GET' && p === '/api/me/prefs') return sendJson(res, 200, os.team.notificationPrefs(me.id));
   if (method === 'PUT' && p === '/api/me/prefs') {
     const b = await readBody(req);
@@ -6288,6 +6388,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     const saved = os.settings.setBranding(sanitizeBranding(b as Partial<Record<keyof Branding, unknown>>), me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.branding.updated', data: { ...saved } });
+    return sendJson(res, 200, { ok: true, ...saved });
+  }
+
+  // ── two-factor reminder cadence (owner/admin) ──
+  if (method === 'GET' && p === '/api/settings/two-factor') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const members = os.team.listMembers().filter((m) => m.status === 'active');
+    const on = new Set(os.mfa.enabledMemberIds());
+    return sendJson(res, 200, { ...os.settings.twoFactorPolicy(), adoption: { enabled: members.filter((m) => on.has(m.id)).length, members: members.length } });
+  }
+  if (method === 'PUT' && p === '/api/settings/two-factor') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const saved = os.settings.setTwoFactorPolicy(await readBody(req), me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.two_factor.updated', data: { ...saved } });
     return sendJson(res, 200, { ok: true, ...saved });
   }
 
@@ -8599,6 +8713,20 @@ function allowLinkRequest(email: string, req: http.IncomingMessage): boolean {
     linkReqHits.set(key, hits);
   }
   return ok;
+}
+
+// Per-IP throttle on POST /api/auth/2fa/verify, on top of the per-pending-session attempt cap: bounds
+// guessing spread across many pending sessions (each needs its own one-time magic link anyway).
+const MFA_REQ_WINDOW_MS = 15 * 60 * 1000;
+const MFA_REQ_MAX = 20;
+const mfaReqHits = new Map<string, number[]>();
+function allowMfaAttempt(req: http.IncomingMessage): boolean {
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim() || '-';
+  const now = Date.now();
+  const hits = (mfaReqHits.get(ip) || []).filter((t) => now - t < MFA_REQ_WINDOW_MS);
+  hits.push(now);
+  mfaReqHits.set(ip, hits);
+  return hits.length <= MFA_REQ_MAX;
 }
 
 // ── per-member GitHub OAuth state (Phase 2 — docs/per-member-github-plan.md) ───

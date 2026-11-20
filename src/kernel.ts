@@ -55,6 +55,7 @@ import { JsonPolicyEngine, PolicyDocument, PolicyRule, policyContextMismatch } f
 import { PolicyDrift, baselineDrift, dropRetiredRules, retiredRuleImpact } from './governance/policy-baseline';
 import { EnvSecretsVault, SqliteSecretsVault } from './edge/secrets';
 import { resolveMasterKey } from './edge/secret-crypto';
+import { MfaStore } from './governance/mfa';
 import { seedBuiltinAgents } from './edge/agent-catalog';
 import { HealthMonitor } from './observability/monitor';
 import { MockAdapter, MockBehavior } from './runtime/mock-adapter';
@@ -88,6 +89,8 @@ export class AgentOS {
   readonly approvals: SqliteApprovals;
   /** The humans with access to this workspace, their roles, sessions and agent assignments. */
   readonly team: TeamStore;
+  /** Member two-factor sign-in (TOTP + recovery codes) — src/governance/mfa.ts. */
+  readonly mfa: MfaStore;
   /** Workspace-wide settings — incl. the Company context injected into every claude-code agent. */
   readonly settings: SettingsStore;
   /** Global skills library — Claude Code Skills materialised into every claude-code agent at launch. */
@@ -158,7 +161,8 @@ export class AgentOS {
     this.paths = opts.paths;
     // The per-workspace DB backs everything user-facing. No paths (tests/demo) → ephemeral in-memory.
     this.db = openDb(opts.paths?.db ?? ':memory:');
-    this.secrets = new SqliteSecretsVault(this.db, resolveMasterKey(opts.paths?.home), new EnvSecretsVault());
+    const masterKey = resolveMasterKey(opts.paths?.home);
+    this.secrets = new SqliteSecretsVault(this.db, masterKey, new EnvSecretsVault());
     this.connectors = new ConnectorStore(this.db);
     this.composioShares = new ComposioShareStore(this.db);
     this.composioIdentities = new ComposioIdentityStore(this.db);
@@ -168,6 +172,7 @@ export class AgentOS {
     this.approvals = new SqliteApprovals(this.db);
     this.team = new TeamStore(this.db);
     this.settings = new SettingsStore(this.db);
+    this.mfa = new MfaStore(this.db, masterKey, () => `Agentric (${this.tenantName})`);
     this.skills = new SkillsStore(opts.paths?.skills, this.db, opts.paths?.bundledSkills);
     this.outputStyles = new OutputStylesStore(opts.paths?.outputStyles);
     this.artifacts = new ArtifactStore(this.db, opts.paths?.artifacts);

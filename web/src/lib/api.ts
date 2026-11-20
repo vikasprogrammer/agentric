@@ -15,7 +15,14 @@ export interface Member {
   /** Agent ids this member pinned to the top of their Agents list, in pin order. Client-only, like
    *  `navPins`: delivered on /api/auth/me for `me`. */
   agentPins?: string[]
+  /** This member's two-factor state + whether to show the enable reminder now. Client-only, like
+   *  `navPins`: delivered on /api/auth/me for `me`. */
+  twoFactor?: { enabled: boolean; nag: boolean }
 }
+/** /api/auth/me's answer for a half-signed-in browser: the magic link was used but a 2FA code is owed. */
+export interface MfaChallenge { mfaRequired: true; email: string }
+export interface TwoFactorPolicy { nagOnLogin: boolean; nagEveryDays: number }
+export interface TwoFactorStatus { enabled: boolean; enabledAt?: number; recoveryRemaining: number; policy?: TwoFactorPolicy; error?: string }
 /** A member-defined canned prompt fired into a live session from the Quick Shortcuts strip. */
 export interface PromptShortcut {
   id: string
@@ -330,6 +337,8 @@ export interface TeamResp {
   assignments: Record<string, AgentAccess>
   /** member id → their linked external accounts (Slack/Discord/email/github), for chat run-as. */
   identities: Record<string, MemberIdentity[]>
+  /** Member ids with two-factor sign-in turned on. */
+  twoFactor?: string[]
   agents: AgentInfo[]
 }
 /** Host resource snapshot (GET /api/system). Bytes for memory; fractions 0–1 for percentages. */
@@ -2004,13 +2013,36 @@ export interface FeedTrailStep { ts: number; source: 'audit' | 'task'; kind: str
 export const api = {
   /** Current member, or null if not authenticated (401). Drives the login gate. */
   me: async (): Promise<Member | null> => {
+    const r = await api.meOrChallenge()
+    return r && 'mfaRequired' in r ? null : r
+  },
+  /** Like `me`, but tells a half-signed-in browser (link used, two-factor code owed) apart from a
+   *  logged-out one, so the login gate can ask for the code instead of a new link. */
+  meOrChallenge: async (): Promise<Member | MfaChallenge | null> => {
     const res = await fetch('/api/auth/me')
-    if (res.status === 401) return null
+    if (res.status === 401) {
+      const b = await res.json().catch(() => ({})) as { mfaRequired?: boolean; email?: string }
+      return b.mfaRequired ? { mfaRequired: true, email: b.email ?? '' } : null
+    }
     const body = await res.json()
     // navPins ships beside `member` on this payload — fold it onto the member so the sidebar has the
     // pinned layout at first paint without a second request.
-    return { ...(body.member as Member), navPins: body.navPins ?? null, agentPins: body.agentPins ?? [] }
+    return { ...(body.member as Member), navPins: body.navPins ?? null, agentPins: body.agentPins ?? [], twoFactor: body.twoFactor }
   },
+  /** Second sign-in step: a 6-digit authenticator code or a recovery code. */
+  verifyTwoFactor: async (code: string): Promise<{ ok?: boolean; error?: string; remaining?: number; expired?: boolean; via?: string; recoveryRemaining?: number }> => {
+    const res = await fetch('/api/auth/2fa/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) })
+    return res.json()
+  },
+  twoFactor: () => call<TwoFactorStatus>('GET', '/api/me/2fa'),
+  twoFactorSetup: (code?: string) => call<{ secret?: string; uri?: string; qrSvg?: string; error?: string }>('POST', '/api/me/2fa/setup', code ? { code } : {}),
+  twoFactorEnable: (code: string) => call<TwoFactorStatus & { ok?: boolean; recoveryCodes?: string[] }>('POST', '/api/me/2fa/enable', { code }),
+  twoFactorDisable: (code: string) => call<TwoFactorStatus & { ok?: boolean }>('POST', '/api/me/2fa/disable', { code }),
+  twoFactorRecovery: (code: string) => call<TwoFactorStatus & { ok?: boolean; recoveryCodes?: string[] }>('POST', '/api/me/2fa/recovery', { code }),
+  dismissTwoFactorNag: () => call<{ ok: boolean }>('POST', '/api/me/2fa/nag/dismiss'),
+  resetMemberTwoFactor: (id: string) => call<{ ok?: boolean; error?: string }>('DELETE', `/api/team/${encodeURIComponent(id)}/2fa`),
+  twoFactorPolicy: () => call<TwoFactorPolicy & { adoption?: { enabled: number; members: number }; error?: string }>('GET', '/api/settings/two-factor'),
+  saveTwoFactorPolicy: (p: TwoFactorPolicy) => call<TwoFactorPolicy & { ok?: boolean; error?: string }>('PUT', '/api/settings/two-factor', p),
   logout: () => call<{ ok: boolean }>('POST', '/api/auth/logout'),
   /** Self-service recovery: ask the server to send a fresh sign-in link. Always resolves ok (neutral
    *  response — a real member is DM'd/logged a link; an unknown email is a silent no-op). */
