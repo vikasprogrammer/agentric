@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.472.0] - 2026-11-20
+### Added
+- **Two-factor sign-in (TOTP) for console members, with a reminder until it's on.** Login is magic-link,
+  and a link can leak: the self-service recovery path DMs it to Slack/Discord and writes it to
+  `server.log`. A member can now require a 6-digit code from an authenticator app as well
+  (Profile → Two-factor sign-in: QR + manual key, ten single-use recovery codes, move to a new phone,
+  turn off). A link consumed by a member with 2FA on mints a PENDING session (10-minute TTL) that
+  `resolveSession` refuses everywhere — `/api/auth/me` answers 401 `mfaRequired`, so nginx's
+  `auth_request` keeps the terminal shut too — until `POST /api/auth/2fa/verify` swaps it for a fresh
+  full session. Five wrong codes destroy the pending session; a used TOTP step can't be replayed; the
+  secret is sealed under the vault master key and recovery codes are stored as hashes. Turning it off,
+  moving devices and regenerating codes all need a current code. Owners/admins see who has it on
+  (Team page badge) and can reset someone who lost their phone (admins: members only); `agent-os
+  2fa-reset <email>` is the box-side last resort. Members without it get a reminder dialog on every new
+  sign-in AND every 7 days (Settings → Governance → Two-factor reminders; sessions slide, so the
+  periodic one is what reaches people who never sign out). Zero new dependencies — the QR code is a
+  small server-side encoder (`src/governance/qr.ts`) checked bit-for-bit against `qrencode`. Audited
+  `auth.2fa.{challenged,verified,failed,enabled,disabled,reset,recovery.regenerated}`. Pinned by
+  `scripts/two-factor-test.cjs`.
+  **For users:** you can now protect your account with an authenticator app, so a forwarded sign-in link alone can't get in. [Open Profile](#/profile)
+
 ## [0.471.1] - 2026-11-19
 ### Fixed
 - **A session whose transcript copy is empty can be reopened again.** If the credential dir a resume runs

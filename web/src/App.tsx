@@ -21,6 +21,7 @@ import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
 import { createGithubApp } from '@/lib/github-app'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
 import { SetupPage, SetupBanner } from '@/setup'
+import { TwoFactorChallenge, TwoFactorNag, TwoFactorSection, TwoFactorPolicyCard } from '@/two-factor'
 import { docPages } from '@/docs'
 import { Xterm } from './Xterm'
 
@@ -1175,10 +1176,16 @@ function insightTarget(m: Msg): { route: Route; detail?: string; label: string }
 export default function App() {
   // undefined = checking, null = not logged in (show Login), Member = authed.
   const [me, setMe] = useState<Member | null | undefined>(undefined)
+  // Set when the magic link was used but a two-factor code is still owed (half signed in).
+  const [mfaEmail, setMfaEmail] = useState<string | null>(null)
   const [accent, setAccent] = useState<string | undefined>(undefined)
-  useEffect(() => {
-    api.me().then(setMe)
+  const loadMe = useCallback(() => {
+    api.meOrChallenge().then((r) => {
+      if (r && 'mfaRequired' in r) { setMfaEmail(r.email); setMe(null) }
+      else { setMfaEmail(null); setMe(r) }
+    }).catch(() => setMe(null))
   }, [])
+  useEffect(() => { loadMe() }, [loadMe])
   // Per-tenant branding — fetched from the PUBLIC endpoint so it themes the login screen + tab favicon
   // before any session exists. Runs once on mount, independent of auth.
   useEffect(() => {
@@ -1206,6 +1213,7 @@ export default function App() {
   const termTmux = hash.match(/^#\/term\/([^?]+)/)?.[1]
 
   if (me === undefined) return <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">Loading…</div>
+  if (me === null && mfaEmail !== null) return <TwoFactorChallenge email={mfaEmail} accent={accent} onDone={loadMe} />
   if (me === null) return <LoginScreen accent={accent} />
   if (viewArtifactId) return <FullArtifactView id={viewArtifactId} />
   if (termTmux) return <FullTerminalView tmux={decodeDetail(termTmux)} />
@@ -2150,6 +2158,7 @@ function Console({ me }: { me: Member }) {
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route !== 'setup' && !fullBleed && <SetupBanner me={me} />}
+          <TwoFactorNag me={me} />
           {route === 'setup' && <SetupPage me={me} step={detail} onStep={(id) => nav('setup', id)} onDone={refreshState} />}
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} sessions={sessions} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
@@ -9972,6 +9981,8 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
         <PromptShortcutsEditor />
       </section>
 
+      <TwoFactorSection me={me} />
+
       {/* Notifications (moved off the bell) */}
       <section className="space-y-2">
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Notifications</div>
@@ -10041,6 +10052,12 @@ function TeamPage({ me, onProfileChange }: { me: Member; onProfileChange: () => 
     if (!('error' in r && r.error)) setLinks((p) => ({ ...p, [id]: r.link }))
   }
   const changeRole = async (id: string, r: Role) => { await api.setRole(id, r); load() }
+  const resetTwoFactor = async (m: Member) => {
+    if (!window.confirm(`Turn off two-factor for ${m.email}? Their next sign-in will need only a link, and they'll be reminded to set it up again.`)) return
+    const r = await api.resetMemberTwoFactor(m.id)
+    if (r.error) return setHint('⚠ ' + r.error)
+    load()
+  }
   const remove = async (id: string) => { await api.removeMember(id); load() }
 
   if (!data) return <div className="text-sm text-muted-foreground">Loading…</div>
@@ -10078,6 +10095,7 @@ function TeamPage({ me, onProfileChange }: { me: Member; onProfileChange: () => 
                       <span className="truncate">{m.name}</span>
                       <RoleBadge role={m.role} />
                       {m.status === 'invited' && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">invited</Badge>}
+                      {data.twoFactor?.includes(m.id) && <Badge variant="outline" className="gap-0.5 border-emerald-500/40 px-1.5 py-0 text-[10px] text-emerald-600 dark:text-emerald-400" title="Two-factor sign-in is on"><Lock className="h-2.5 w-2.5" />2FA</Badge>}
                       {m.id === me.id && <span className="text-[11px] text-muted-foreground">(you)</span>}
                     </div>
                     <div className="truncate text-xs text-muted-foreground">{m.email}</div>
@@ -10099,6 +10117,9 @@ function TeamPage({ me, onProfileChange }: { me: Member; onProfileChange: () => 
                   )}
                   {isAdmin && (
                     <Button size="sm" variant="outline" onClick={() => loginLink(m.id)}>Login link</Button>
+                  )}
+                  {isAdmin && m.id !== me.id && data.twoFactor?.includes(m.id) && (isOwner || m.role === 'member') && (
+                    <Button size="sm" variant="outline" title="For a member who lost their phone and recovery codes — their next sign-in is link-only" onClick={() => resetTwoFactor(m)}>Reset 2FA</Button>
                   )}
                   {isOwner && m.id !== me.id && (
                     <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="remove" onClick={() => remove(m.id)}>
@@ -19352,6 +19373,7 @@ function GovernanceSettings({ me }: { me: Member }) {
   return (
     <div className="space-y-4">
       <KillSwitchCard me={me} />
+      <TwoFactorPolicyCard me={me} />
       <Card>
         <CardContent className="space-y-4 p-4">
           <p className="text-sm text-muted-foreground">

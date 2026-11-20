@@ -9,6 +9,7 @@
  * Backed by a key→value `settings` table (same constructor-takes-Db pattern as the other stores),
  * so adding more instance-level settings later is just another key.
  */
+import { TwoFactorPolicy, DEFAULT_TWO_FACTOR_POLICY, sanitizeTwoFactorPolicy } from './mfa';
 import { Db } from '../state/db';
 import { AgentProposalTrust, Branding, EnrichPattern, GithubInstallationRecord, MemoryConfig, Recommendation, RouterConfig, RuntimeTuning, sanitizeAgentProposalTrust, sanitizeBranding, sanitizeGithubInstallation, sanitizeRuntimeTuning } from '../types';
 
@@ -71,6 +72,7 @@ const SEMANTIC_GUARD_KEY = 'semantic_guard_enabled'; // master switch for the pr
 const FILE_WRITE_GUARD_KEY = 'file_write_guard';
 const ENRICH_PATTERNS_KEY = 'enrich_patterns'; // operator regex→boolean-fact rules the enricher applies (JSON EnrichPattern[])
 const BRANDING_KEY = 'ui_branding'; // per-tenant web-console accent colour + favicon badge (JSON Branding)
+const TWO_FACTOR_KEY = 'two_factor_policy'; // reminder cadence for members without 2FA (JSON TwoFactorPolicy)
 const SETUP_KEY = 'setup_state'; // install-wizard state: dismissal + per-step "not now" (JSON SetupState)
 
 /** Numeric governance caps the policy's never-tier rules reference by name (e.g. `$moneyCapUsd`).
@@ -685,6 +687,20 @@ export class SettingsStore {
   setBranding(b: Branding, by?: string): Branding {
     this.set(BRANDING_KEY, JSON.stringify(sanitizeBranding(b)), by);
     return this.branding();
+  }
+
+  // ── two-factor reminder policy ─────────────────────────────────────────────────────
+  // How insistently members WITHOUT 2FA are reminded to turn it on (src/governance/mfa.ts). Default:
+  // on every new login + every 7 days — sessions slide for an active user, so "every login" alone would
+  // nag someone who never signs out exactly once.
+  twoFactorPolicy(): TwoFactorPolicy {
+    const raw = this.getRow(TWO_FACTOR_KEY)?.value;
+    if (!raw) return { ...DEFAULT_TWO_FACTOR_POLICY };
+    try { return sanitizeTwoFactorPolicy(JSON.parse(raw)); } catch { return { ...DEFAULT_TWO_FACTOR_POLICY }; }
+  }
+  setTwoFactorPolicy(p: unknown, by?: string): TwoFactorPolicy {
+    this.set(TWO_FACTOR_KEY, JSON.stringify(sanitizeTwoFactorPolicy(p)), by);
+    return this.twoFactorPolicy();
   }
 
   // ── self-learning (Dreaming) cadence ─────────────────────────────────────────────

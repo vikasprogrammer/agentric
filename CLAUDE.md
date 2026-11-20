@@ -655,6 +655,16 @@ in `src/types.ts` and `TeamStore.canRun()`.
   default `owner@localhost`); the one-time link is printed to the console + `data/server.log`. Others
   get a link from the Team page or the CLI (`agent-os invite|login-link|members`). Accepting a token
   (`GET /accept?token=…`) mints a 30-day `aos_sid` cookie session.
+- **Two-factor sign-in (TOTP, opt-in per member).** `src/governance/mfa.ts` (+ `totp.ts`, and `qr.ts` — a
+  zero-dep QR encoder for the setup screen). A link consumed by a member with 2FA on mints a **pending**
+  session (`auth_sessions.mfa_pending=1`, 10 min) that `resolveSession`/`presence` ignore, so EVERY gate —
+  member API, terminal proxy, nginx `auth_request` — treats it as logged out; only public
+  `POST /api/auth/2fa/verify` accepts it and swaps it for a fresh sid. ⚠ Any NEW way of minting a login
+  session must go through `acceptToken(…, { mfaRequired })` or it silently bypasses the second factor.
+  Secret sealed under the vault master key (lose `secret.key` = everyone's 2FA reads as broken → reset via
+  `agent-os 2fa-reset <email>`), recovery codes hashed, used TOTP steps unreplayable. Members without it
+  are reminded on the `twoFactorPolicy` cadence (every new login and/or every N days; Settings →
+  Governance), driven by `twoFactor.nag` on `/api/auth/me`.
 - **Identity map (chat run-as).** A member can be linked to external accounts — `member_identities`
   (provider ∈ `slack|discord|email|github`), edited on the Team page (**Chat IDs**) or via
   `POST /api/team/:id/identities` + `DELETE …/:provider`. `TeamStore.memberByExternalId(provider, id)`

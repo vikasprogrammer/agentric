@@ -77,6 +77,21 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_member_identities_member ON member_identities (member_id);
 
+    -- Two-factor sign-in (TOTP) per member — src/governance/mfa.ts. secret/pending_secret are sealed
+    -- under the vault master key (never plaintext: an agent's shell can reach this file); recovery codes
+    -- are stored only as tokenAtRest hashes. last_step blocks replay of an already-used code.
+    -- nag_dismissed_at drives the "turn on 2FA" reminder cadence (Settings → Governance).
+    CREATE TABLE IF NOT EXISTS member_mfa (
+      member_id        TEXT PRIMARY KEY,
+      secret           TEXT,
+      enabled_at       INTEGER,
+      last_step        INTEGER,
+      recovery         TEXT NOT NULL DEFAULT '[]',
+      pending_secret   TEXT,
+      pending_at       INTEGER,
+      nag_dismissed_at INTEGER
+    );
+
     -- User-registered MCP connectors (Slack / GitHub / Composio / …) + the credentials they carry.
     -- stdio connectors use command/args/env; remote (http|sse) connectors use url/headers.
     CREATE TABLE IF NOT EXISTS connectors (
@@ -1059,6 +1074,14 @@ function migrate(db: Db): void {
   // Presence: last time a browser request rode this auth session (throttled to ≤1 write/min in
   // TeamStore.resolveSession). A member is "online" when any of their sessions was seen recently.
   addColumn(db, 'auth_sessions', 'last_seen_at', 'INTEGER');
+
+  // Two-factor sign-in. A magic link consumed by a member with 2FA on mints a PENDING session
+  // (mfa_pending=1, 10-minute TTL) that resolveSession refuses — it only unlocks POST /api/auth/2fa/verify,
+  // which swaps it for a full session. `mfa_attempts` caps guesses per pending session. `nag_seen`
+  // records that THIS login already showed the enable-2FA reminder (the "every login" cadence).
+  addColumn(db, 'auth_sessions', 'mfa_pending', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'auth_sessions', 'mfa_attempts', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'auth_sessions', 'nag_seen', 'INTEGER NOT NULL DEFAULT 0');
 
   // Per-session bearer secret for the loopback agent endpoints (0d). Older rows have none → the
   // server fails open for them (they predate the secret), but every new session mints one.
