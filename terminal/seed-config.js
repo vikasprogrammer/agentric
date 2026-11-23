@@ -73,6 +73,14 @@ function seedClaudeConfig(o = {}) {
 
   if (cfg.hasCompletedOnboarding !== true) { cfg.hasCompletedOnboarding = true; changed = true; }
 
+  // Claude Code's DIFF SIDE PANEL auto-opens beside the transcript once a session has edited a file and
+  // the terminal is wide enough — and its only close control is a clickable ×. Every governed session runs
+  // with CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1 (clicks go to xterm.js so copy-select works, see
+  // claude-launch.sh), so that × can never be clicked and the panel squats on half the browser terminal.
+  // Clicking it would only persist `diffSidebarOpen: false` here; seed that instead. Gap-fill: an explicit
+  // value (the box owner's own choice, or one inherited above) wins. `/diff` still opens it on demand.
+  if (!('diffSidebarOpen' in cfg)) { cfg.diffSidebarOpen = false; changed = true; }
+
   // Trust is keyed by the path claude actually OPENS. A symlinked path (a macOS scratch home under
   // /var → /private/var) is resolved by claude before the lookup, so seed both spellings or the dialog
   // still fires on the real path.
