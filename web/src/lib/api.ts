@@ -1939,6 +1939,9 @@ export interface ChainNode {
   taskId?: string
   taskTitle?: string
   taskStatus?: TaskStatus
+  /** An `ask_agent` delegate's question (clipped) + the ask's state — set on nodes with no task row. */
+  question?: string
+  askStatus?: 'pending' | 'answered' | 'failed'
   /** Set when an earlier sibling already handed the SAME work to the SAME agent — holds that task id. */
   duplicateOf?: string
   pending: ChainPending[]

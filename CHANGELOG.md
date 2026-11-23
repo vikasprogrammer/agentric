@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.472.2] - 2026-11-23
+### Fixed
+- **The chain rail shows every agent a conversation asked, not just the ones it handed a task.** An
+  `ask_agent` delegate has no task row — its provenance is `ask:<callerAgent>`, linked to the caller only
+  through `agent_asks` — so the chain (which followed `tasks.caller_claude_id` alone) dropped it: a live
+  globex engineer conversation that asked customer-bot three questions and billing-ops one showed only its
+  single QA task. The walk now descends into `agent_asks` from every run of a conversation (so asks made
+  after a poke-back resume are found too), climbs from a delegate to its caller, and the collapsed
+  sessions list nests those runs the same way. Ask nodes carry the question and the ask's state
+  (`ask · answered|pending|failed`), and an `ask:<agent>` provenance is no longer misread as a task id.
+  Both directions of the edge are indexed. Pinned in `scripts/chain-model-test.cjs`.
+  **For users:** a session's Chain panel now lists every teammate agent it asked a question, with what it asked and whether it was answered.
+
 ## [0.472.1] - 2026-11-20
 ### Fixed
 - **Settings → Secrets is filterable and paginated.** The vault list rendered every secret in one
