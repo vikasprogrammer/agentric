@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.472.3] - 2026-11-23
+### Fixed
+- **Claude Code's diff side panel no longer opens over the browser terminal with no way to close it.**
+  Recent Claude Code versions auto-open a "changes" panel beside the transcript once a session has edited
+  a file and the terminal is wide, and its only close control is a clickable ×. Governed sessions run with
+  mouse clicks handed to the browser terminal (so copy-select works), so that × could never be clicked
+  and the panel took half the pane. The launcher's config seed now sets `diffSidebarOpen: false` when it is
+  unset, which is exactly what clicking × would have saved; an explicit value is left alone, and `/diff`
+  still opens it on demand. Takes effect on the next launch or reattach of a session.
+  **For users:** the browser terminal no longer gets stuck with an uncloseable "No changes this session" panel on the right.
+
 ## [0.472.2] - 2026-11-23
 ### Fixed
 - **The chain rail shows every agent a conversation asked, not just the ones it handed a task.** An

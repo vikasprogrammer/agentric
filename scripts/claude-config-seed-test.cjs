@@ -102,6 +102,15 @@ const missingDir = path.join(TMP, 'not-created-yet', 'deep');
 r = seedClaudeConfig({ home, configDir: missingDir, projectDir: path.join(TMP, 'no-such-agent') });
 assert(fs.existsSync(path.join(missingDir, '.claude.json')), 'a config dir that does not exist yet is created');
 
+console.log('\n\x1b[1m6) The diff side panel stays shut (its × needs a click, and clicks are off)\x1b[0m');
+const home3 = path.join(TMP, 'home3');
+fs.mkdirSync(home3, { recursive: true });
+seedClaudeConfig({ home: home3, projectDir: agentDir });
+assert(read(path.join(home3, '.claude.json')).diffSidebarOpen === false, 'an unset preference is seeded closed');
+fs.writeFileSync(path.join(home3, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true, diffSidebarOpen: true, projects: { [agentDir]: { hasTrustDialogAccepted: true } } }));
+r = seedClaudeConfig({ home: home3, projectDir: agentDir });
+assert(read(path.join(home3, '.claude.json')).diffSidebarOpen === true, 'an explicit choice is left alone');
+
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m\n`);
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* best effort */ }
 process.exit(fail === 0 ? 0 : 1);
