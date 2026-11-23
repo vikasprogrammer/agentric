@@ -4536,14 +4536,14 @@ function ChainRail({ chain, session, open, onToggle, onReload, onOpen }: {
           return (
             <div key={n.threadId} className={n.depth ? 'border-l pl-1.5' : ''} style={{ marginLeft: `${Math.min(n.depth, 3) * 8}px` }}>
             <button onClick={() => onOpen(n.tmux, `${n.agent} · ${n.sessionId}`)}
-              title={n.taskTitle ?? n.title}
+              title={n.taskTitle ?? n.question ?? n.title}
               className={`block w-full rounded-md border px-2.5 py-2 text-left transition-colors ${here ? 'border-primary/40 bg-background' : 'border-transparent hover:border-border hover:bg-background'}`}>
               <div className="flex items-center gap-1.5">
                 <st.icon className={`h-3.5 w-3.5 shrink-0 ${st.tone} ${st.anim}`} aria-label={st.label} />
                 <span className="truncate text-[13px] font-medium">{n.agent}</span>
                 <span className={`ml-auto shrink-0 text-[10px] ${st.tone}`}>{st.label}</span>
               </div>
-              <p className="mt-0.5 line-clamp-3 text-[11.5px] leading-snug text-muted-foreground">{n.summary || n.taskTitle || n.title}</p>
+              <p className="mt-0.5 line-clamp-3 text-[11.5px] leading-snug text-muted-foreground">{n.summary || n.taskTitle || n.question || n.title}</p>
               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-muted-foreground/80">
                 {st.live
                   ? <span className="text-emerald-600" title={`started ${new Date(n.createdAt).toLocaleString()} — still open`}>{n.headless ? 'unattended · ' : ''}{timeAgo(n.createdAt)} in</span>
@@ -4551,6 +4551,7 @@ function ChainRail({ chain, session, open, onToggle, onReload, onOpen }: {
                 {n.runs > 1 && <span title={`${n.runs} runs — this conversation was resumed (poke-backs / continuations)`}>{n.runs} runs</span>}
                 {n.costUsd != null && <span>${n.costUsd.toFixed(2)}</span>}
                 {n.taskId && <span className="truncate" title={n.taskTitle}>{n.taskId}</span>}
+                {n.askStatus && <span title={n.question ? `asked: ${n.question}` : 'ask_agent delegate'}>ask · {n.askStatus}</span>}
               </div>
               {n.duplicateOf && (
                 <p className="mt-1 flex items-start gap-1 text-[10px] text-amber-600">

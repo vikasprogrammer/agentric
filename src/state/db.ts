@@ -1411,6 +1411,10 @@ function migrate(db: Db): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_claude ON term_sessions(claude_session_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_spawned_by ON term_sessions(spawned_by)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_caller ON tasks(caller_claude_id)');
+  // …and the `ask_agent` edge: delegate → caller (the climb + the sessions-list stamp) and caller → its
+  // delegates (the descent). Unindexed, both were a scan of `agent_asks` per node / per list poll.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_agent_asks_delegate ON agent_asks(delegate_run_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_agent_asks_caller ON agent_asks(caller_run_id, created_at)');
 
   // audit_events by TYPE. The existing index is (run_id, type, ts) — useless to the many callers that ask
   // "when did this type last happen" / "how many since T" WITHOUT a run: the digest, the alert staleness

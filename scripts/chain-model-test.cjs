@@ -228,6 +228,49 @@ console.log('\n\x1b[1msteering a live delegate\x1b[0m');
   assert(/USING (COVERING )?INDEX idx_tasks_caller/.test(plan("SELECT id FROM tasks WHERE caller_claude_id = 'x'")), 'the caller one level up is found by index');
 }
 
+// ── ask_agent delegates (instawp 2026-11-23, ses_85f2…) ──────────────────────────────────────────
+// An `ask_agent` delegate has NO task row: provenance `ask:<callerAgent>`, linked to its caller only
+// through `agent_asks`. The chain followed tasks alone, so an engineer conversation that asked
+// customer-bot three questions and billing-ops one showed just its one task delegate.
+{
+  console.log('\n\x1b[1mask_agent delegates\x1b[0m');
+  const callerA = mkRun({ agent: 'lead', claude_session_id: 'cs_lead', title: 'investigate dunning' });
+  const callerB = mkRun({ agent: 'lead', claude_session_id: 'cs_lead', spawned_by: 'poke:tsk_none', title: 'Poke' }); // a later run of the SAME conversation
+  const tTask = mkTask({ title: 'QA the fix', assignee: 'agent:qa', callerAgent: 'agent:lead', callerClaudeId: 'cs_lead' });
+  const taskRun = mkRun({ agent: 'qa', claude_session_id: 'cs_lead_qa', spawned_by: `task:${tTask.id}`, title: 'Task: QA the fix' });
+  const ask = (caller, target, claude, q, status) => {
+    const run = mkRun({ agent: target, claude_session_id: claude, spawned_by: 'ask:lead', title: 'Ask ← lead' });
+    aos.db.prepare("INSERT INTO agent_asks (id,tenant,caller_run_id,caller_agent,target_agent,question,status,delegate_run_id,run_as,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run('ask_' + run, aos.tenant, caller, 'lead', target, q, status, run, alice.id, T0 + n * 60_000);
+    return run;
+  };
+  const ask1 = ask(callerA, 'customer-bot', 'cs_ask1', 'what did the customer   say?', 'answered');
+  const ask2 = ask(callerB, 'billing-ops', 'cs_ask2', 'was the invoice paid?', 'pending');
+  // a delegate that never got a transcript id folds to its own row id
+  const ask3 = ask(callerA, 'customer-bot', null, 'third question', 'failed');
+
+  const c = tm.sessionChain(callerA);
+  const by = (t) => c.nodes.find((x) => x.threadId === t);
+  assert(c.nodes.length === 5, 'root + task delegate + every ask_agent delegate', c.nodes.map((x) => x.agent).join());
+  assert(by('cs_ask1')?.parentThreadId === 'cs_lead' && by('cs_ask1').kind === 'answer', 'an ask delegate nests under its caller as an answer');
+  assert(by('cs_ask2')?.parentThreadId === 'cs_lead', 'asks from a LATER run of the same conversation are found too');
+  assert(by(ask3)?.depth === 1, 'a transcript-less delegate still appears');
+  assert(by('cs_ask1').question === 'what did the customer say?' && by('cs_ask1').askStatus === 'answered', 'the node carries the question + ask state');
+  assert(by('cs_ask1').taskId === undefined, 'an ask_agent delegate is not mistaken for a task (`ask:<agent>` ≠ `ask:<taskId>`)');
+  const order = c.nodes.slice(1).map((x) => x.sessionId);
+  assert(order.join() === [taskRun, ask1, ask2, ask3].join(), 'children render in start order across tasks and asks', order.join());
+  // seeded FROM the delegate, the walk climbs to the caller
+  const up = tm.sessionChain(ask2);
+  assert(up.rootThreadId === 'cs_lead' && up.nodes.length === 5, 'seeded from an ask delegate, the chain climbs to its caller');
+  // the collapsed sessions list gets the same edge
+  const listed = tm.listSessions(owner);
+  const lr = (id) => listed.find((r) => r.id === id);
+  assert(lr(ask1).parentThreadId === 'cs_lead' && lr(ask1).taskId === undefined, 'the list stamps an ask delegate under its caller, with no bogus taskId');
+  assert(lr(ask3).parentThreadId === 'cs_lead', 'including a transcript-less delegate');
+  const idx = aos.db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_agent_asks_%'").all().map((r) => r.name).sort();
+  assert(idx.join() === 'idx_agent_asks_caller,idx_agent_asks_delegate', 'the ask edge is indexed both ways', idx.join());
+}
+
 console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
 fs.rmSync(HOME, { recursive: true, force: true });
 process.exit(fail ? 1 : 0);

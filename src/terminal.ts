@@ -405,7 +405,8 @@ export interface Session {
    *  one entry with N runs instead of N unrelated entries. */
   threadId?: string;
   /** The `threadId` of the CALLER that delegated this run — set when the run was dispatched by a task
-   *  (`task:` / `ask:` / `poke:` provenance) whose `caller_claude_id` is known. Equal to `threadId` for a
+   *  (`task:` / `ask:` / `poke:` provenance) whose `caller_claude_id` is known, or is an `ask_agent`
+   *  delegate (`agent_asks.caller_run_id` → that run's conversation). Equal to `threadId` for a
    *  poke (a caller waking itself), which the console reads as "no parent". The one edge that turns the
    *  flat session list into the hand-off tree. */
   parentThreadId?: string;
@@ -552,6 +553,10 @@ export interface ChainNode {
   taskId?: string;
   taskTitle?: string;
   taskStatus?: TaskStatus;
+  /** An `ask_agent` delegate's question (clipped) and the ask's state — the label for a node that has no
+   *  task row behind it. */
+  question?: string;
+  askStatus?: 'pending' | 'answered' | 'failed';
   /** Set when an earlier sibling already handed the SAME work to the SAME agent — the duplicate
    *  re-dispatch a flat list hides. Holds the task id it repeats. */
   duplicateOf?: string;
@@ -576,7 +581,10 @@ const CHAIN_MAX_DEPTH = 8;
 const CHAIN_MAX_NODES = 60;
 
 /** The task id behind a dispatched run's provenance — `task:<id>` (working it), `ask:<id>` (quick answer
- *  on it), or `poke:<id>` (the caller woken because it finished). Undefined for every other origin. */
+ *  on it), or `poke:<id>` (the caller woken because it finished). Undefined for every other origin.
+ *  ⚠ `ask:` is overloaded: an `ask_agent` delegate is `ask:<callerAgent>` — not a task. Those are
+ *  resolved FIRST via `agent_asks` ({@link TerminalManager.askEdges}); only an unmatched `ask:` row is
+ *  read as a task id here. */
 function taskOfProvenance(spawnedBy: string | null | undefined): string | undefined {
   const m = spawnedBy ? /^(?:task|poke|ask):(.+)$/.exec(spawnedBy) : null;
   return m ? m[1] : undefined;
@@ -1887,14 +1895,19 @@ export class TerminalManager {
    * than per row — the sessions list is a hot poll path, and an N+1 here would cost a query per delegated
    * run. Rows with no `task:`/`poke:`/`ask:` provenance simply aren't in the map.
    */
-  private chainLinks(rows: SessionRow[]): Map<string, { taskId: string; parentThreadId?: string }> {
-    const out = new Map<string, { taskId: string; parentThreadId?: string }>();
+  private chainLinks(rows: SessionRow[]): Map<string, { taskId?: string; parentThreadId?: string }> {
+    const out = new Map<string, { taskId?: string; parentThreadId?: string }>();
+    // `ask_agent` delegates first — their `ask:<callerAgent>` provenance names an agent, not a task.
+    const asks = this.askEdges(rows.filter((r) => r.spawned_by?.startsWith('ask:')).map((r) => r.id));
+    for (const [runId, edge] of asks) out.set(runId, { parentThreadId: edge.callerThreadId });
+    const byTask = new Map<string, { taskId?: string; parentThreadId?: string }>();
     for (const r of rows) {
+      if (asks.has(r.id)) continue;
       const taskId = taskOfProvenance(r.spawned_by);
-      if (taskId) out.set(r.id, { taskId });
+      if (taskId) { const link = { taskId }; out.set(r.id, link); byTask.set(r.id, link); }
     }
-    if (!out.size) return out;
-    const ids = [...new Set([...out.values()].map((v) => v.taskId))];
+    if (!byTask.size) return out;
+    const ids = [...new Set([...byTask.values()].map((v) => v.taskId!))];
     const callers = new Map<string, string>();
     for (let i = 0; i < ids.length; i += 400) {
       const page = ids.slice(i, i + 400);
@@ -1904,7 +1917,30 @@ export class TerminalManager {
         if (c.caller_claude_id) callers.set(c.id, c.caller_claude_id);
       }
     }
-    for (const link of out.values()) link.parentThreadId = callers.get(link.taskId);
+    for (const link of byTask.values()) link.parentThreadId = callers.get(link.taskId!);
+    return out;
+  }
+
+  /**
+   * The `ask_agent` edge for a set of run ids: delegate run → its ask and the CALLER's conversation
+   * (`agent_asks.caller_run_id`, folded to that run's `claude_session_id`). An ask_agent delegate has no
+   * task row — its provenance is `ask:<callerAgent>` — so without this the chain and the collapsed list
+   * lose every quick question one agent put to another. Batched (chunked under SQLite's variable cap):
+   * the sessions list calls it on its hot poll path.
+   */
+  private askEdges(runIds: string[]): Map<string, { askId: string; callerThreadId?: string; question: string; status: string }> {
+    const out = new Map<string, { askId: string; callerThreadId?: string; question: string; status: string }>();
+    const ids = [...new Set(runIds.filter(Boolean))];
+    for (let i = 0; i < ids.length; i += 400) {
+      const page = ids.slice(i, i + 400);
+      for (const a of this.db
+        .prepare(`SELECT a.id, a.delegate_run_id, a.question, a.status, COALESCE(c.claude_session_id, a.caller_run_id) AS caller_thread
+                  FROM agent_asks a LEFT JOIN term_sessions c ON c.id = a.caller_run_id
+                  WHERE a.delegate_run_id IN (${page.map(() => '?').join(',')})`)
+        .all<{ id: string; delegate_run_id: string; question: string; status: string; caller_thread: string | null }>(...page)) {
+        out.set(a.delegate_run_id, { askId: a.id, callerThreadId: a.caller_thread ?? undefined, question: a.question, status: a.status });
+      }
+    }
     return out;
   }
 
@@ -1942,7 +1978,8 @@ export class TerminalManager {
    *   - a **conversation** is every run sharing a `claude_session_id` — a poke-back RESUMES a transcript,
    *     so one conversation routinely spans several rows;
    *   - the **chain** is the delegation tree over conversations: `tasks.caller_claude_id` (the caller)
-   *     → the runs dispatched for that task (`task:` / `ask:` provenance).
+   *     → the runs dispatched for that task (`task:` / `ask:` provenance), plus every `ask_agent`
+   *     delegate a run of the conversation spawned (`agent_asks.caller_run_id` → `delegate_run_id`).
    *
    * We walk UP from `sessionId` to the chain root, then DOWN over every descendant, folding each
    * conversation into a single node (runs counted, cost summed, newest run representative). Sibling
@@ -1971,10 +2008,14 @@ export class TerminalManager {
       threadRows.set(threadId, out);
       return out;
     };
-    // The task a conversation was dispatched FOR (its first `task:`/`ask:` run), and from it the caller
-    // conversation one level up.
-    const dispatchOf = (rows: SessionRow[]): { taskId: string; callerThreadId?: string } | undefined => {
+    // The task a conversation was dispatched FOR (its first `task:`/`ask:` run) — or the `ask_agent` call
+    // that spawned it — and from it the caller conversation one level up.
+    type Dispatch = { taskId?: string; callerThreadId?: string; ask?: { question: string; status: string } };
+    const dispatchOf = (rows: SessionRow[]): Dispatch | undefined => {
+      const asks = this.askEdges(rows.filter((r) => r.spawned_by?.startsWith('ask:')).map((r) => r.id));
       for (const r of rows) {
+        const ask = asks.get(r.id);
+        if (ask) return { callerThreadId: ask.callerThreadId, ask: { question: ask.question, status: ask.status } };
         const taskId = taskOfProvenance(r.spawned_by);
         if (!taskId || r.spawned_by?.startsWith('poke:')) continue; // a poke resumes the CALLER, not a delegate
         const t = this.db.prepare('SELECT caller_claude_id FROM tasks WHERE id = ?').get<{ caller_claude_id: string | null }>(taskId);
@@ -2006,7 +2047,7 @@ export class TerminalManager {
       seen.add(threadId);
       const latest = rows[rows.length - 1];
       const dispatch = dispatchOf(rows);
-      const task = dispatch ? this.os.tasks.get(dispatch.taskId) : undefined;
+      const task = dispatch?.taskId ? this.os.tasks.get(dispatch.taskId) : undefined;
       // Cost is per-TRANSCRIPT and cumulative: every resumed row re-parses the same conversation and
       // stores the running total, so the conversation's cost is the largest of them — summing would
       // multiply one bill by the number of resumes.
@@ -2043,21 +2084,34 @@ export class TerminalManager {
         taskId: dispatch?.taskId,
         taskTitle: task?.title,
         taskStatus: task?.status,
+        question: dispatch?.ask ? clipText(dispatch.ask.question, 240) : undefined,
+        askStatus: dispatch?.ask ? (dispatch.ask.status as ChainNode['askStatus']) : undefined,
         pending,
       });
-      // Children: every task this conversation delegated, and the runs dispatched for it.
+      // Children: every task this conversation delegated (and the runs dispatched for it), plus every
+      // `ask_agent` delegate any of its runs spawned — merged in start order so the rail reads as it
+      // happened rather than tasks-then-asks.
+      const children: SessionRow[] = [];
       const tasks = this.db
         .prepare('SELECT id FROM tasks WHERE caller_claude_id = ? ORDER BY created_at ASC')
         .all<{ id: string }>(threadId);
       for (const t of tasks) {
-        const runs = this.db
+        children.push(...this.db
           .prepare("SELECT * FROM term_sessions WHERE spawned_by = ? OR spawned_by = ? ORDER BY created_at ASC")
-          .all<SessionRow>(`task:${t.id}`, `ask:${t.id}`);
-        for (const child of runs) {
-          const childThread = threadOf(child);
-          if (childThread === threadId) continue; // defensive: never nest a conversation under itself
-          visit(childThread, depth + 1, threadId);
-        }
+          .all<SessionRow>(`task:${t.id}`, `ask:${t.id}`));
+      }
+      const runIds = rows.map((r) => r.id);
+      if (runIds.length) {
+        children.push(...this.db
+          .prepare(`SELECT s.* FROM agent_asks a JOIN term_sessions s ON s.id = a.delegate_run_id
+                    WHERE a.caller_run_id IN (${runIds.map(() => '?').join(',')}) ORDER BY a.created_at ASC`)
+          .all<SessionRow>(...runIds));
+      }
+      children.sort((a, b) => a.created_at - b.created_at);
+      for (const child of children) {
+        const childThread = threadOf(child);
+        if (childThread === threadId) continue; // defensive: never nest a conversation under itself
+        visit(childThread, depth + 1, threadId);
       }
     };
     visit(rootThread, 0);
