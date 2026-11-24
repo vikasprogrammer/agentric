@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.472.4] - 2026-11-24
+### Fixed
+- **Session terminal scrolled far too fast on a trackpad.** The console's wheel bridge turned every
+  wheel event into at least one wheel event for claude's TUI, and a trackpad emits a stream of tiny
+  2–20px events (~60/s, plus momentum), each of which claude scrolls up to 3 lines — so a light flick
+  flew through hundreds of lines. Wheel travel now accumulates and one event is forwarded per 50px
+  (~2 per mouse-wheel click, unchanged feel there), a direction change drops the remainder, and touch
+  drags send one event per 3 lines of finger travel so the content tracks the finger.
+  **For users:** Scrolling a session in the browser terminal is now much slower and smoother on a trackpad.
+
 ## [0.472.3] - 2026-11-23
 ### Fixed
 - **Claude Code's diff side panel no longer opens over the browser terminal with no way to close it.**
