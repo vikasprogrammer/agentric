@@ -202,7 +202,7 @@ export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: Run
 export type DmPresence = 'working' | 'online' | 'away'
 /** One thing an agent did (`do`) or noted (`say`) on the way to a reply — hidden until expanded. */
 export interface DmStep { t: 'say' | 'do'; text: string; detail?: string; status?: 'running' | 'ok' | 'error' }
-export interface DmMessage { seq: number; authorKind: 'member' | 'agent'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** client-only: sent, not yet stored */ pending?: boolean }
+export interface DmMessage { seq: number; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** client-only: sent, not yet stored */ pending?: boolean }
 export interface DmContact { agent: string; roomId: string; description: string; icon?: string; presence: DmPresence; lastText?: string; lastFromMe?: boolean; lastAt: number; unread: number; sessionId: string | null }
 export interface DmDirectoryAgent { id: string; description: string; icon?: string; category?: string }
 export interface DmThread { agent: string; roomId: string; sessionId: string | null; presence: DmPresence; messages: DmMessage[]; typing: { label: string; steps: DmStep[]; since?: number } | null; stalled?: boolean; error?: string }
