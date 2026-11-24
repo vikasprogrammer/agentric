@@ -13,12 +13,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
+import { ChevronRight, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, MessageSquareReply, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { api, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
+import { chatSocket } from '@/lib/chat-socket'
+import { api, type NotificationPrefs, type NotifyLevel, type ThreadView, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
 
 /** Search people/agents by NAME first; a description match only ranks after every name match — otherwise
  *  typing "engin" lists half the fleet (anything whose blurb says "engineer") above the Engineer. */
@@ -110,12 +111,15 @@ function TypingDots() {
 
 /** One row of the conversation. Consecutive messages from the same author within a few minutes are
  *  GROUPED: only the first carries the avatar + name, the rest sit flush under it with a hover time. */
-function MessageRow({ m, grouped, name, avatar }: { m: DmMessage; grouped: boolean; name: string; avatar: ReactNode }) {
+function MessageRow({ m, grouped, name, avatar, onThread }: { m: DmMessage; grouped: boolean; name: string; avatar: ReactNode; /** open this message's thread (absent inside a thread) */ onThread?: () => void }) {
   const body = m.authorKind === 'agent'
     ? <div className="md max-w-none text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]}>{m.body}</ReactMarkdown></div>
     : <div className="whitespace-pre-wrap break-words text-sm">{m.body}</div>
   return (
-    <div className={`group flex gap-3 px-5 hover:bg-muted/40 ${grouped ? 'py-0.5' : 'pb-0.5 pt-2'} ${m.pending ? 'opacity-60' : ''}`}>
+    <div className={`group relative flex gap-3 px-5 hover:bg-muted/40 ${grouped ? 'py-0.5' : 'pb-0.5 pt-2'} ${m.pending ? 'opacity-60' : ''}`}>
+      {onThread && !m.pending && (
+        <button onClick={onThread} title="Reply in thread" aria-label="Reply in thread" className="absolute -top-2 right-5 hidden items-center gap-1 rounded-md border bg-background px-1.5 py-1 text-[11px] text-muted-foreground shadow-sm hover:text-foreground group-hover:flex"><MessageSquareReply className="h-3.5 w-3.5" /> Reply</button>
+      )}
       <div className="w-9 shrink-0">
         {grouped
           ? <span className="hidden pt-1 text-right text-[10px] leading-5 text-muted-foreground group-hover:block">{clock(m.createdAt)}</span>
@@ -132,6 +136,12 @@ function MessageRow({ m, grouped, name, avatar }: { m: DmMessage; grouped: boole
         {body}
         {m.files && <div className="mt-1 flex flex-wrap gap-1">{m.files.map((f, i) => <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"><Paperclip className="h-3 w-3" />{f}</span>)}</div>}
         {m.steps && <Steps steps={m.steps} />}
+        {onThread && !!m.replies && (
+          <button onClick={onThread} className="mt-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-xs font-medium text-primary hover:bg-primary/10">
+            <MessageSquareReply className="h-3.5 w-3.5" /> {m.replies} {m.replies === 1 ? 'reply' : 'replies'}
+            {m.lastReplyAt && <span className="font-normal text-muted-foreground">· last {shortWhen(m.lastReplyAt)}</span>}
+          </button>
+        )}
       </div>
     </div>
   )
@@ -185,7 +195,8 @@ type Target = { kind: 'dm'; contact: DmContact } | { kind: 'room'; room: RoomSum
 /** Both kinds of thread, in the one shape the conversation renders. */
 interface View {
   messages: DmMessage[]
-  typing: { agent: string; label: string; steps: DmStep[] }[]
+  typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null }[]
+  threadView?: ThreadView | null
   sessionIds: string[]
   stalled: boolean
   working: boolean
@@ -198,8 +209,9 @@ interface View {
   peopleTyping: string[]
 }
 
-const roomView = (r: RoomThread): View => ({ messages: r.messages, typing: r.typing, sessionIds: r.sessionIds, stalled: false, working: r.typing.length > 0, room: r.room, cardSessionIds: r.cardSessionIds ?? r.sessionIds, jobs: r.jobs ?? [], handoffs: r.handoffs ?? [], peopleTyping: r.peopleTyping ?? [] })
+const roomView = (r: RoomThread): View => ({ threadView: r.threadView, messages: r.messages, typing: r.typing, sessionIds: r.sessionIds, stalled: false, working: r.typing.length > 0, room: r.room, cardSessionIds: r.cardSessionIds ?? r.sessionIds, jobs: r.jobs ?? [], handoffs: r.handoffs ?? [], peopleTyping: r.peopleTyping ?? [] })
 const dmView = (id: string, r: DmThread): View => ({
+  threadView: r.threadView,
   messages: r.messages, typing: r.typing ? [{ agent: id, ...r.typing }] : [], sessionIds: r.sessionId ? [r.sessionId] : [], stalled: !!r.stalled, working: r.presence === 'working',
   cardSessionIds: r.cardSessionIds ?? (r.sessionId ? [r.sessionId] : []), jobs: r.jobs ?? [], handoffs: r.handoffs ?? [], peopleTyping: [],
 })
@@ -395,7 +407,140 @@ function RoomDetails({ me, room, people, agents, renderIcon, onChanged, onLeft, 
   )
 }
 
-function Conversation({ me, target, messages, people, agents, renderIcon, renderCard, onChanged, onRemoved, onOpenSession, pushed, connected, onTyping }: {
+/** A thread, beside the conversation: the message it hangs off, the replies under it, and a reply box. */
+function ThreadPanel({ view, typing, nameOf, avatarOf, onClose, onSend }: {
+  view: ThreadView | null | undefined
+  typing: { agent: string; label: string }[]
+  nameOf: (m: DmMessage) => string
+  avatarOf: (m: DmMessage) => ReactNode
+  onClose: () => void
+  /** Returns an error message, or nothing on success. */
+  onSend: (text: string) => Promise<string | undefined>
+}) {
+  const [draft, setDraft] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const count = view?.replies.length ?? 0
+  useEffect(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [count, typing.length])
+  useEffect(() => { inputRef.current?.focus() }, [view?.root.seq])
+  const submit = async () => {
+    const text = draft.trim()
+    if (!text || busy) return
+    setBusy(true); setErr(''); setDraft('')
+    const e = await onSend(text)
+    setBusy(false)
+    if (e) { setErr(e); setDraft(text) }
+  }
+  return (
+    <aside className="flex w-[26rem] shrink-0 flex-col border-l">
+      <div className="flex shrink-0 items-center justify-between border-b px-4 py-2.5">
+        <span className="flex items-center gap-2 text-sm font-semibold"><MessageSquareReply className="h-4 w-4" /> Thread</span>
+        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={onClose} aria-label="Close thread"><X className="h-4 w-4" /></Button>
+      </div>
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-2">
+        {view === undefined && <p className="px-4 pt-6 text-center text-sm text-muted-foreground">Loading…</p>}
+        {view === null && <p className="px-4 pt-6 text-center text-sm text-muted-foreground">This thread no longer exists.</p>}
+        {view && (
+          <>
+            <MessageRow m={view.root} grouped={false} name={nameOf(view.root)} avatar={avatarOf(view.root)} />
+            <div className="my-2 flex items-center gap-3 px-5 text-[11px] text-muted-foreground"><span>{count} {count === 1 ? 'reply' : 'replies'}</span><div className="h-px flex-1 bg-border" /></div>
+            {view.replies.map((m, i) => {
+              const prev = view.replies[i - 1]
+              const grouped = !!prev && prev.authorKind === m.authorKind && prev.authorId === m.authorId && m.createdAt - prev.createdAt < 5 * 60_000
+              return <MessageRow key={m.seq} m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} />
+            })}
+          </>
+        )}
+      </div>
+      <div className="min-h-[1.25rem] shrink-0 px-4">
+        {typing.map((t) => <div key={t.agent} className="flex items-center gap-2 pb-1 text-xs text-muted-foreground"><TypingDots /><span><span className="font-medium text-foreground">{prettyAgent(t.agent)}</span> is replying…</span></div>)}
+      </div>
+      <div className="shrink-0 px-4 pb-4">
+        <div className="flex items-end gap-2 rounded-xl border bg-background p-1.5 focus-within:border-primary/60">
+          <Textarea ref={inputRef} value={draft} onChange={(e) => setDraft(e.target.value)} rows={1} placeholder="Reply in thread"
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit() } }}
+            className="max-h-40 min-h-[36px] resize-none border-0 bg-transparent text-sm shadow-none focus-visible:ring-0" />
+          <Button size="icon" className="h-7 w-7 shrink-0" disabled={!draft.trim() || busy || !view} onClick={submit} aria-label="Send reply"><Send className="h-3.5 w-3.5" /></Button>
+        </div>
+        {err && <p className="pt-1 text-xs text-destructive">{err}</p>}
+      </div>
+    </aside>
+  )
+}
+
+function chime() {
+  try {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    const ctx = new Ctx(), o = ctx.createOscillator(), g = ctx.createGain()
+    o.type = 'sine'; o.frequency.value = 880
+    g.gain.setValueAtTime(0.0001, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35)
+    o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.4)
+    o.onended = () => { void ctx.close() }
+  } catch { /* no audio — fine */ }
+}
+
+interface ChatToast { id: number; key: string; title: string; text: string; mention: boolean }
+
+/**
+ * App-wide message notifications — mounted once by the console, on every page. Listens to the sidebar
+ * the chat socket pushes and, when a conversation gains something you haven't seen, tells you: a toast
+ * (click to open), a chime if you turned sound on, and a desktop notification when the tab is in the
+ * background. Respects each conversation's level (`all` / `mentions` / `mute`), your toast + sound
+ * preferences, and stays quiet about the conversation you are looking at.
+ */
+export function ChatNotifier({ me, openKey, onOpen, onUnread }: { me: Member; /** the conversation on screen right now ('' = none) */ openKey: string; onOpen: (key: string) => void; onUnread: (n: number) => void }) {
+  const [toasts, setToasts] = useState<ChatToast[]>([])
+  const prefs = useRef<NotificationPrefs | null>(null)
+  const seen = useRef<Map<string, { unread: number; mentions: number }> | null>(null)
+  const openRef = useRef(openKey)
+  openRef.current = openKey
+  const n = useRef(0)
+  useEffect(() => { api.notificationPrefs().then((p) => { if (!(p as { error?: string }).error) prefs.current = p }).catch(() => {}) }, [])
+  useEffect(() => chatSocket.subscribe((m) => {
+    if (m.t !== 'list' || !m.data) return
+    const d = m.data as { contacts: DmContact[]; rooms?: RoomSummary[] }
+    const rows = [
+      ...d.contacts.map((c) => ({ key: c.agent, title: prettyAgent(c.agent), text: c.lastText ?? '', unread: c.unread, mentions: 0, level: c.notify ?? 'all' })),
+      ...(d.rooms ?? []).map((r) => ({ key: r.id, title: `${r.lastAuthor ? r.lastAuthor + ' · ' : ''}${r.name ? '#' + r.name : roomTitle(r, me.id)}`, text: r.lastText ?? '', unread: r.unread, mentions: r.mentions ?? 0, level: r.notify ?? 'all' })),
+    ]
+    const looking = document.visibilityState === 'visible' ? openRef.current : ''
+    onUnread(rows.reduce((t, r) => t + (r.key === looking || r.level === 'mute' ? 0 : r.unread), 0))
+    const prev = seen.current
+    const next = new Map(rows.map((r) => [r.key, { unread: r.unread, mentions: r.mentions }]))
+    seen.current = next
+    if (!prev) return // the first sidebar is the baseline, not news
+    for (const r of rows) {
+      const was = prev.get(r.key) ?? { unread: 0, mentions: 0 }
+      const mention = r.mentions > was.mentions
+      if (r.unread <= was.unread && !mention) continue
+      if (r.key === looking || r.level === 'mute' || (r.level === 'mentions' && !mention)) continue
+      const p = prefs.current
+      if (p?.sound) chime()
+      if (document.visibilityState !== 'visible' && 'Notification' in window && Notification.permission === 'granted') {
+        try { const note = new Notification(mention ? `${r.title} mentioned you` : r.title, { body: r.text, tag: `agentric-chat-${r.key}` }); note.onclick = () => { window.focus(); onOpen(r.key); note.close() } } catch { /* blocked */ }
+      }
+      if (p && !p.toasts) continue
+      const id = ++n.current
+      setToasts((t) => [...t.filter((x) => x.key !== r.key), { id, key: r.key, title: r.title, text: r.text, mention }].slice(-3))
+      setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 7000)
+    }
+  }), [])
+  if (toasts.length === 0) return null
+  return (
+    <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 flex-col gap-2">
+      {toasts.map((t) => (
+        <button key={t.id} onClick={() => { onOpen(t.key); setToasts((x) => x.filter((y) => y.id !== t.id)) }} className="pointer-events-auto rounded-xl border bg-popover p-3 text-left shadow-lg transition hover:border-primary">
+          <div className="flex items-center gap-1.5 text-sm font-semibold">{t.mention ? <AtSign className="h-3.5 w-3.5 text-destructive" /> : <Bell className="h-3.5 w-3.5 text-muted-foreground" />}<span className="min-w-0 flex-1 truncate">{t.title}</span></div>
+          <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{t.text}</div>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Conversation({ me, target, messages, people, agents, renderIcon, renderCard, onChanged, onRemoved, onOpenSession, pushed, connected, onTyping, openThread, onThread, notify }: {
   me: Member
   target: Target
   messages: Msg[]
@@ -411,6 +556,11 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   connected: boolean
   /** Tell the others in the room that I'm typing (sent over the socket). */
   onTyping: () => void
+  /** The thread panel: which message's thread is open (0 = none), and how to open/close one. */
+  openThread: number
+  onThread: (seq: number) => void
+  /** My notification level for this conversation. */
+  notify: NotifyLevel
 }) {
   const isRoom = target.kind === 'room'
   const id = isRoom ? target.room.id : target.contact.agent
@@ -448,11 +598,11 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   const load = async () => {
     const read = document.visibilityState === 'visible'
     if (isRoom) {
-      const r = await api.roomThread(id, { read })
+      const r = await api.roomThread(id, { read, thread: openThread || undefined })
       if (r.error) { if (/not in this room|not found/.test(r.error)) onRemoved(); return }
       setView(roomView(r))
     } else {
-      const r = await api.dmThread(id, { read })
+      const r = await api.dmThread(id, { read, thread: openThread || undefined })
       if (r.error) return
       setView(dmView(id, r))
     }
@@ -471,7 +621,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
     // With the socket up, this is only a safety net.
     const t = setInterval(tick, connected ? 20_000 : live ? 900 : 3000)
     return () => { stop = true; clearInterval(t) }
-  }, [id, live, connected])
+  }, [id, live, connected, openThread])
 
   const all = useMemo(() => {
     const server = [...older, ...(view?.messages ?? [])]
@@ -629,6 +779,12 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
                   <UserMinus className="mr-2 h-3.5 w-3.5" /> Remove from contacts
                 </DropdownMenuItem>
               )}
+              {(['all', 'mentions', 'mute'] as NotifyLevel[]).map((lv) => (
+                <DropdownMenuItem key={lv} onClick={async () => { await api.chatNotify(id, lv); onChanged() }}>
+                  {lv === 'mute' ? <BellOff className="mr-2 h-3.5 w-3.5" /> : lv === 'mentions' ? <AtSign className="mr-2 h-3.5 w-3.5" /> : <Bell className="mr-2 h-3.5 w-3.5" />}
+                  {lv === 'all' ? 'Notify me: every message' : lv === 'mentions' ? 'Notify me: only @mentions' : 'Mute this conversation'}{notify === lv ? '  ✓' : ''}
+                </DropdownMenuItem>
+              ))}
               {onOpenSession && sessionIds.map((sid, i) => (
                 <DropdownMenuItem key={sid} onClick={() => onOpenSession(sid)}>
                   <TerminalSquare className="mr-2 h-3.5 w-3.5" /> Open the session behind this{sessionIds.length > 1 ? ` (${i + 1})` : ''}
@@ -680,7 +836,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
                   <div className="my-3 flex items-center gap-3 px-5 text-[11px] text-muted-foreground">
                     <div className="h-px flex-1 border-t border-dashed" />{m.body === 'New session' && <RotateCcw className="h-3 w-3" />} {m.body} · {clock(m.createdAt)}<div className="h-px flex-1 border-t border-dashed" />
                   </div>
-                ) : <MessageRow m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} />}
+                ) : <MessageRow m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} onThread={m.seq > 0 ? () => onThread(m.seq) : undefined} />}
                 {failed && (
                   <div className="flex items-center gap-2 pl-[4.25rem] text-xs text-destructive">
                     <CircleAlert className="h-3.5 w-3.5" /> {failed}
@@ -718,6 +874,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
           )}
           {(view?.typing ?? []).map((t, i) => (
             <div key={t.agent} className="pb-1">
+              {t.thread ? <button onClick={() => onThread(t.thread!)} className="mb-0.5 text-[10px] text-primary hover:underline">in a thread →</button> : null}
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <TypingDots />
                 <span><span className="font-medium text-foreground">{prettyAgent(t.agent)}</span> is {t.label === 'Writing' ? 'writing…' : t.label === 'Thinking' ? 'thinking…' : 'working on it…'}</span>
@@ -789,7 +946,14 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
           )}
         </div>
       </div>
-      {isRoom && details && <RoomDetails me={me} room={room!} people={people} agents={agents} renderIcon={renderIcon} onChanged={() => { load(); onChanged() }} onLeft={onRemoved} onClose={() => setDetails(false)} />}
+      {openThread > 0 && (
+        <ThreadPanel
+          view={view?.threadView} typing={(view?.typing ?? []).filter((t) => t.thread === openThread)} nameOf={nameOf} avatarOf={avatarOf}
+          onClose={() => onThread(0)}
+          onSend={async (text) => { const r = isRoom ? await api.roomSend(id, text, undefined, openThread) : await api.dmSend(id, text, undefined, openThread); if (!r.error) { await load(); onChanged() } return r.error }}
+        />
+      )}
+      {isRoom && details && openThread === 0 && <RoomDetails me={me} room={room!} people={people} agents={agents} renderIcon={renderIcon} onChanged={() => { load(); onChanged() }} onLeft={onRemoved} onClose={() => setDetails(false)} />}
     </div>
   )
 }
@@ -824,38 +988,24 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
   }
   const refresh = async () => { const r = await api.dmList(); if (!r.error) applyList(r) }
 
-  // The chat socket: the server pushes the sidebar and the open conversation when they change. If it
-  // can't connect (a proxy that drops upgrades) the page simply keeps polling, as it always did.
-  const [connected, setConnected] = useState(false)
+  // The chat socket (shared with the app-wide notifier): the server pushes the sidebar and the open
+  // conversation when they change. If it can't connect (a proxy that drops upgrades) the page simply
+  // keeps polling, as it always did.
+  const [connected, setConnected] = useState(chatSocket.isConnected())
   const [pushed, setPushed] = useState<PushedThread | null>(null)
-  const wsRef = useRef<WebSocket | null>(null)
+  const [openThread, setOpenThread] = useState(0)
   const watchKey = selected && selected !== 'add' && selected !== 'new-room' ? selected : ''
-  const tell = () => { const ws = wsRef.current; const k = selectedRef.current; if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ watch: k && k !== 'add' && k !== 'new-room' ? k : '', visible: document.visibilityState === 'visible' })) }
   useEffect(() => {
-    let dead = false, retry = 0
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const open = () => {
-      if (dead) return
-      let ws: WebSocket
-      try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/chat/ws`) } catch { return }
-      wsRef.current = ws
-      ws.onopen = () => { retry = 0; setConnected(true); tell() }
-      ws.onmessage = (e) => {
-        let m: { t?: string; key?: string; data?: unknown; error?: string }
-        try { m = JSON.parse(String(e.data)) } catch { return }
-        if (m.t === 'list' && m.data) applyList(m.data as ListData)
-        else if (m.t === 'thread' && m.key) setPushed({ key: m.key, data: m.data as PushedThread['data'], error: m.error })
-      }
-      ws.onclose = () => { if (wsRef.current === ws) wsRef.current = null; setConnected(false); if (!dead) timer = setTimeout(open, Math.min(30_000, 1500 * 2 ** retry++)) }
-      ws.onerror = () => { try { ws.close() } catch { /* already closing */ } }
-    }
-    open()
-    const vis = () => tell()
-    document.addEventListener('visibilitychange', vis)
-    return () => { dead = true; if (timer) clearTimeout(timer); document.removeEventListener('visibilitychange', vis); try { wsRef.current?.close() } catch { /* gone */ } }
+    const offStatus = chatSocket.onStatus(setConnected)
+    const off = chatSocket.subscribe((m) => {
+      if (m.t === 'list' && m.data) applyList(m.data as ListData)
+      else if (m.t === 'thread' && m.key) setPushed({ key: m.key, data: m.data as PushedThread['data'], error: m.error })
+    })
+    return () => { off(); offStatus(); chatSocket.watch('') }
   }, [])
-  useEffect(() => { tell() }, [watchKey])
-  const sayTyping = () => { const ws = wsRef.current; if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ typing: true })) }
+  useEffect(() => { setOpenThread(0) }, [watchKey])
+  useEffect(() => { chatSocket.watch(watchKey, openThread) }, [watchKey, openThread, connected])
+  const sayTyping = () => chatSocket.typing()
 
   useEffect(() => {
     refresh()
@@ -863,6 +1013,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
     return () => clearInterval(t)
   }, [selected, connected])
 
+  const [desktop, setDesktop] = useState<NotificationPermission | 'unsupported'>(() => ('Notification' in window ? Notification.permission : 'unsupported'))
   const adding = selected === 'add'
   const creating = selected === 'new-room'
   const activeContact = contacts?.find((c) => c.agent === selected)
@@ -896,7 +1047,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
   ].sort((a, b) => b.at - a.at)
   const total = (contacts?.length ?? 0) + rooms.length
 
-  const item = (key: string, glyph: ReactNode, title: string, preview: ReactNode, at: number, unreadCount: number, hasPreview: boolean) => {
+  const item = (key: string, glyph: ReactNode, title: string, preview: ReactNode, at: number, unreadCount: number, hasPreview: boolean, level: NotifyLevel = 'all', mentions = 0) => {
     const on = key === selected
     const unread = !on && unreadCount > 0
     return (
@@ -909,7 +1060,9 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
           </span>
           <span className="flex items-center gap-1">
             <span className={`min-w-0 flex-1 truncate text-xs ${unread ? 'text-foreground' : 'text-muted-foreground'}`}>{preview}</span>
-            {unread && <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{unreadCount}</span>}
+            {level === 'mute' && <BellOff className="h-3 w-3 shrink-0 text-muted-foreground/70" />}
+            {!on && mentions > 0 && <span className="flex h-4 shrink-0 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-white">@{mentions}</span>}
+            {unread && level !== 'mute' && mentions === 0 && <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{unreadCount}</span>}
           </span>
         </span>
       </button>
@@ -917,7 +1070,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
   }
   const roomItem = (r: RoomSummary) => item(r.id, <RoomGlyph room={r} />, roomTitle(r, me.id),
     r.agents.some((a) => a.presence === 'working') ? <span className="italic">working…</span> : r.lastText ? `${r.lastAuthor ? r.lastAuthor + ': ' : ''}${r.lastText}` : `${r.members.length + r.agents.length} in here`,
-    r.lastAt, r.unread, !!r.lastText)
+    r.lastAt, r.unread, !!r.lastText, r.notify ?? 'all', r.mentions ?? 0)
   const sectionHead = (label: string, onPlus: () => void, plusTitle: string) => (
     <div className="flex items-center justify-between px-3 pb-1 pt-3">
       <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
@@ -941,7 +1094,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
             {direct.map((d) => d.contact
               ? item(d.contact.agent, <Avatar agent={d.contact.agent} icon={d.contact.icon} renderIcon={renderIcon} presence={d.contact.presence} />, prettyAgent(d.contact.agent),
                   d.contact.presence === 'working' ? <span className="italic">working…</span> : d.contact.lastText ? `${d.contact.lastFromMe ? 'You: ' : ''}${d.contact.lastText}` : 'Say hello',
-                  d.contact.lastAt, d.contact.unread, !!d.contact.lastText)
+                  d.contact.lastAt, d.contact.unread, !!d.contact.lastText, d.contact.notify ?? 'all')
               : roomItem(d.room!))}
             {contacts && direct.length === 0 && <p className="px-2 pt-1 text-xs text-muted-foreground">No contacts yet. Add an agent to start talking.</p>}
             <button onClick={() => onSelect('add')} className={`mt-1 flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground ${adding ? 'bg-muted text-foreground' : ''}`}>
@@ -950,6 +1103,11 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
             </button>
           </div>
         </div>
+        {desktop === 'default' && (
+          <button onClick={async () => setDesktop(await Notification.requestPermission())} className="flex shrink-0 items-center gap-2 border-t px-3 py-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground">
+            <Bell className="h-3.5 w-3.5 shrink-0" /> Turn on desktop notifications
+          </button>
+        )}
       </aside>
 
       {/* Conversation / directory / new room */}
@@ -957,9 +1115,9 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
         {creating ? (
           <NewRoom me={me} people={people} agents={allAgents} renderIcon={renderIcon} onCreated={async (id) => { await refresh(); onSelect(id) }} onClose={() => onSelect('')} />
         ) : activeRoom ? (
-          <Conversation key={activeRoom.id} me={me} target={{ kind: 'room', room: activeRoom }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
+          <Conversation key={activeRoom.id} notify={activeRoom.notify ?? 'all'} me={me} target={{ kind: 'room', room: activeRoom }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} openThread={openThread} onThread={setOpenThread} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
         ) : activeContact && !adding ? (
-          <Conversation key={activeContact.agent} me={me} target={{ kind: 'dm', contact: activeContact }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
+          <Conversation key={activeContact.agent} notify={activeContact.notify ?? 'all'} me={me} target={{ kind: 'dm', contact: activeContact }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} openThread={openThread} onThread={setOpenThread} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
         ) : contacts === null ? (
           <p className="pt-16 text-center text-sm text-muted-foreground">Loading…</p>
         ) : selected && isRoomId(selected) ? (

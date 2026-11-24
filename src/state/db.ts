@@ -1548,6 +1548,11 @@ function migrate(db: Db): void {
   // newer session, so every session a DM ever used stays out of the Sessions lists.
   addColumn(db, 'term_sessions', 'dm_room', 'TEXT');
   addColumn(db, 'chat_rooms', 'name', 'TEXT');
+  addColumn(db, 'chat_messages', 'thread_id', 'INTEGER');        // a reply: the seq of the message it replies under (NULL = main stream)
+  addColumn(db, 'chat_messages', 'mentions', 'TEXT');            // ',memberId,memberId,' — the PEOPLE this message @mentions
+  db.exec('CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages (room_id, thread_id)');
+  addColumn(db, 'chat_reads', 'notify', 'TEXT');                 // this member's level for the room: all | mentions | mute (NULL = all)
+  addColumn(db, 'chat_reads', 'pinged_at', 'INTEGER');           // an away-ping went to this member and hasn't been read yet
   addColumn(db, 'chat_rooms', 'pinged_at', 'INTEGER');           // dm: an away-ping went out and hasn't been read yet
   addColumn(db, 'chat_participants', 'hop', 'INTEGER NOT NULL DEFAULT 0'); // agent lane: hops from a human in the turn it is answering
   addColumn(db, 'chat_participants', 'acting', 'TEXT');          // agent lane: the member that turn acts for // kind 'room': its name; NULL = an unnamed group

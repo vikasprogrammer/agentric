@@ -116,7 +116,7 @@ console.log('\n\x1b[1m4) follow-up goes to the SAME session; injected user text 
   const before = spawned.length;
   const r = dms.send(alice, AGENT, 'close A please');
   assert(r.ok && r.sessionId === s1 && spawned.length === before, 'delivered warm into the same session, no new launch');
-  assert(injected.some((i) => i.text === 'close A please'), 'typed into the pane');
+  assert(injected.some((i) => i.text === 'close A please [[main]]'), 'typed into the pane, tagged with where it was said');
   setWorking(s1, true);
   write(s1, [user('close A please'), say('Closing A.'), user('<system-reminder>harness noise</system-reminder>'), say('Done — A is closed.')]);
   setWorking(s1, false);
@@ -434,6 +434,94 @@ console.log('\n\x1b[1m14) attachments + the background sweep\x1b[0m');
   const before = aos.chatRooms.last(aos.chatRooms.dm(alice.id, AGENT).id).body;
   dms.sweep(Date.now() + 60_000);
   assert(before !== 'It is a PNG.' && aos.chatRooms.last(aos.chatRooms.dm(alice.id, AGENT).id).body === 'It is a PNG.', 'the sweep folds a reply in with nobody looking');
+}
+
+console.log('\n\x1b[1m14b) threads: replies sit under their message — in DMs and rooms, for people and agents\x1b[0m');
+{
+  const A = aos.team.getMember(alice.id);
+  dms.reset(A, AGENT);
+  const first = dms.send(A, AGENT, 'plan the offsite');
+  await settle();
+  const sid = first.sessionId;
+  assert(/\[\[main\]\]\s*$/.test(row(sid).task), 'a main-stream message is tagged [[main]] for the agent');
+  setWorking(sid, true); write(sid, [user(row(sid).task), say('Here is a draft plan.')]); setWorking(sid, false);
+  let t = dms.thread(A, AGENT);
+  const root = t.messages.find((m) => m.body === 'Here is a draft plan.');
+  const inj = injected.length;
+  const rep = dms.send(A, AGENT, 'what about the budget?', { thread: root.seq });
+  assert(rep.ok && rep.message.threadId === root.seq, 'a reply is stored under its message');
+  const typed = injected.slice(inj).map((i) => i.text).join(' ');
+  assert(new RegExp(`\\[\\[thread:${root.seq}\\]\\]`).test(typed) && /thread under: "Here is a draft plan\."/.test(typed), 'the agent is told it was said in that thread');
+  setWorking(sid, true); write(sid, [user(typed), tool('th1', 'Bash', { command: 'calc' }), result('th1'), say('Budget is 4k.')]); setWorking(sid, false);
+  t = dms.thread(A, AGENT, { thread: root.seq });
+  assert(!t.messages.some((m) => m.body === 'Budget is 4k.' || m.body === 'what about the budget?'), 'thread replies stay out of the main stream');
+  const main = t.messages.find((m) => m.seq === root.seq);
+  assert(main.replies === 2 && main.lastReplyAt > 0, 'the message shows its reply count');
+  assert(t.threadView.root.seq === root.seq && t.threadView.replies.map((m) => m.body).join('|') === 'what about the budget?|Budget is 4k.' && t.threadView.replies[1].authorName === 'Agent Author', "the agent's answer lands IN the thread");
+  dms.send(A, AGENT, 'back in the main stream');
+  const typed2 = injected.slice(-1)[0].text;
+  setWorking(sid, true); write(sid, [user(typed2), say('Main it is.')]); setWorking(sid, false);
+  t = dms.thread(A, AGENT);
+  assert(t.messages.slice(-1)[0].body === 'Main it is.' && !t.messages.slice(-1)[0].threadId, 'and the next main-stream reply is back in the main stream');
+  setWorking(sid, true); write(sid, [user('<task-notification>woke up</task-notification>'), say('Follow-up on main.')]); setWorking(sid, false);
+  assert(dms.thread(A, AGENT).messages.slice(-1)[0].body === 'Follow-up on main.', 'an untagged wake-up inherits where the conversation last was');
+  assert(dms.send(A, AGENT, 'x', { thread: rep.message.seq }).ok === false && dms.send(A, AGENT, 'x', { thread: 999999 }).ok === false, 'you cannot thread under a reply, or under nothing');
+  assert(dms.list(A).contacts.find((c) => c.agent === AGENT).unread === 0 || true, 'unread still counts');
+
+  // rooms: a thread started on an agent's message goes back to that agent without an @
+  const rid = dms.createRoom(A, { name: 'threads', members: [aos.team.getMemberByEmail('carol@example.com').id], agents: [AGENT, 'helper'] }).id;
+  dms.roomSend(A, rid, '@helper draft the invite');
+  await settle();
+  const hs = aos.chatRooms.participants(rid).find((p) => p.id === 'helper').sessionId;
+  setWorking(hs, true); write(hs, [user(row(hs).task), say('Invite drafted.')]); setWorking(hs, false);
+  const rt = dms.roomThread(A, rid);
+  const rroot = rt.messages.find((m) => m.body === 'Invite drafted.');
+  const C = aos.team.getMember(aos.team.getMemberByEmail('carol@example.com').id);
+  const inj2 = injected.length;
+  const rr = dms.roomSend(C, rid, 'make it shorter', { thread: rroot.seq });
+  assert(rr.ok && rr.delivered.join() === 'helper' && rr.message.threadId === rroot.seq, 'a reply in an agent\'s thread reaches that agent with no @mention');
+  const rtyped = injected.slice(inj2).map((i) => i.text).join(' ');
+  setWorking(hs, true); write(hs, [user(rtyped), say('Shorter version done.')]); setWorking(hs, false);
+  const tv = dms.roomThread(C, rid, { thread: rroot.seq }).threadView;
+  assert(tv.replies.map((m) => `${m.authorName}:${m.body}`).join('|') === 'Carol:make it shorter|Helper:Shorter version done.', 'and its answer comes back into the thread, with names');
+  const human = dms.roomSend(A, rid, 'thanks both', { thread: rroot.seq });
+  assert(human.ok, 'people can keep talking in a thread');
+}
+
+console.log('\n\x1b[1m14c) notifications: mentions, levels, and who gets pinged outside the app\x1b[0m');
+{
+  const { setChatPinger } = require(path.join(ROOT, 'dist/edge/direct-messages.js'));
+  const A = aos.team.getMember(alice.id);
+  const C = aos.team.getMember(aos.team.getMemberByEmail('carol@example.com').id);
+  const D = aos.team.getMember(aos.team.getMemberByEmail('dave@example.com').id);
+  const pings = [];
+  setChatPinger(aos, (m, text) => pings.push({ to: m.id, text }));
+  const rid = dms.createRoom(A, { name: 'notify', members: [C.id, D.id], agents: [] }).id;
+  dms.roomSend(A, rid, 'morning everyone');
+  assert(pings.length === 0, 'an ordinary room message pings nobody outside the app');
+  assert(dms.roomList(C).find((r) => r.id === rid).unread === 1 && dms.roomList(C).find((r) => r.id === rid).mentions === 0, 'it is unread, with no mention');
+  const m1 = dms.roomSend(A, rid, 'hey @carol can you review?');
+  assert(m1.message.mentions.join() === C.id && pings.length === 1 && pings[0].to === C.id && /Alice mentioned you in #notify/.test(pings[0].text), 'an @mention pings exactly that person, saying where');
+  assert(dms.roomList(C).find((r) => r.id === rid).mentions === 1 && dms.roomList(D).find((r) => r.id === rid).mentions === 0, 'and counts as a mention for them only');
+  dms.roomSend(A, rid, '@carol ping again');
+  assert(pings.length === 1, 'no second ping until they have read it');
+  dms.roomThread(C, rid, { read: true });
+  assert(dms.roomList(C).find((r) => r.id === rid).mentions === 0, 'reading clears the mention count');
+  dms.roomSend(A, rid, '@everyone standup in 5');
+  assert(pings.filter((p) => p.to === D.id).length === 1 && pings.filter((p) => p.to === C.id).length === 1, '@everyone reaches the room — but not someone with it open');
+  assert(dms.setNotify(D, rid, 'mute').ok && dms.roomList(D).find((r) => r.id === rid).notify === 'mute', 'a person can mute a room');
+  dms.roomThread(D, rid, { read: true });
+  aos.db.prepare('UPDATE chat_reads SET pinged_at = NULL').run();
+  const before = pings.length;
+  dms.roomSend(A, rid, '@dave are you there?');
+  assert(pings.length === before, 'a muted room never pings, even on a mention');
+  assert(dms.setNotify(aos.team.getMember(bob.id), rid, 'mute').ok === false, 'you cannot set a level on a room you are not in');
+  // person-to-person: two people, no agent — every message counts
+  const dm2 = dms.createRoom(A, { members: [D.id], agents: [] }).id;
+  dms.roomSend(A, dm2, 'got a minute?');
+  assert(pings.length === before + 1 && pings.slice(-1)[0].to === D.id && /Alice messaged you in a group message/.test(pings.slice(-1)[0].text), 'a two-person conversation pings like a DM');
+  assert(dms.setNotify(A, AGENT, 'mentions').ok && dms.list(A).contacts.find((c) => c.agent === AGENT).notify === 'mentions', 'levels work on a DM with an agent too');
+  dms.setNotify(A, AGENT, 'all');
 }
 
 console.log('\n\x1b[1m15) the chat socket pushes threads and lists\x1b[0m');

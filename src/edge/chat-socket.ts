@@ -32,7 +32,7 @@ const MAX_LIFE_MS = 12 * 3_600_000;
 
 interface Conn {
   socket: Duplex; os: AgentOS; tm: TerminalManager; memberId: string;
-  watch: string; visible: boolean; busy: boolean; dirty: boolean;
+  watch: string; thread: number; visible: boolean; busy: boolean; dirty: boolean;
   lastThread: string; lastList: string; tick: number; openedAt: number;
   timer: ReturnType<typeof setInterval>; buf: Buffer; closed: boolean;
 }
@@ -78,11 +78,11 @@ function pump(c: Conn, force = false): void {
       const key = c.watch;
       let data: unknown, error: string | undefined;
       if (key.startsWith('room_')) {
-        const r = dms.roomThread(me, key, { read: c.visible });
+        const r = dms.roomThread(me, key, { read: c.visible, thread: c.thread || undefined });
         if ('ok' in r) error = r.error; else { data = r; c.busy = r.typing.length > 0 || r.jobs.length > 0 || r.peopleTyping.length > 0; }
       } else {
         const denied = dms.canChat(me, key);
-        if (denied) error = denied; else { const r = dms.thread(me, key, { read: c.visible }); data = r; c.busy = r.presence === 'working' || r.jobs.length > 0; }
+        if (denied) error = denied; else { const r = dms.thread(me, key, { read: c.visible, thread: c.thread || undefined }); data = r; c.busy = r.presence === 'working' || r.jobs.length > 0; }
       }
       const json = JSON.stringify(error ? { t: 'thread', key, error } : { t: 'thread', key, data });
       if (json !== c.lastThread) { c.lastThread = json; if (!c.closed) c.socket.write(frame(json)); }
@@ -113,10 +113,12 @@ function onData(c: Conn, chunk: Buffer): void {
     if (op === 0x8) return close(c);
     if (op === 0x9) { try { c.socket.write(Buffer.concat([Buffer.from([0x8a, payload.length]), payload])); } catch { return close(c); } continue; }
     if (op !== 0x1) continue;
-    let msg: { watch?: unknown; visible?: unknown; typing?: unknown };
+    let msg: { watch?: unknown; visible?: unknown; typing?: unknown; thread?: unknown };
     try { msg = JSON.parse(payload.toString('utf8')); } catch { continue; }
     if (typeof msg.visible === 'boolean') c.visible = msg.visible;
-    if (typeof msg.watch === 'string' && /^[\w.-]{0,80}$/.test(msg.watch) && msg.watch !== c.watch) { c.watch = msg.watch; c.lastThread = ''; c.busy = false; }
+    if (typeof msg.watch === 'string' && /^[\w.-]{0,80}$/.test(msg.watch) && msg.watch !== c.watch) { c.watch = msg.watch; c.thread = 0; c.lastThread = ''; c.busy = false; }
+    // The open thread panel, if any — its replies ride along in the pushed thread (`threadView`).
+    if ('thread' in msg) { const t = Number(msg.thread) || 0; if (t !== c.thread) { c.thread = t; c.lastThread = ''; } }
     // "I'm typing" — rooms only (a DM has nobody else to tell), and only from someone actually in it.
     if (msg.typing === true) {
       if (c.watch.startsWith('room_') && c.os.chatRooms.isMember(c.watch, c.memberId)) { noteTyping(c.watch, c.memberId); chatBus.emit('changed', c.os); }
@@ -143,7 +145,7 @@ export function chatUpgrade(os: AgentOS, tm: TerminalManager, me: Member | undef
   const accept = crypto.createHash('sha1').update(key + GUID).digest('base64');
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
   const c: Conn = {
-    socket, os, tm, memberId: me.id, watch: '', visible: true, busy: false, dirty: false, lastThread: '', lastList: '', tick: 0,
+    socket, os, tm, memberId: me.id, watch: '', thread: 0, visible: true, busy: false, dirty: false, lastThread: '', lastList: '', tick: 0,
     openedAt: Date.now(), buf: Buffer.alloc(0), closed: false, timer: setInterval(() => pump(c), TICK_MS),
   };
   c.timer.unref?.();
