@@ -928,7 +928,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
               <p className="max-w-xl text-sm text-muted-foreground">
                 {isRoom
                   ? <>This is the start of {room!.name ? <>the <span className="font-medium text-foreground">{room!.name}</span> room</> : 'this group conversation'}. {room!.agents.length > 0 ? <>Type <kbd className="rounded border px-1 font-sans text-xs">@</kbd> to bring an agent in — they answer only when addressed.</> : 'Add an agent from the people list to bring one in.'}</>
-                  : <>This is the start of your conversation with <span className="font-medium text-foreground">{title}</span>. {description}</>}
+                  : <>This is the start of your conversation with <span className="font-medium text-foreground">{title}</span>.</>}
               </p>
             </div>
           )}
