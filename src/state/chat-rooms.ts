@@ -33,7 +33,14 @@ export interface ChatMessage {
   tag?: string;
   /** Names of files sent with the message. */
   files?: string[];
+  /** A reply: the seq of the message it sits under. Absent = the main stream. */
+  threadId?: number;
+  /** On a main-stream message: how many replies it has, and when the last one came. */
+  replies?: number; lastReplyAt?: number;
+  /** Member ids this message @mentions. */
+  mentions?: string[];
 }
+export type NotifyLevel = 'all' | 'mentions' | 'mute';
 
 export interface ChatJob {
   id: string; roomId: string; kind: 'bg' | 'remind'; agent: string; memberId: string; request: string;
@@ -46,7 +53,8 @@ interface RoomRow {
   id: string; kind: string; name?: string | null; member_id: string; agent: string; session_id: string | null;
   synced_turns: number; synced_mark: string | null; hidden: number; created_at: number; last_message_at: number | null; pinged_at?: number | null;
 }
-interface MsgRow { seq: number; room_id: string; author_kind: string; author_id: string; body: string; meta: string | null; created_at: number }
+interface MsgRow { seq: number; room_id: string; author_kind: string; author_id: string; body: string; meta: string | null; created_at: number; thread_id?: number | null; mentions?: string | null; replies?: number | null; last_reply_at?: number | null }
+const MAIN = `m.*, (SELECT COUNT(*) FROM chat_messages r WHERE r.thread_id = m.seq) AS replies, (SELECT MAX(r.created_at) FROM chat_messages r WHERE r.thread_id = m.seq) AS last_reply_at`;
 
 const toRoom = (r: RoomRow): ChatRoom => ({
   id: r.id, kind: r.kind === 'room' ? 'room' : 'dm', name: r.name ?? null, memberId: r.member_id, agent: r.agent, sessionId: r.session_id,
@@ -56,7 +64,8 @@ const toRoom = (r: RoomRow): ChatRoom => ({
 function toMsg(r: MsgRow): ChatMessage {
   let steps: ChatStep[] | undefined, tag: string | undefined, files: string[] | undefined;
   if (r.meta) { try { const m = JSON.parse(r.meta); if (Array.isArray(m.steps) && m.steps.length) steps = m.steps; if (typeof m.tag === 'string') tag = m.tag; if (Array.isArray(m.files) && m.files.length) files = m.files.map(String); } catch { /* a bad meta blob is just a message without detail */ } }
-  return { tag, files, seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : r.author_kind === 'system' ? 'system' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
+  const mentions = r.mentions ? r.mentions.split(',').filter(Boolean) : undefined;
+  return { tag, files, threadId: r.thread_id ?? undefined, replies: r.replies || undefined, lastReplyAt: r.last_reply_at ?? undefined, mentions: mentions?.length ? mentions : undefined, seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : r.author_kind === 'system' ? 'system' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
 }
 
 export class ChatRoomStore {
@@ -98,25 +107,65 @@ export class ChatRoomStore {
     this.db.prepare('UPDATE chat_rooms SET synced_turns = ?, synced_mark = ? WHERE id = ?').run(turns, mark, roomId);
   }
 
-  post(roomId: string, authorKind: 'member' | 'agent' | 'system', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now(), extra: { tag?: string; files?: string[] } = {}): ChatMessage {
+  post(roomId: string, authorKind: 'member' | 'agent' | 'system', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now(), extra: { tag?: string; files?: string[]; thread?: number | null; mentions?: string[] } = {}): ChatMessage {
     const m = { ...(steps?.length ? { steps } : {}), ...(extra.tag ? { tag: extra.tag } : {}), ...(extra.files?.length ? { files: extra.files } : {}) };
     const meta = Object.keys(m).length ? JSON.stringify(m) : null;
-    const r = this.db.prepare('INSERT INTO chat_messages (room_id, author_kind, author_id, body, meta, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(roomId, authorKind, authorId, body, meta, at);
+    const mentions = extra.mentions?.length ? `,${extra.mentions.join(',')},` : null;
+    const r = this.db.prepare('INSERT INTO chat_messages (room_id, author_kind, author_id, body, meta, created_at, thread_id, mentions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(roomId, authorKind, authorId, body, meta, at, extra.thread ?? null, mentions);
     this.db.prepare('UPDATE chat_rooms SET last_message_at = ? WHERE id = ?').run(Date.now(), roomId);
-    return { seq: Number(r.lastInsertRowid), roomId, authorKind, authorId, body, steps: steps?.length ? steps : undefined, createdAt: at, tag: extra.tag, files: extra.files?.length ? extra.files : undefined };
+    return { seq: Number(r.lastInsertRowid), roomId, authorKind, authorId, body, steps: steps?.length ? steps : undefined, createdAt: at, tag: extra.tag, files: extra.files?.length ? extra.files : undefined, threadId: extra.thread ?? undefined, mentions: extra.mentions?.length ? extra.mentions : undefined };
   }
 
   /** Messages after `after` (oldest first); with no cursor, the newest `limit`. `before` pages backwards. */
   messages(roomId: string, opts: { after?: number; before?: number; limit?: number } = {}): ChatMessage[] {
     const limit = Math.min(Math.max(opts.limit ?? 100, 1), 300);
+    // The MAIN stream only — replies live under their message (see `thread`).
     if (opts.after != null) {
-      return this.db.prepare('SELECT * FROM chat_messages WHERE room_id = ? AND seq > ? ORDER BY seq LIMIT ?').all<MsgRow>(roomId, opts.after, limit).map(toMsg);
+      return this.db.prepare(`SELECT ${MAIN} FROM chat_messages m WHERE m.room_id = ? AND m.thread_id IS NULL AND m.seq > ? ORDER BY m.seq LIMIT ?`).all<MsgRow>(roomId, opts.after, limit).map(toMsg);
     }
     const rows = opts.before != null
-      ? this.db.prepare('SELECT * FROM chat_messages WHERE room_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?').all<MsgRow>(roomId, opts.before, limit)
-      : this.db.prepare('SELECT * FROM chat_messages WHERE room_id = ? ORDER BY seq DESC LIMIT ?').all<MsgRow>(roomId, limit);
+      ? this.db.prepare(`SELECT ${MAIN} FROM chat_messages m WHERE m.room_id = ? AND m.thread_id IS NULL AND m.seq < ? ORDER BY m.seq DESC LIMIT ?`).all<MsgRow>(roomId, opts.before, limit)
+      : this.db.prepare(`SELECT ${MAIN} FROM chat_messages m WHERE m.room_id = ? AND m.thread_id IS NULL ORDER BY m.seq DESC LIMIT ?`).all<MsgRow>(roomId, limit);
     return rows.reverse().map(toMsg);
+  }
+
+  /** One message of a room (any depth). */
+  message(roomId: string, seq: number): ChatMessage | undefined {
+    const r = this.db.prepare(`SELECT ${MAIN} FROM chat_messages m WHERE m.room_id = ? AND m.seq = ?`).get<MsgRow>(roomId, seq);
+    return r ? toMsg(r) : undefined;
+  }
+
+  /** A thread: the replies under a main-stream message, oldest first. */
+  replies(roomId: string, rootSeq: number, limit = 300): ChatMessage[] {
+    return this.db.prepare('SELECT * FROM chat_messages WHERE room_id = ? AND thread_id = ? ORDER BY seq LIMIT ?').all<MsgRow>(roomId, rootSeq, limit).map(toMsg);
+  }
+
+  /** Unread messages that @mention this member. */
+  unreadMentions(roomId: string, memberId: string): number {
+    const r = this.db.prepare(
+      `SELECT COUNT(*) AS c FROM chat_messages WHERE room_id = ? AND mentions LIKE ?
+          AND seq > COALESCE((SELECT last_read_seq FROM chat_reads WHERE room_id = ? AND member_id = ?), 0)`,
+    ).get<{ c: number }>(roomId, `%,${memberId},%`, roomId, memberId);
+    return r?.c ?? 0;
+  }
+
+  /** This member's notification level for a room (default: all). */
+  level(roomId: string, memberId: string): NotifyLevel {
+    const r = this.db.prepare('SELECT notify FROM chat_reads WHERE room_id = ? AND member_id = ?').get<{ notify: string | null }>(roomId, memberId);
+    return r?.notify === 'mentions' || r?.notify === 'mute' ? r.notify : 'all';
+  }
+  setLevel(roomId: string, memberId: string, level: NotifyLevel): void {
+    this.db.prepare(`INSERT INTO chat_reads (room_id, member_id, last_read_seq, notify) VALUES (?, ?, 0, ?)
+      ON CONFLICT(room_id, member_id) DO UPDATE SET notify = excluded.notify`).run(roomId, memberId, level === 'all' ? null : level);
+  }
+  /** Has an away-ping gone to this member that they haven't read yet? */
+  pinged(roomId: string, memberId: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM chat_reads WHERE room_id = ? AND member_id = ? AND pinged_at IS NOT NULL').get(roomId, memberId);
+  }
+  markPinged(roomId: string, memberId: string): void {
+    this.db.prepare(`INSERT INTO chat_reads (room_id, member_id, last_read_seq, pinged_at) VALUES (?, ?, 0, ?)
+      ON CONFLICT(room_id, member_id) DO UPDATE SET pinged_at = excluded.pinged_at`).run(roomId, memberId, Date.now());
   }
 
   last(roomId: string): ChatMessage | undefined {
@@ -137,7 +186,7 @@ export class ChatRoomStore {
   markRead(roomId: string, memberId: string): void {
     this.db.prepare(
       `INSERT INTO chat_reads (room_id, member_id, last_read_seq) VALUES (?, ?, COALESCE((SELECT MAX(seq) FROM chat_messages WHERE room_id = ?), 0))
-       ON CONFLICT(room_id, member_id) DO UPDATE SET last_read_seq = excluded.last_read_seq`,
+       ON CONFLICT(room_id, member_id) DO UPDATE SET last_read_seq = excluded.last_read_seq, pinged_at = NULL`,
     ).run(roomId, memberId, roomId);
     // Reading a DM re-arms its away-ping.
     this.db.prepare("UPDATE chat_rooms SET pinged_at = NULL WHERE id = ? AND kind = 'dm' AND pinged_at IS NOT NULL").run(roomId);

@@ -99,7 +99,31 @@ through a proxy the page keeps polling. Cookie-authenticated, same-origin only.
 The same socket carries "I'm typing" from a person in a room to the others there (`peopleTyping`; expires after
 5 s, cleared on send). It has no REST fallback — without the socket nobody sees it, and nothing breaks.
 
+## Threads
+
+Any main-stream message can carry a thread: replies are `chat_messages` rows with `thread_id` = that
+message's `seq`. The main stream shows only `thread_id IS NULL` rows, each with its reply count; the
+thread opens in a panel beside the conversation. Works the same in DMs and rooms.
+
+**How an agent's reply finds its thread.** Every message handed to an agent ends with a tag —
+`[[main]]` or `[[thread:<seq>]]` — and the transcript keeps it. When `syncLane` folds a reply back in,
+it reads the tag of the user turn the reply answers (an untagged turn, e.g. a harness wake-up, inherits
+the last one). No queue, no per-lane "current thread" state to desync when a turn is interrupted.
+In a room, a reply in a thread with no `@mention` goes to the one agent already talking there.
+
+## Notifications
+
+| Where | What you get |
+|---|---|
+| **In the app** (`ChatNotifier`, mounted on every page) | A toast (click to open), a chime if sound is on in your preferences, a desktop notification when the tab is in the background (opt-in button in the Messages sidebar). Never for the conversation you are looking at. |
+| **Sidebar** | Unread count; a red `@n` when you were mentioned; a muted bell on muted conversations. |
+| **Outside the app** (Slack/Discord DM) | One-to-one conversations (a DM with an agent, or two people with no agent): every message. Rooms: only when you are `@mentioned` (`@first`, `@first-last`, `@everyone`/`@here`). Skipped while you have it open; once per unread stretch (`chat_reads.pinged_at`). |
+
+Each person sets a level per conversation — every message / only @mentions / mute
+(`chat_reads.notify`, `PUT /api/chat/notify`) — which narrows all three. People mentioned are stored on
+the message (`chat_messages.mentions`).
+
 ## Not built yet
 
-- **Pings for rooms** — a message in a room raises the unread badge only. Browsable/joinable public rooms.
-- Threads, reactions, search, inline image previews for attachments.
+- Browsable/joinable public rooms.
+- Reactions, search, inline image previews for attachments, attachments and commands inside a thread.

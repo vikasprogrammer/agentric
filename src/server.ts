@@ -3846,13 +3846,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = (r: { ok?: boolean; status?: number; error?: string } & Record<string, unknown>) => (r.ok === false ? sendJson(res, r.status ?? 400, { error: r.error, held: r.held }) : sendJson(res, 200, r));
     if (!sub && method === 'GET') {
       const before = Number(url.searchParams.get('before'));
-      return out(dms.roomThread(me, id, { before: url.searchParams.has('before') && Number.isFinite(before) ? before : undefined, read: url.searchParams.get('read') === '1' }) as never);
+      return out(dms.roomThread(me, id, { before: url.searchParams.has('before') && Number.isFinite(before) ? before : undefined, thread: Number(url.searchParams.get('thread')) || undefined, read: url.searchParams.get('read') === '1' }) as never);
     }
     if (!sub && method === 'PATCH') return out(dms.roomRename(me, id, String((await readBody(req)).name ?? '')));
     if (sub === 'send' && method === 'POST') {
       if (tooBig()) return sendJson(res, 413, { error: 'attachments too large (max ~16MB per message)' });
       const b = await readBody(req);
-      return out(dms.roomSend(me, id, String(b.message || ''), { files: chatFiles(b) }) as never);
+      return out(dms.roomSend(me, id, String(b.message || ''), { files: chatFiles(b), thread: Number(b.thread) || undefined }) as never);
     }
     if (sub === 'stop' && method === 'POST') {
       const room = dms.roomOf(me, id);
@@ -3876,6 +3876,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.chatRooms.ensureDm(me.id, agent);
     return sendJson(res, 200, { ok: true });
   }
+  // My notification level for one conversation: all | mentions | mute.
+  if (p === '/api/chat/notify' && method === 'PUT') {
+    const b = await readBody(req);
+    const level = b.level === 'mentions' || b.level === 'mute' ? b.level : 'all';
+    const r = new DirectMessages(os, tm).setNotify(me, String(b.key || ''), level);
+    return r.ok ? sendJson(res, 200, r) : sendJson(res, r.status, { error: r.error });
+  }
   const jobCancel = p.match(/^\/api\/chat\/jobs\/(job_[0-9a-f]+)\/cancel$/);
   if (jobCancel && method === 'POST') {
     const r = new DirectMessages(os, tm).cancelJob(me, jobCancel[1]);
@@ -3889,7 +3896,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (denied) return sendJson(res, 403, { error: denied });
     if (!dmMatch[2] && method === 'GET') {
       const num = (k: string) => { const v = Number(url.searchParams.get(k)); return url.searchParams.has(k) && Number.isFinite(v) ? v : undefined; };
-      return sendJson(res, 200, dms.thread(me, agent, { after: num('after'), before: num('before'), read: url.searchParams.get('read') === '1' }));
+      return sendJson(res, 200, dms.thread(me, agent, { after: num('after'), before: num('before'), thread: num('thread'), read: url.searchParams.get('read') === '1' }));
     }
     if (!dmMatch[2] && method === 'DELETE') {
       const room = os.chatRooms.dm(me.id, agent);
@@ -3899,7 +3906,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (dmMatch[2] === 'send' && method === 'POST') {
       if (tooBig()) return sendJson(res, 413, { error: 'attachments too large (max ~16MB per message)' });
       const b = await readBody(req);
-      const r = dms.send(me, agent, String(b.message || ''), { retry: b.retry === true, files: chatFiles(b) });
+      const r = dms.send(me, agent, String(b.message || ''), { retry: b.retry === true, files: chatFiles(b), thread: Number(b.thread) || undefined });
       if (!r.ok) return sendJson(res, r.status, { error: r.error, held: r.held });
       return sendJson(res, 200, { ok: true, message: r.message, notes: r.notes ?? [] });
     }

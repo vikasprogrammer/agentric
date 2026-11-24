@@ -24,7 +24,7 @@ import { SetupPage, SetupBanner } from '@/setup'
 import { TwoFactorChallenge, TwoFactorNag, TwoFactorSection, TwoFactorPolicyCard } from '@/two-factor'
 import { docPages } from '@/docs'
 import { Xterm } from './Xterm'
-import { MessagesPage } from './messages'
+import { MessagesPage, ChatNotifier } from './messages'
 
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
@@ -2178,6 +2178,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route !== 'setup' && !fullBleed && <SetupBanner me={me} />}
           <TwoFactorNag me={me} />
+          <ChatNotifier me={me} openKey={route === 'chat' && !legacyChat ? detail : ''} onOpen={(key) => nav('chat', key)} onUnread={setDmUnread} />
           {route === 'setup' && <SetupPage me={me} step={detail} onStep={(id) => nav('setup', id)} onDone={refreshState} />}
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} sessions={sessions} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}

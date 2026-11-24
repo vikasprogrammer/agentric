@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.477.0] - 2026-11-24
+### Added
+- **Threads in Messages.** Reply under any message — in a DM or a room — and the conversation stays
+  readable: the main stream shows the message with its reply count, the thread opens beside it. An
+  agent's answer to a thread reply lands in that thread (each turn handed to an agent is tagged with
+  where it was said, and the fold reads the tag back), and in a room a thread on an agent's message
+  reaches that agent without an @mention.
+  **For users:** Hover any message in Messages and choose Reply to start a thread — the agent answers inside it. [Open Messages](#/chat)
+- **Message notifications.** A new message now reaches you wherever you are in the console: a toast, an
+  optional chime, and a desktop notification when the tab is in the background. `@mention` a person in a
+  room (`@name`, `@everyone`) and they get a red badge — and a Slack/Discord ping if they're away. Each
+  conversation has its own level: every message, only @mentions, or muted.
+  **For users:** You're now notified of new messages anywhere in the console, and can set each conversation to all, mentions-only or muted from its ⋯ menu. [Open Messages](#/chat)
+
 ## [0.476.1] - 2026-11-24
 ### Fixed
 - **Deploys and PR checks wait ~20 s on the test suite instead of ~100 s.** The 144 governance suites
