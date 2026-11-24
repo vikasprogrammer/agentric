@@ -196,6 +196,15 @@ function writeClipboard(text: string): Promise<void> {
   })
 }
 
+/** True when keyboard focus sits in an editable field OUTSIDE the terminal (a search box, a rename input,
+ *  a reply textarea) — auto-focusing the pane then would yank the person's typing away. A focused button
+ *  or link (what clicking a session in the list leaves behind) doesn't count. */
+function typingElsewhere(host: HTMLElement): boolean {
+  const a = document.activeElement as HTMLElement | null
+  if (!a || a === document.body || host.contains(a)) return false
+  return a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)
+}
+
 /** Console-matched dark theme (neutral-950 bg, geist-ish selection). */
 export const AOS_THEME: ITheme = {
   background: '#0a0a0a',
@@ -223,6 +232,7 @@ export function Xterm({
   fontSize = 14,
   theme = AOS_THEME,
   copyOnSelect = false,
+  autoFocus = true,
   onTitle,
   onStatus,
   onReady,
@@ -236,6 +246,8 @@ export function Xterm({
   theme?: ITheme
   /** Copy the selection to the clipboard the moment a drag-selection finishes (highlight is kept). */
   copyOnSelect?: boolean
+  /** Focus the terminal once its socket opens, so typing goes straight to the session (default on). */
+  autoFocus?: boolean
   onTitle?: (title: string) => void
   onStatus?: (s: 'connecting' | 'open' | 'closed') => void
   onReady?: (h: XtermHandle) => void
@@ -248,8 +260,8 @@ export function Xterm({
   // Latest-callback refs so the socket effect doesn't re-run (and re-attach) when a parent re-renders.
   const cbs = useRef({ onTitle, onStatus, onReady, onCopy, onSubmit })
   cbs.current = { onTitle, onStatus, onReady, onCopy, onSubmit }
-  const opts = useRef({ copyOnSelect })
-  opts.current = { copyOnSelect }
+  const opts = useRef({ copyOnSelect, autoFocus })
+  opts.current = { copyOnSelect, autoFocus }
 
   // Font size is a live option — apply without tearing the terminal down.
   const termRef = useRef<Terminal | null>(null)
@@ -388,6 +400,10 @@ export function Xterm({
       titleDisp = term.onTitleChange((t) => cbs.current.onTitle?.(t))
       // Nudge a resize so ttyd sizes the pty to our actual layout.
       try { fit.fit() } catch { /* ignore */ }
+      // Land the cursor in the pane: the terminal IS the session's chat box (claude's prompt), so on a
+      // page refresh, opening a session, or a reload/take-over reconnect, the person can just start typing
+      // instead of first clicking into it. Never steal focus from a field they're already typing in.
+      if (opts.current.autoFocus && !typingElsewhere(host)) term.focus()
       cbs.current.onReady?.({ term, fit: () => { try { fit.fit() } catch { /* ignore */ } }, search, copySelection, paste })
     }
     ws.onmessage = (ev) => {
