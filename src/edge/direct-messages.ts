@@ -175,10 +175,16 @@ const SUMMARY_SYSTEM = [
   '- what is being worked on and why, decisions made (and by whom), what is still open, who is doing what.',
   '- Keep names. Drop greetings, thanks and chatter. Do not invent anything. Output only the summary.',
 ].join('\n');
+/** Does a message name this agent in plain words? `infra-ops` ← "infraops", "infra ops", "Infra-Ops" — whole words only. */
+function nameRegex(id: string): RegExp {
+  const parts = id.split(/[^a-z0-9]+/i).filter(Boolean).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`(^|[^a-z0-9])${parts.join('[\\s_-]*')}(?![a-z0-9])`, 'i');
+}
 const ROUTE_SYSTEM = [
   'You coordinate a team chat room. People talk to each other here, and several AI agents are present.',
   'Someone just posted a message WITHOUT addressing anyone. Decide whether an agent should pick it up.',
   '- Conversation between people, a reaction, thanks, small talk, or anything needing no work or answer from an agent → nobody.',
+  '- A message that speaks TO an agent — by name, role or what it was just doing — is for that agent, even if it is only a check-in ("are you there?", "any update?").',
   '- A request or question that clearly belongs to one agent\'s job → that agent.',
   '- Name two agents only when the task genuinely needs both — each answers separately and their answers are merged into one reply.',
   '- When in doubt, prefer nobody: waking the wrong agent is worse than a person typing an @.',
@@ -613,6 +619,19 @@ export class DirectMessages {
     if (!eligible.length) return [];
     const thread = message.threadId ?? null;
     const stream = (thread ? this.rooms.replies(room.id, thread) : this.rooms.messages(room.id, { limit: 30 })).filter((m) => m.authorKind !== 'system' && m.seq < message.seq);
+    // Named: "hey infraops, are you there?" has no @, but it is plainly FOR that agent. Matching the
+    // agent's own name is deterministic — no reason to ask a model (which, asked, read exactly this
+    // message as small talk and woke nobody: instawp, 2026-11-24).
+    const named = eligible.filter((id) => nameRegex(id).test(message.body));
+    if (named.length) {
+      const took: string[] = [];
+      for (const a of named.slice(0, 3)) {
+        const d = this.roomDeliver(me, room, parts, a, `${message.body}${this.threadHint(this.threadRoot(room.id, thread))}`, me.name || me.email, 0, message.seq, thread);
+        if (d.ok) took.push(a);
+      }
+      this.routed(me, room, { how: 'named', agents: took });
+      return took;
+    }
     // Sticky: the last thing said here was an agent's, moments ago — this is the next line of that exchange.
     const prev = stream[stream.length - 1];
     if (prev && prev.authorKind === 'agent' && eligible.includes(prev.authorId) && message.createdAt - prev.createdAt < STICKY_MS) {
@@ -623,11 +642,16 @@ export class DirectMessages {
     return [];
   }
 
+  /** Audit one orchestrator decision. (`chat.room.routed` — `chat.routed` is the Slack/Discord router's.) */
+  private routed(me: Member, room: ChatRoom, d: { how: string; agents: string[]; confidence?: number; reason?: string }): void {
+    this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: me.id, type: 'chat.room.routed', data: { room: room.id, mode: room.orchestrate, ...d } });
+  }
+
   /** The model half: ask who should take it, then hand it over (auto) or offer pills (suggest / unsure). */
   private async route(me: Member, room: ChatRoom, message: ChatMessage, eligible: string[], recent: ChatMessage[]): Promise<void> {
     if (routing.has(room.id)) return; // one decision at a time per room; a later message rides along as context
     const brain = this.brain();
-    if (!brain) return;
+    if (!brain) return this.routed(me, room, { how: 'no-model', agents: [] });
     routing.add(room.id);
     let pick: { agents: string[]; confidence: number; reason: string } | null = null;
     try {
@@ -636,7 +660,8 @@ export class DirectMessages {
       const convo = recent.map((m) => `${m.authorKind === 'agent' ? `${m.authorId} (agent)` : this.person(m.authorId).name}: ${clip(m.body.replace(/\s+/g, ' '), 300)}`).join('\n');
       pick = parseRoute(await brain(ROUTE_SYSTEM, `Agents in this room:\n${roster}\n\n${convo ? `Recent conversation (oldest first):\n${convo}\n\n` : ''}New message from ${who}:\n${clip(message.body, 2000)}`), eligible);
     } finally { routing.delete(room.id); }
-    if (!pick || !pick.agents.length || pick.confidence < ROUTE_SUGGEST_AT) return;
+    // Every decision is recorded — including "nobody" — or a quiet room can't be told apart from a broken router.
+    if (!pick || !pick.agents.length || pick.confidence < ROUTE_SUGGEST_AT) return this.routed(me, room, { how: !pick ? 'unreadable' : !pick.agents.length ? 'nobody' : 'unsure', agents: pick?.agents ?? [], confidence: pick?.confidence, reason: pick?.reason });
     const now = this.rooms.get(room.id);
     if (!now || now.orchestrate === 'off' || !this.rooms.message(room.id, message.seq)) return;
     const parts = this.rooms.participants(room.id);
@@ -655,7 +680,7 @@ export class DirectMessages {
       // Not sure enough to act (or the room only wants suggestions): offer the hand-off as one-tap replies.
       this.rooms.post(room.id, 'system', me.id, `Bring someone in?${why}`, undefined, Date.now(), { thread, actions: pick.agents.slice(0, 3).map((a) => `@${a} can you take this?`) });
     }
-    this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: me.id, type: 'chat.routed', data: { room: room.id, agents: pick.agents, confidence: pick.confidence, mode: now.orchestrate } });
+    this.routed(me, room, { how: now.orchestrate === 'auto' && pick.confidence >= ROUTE_AUTO_AT ? 'routed' : 'suggested', agents: pick.agents, confidence: pick.confidence, reason: pick.reason });
     chatBus.emit('changed', this.os);
   }
 
@@ -839,14 +864,14 @@ export class DirectMessages {
     }
     const message = this.rooms.post(roomId, 'member', me.id, body, undefined, Date.now(), { files: files.map((f) => f.name), thread: root?.seq, mentions: this.peopleMentioned(body, parts, me.id) });
     for (const agent of delivered) this.rooms.setLaneSeen(roomId, agent, message.seq);
-    // Several agents were asked the same thing (the person tagged them): their answers come back as ONE
+    // Nobody was addressed: the room's orchestrator decides whether an agent should pick this up.
+    // (Not when it was addressed to a PERSON — `@priya` is for Priya.)
+    if (!to.length && !message.mentions?.length) for (const a of this.orchestrate(me, room, parts, message)) delivered.push(a);
+    // Several agents were asked the same thing (the person tagged or named them): their answers come back as ONE
     // combined reply too, exactly as when the orchestrator fans a message out itself.
     if (delivered.length > 1 && room.orchestrate !== 'off') {
       this.rooms.addJob({ roomId, kind: 'fanout', agent: delivered.join(','), memberId: me.id, request: body, status: 'running', thread: root?.seq, data: { seq: message.seq, replies: {} } });
     }
-    // Nobody was addressed: the room's orchestrator decides whether an agent should pick this up.
-    // (Not when it was addressed to a PERSON — `@priya` is for Priya.)
-    if (!to.length && !message.mentions?.length) for (const a of this.orchestrate(me, room, parts, message)) delivered.push(a);
     this.notify(room, message);
     this.rooms.markRead(roomId, me.id);
     chatBus.emit('changed', this.os);
