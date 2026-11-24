@@ -526,6 +526,58 @@ console.log('\n\x1b[1m14c) notifications: mentions, levels, and who gets pinged 
   dms.setNotify(A, AGENT, 'all');
 }
 
+console.log('\n\x1b[1m14d) in a thread: commands and files go where they were typed; quick-action pills; agents tag people\x1b[0m');
+{
+  const { setChatPinger, splitActions } = require(path.join(ROOT, 'dist/edge/direct-messages.js'));
+  const A = aos.team.getMember(alice.id);
+  dms.reset(A, AGENT);
+  const first = dms.send(A, AGENT, 'start a topic');
+  await settle();
+  const sid = first.sessionId;
+  setWorking(sid, true); write(sid, [user(row(sid).task), say('Topic started.\n[[actions: Go ahead | Show me the plan | "Not now"]]')]); setWorking(sid, false);
+  let t = dms.thread(A, AGENT);
+  const root = t.messages.find((m) => /^Topic started\./.test(m.body));
+  assert(root.body === 'Topic started.' && root.actions.join('|') === 'Go ahead|Show me the plan|Not now', 'a trailing [[actions: …]] line becomes pills and leaves the text');
+  assert(/\[\[actions: /.test(row(sid).task), 'the agent is told how to offer them');
+  assert(splitActions('[[actions: A | B]]').actions === undefined && splitActions('see [[actions: x]] mid text').actions === undefined, 'only a trailing line with something to hang on counts');
+  assert(splitActions('ok\n[[actions: a|b|c|d|e|f]]').actions.length === 4, 'at most four');
+
+  const bg = dms.send(A, AGENT, '/bg dig into it', { thread: root.seq });
+  await settle();
+  const job = aos.chatRooms.openJobs().find((j) => j.kind === 'bg');
+  assert(bg.ok && bg.message.threadId === root.seq && job.threadId === root.seq, '/bg typed in a thread stays in the thread');
+  write(job.sessionId, [user(row(job.sessionId).task), say('Dug in: all fine.')]);
+  livePanes.delete('aos-' + job.sessionId);
+  aos.db.prepare("UPDATE term_sessions SET status = 'done', busy_since = NULL WHERE id = ?").run(job.sessionId);
+  aos.db.prepare('UPDATE chat_jobs SET created_at = created_at - 60000 WHERE id = ?').run(job.id);
+  setWorking(job.sessionId, false);
+  dms.sweepJobs();
+  t = dms.thread(A, AGENT, { thread: root.seq });
+  assert(t.threadView.replies.some((m) => m.tag === 'bg' && m.authorKind === 'agent' && m.body === 'Dug in: all fine.') && !t.messages.some((m) => m.body === 'Dug in: all fine.'), 'and its result comes back INTO the thread');
+  const rem = dms.send(A, AGENT, '/remind 1h revisit this', { thread: root.seq });
+  assert(rem.ok && rem.message.threadId === root.seq && aos.chatRooms.openJobs().find((j) => j.kind === 'remind').threadId === root.seq, 'a reminder set in a thread belongs to it');
+  aos.db.prepare("UPDATE chat_jobs SET status = 'cancelled' WHERE kind = 'remind' AND status = 'scheduled'").run();
+  const f = dms.send(A, AGENT, 'see this', { thread: root.seq, files: [{ name: 'log.txt', data: Buffer.from('x') }] });
+  assert(f.ok && f.message.threadId === root.seq && f.message.files.join() === 'log.txt' && /\(attached: \.inbox\/[^)]*log\.txt\)/.test(injected.slice(-1)[0].text), 'files attach to a thread reply');
+  assert(dms.send(A, AGENT, '/status', { thread: 424242 }).ok === false, 'a command in a thread that is gone is refused');
+
+  // an agent tags a person in a room → stored as a mention, pinged at once
+  const pings = [];
+  setChatPinger(aos, (m, text) => pings.push({ to: m.id, text }));
+  const C = aos.team.getMember(aos.team.getMemberByEmail('carol@example.com').id);
+  const rid = dms.createRoom(A, { name: 'tagging', members: [C.id], agents: [AGENT, 'helper'] }).id;
+  dms.roomSend(A, rid, '@helper who should review this?');
+  await settle();
+  const hs = aos.chatRooms.participants(rid).find((p) => p.id === 'helper').sessionId;
+  const prompt = row(hs).task;
+  assert(/@agent-author/.test(prompt) && /@carol/.test(prompt) && /@everyone/.test(prompt) && /notified at once/.test(prompt), 'an agent in a room is told how to call another agent and tag a person');
+  setWorking(hs, true); write(hs, [user(prompt), say('@carol could you take a look?')]); setWorking(hs, false);
+  const rt = dms.roomThread(A, rid);
+  const tagged = rt.messages.find((m) => m.authorKind === 'agent');
+  assert(tagged.mentions.join() === C.id && pings.length === 1 && pings[0].to === C.id && /Helper mentioned you in #tagging/.test(pings[0].text), "an agent's @person is a mention — that person is pinged");
+  assert(dms.roomList(C).find((r) => r.id === rid).mentions === 1, 'and sees the red mention badge');
+}
+
 console.log('\n\x1b[1m15) the chat socket pushes threads and lists\x1b[0m');
 {
   const http = require('http');

@@ -124,7 +124,7 @@ function TypingDots() {
 
 /** One row of the conversation. Consecutive messages from the same author within a few minutes are
  *  GROUPED: only the first carries the avatar + name, the rest sit flush under it with a hover time. */
-function MessageRow({ m, grouped, name, avatar, onThread }: { m: DmMessage; grouped: boolean; name: string; avatar: ReactNode; /** open this message's thread (absent inside a thread) */ onThread?: () => void }) {
+function MessageRow({ m, grouped, name, avatar, onThread, onAction }: { m: DmMessage; grouped: boolean; name: string; avatar: ReactNode; /** open this message's thread (absent inside a thread) */ onThread?: () => void; /** send one of the agent's quick replies — given only for the newest message, so stale ones can't be tapped */ onAction?: (text: string) => void }) {
   const body = m.authorKind === 'agent'
     ? <div className="md max-w-none text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]}>{m.body}</ReactMarkdown></div>
     : <div className="whitespace-pre-wrap break-words text-sm">{m.body}</div>
@@ -149,6 +149,11 @@ function MessageRow({ m, grouped, name, avatar, onThread }: { m: DmMessage; grou
         {body}
         {m.files && <div className="mt-1 flex flex-wrap gap-1">{m.files.map((f, i) => <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"><Paperclip className="h-3 w-3" />{f}</span>)}</div>}
         {(m.steps || m.took) && <Steps steps={m.steps ?? []} took={m.took} />}
+        {onAction && m.actions && (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {m.actions.map((a, i) => <button key={i} onClick={() => onAction(a)} className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-foreground">{a}</button>)}
+          </div>
+        )}
         {onThread && !!m.replies && (
           <button onClick={onThread} className="mt-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-xs font-medium text-primary hover:bg-primary/10">
             <MessageSquareReply className="h-3.5 w-3.5" /> {m.replies} {m.replies === 1 ? 'reply' : 'replies'}
@@ -420,32 +425,61 @@ function RoomDetails({ me, room, people, agents, renderIcon, onChanged, onLeft, 
   )
 }
 
-/** A thread, beside the conversation: the message it hangs off, the replies under it, and a reply box. */
-function ThreadPanel({ view, typing, nameOf, avatarOf, onClose, onSend }: {
+/** A thread, beside the conversation: the message it hangs off, the replies under it, and a reply box
+ *  with everything the main one has — attachments, `/` commands, `@` to bring a room's agent in. */
+function ThreadPanel({ view, typing, nameOf, avatarOf, agents, renderIcon, onClose, onSend }: {
   view: ThreadView | null | undefined
   typing: { agent: string; label: string; since?: number }[]
   nameOf: (m: DmMessage) => string
   avatarOf: (m: DmMessage) => ReactNode
+  /** The room's agents, for `@` — empty in a DM. */
+  agents: { id: string; icon?: string }[]
+  renderIcon: IconRenderer
   onClose: () => void
-  /** Returns an error message, or nothing on success. */
-  onSend: (text: string) => Promise<string | undefined>
+  onSend: (text: string, files: File[]) => Promise<{ error?: string; notes?: string[] }>
 }) {
   const [draft, setDraft] = useState('')
   const [err, setErr] = useState('')
+  const [info, setInfo] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
+  const [files, setFiles] = useState<File[]>([])
+  const [pick, setPick] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const count = view?.replies.length ?? 0
-  useEffect(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [count, typing.length])
+  const fileRef = useRef<HTMLInputElement>(null)
+  const count = view?.replies.filter((m) => m.authorKind !== 'system').length ?? 0
+  useEffect(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight }, [view?.replies.length, typing.length])
   useEffect(() => { inputRef.current?.focus() }, [view?.root.seq])
-  const submit = async () => {
-    const text = draft.trim()
-    if (!text || busy) return
-    setBusy(true); setErr(''); setDraft('')
-    const e = await onSend(text)
+  const addFiles = (list: FileList | File[] | null) => { if (list) setFiles((f) => [...f, ...Array.from(list)].slice(0, 6)) }
+  const send = async (text: string) => {
+    if ((!text.trim() && files.length === 0) || busy) return
+    const sending = files
+    setBusy(true); setErr(''); setInfo([]); setDraft(''); setFiles([])
+    const r = await onSend(text.trim(), sending)
     setBusy(false)
-    if (e) { setErr(e); setDraft(text) }
+    if (r.error) { setErr(r.error); setDraft(text); setFiles(sending) } else if (r.notes?.length) setInfo(r.notes)
   }
+  // One menu at a time: `/` at the very start → commands; `@word` at the end → the room's agents.
+  const slash = /^\/([a-z]*)$/i.exec(draft)
+  const at = !slash && agents.length ? /(^|\s)@([\w.-]*)$/.exec(draft) : null
+  const commands = slash ? COMMANDS.filter((c) => c.name.startsWith(slash[1].toLowerCase())) : []
+  const mentions = at ? agents.filter((a) => a.id.toLowerCase().includes(at[2].toLowerCase()) || prettyAgent(a.id).toLowerCase().includes(at[2].toLowerCase())) : []
+  const menu = commands.length || mentions.length
+  const choose = (i: number) => {
+    if (commands.length) setDraft(`/${commands[i].name} `)
+    else if (at) setDraft(`${draft.slice(0, draft.length - at[2].length - 1)}@${mentions[i].id} `)
+    setPick(0); inputRef.current?.focus()
+  }
+  const onKey = (e: ReactKeyboardEvent) => {
+    if (menu) {
+      const i = Math.min(pick, menu - 1)
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setPick((i + (e.key === 'ArrowDown' ? 1 : -1) + menu) % menu); return }
+      if (e.key === 'Enter' && !e.shiftKey && commands.length && !commands[i].usage.includes('<')) { e.preventDefault(); send(`/${commands[i].name}`); return }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); choose(i); return }
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(draft) }
+  }
+  const last = view?.replies[view.replies.length - 1]
   return (
     <aside className="flex w-[26rem] shrink-0 flex-col border-l">
       <div className="flex shrink-0 items-center justify-between border-b px-4 py-2.5">
@@ -457,12 +491,13 @@ function ThreadPanel({ view, typing, nameOf, avatarOf, onClose, onSend }: {
         {view === null && <p className="px-4 pt-6 text-center text-sm text-muted-foreground">This thread no longer exists.</p>}
         {view && (
           <>
-            <MessageRow m={view.root} grouped={false} name={nameOf(view.root)} avatar={avatarOf(view.root)} />
+            <MessageRow m={view.root} grouped={false} name={nameOf(view.root)} avatar={avatarOf(view.root)} onAction={view.replies.length === 0 ? (t) => send(t) : undefined} />
             <div className="my-2 flex items-center gap-3 px-5 text-[11px] text-muted-foreground"><span>{count} {count === 1 ? 'reply' : 'replies'}</span><div className="h-px flex-1 bg-border" /></div>
             {view.replies.map((m, i) => {
+              if (m.authorKind === 'system') return <div key={m.seq} className="my-2 flex items-center gap-3 px-5 text-[11px] text-muted-foreground"><div className="h-px flex-1 border-t border-dashed" />{m.body}<div className="h-px flex-1 border-t border-dashed" /></div>
               const prev = view.replies[i - 1]
               const grouped = !!prev && prev.authorKind === m.authorKind && prev.authorId === m.authorId && m.createdAt - prev.createdAt < 5 * 60_000
-              return <MessageRow key={m.seq} m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} />
+              return <MessageRow key={m.seq} m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} onAction={m === last ? (t) => send(t) : undefined} />
             })}
           </>
         )}
@@ -470,14 +505,43 @@ function ThreadPanel({ view, typing, nameOf, avatarOf, onClose, onSend }: {
       <div className="min-h-[1.25rem] shrink-0 px-4">
         {typing.map((t) => <div key={t.agent} className="flex items-center gap-2 pb-1 text-xs text-muted-foreground"><TypingDots /><span><span className="font-medium text-foreground">{prettyAgent(t.agent)}</span> is replying…</span><Elapsed since={t.since} /></div>)}
       </div>
-      <div className="shrink-0 px-4 pb-4">
-        <div className="flex items-end gap-2 rounded-xl border bg-background p-1.5 focus-within:border-primary/60">
-          <Textarea ref={inputRef} value={draft} onChange={(e) => setDraft(e.target.value)} rows={1} placeholder="Reply in thread"
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit() } }}
-            className="max-h-40 min-h-[36px] resize-none border-0 bg-transparent text-sm shadow-none focus-visible:ring-0" />
-          <Button size="icon" className="h-7 w-7 shrink-0" disabled={!draft.trim() || busy || !view} onClick={submit} aria-label="Send reply"><Send className="h-3.5 w-3.5" /></Button>
+      <div className="relative shrink-0 px-4 pb-4" onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }} onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); addFiles(e.dataTransfer.files) } }}>
+        {menu > 0 && (
+          <div className="absolute bottom-full left-4 right-4 z-10 mb-1 overflow-hidden rounded-lg border bg-popover shadow-md">
+            {commands.map((c, i) => (
+              <button key={c.name} onMouseDown={(e) => { e.preventDefault(); choose(i) }} className={`flex w-full items-baseline gap-2 px-2.5 py-1.5 text-left text-sm ${i === Math.min(pick, menu - 1) ? 'bg-muted' : ''}`}>
+                <span className="shrink-0 font-mono text-[12px] font-medium">{c.usage}</span><span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{c.help}</span>
+              </button>
+            ))}
+            {!commands.length && mentions.map((a, i) => (
+              <button key={a.id} onMouseDown={(e) => { e.preventDefault(); choose(i) }} className={`flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm ${i === Math.min(pick, menu - 1) ? 'bg-muted' : ''}`}>
+                <Avatar agent={a.id} icon={a.icon} renderIcon={renderIcon} size="sm" /><span className="min-w-0 flex-1 truncate font-medium">{prettyAgent(a.id)}</span><span className="shrink-0 font-mono text-[11px] text-muted-foreground">@{a.id}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="rounded-xl border bg-background focus-within:border-primary/60">
+          {files.length > 0 && (
+            <div className="flex flex-wrap gap-1 px-2.5 pt-2">
+              {files.map((f, i) => (
+                <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px]">
+                  <Paperclip className="h-3 w-3 text-muted-foreground" />{f.name || 'pasted file'}
+                  <button onClick={() => setFiles((x) => x.filter((_, k) => k !== i))} aria-label="Remove attachment" className="text-muted-foreground hover:text-foreground"><X className="h-3 w-3" /></button>
+                </span>
+              ))}
+            </div>
+          )}
+          <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = '' }} />
+          <div className="flex items-end gap-1 p-1.5">
+            <Textarea ref={inputRef} value={draft} onChange={(e) => { setDraft(e.target.value); setPick(0) }} rows={1} placeholder="Reply in thread" onKeyDown={onKey}
+              onPaste={(e) => { const fs = Array.from(e.clipboardData.files); if (fs.length) { e.preventDefault(); addFiles(fs) } }}
+              className="max-h-40 min-h-[36px] resize-none border-0 bg-transparent text-sm shadow-none focus-visible:ring-0" />
+            <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0 text-muted-foreground" onClick={() => fileRef.current?.click()} title="Attach files (or paste / drop them)" aria-label="Attach files"><Paperclip className="h-3.5 w-3.5" /></Button>
+            <Button size="icon" className="h-7 w-7 shrink-0" disabled={(!draft.trim() && files.length === 0) || busy || !view} onClick={() => send(draft)} aria-label="Send reply"><Send className="h-3.5 w-3.5" /></Button>
+          </div>
         </div>
         {err && <p className="pt-1 text-xs text-destructive">{err}</p>}
+        {info.length > 0 && <div className="mt-1 space-y-0.5 rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">{info.map((n, i) => <div key={i} className="break-words">{n}</div>)}</div>}
       </div>
     </aside>
   )
@@ -741,6 +805,8 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   }
 
   const sessionIds = view?.sessionIds ?? []
+  // Quick replies are offered only on the newest message, and not once I've started answering.
+  const newestSeq = outgoing.length === 0 && all.length ? all[all.length - 1].seq : 0
   // Everything in the stream, in the order it happened: what was said, the cards the conversation's
   // sessions raised (approvals, questions, deliverables, proposals) and the hand-offs its agent made.
   type Item = { at: number; key: string; msg?: DmMessage; card?: Msg; handoff?: DmHandoff }
@@ -849,7 +915,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
                   <div className="my-3 flex items-center gap-3 px-5 text-[11px] text-muted-foreground">
                     <div className="h-px flex-1 border-t border-dashed" />{m.body === 'New session' && <RotateCcw className="h-3 w-3" />} {m.body} · {clock(m.createdAt)}<div className="h-px flex-1 border-t border-dashed" />
                   </div>
-                ) : <MessageRow m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} onThread={m.seq > 0 ? () => onThread(m.seq) : undefined} />}
+                ) : <MessageRow m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} onThread={m.seq > 0 ? () => onThread(m.seq) : undefined} onAction={m.seq === newestSeq && !m.replies ? (t) => send(t) : undefined} />}
                 {failed && (
                   <div className="flex items-center gap-2 pl-[4.25rem] text-xs text-destructive">
                     <CircleAlert className="h-3.5 w-3.5" /> {failed}
@@ -964,7 +1030,17 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
         <ThreadPanel
           view={view?.threadView} typing={(view?.typing ?? []).filter((t) => t.thread === openThread)} nameOf={nameOf} avatarOf={avatarOf}
           onClose={() => onThread(0)}
-          onSend={async (text) => { const r = isRoom ? await api.roomSend(id, text, undefined, openThread) : await api.dmSend(id, text, undefined, openThread); if (!r.error) { await load(); onChanged() } return r.error }}
+          agents={isRoom ? room!.agents : []} renderIcon={renderIcon}
+          onSend={async (text, attached) => {
+            let payload: ChatFile[] | undefined
+            if (attached.length) {
+              if (attached.reduce((n, f) => n + f.size, 0) > 15 * 1024 * 1024) return { error: 'Attachments are too large — 15 MB per message at most.' }
+              try { payload = await Promise.all(attached.map(readFile)) } catch { return { error: 'Could not read an attachment.' } }
+            }
+            const r: { error?: string; notes?: string[] } = isRoom ? await api.roomSend(id, text, payload, openThread) : await api.dmSend(id, text, payload, openThread)
+            if (!r.error) { await load(); onChanged() }
+            return r
+          }}
         />
       )}
       {isRoom && details && openThread === 0 && <RoomDetails me={me} room={room!} people={people} agents={agents} renderIcon={renderIcon} onChanged={() => { load(); onChanged() }} onLeft={onRemoved} onClose={() => setDetails(false)} />}

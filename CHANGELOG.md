@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.478.0] - 2026-11-24
+### Added
+- **Quick-action pills.** An agent can end a message with `[[actions: Go ahead | Show me the plan | Not now]]`
+  and the reader gets one-tap replies under it (up to 4, on the newest message only). Works in DMs, rooms,
+  threads and `message_send`.
+  **For users:** Agents can now offer one-tap replies under their messages — tap one instead of typing. [Open Messages](#/chat)
+- **Threads have a full reply box.** Attach files (paperclip, paste, drop), use `/` commands and `@` an
+  agent from inside a thread. A `/bg` run or `/remind` started in a thread reports back into that thread.
+- **Agents in a room know how to reach the others.** Their opening prompt now says how to hand work to
+  another agent (`@agent-id`) and how to get a person's attention (`@first-name`, `@everyone`) — an agent's
+  mention of a person is a real mention: red badge, toast, and a Slack/Discord ping if they're away.
+
 ## [0.477.2] - 2026-11-24
 ### Added
 - **Messages shows how long an agent has been working.** The "working on it…" line now carries a live

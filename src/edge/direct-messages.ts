@@ -171,7 +171,7 @@ const MAX_FILES = 6;
 
 /** A hand-off the conversation's agent made to another agent — shown inline as a status card. */
 export interface DmHandoff { sessionId: string; agent: string; title: string; status: string; working: boolean; blocked: boolean; summary?: string; createdAt: number; kind: string }
-export interface DmJob { id: string; kind: 'bg' | 'remind'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null }
+export interface DmJob { id: string; kind: 'bg' | 'remind'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null; thread: number | null }
 export interface InboundFile { name: string; data: Buffer }
 /** What both thread shapes carry beyond the messages themselves. */
 export interface ThreadExtras {
@@ -369,7 +369,9 @@ export class DirectMessages {
         body = (cmd[1] ?? '').trim();
         if (!body) return { ok: true, message: marker, sessionId: null };
       } else {
-        const r = this.command(me, room0, [agent], body);
+        const at = this.threadRoot(room0.id, opts.thread);
+        if (at === false) return { ok: false, status: 404, error: 'that thread no longer exists' };
+        const r = this.command(me, room0, [agent], body, at?.seq);
         if (r) return r.ok ? { ok: true, message: r.message, sessionId: room0.sessionId, notes: r.notes } : r;
       }
     }
@@ -591,7 +593,9 @@ export class DirectMessages {
         if (!body) return { ok: true, message: marker, delivered: [], notes: [] };
         parts = this.rooms.participants(roomId);
       } else {
-        const r = this.command(me, room, parts.filter((p) => p.kind === 'agent').map((p) => p.id), body);
+        const at = this.threadRoot(roomId, opts.thread);
+        if (at === false) return { ok: false, status: 404, error: 'that thread no longer exists' };
+        const r = this.command(me, room, parts.filter((p) => p.kind === 'agent').map((p) => p.id), body, at?.seq);
         if (r) return r.ok ? { ok: true, message: r.message, delivered: [], notes: r.notes } : r;
       }
     }
@@ -674,12 +678,16 @@ export class DirectMessages {
   /** The opening prompt of an agent's session in a room: where it is, who is there, how to behave. */
   private roomPrompt(room: ChatRoom, parts: ChatParticipant[], agent: string, missed: string[], who: string, body: string): string {
     const people = parts.filter((p) => p.kind === 'member').map((p) => this.person(p.id).name);
-    const others = parts.filter((p) => p.kind === 'agent' && p.id !== agent).map((p) => pretty(p.id));
+    const otherIds = parts.filter((p) => p.kind === 'agent' && p.id !== agent).map((p) => p.id);
+    const firsts = [...new Set(people.map((n) => n.split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9]/g, '')).filter(Boolean))];
     const lines = [
       `You are ${pretty(agent)}, taking part in ${room.name ? `the room "#${room.name}"` : 'a group chat'} in the Agentric console — a shared chat, like a channel with colleagues.`,
-      `People here: ${people.join(', ')}.${others.length ? ` Other agents here: ${others.join(', ')}.` : ''}`,
+      `People here: ${people.join(', ')}.${otherIds.length ? ` Other agents here: ${otherIds.map(pretty).join(', ')}.` : ''}`,
+      // How to reach the others. Without this an agent has no way to know a mention DOES anything.
+      `You can pull others in by @mentioning them in your message: ${otherIds.length ? `another agent by its id (${otherIds.map((a) => `@${a}`).join(', ')}) — it is handed your message and answers here; ` : ''}a person by first name (${firsts.map((f) => `@${f}`).join(', ')}) or @everyone — they are notified at once, including outside the app if they are away. Mention someone only when you actually need them; agents can pass work along at most ${MAX_AGENT_HOPS} times before a person has to step in.`,
       'You are only brought in when someone addresses you. Each time, you are shown what was said since your last turn, then the message for you.',
       'Everyone in the room sees ONLY the final message you write each turn; your tool calls and interim notes are tucked away behind it.',
+      ACTIONS_HINT,
       'So answer the way a teammate would in a group chat: reply to the person who asked, lead with the answer, keep it short, and do the work rather than describing it. You act on behalf of whoever addressed you.',
     ];
     if (missed.length) { lines.push('', 'Said in the room so far (most recent last):'); lines.push(...missed); }
@@ -698,7 +706,9 @@ export class DirectMessages {
     // A reply whose thread has gone (or was never a main-stream message) lands in the main stream instead.
     const thread = extra.thread && this.threadRoot(room.id, extra.thread) ? extra.thread : null;
     const mentions = room.kind === 'room' ? this.peopleMentioned(body, this.rooms.participants(room.id)) : undefined;
-    const msg = this.rooms.post(room.id, 'agent', agent, body, steps, at, { tag: extra.tag, thread, mentions, took: extra.took });
+    // Quick actions: a trailing `[[actions: A | B | C]]` line becomes one-tap replies, and leaves the text.
+    const offered = splitActions(body);
+    const msg = this.rooms.post(room.id, 'agent', agent, offered.body, steps, at, { tag: extra.tag, thread, mentions, took: extra.took, actions: offered.actions });
     chatBus.emit('changed', this.os);
     this.notify(room, msg);
     return msg;
@@ -783,7 +793,7 @@ export class DirectMessages {
   private extras(roomId: string, live: string[], me: Member): ThreadExtras {
     return {
       cardSessionIds: this.tm.dmSessionIds(roomId),
-      jobs: this.rooms.openJobs(roomId).map((j) => ({ id: j.id, kind: j.kind, agent: j.agent, request: j.request, status: j.status, createdAt: j.createdAt, dueAt: j.dueAt })),
+      jobs: this.rooms.openJobs(roomId).map((j) => ({ id: j.id, kind: j.kind, agent: j.agent, request: j.request, status: j.status, createdAt: j.createdAt, dueAt: j.dueAt, thread: j.threadId })),
       handoffs: live.flatMap((sid) => this.handoffs(sid, me)),
     };
   }
@@ -843,7 +853,7 @@ export class DirectMessages {
    * A slash command other than `/new`. Returns null when `body` isn't one (it is then an ordinary
    * message — a path like `/etc/hosts` must still be sayable). `agents` = who the command could be for.
    */
-  private command(me: Member, room: ChatRoom, agents: string[], body: string): { ok: true; message: ChatMessage | null; notes: string[] } | Fail | null {
+  private command(me: Member, room: ChatRoom, agents: string[], body: string, thread?: number): { ok: true; message: ChatMessage | null; notes: string[] } | Fail | null {
     const m = /^\/([a-z]+)(?:\s+([\s\S]*))?$/i.exec(body);
     const name = m?.[1].toLowerCase();
     if (!m || !COMMANDS.some((c) => c.name === name)) return null;
@@ -886,8 +896,8 @@ export class DirectMessages {
       ].join('\n');
       const s = this.tm.createSession(agent, `Background · ${clip(rest, 60)}`, prompt, `chat:${me.id}`, true, undefined, undefined, me.id, undefined, false);
       this.tm.markDmSession(s.id, room.id);
-      this.rooms.addJob({ roomId: room.id, kind: 'bg', agent, memberId: me.id, request: rest, sessionId: s.id, status: 'running' });
-      const message = this.rooms.post(room.id, 'member', me.id, rest, undefined, Date.now(), { tag: 'bg' });
+      this.rooms.addJob({ roomId: room.id, kind: 'bg', agent, memberId: me.id, request: rest, sessionId: s.id, status: 'running', thread });
+      const message = this.rooms.post(room.id, 'member', me.id, rest, undefined, Date.now(), { tag: 'bg', thread });
       chatBus.emit('changed', this.os);
       return { ok: true, message, notes: [] };
     }
@@ -895,7 +905,7 @@ export class DirectMessages {
       const agent = pick();
       if (!rest) return { ok: false, status: 400, error: 'usage: /task <title>' };
       const task = this.os.tasks.create({ tenant: this.os.tenant, title: clip(rest, 200), assignee: agent ? `agent:${agent}` : undefined, owner: me.id, autoDispatch: false, createdBy: me.id });
-      const message = this.rooms.post(room.id, 'system', me.id, `${who} filed a task${agent ? ` for ${pretty(agent)}` : ''}: “${clip(rest, 120)}”`);
+      const message = this.rooms.post(room.id, 'system', me.id, `${who} filed a task${agent ? ` for ${pretty(agent)}` : ''}: “${clip(rest, 120)}”`, undefined, Date.now(), { thread });
       chatBus.emit('changed', this.os);
       return { ok: true, message, notes: [`Task filed — ${this.tm.consoleLink(`tasks/${task.id}`)}`] };
     }
@@ -907,8 +917,8 @@ export class DirectMessages {
       rest = what;
       const agent = pick() ?? '';
       const due = Date.now() + ms;
-      this.rooms.addJob({ roomId: room.id, kind: 'remind', agent, memberId: me.id, request: rest, status: 'scheduled', dueAt: due });
-      const message = this.rooms.post(room.id, 'system', me.id, `⏰ ${who} set a reminder for ${new Date(due).toLocaleString()}: ${clip(rest, 160)}`);
+      this.rooms.addJob({ roomId: room.id, kind: 'remind', agent, memberId: me.id, request: rest, status: 'scheduled', dueAt: due, thread });
+      const message = this.rooms.post(room.id, 'system', me.id, `⏰ ${who} set a reminder for ${new Date(due).toLocaleString()}: ${clip(rest, 160)}`, undefined, Date.now(), { thread });
       chatBus.emit('changed', this.os);
       return { ok: true, message, notes: [] };
     }
@@ -928,20 +938,23 @@ export class DirectMessages {
         if (!ended || (pulse && pulse.mtime && now - pulse.mtime < SETTLE_MS)) continue;
         const turns = pulse ? this.tm.sessionConversation(job.sessionId).turns.filter((t) => t.kind !== 'user') : [];
         const msg = foldReply(turns);
-        if (msg) this.postAgent(room, job.agent, msg.body, msg.steps, now, { tag: 'bg' });
-        else this.rooms.post(room.id, 'system', job.memberId, `${pretty(job.agent)}'s background run ended without reporting anything back`);
+        // Back to where it was asked for — the thread, if that is still there.
+        const back = job.threadId && this.threadRoot(room.id, job.threadId) ? job.threadId : null;
+        if (msg) this.postAgent(room, job.agent, msg.body, msg.steps, now, { tag: 'bg', thread: back });
+        else this.rooms.post(room.id, 'system', job.memberId, `${pretty(job.agent)}'s background run ended without reporting anything back`, undefined, now, { thread: back });
         this.rooms.finishJob(job.id, msg ? 'done' : 'failed');
         chatBus.emit('changed', this.os);
       } else if (job.dueAt != null && job.dueAt <= now) {
         this.rooms.finishJob(job.id, 'done');
         const me = this.os.team.getMember(job.memberId);
-        this.rooms.post(room.id, 'system', job.memberId, `⏰ Reminder: ${job.request}`);
+        const back = job.threadId && this.threadRoot(room.id, job.threadId) ? job.threadId : null;
+        this.rooms.post(room.id, 'system', job.memberId, `⏰ Reminder: ${job.request}`, undefined, now, { thread: back });
         // The reminder is also handed to the agent, as the person who set it — so it follows up, not just beeps.
         const agent = room.kind === 'dm' ? room.agent : job.agent;
         if (me && agent && !this.canChat(me, agent)) {
           const text = `This is a reminder ${me.name || me.email} set earlier: ${job.request}`;
-          if (room.kind === 'dm') this.dmDeliver(me, this.sync(room).room, text);
-          else { const parts = this.rooms.participants(room.id); this.roomDeliver(me, room, parts, agent, text, me.name || me.email, 0); }
+          if (room.kind === 'dm') this.dmDeliver(me, this.sync(room).room, text, back);
+          else { const parts = this.rooms.participants(room.id); this.roomDeliver(me, room, parts, agent, text, me.name || me.email, 0, undefined, back); }
         }
         chatBus.emit('changed', this.os);
       }
@@ -1012,6 +1025,7 @@ export class DirectMessages {
     const lines = [
       `You are in a direct-message conversation with ${who} in the Agentric console — a chat window, like a DM with a colleague.`,
       'They see ONLY the final message you write each turn; your tool calls and interim notes are tucked away behind it.',
+      ACTIONS_HINT,
       'So answer the way a teammate would in chat: lead with the answer, keep it short, use plain language, and do the work rather than describing it. If something will take a while, say so in a sentence and carry on.',
     ];
     if (recent.length) {
@@ -1021,6 +1035,19 @@ export class DirectMessages {
     lines.push('', `${who}: ${body}`, tagFor(thread));
     return lines.join('\n');
   }
+}
+
+const ACTIONS_HINT = 'When there are obvious next moves, you may offer up to 4 one-tap replies by ending your message with one line like `[[actions: Yes, ship it | Show me the diff | Not now]]` — each is sent back to you as their message when tapped, so word them as things THEY would say. Only when it genuinely saves them typing.';
+const ACTIONS = /\n?[ \t]*\[\[actions?:([^\]]*)\]\][ \t]*$/i;
+/** Peel a trailing `[[actions: …]]` line off an agent's message. */
+export function splitActions(text: string): { body: string; actions?: string[] } {
+  const trimmed = text.trimEnd();
+  const m = ACTIONS.exec(trimmed);
+  if (!m) return { body: text };
+  const actions = [...new Set(m[1].split('|').map((a) => a.trim().replace(/^["'`]|["'`]$/g, '')).filter((a) => a && a.length <= 80))].slice(0, 4);
+  const body = trimmed.slice(0, m.index).trimEnd();
+  // A message that is ONLY actions has nothing to hang them on — keep it as written.
+  return actions.length && body ? { body, actions } : { body: text };
 }
 
 /** Collapse one agent turn into a message: the LAST prose is what was said; the rest is how it got there. */
