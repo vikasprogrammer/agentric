@@ -7,6 +7,12 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.477.1] - 2026-11-24
+### Changed
+- **Cockpit's "Chat" launch opens Messages.** The request is sent as the next message in your
+  conversation with the routed agent (added to your contacts if needed) instead of starting a session on
+  the deprecated Chat page. "Open full session" on a Cockpit answer/action opens the session itself.
 - **Deploys no longer re-run the test suite on remote boxes** when this deploy's own local checkout runs
   it for the same commit (CI has too). The remote runs were the long pole — 4+ minutes on the slowest box,
   with every tenant's restart waiting behind it. A remote-only deploy (`--only <remote>`) still runs it
