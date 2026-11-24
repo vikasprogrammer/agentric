@@ -533,7 +533,7 @@ Key modules:
   + humans co-author. Markdown on disk (`<home>/kb/<section>/<slug>.md`) + SQLite/FTS mirror, full
   **revision chain + revert**, auto-apply + audit (no gate). Agent tools `kb_search`/`kb_read`/`kb_write`/
   `kb_history`/`kb_revert`; console **Knowledge** page. See `docs/knowledge-base-plan.md`.
-- `src/edge/direct-messages.ts` + `src/state/chat-rooms.ts` — **Messages** (`#/dm`, `web/src/messages.tsx`):
+- `src/edge/direct-messages.ts` + `src/state/chat-rooms.ts` — **Messages** (`#/chat`, `web/src/messages.tsx`):
   DM an agent like a teammate. A ROOM owns its messages (`chat_rooms`/`chat_messages`/`chat_reads`); the
   governed session behind it is plumbing — warm-delivered, cold-resumed, or silently replaced with a recap
   (`term_sessions.dm_room` → `Session.dm` hides it from the lists). `sync` folds a whole turn into ONE

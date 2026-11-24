@@ -35,7 +35,7 @@ const ROUTES: Route[] = ['setup', 'overview', 'feed', 'inbox', 'dm', 'cockpit', 
 // The single source of truth for a page's human name — used for the header <h1> AND the browser-tab
 // title, so both always agree. The `agent` detail page appends the agent id at the call site.
 const ROUTE_TITLES: Record<Route, string> = {
-  setup: 'Set up', overview: 'Overview', feed: 'Feed', inbox: 'Inbox', dm: 'Messages', cockpit: 'Cockpit', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
+  setup: 'Set up', overview: 'Overview', feed: 'Feed', inbox: 'Inbox', dm: 'Messages', cockpit: 'Cockpit', chat: 'Messages', sessions: 'Sessions', agents: 'Agents',
   'new-agent': 'New agent', agent: 'Agent', connectors: 'Connections', team: 'Team',
   automations: 'Automations', goals: 'Goals', tasks: 'Tasks', memory: 'Memory', insights: 'Insights',
   kb: 'Knowledge Base', skills: 'Skills', apps: 'Apps', files: 'Files', artifacts: 'Library', audit: 'Audit log',
@@ -1478,7 +1478,8 @@ interface NavMeta { key: NavKey; route: Route; label: string; icon: ReactNode; a
 const PINNABLE_NAV: NavMeta[] = [
   { key: 'feed',        route: 'feed',        label: 'Feed',        icon: <Activity className="h-4 w-4" />, beta: true },
   { key: 'cockpit',     route: 'cockpit',     label: 'Cockpit',     icon: <Gauge className="h-4 w-4" />, beta: true },
-  { key: 'chat',        route: 'chat',        label: 'Chat',        icon: <MessageSquare className="h-4 w-4" />, beta: true },
+  // 'chat' (the old session-per-conversation Chat page) is DEPRECATED: Messages took over the #/chat slug and
+  // is a permanent sidebar anchor, so it is no longer pinnable. The key stays in NavKey so saved pins still parse.
   { key: 'goals',       route: 'goals',       label: 'Goals',       icon: <Target className="h-4 w-4" /> },
   { key: 'tasks',       route: 'tasks',       label: 'Tasks',       icon: <ListChecks className="h-4 w-4" /> },
   { key: 'artifacts',   route: 'artifacts',   label: 'Library',     icon: <Package className="h-4 w-4" /> },
@@ -1551,7 +1552,7 @@ function Console({ me }: { me: Member }) {
   const dismissToast = (key: string) => setToasts((t) => t.filter((x) => x.key !== key))
   const { route, detail, query: urlQuery, nav, setQuery: setUrlQuery, backTo } = useHashRoute()
   useEffect(() => {
-    if (route === 'dm') return // the page itself reports unread while it's open
+    if (route === 'chat' || route === 'dm') return // the page itself reports unread while it's open
     let alive = true
     const tick = async () => { const r = await api.dmList(); if (alive && !r.error) setDmUnread(r.contacts.reduce((n, c) => n + c.unread, 0)) }
     tick()
@@ -2019,7 +2020,12 @@ function Console({ me }: { me: Member }) {
     )
   }
   // A live terminal takes the whole content area (no padding/scroll wrapper).
-  const fullBleed = (route === 'sessions' && !!selected) || route === 'dm'
+  // DEPRECATED: the old Chat page (one session per conversation). Messages owns #/chat now; the old page is
+  // kept only for a deep link that names a SESSION (`#/chat/ses_…`, which Cockpit's chat launch still makes).
+  const legacyChat = route === 'chat' && detail.startsWith('ses_')
+  // #/dm was Messages' first address — keep old links working.
+  useEffect(() => { if (route === 'dm') nav('chat', detail) }, [route, detail])
+  const fullBleed = (route === 'sessions' && !!selected) || (route === 'chat' && !legacyChat)
 
   return (
     <WaitingCtx.Provider value={waiting}>
@@ -2076,7 +2082,7 @@ function Console({ me }: { me: Member }) {
           <nav className="space-y-1">
             {me.role === 'owner' && <NavItem icon={<LayoutGrid className="h-4 w-4" />} label="Overview" active={route === 'overview'} href={navHref('overview')} onClick={() => nav('overview')} />}
             <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} href={navHref('inbox')} onClick={() => nav('inbox')} />
-            <NavItem icon={<MessagesSquare className="h-4 w-4" />} label="Messages" active={route === 'dm'} badge={dmUnread || undefined} href={navHref('dm')} onClick={() => nav('dm')} />
+            <NavItem icon={<MessagesSquare className="h-4 w-4" />} label="Messages" active={route === 'chat' || route === 'dm'} badge={dmUnread || undefined} href={navHref('chat')} onClick={() => nav('chat')} />
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} href={navHref('agents')} onClick={() => nav('agents')} />
             {pinnedNav.map((n) => (
               <NavItem key={n.key} icon={n.icon} label={n.label} beta={n.beta} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned onTogglePin={() => togglePin(n.key)} />
@@ -2178,9 +2184,9 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onPause={pauseSession} onUnpause={unpauseSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} doneToday={doneToday} members={members} agents={state?.agents ?? []} maturity={maturity} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} agents={state?.agents ?? []} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
-          {route === 'dm' && <MessagesPage me={me} selected={detail} onSelect={(a) => nav('dm', a)} messages={messages} renderIcon={(icon, cls) => <AgentIcon icon={icon} className={cls} />} renderPending={(m) => <PendingCard m={m} />} onUnread={setDmUnread} onOpenSession={me.role === 'member' ? undefined : (id) => nav('sessions', 'aos-' + id)} />}
+          {route === 'chat' && !legacyChat && <MessagesPage me={me} selected={detail} onSelect={(a) => nav('chat', a)} messages={messages} renderIcon={(icon, cls) => <AgentIcon icon={icon} className={cls} />} renderPending={(m) => <PendingCard m={m} />} onUnread={setDmUnread} onOpenSession={me.role === 'member' ? undefined : (id) => nav('sessions', 'aos-' + id)} />}
           {route === 'cockpit' && <CockpitPage agents={state?.agents ?? []} sessions={sessions} onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
-          {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
+          {legacyChat && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
           {route === 'profile' && <ProfilePage me={state?.me ?? me} prefs={prefs} onSavePrefs={savePrefs} onProfileChange={refreshState} />}
