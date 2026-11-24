@@ -18,7 +18,9 @@ import type { Db } from './db';
 export interface ChatStep { t: 'say' | 'do'; text: string; detail?: string; status?: 'running' | 'ok' | 'error' }
 
 export interface ChatRoom {
-  id: string; kind: 'dm'; memberId: string; agent: string; sessionId: string | null;
+  /** 'dm' = one member + one agent. 'room' = several members and/or agents; `name` set = a named room,
+   *  unset = a group DM. For a room `memberId` is its creator and `agent` is ''. */
+  id: string; kind: 'dm' | 'room'; name: string | null; memberId: string; agent: string; sessionId: string | null;
   syncedTurns: number; syncedMark: string | null; hidden: boolean; createdAt: number; lastMessageAt: number | null;
 }
 
@@ -29,13 +31,13 @@ export interface ChatMessage {
 }
 
 interface RoomRow {
-  id: string; kind: string; member_id: string; agent: string; session_id: string | null;
+  id: string; kind: string; name?: string | null; member_id: string; agent: string; session_id: string | null;
   synced_turns: number; synced_mark: string | null; hidden: number; created_at: number; last_message_at: number | null;
 }
 interface MsgRow { seq: number; room_id: string; author_kind: string; author_id: string; body: string; meta: string | null; created_at: number }
 
 const toRoom = (r: RoomRow): ChatRoom => ({
-  id: r.id, kind: 'dm', memberId: r.member_id, agent: r.agent, sessionId: r.session_id,
+  id: r.id, kind: r.kind === 'room' ? 'room' : 'dm', name: r.name ?? null, memberId: r.member_id, agent: r.agent, sessionId: r.session_id,
   syncedTurns: r.synced_turns, syncedMark: r.synced_mark, hidden: !!r.hidden, createdAt: r.created_at, lastMessageAt: r.last_message_at,
 });
 
@@ -109,12 +111,13 @@ export class ChatRoomStore {
     return r ? toMsg(r) : undefined;
   }
 
-  /** Agent messages this member hasn't seen yet. */
+  /** Messages from anyone else (agents, other members) this member hasn't seen yet. */
   unread(roomId: string, memberId: string): number {
     const r = this.db.prepare(
-      `SELECT COUNT(*) AS c FROM chat_messages WHERE room_id = ? AND author_kind = 'agent'
+      `SELECT COUNT(*) AS c FROM chat_messages WHERE room_id = ? AND author_kind != 'system'
+          AND NOT (author_kind = 'member' AND author_id = ?)
           AND seq > COALESCE((SELECT last_read_seq FROM chat_reads WHERE room_id = ? AND member_id = ?), 0)`,
-    ).get<{ c: number }>(roomId, roomId, memberId);
+    ).get<{ c: number }>(roomId, memberId, roomId, memberId);
     return r?.c ?? 0;
   }
 
@@ -124,4 +127,71 @@ export class ChatRoomStore {
        ON CONFLICT(room_id, member_id) DO UPDATE SET last_read_seq = excluded.last_read_seq`,
     ).run(roomId, memberId, roomId);
   }
+
+  // ── Multi-party rooms (kind 'room') ─────────────────────────────────────────────────────────────
+
+  get(roomId: string): ChatRoom | undefined {
+    const r = this.db.prepare('SELECT * FROM chat_rooms WHERE id = ?').get<RoomRow>(roomId);
+    return r ? toRoom(r) : undefined;
+  }
+
+  createRoom(creatorId: string, name: string | null): ChatRoom {
+    const id = `room_${randomBytes(8).toString('hex')}`;
+    this.db.prepare("INSERT INTO chat_rooms (id, kind, name, member_id, agent, created_at) VALUES (?, 'room', ?, ?, '', ?)").run(id, name, creatorId, Date.now());
+    return this.get(id)!;
+  }
+
+  rename(roomId: string, name: string | null): void { this.db.prepare('UPDATE chat_rooms SET name = ? WHERE id = ?').run(name, roomId); }
+
+  /** Rooms this member is in, most recently active first. */
+  roomsFor(memberId: string): ChatRoom[] {
+    return this.db.prepare(
+      `SELECT r.* FROM chat_rooms r JOIN chat_participants p ON p.room_id = r.id AND p.kind = 'member' AND p.id = ?
+        WHERE r.kind = 'room' ORDER BY COALESCE(r.last_message_at, r.created_at) DESC`,
+    ).all<RoomRow>(memberId).map(toRoom);
+  }
+
+  participants(roomId: string): ChatParticipant[] {
+    return this.db.prepare('SELECT * FROM chat_participants WHERE room_id = ? ORDER BY added_at, id').all<PartRow>(roomId).map((p) => ({
+      roomId: p.room_id, kind: p.kind === 'agent' ? 'agent' : 'member', id: p.id, sessionId: p.session_id,
+      syncedTurns: p.synced_turns, syncedMark: p.synced_mark, seenSeq: p.seen_seq,
+    }));
+  }
+
+  isMember(roomId: string, memberId: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM chat_participants WHERE room_id = ? AND kind = 'member' AND id = ?").get(roomId, memberId);
+  }
+
+  addParticipant(roomId: string, kind: 'member' | 'agent', id: string): boolean {
+    return this.db.prepare('INSERT OR IGNORE INTO chat_participants (room_id, kind, id, added_at) VALUES (?, ?, ?, ?)').run(roomId, kind, id, Date.now()).changes > 0;
+  }
+
+  removeParticipant(roomId: string, kind: 'member' | 'agent', id: string): boolean {
+    return this.db.prepare('DELETE FROM chat_participants WHERE room_id = ? AND kind = ? AND id = ?').run(roomId, kind, id).changes > 0;
+  }
+
+  /** Point an agent's lane in a room at a (new) session, or at none. Resets its transcript cursor. */
+  setLaneSession(roomId: string, agent: string, sessionId: string | null): void {
+    this.db.prepare("UPDATE chat_participants SET session_id = ?, synced_turns = 0, synced_mark = NULL WHERE room_id = ? AND kind = 'agent' AND id = ?").run(sessionId, roomId, agent);
+  }
+
+  setLaneSync(roomId: string, agent: string, turns: number, mark: string): void {
+    this.db.prepare("UPDATE chat_participants SET synced_turns = ?, synced_mark = ? WHERE room_id = ? AND kind = 'agent' AND id = ?").run(turns, mark, roomId, agent);
+  }
+
+  /** How far into the room this agent has been shown — the next message it gets carries what came after. */
+  setLaneSeen(roomId: string, agent: string, seq: number): void {
+    this.db.prepare("UPDATE chat_participants SET seen_seq = ? WHERE room_id = ? AND kind = 'agent' AND id = ?").run(seq, roomId, agent);
+  }
+
+  deleteRoom(roomId: string): void {
+    for (const t of ['chat_messages', 'chat_participants', 'chat_reads']) this.db.prepare(`DELETE FROM ${t} WHERE room_id = ?`).run(roomId);
+    this.db.prepare("DELETE FROM chat_rooms WHERE id = ? AND kind = 'room'").run(roomId);
+  }
 }
+
+export interface ChatParticipant {
+  roomId: string; kind: 'member' | 'agent'; id: string; sessionId: string | null;
+  syncedTurns: number; syncedMark: string | null; seenSeq: number;
+}
+interface PartRow { room_id: string; kind: string; id: string; session_id: string | null; synced_turns: number; synced_mark: string | null; seen_seq: number; added_at: number }

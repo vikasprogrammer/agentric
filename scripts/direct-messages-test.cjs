@@ -217,6 +217,87 @@ console.log('\n\x1b[1m8) /new starts a new session with a clean slate\x1b[0m');
   assert(dms.list(alice).contacts[0].unread === 0, 'markers do not count as unread');
 }
 
+console.log('\n\x1b[1m9) rooms: membership, @-addressing, a session per agent, context catch-up\x1b[0m');
+{
+  const carol = aos.team.invite({ email: 'carol@example.com', role: 'admin' }).member;
+  aos.db.prepare("UPDATE members SET status = 'active', name = CASE id WHEN ? THEN 'Alice' WHEN ? THEN 'Carol' ELSE 'Bob' END").run(alice.id, carol.id);
+  const A = aos.team.getMember(alice.id), C = aos.team.getMember(carol.id), B = aos.team.getMember(bob.id);
+  // a second agent to talk to
+  const dir = path.join(HOME, 'agents', 'helper');
+  fs.mkdirSync(dir, { recursive: true });
+  const src = aos.agents.get(AGENT);
+  aos.registerAgent({ ...src, id: 'helper', description: 'A second agent', dir, category: undefined });
+
+  assert(dms.createRoom(A, { members: [], agents: [] }).ok === false, 'a room needs someone besides you');
+  const made = dms.createRoom(A, { name: '#launch', members: [C.id, B.id], agents: [AGENT, 'helper'] });
+  assert(made.ok, 'room created', JSON.stringify(made));
+  const id = made.id;
+  const sum = dms.roomList(A)[0];
+  assert(sum.name === 'launch' && sum.members.length === 3 && sum.agents.length === 2, 'named, 3 people + 2 agents');
+  assert(dms.roomList(C).length === 1 && dms.roomList(B).length === 1, 'every member sees it');
+  const dave = aos.team.invite({ email: 'dave@example.com', role: 'admin' }).member;
+  assert(dms.roomThread(dave, id).ok === false && dms.roomSend(dave, id, 'hi').ok === false, 'a non-member can neither read nor post');
+
+  const n0 = spawned.length;
+  const m1 = dms.roomSend(A, id, 'morning all, launch is thursday');
+  assert(m1.ok && m1.delivered.length === 0 && spawned.length === n0, 'people talking: no agent runs');
+  const m2 = dms.roomSend(C, id, 'works for me');
+  assert(dms.roomList(A)[0].unread === 1 && dms.roomList(A)[0].lastAuthor === 'Carol', "Carol's message is unread for Alice");
+
+  const m3 = dms.roomSend(A, id, '@helper can you draft the announcement?');
+  await settle();
+  const lane = () => aos.chatRooms.participants(id).find((p) => p.id === 'helper');
+  const hs = lane().sessionId;
+  assert(m3.ok && m3.delivered.join() === 'helper' && spawned.includes('aos-' + hs), 'an @mention runs exactly that agent', JSON.stringify([m3.delivered, spawned.length - n0]));
+  const task = row(hs).task;
+  assert(/room "#launch"/.test(task) && /launch is thursday/.test(task) && /Carol: works for me/.test(task) && /Alice to you: @helper can you draft/.test(task), 'its first prompt carries the room so far', task.slice(0, 200));
+  assert(row(hs).run_as === alice.id && row(hs).dm_room === id, 'runs as the person who addressed it; session flagged hidden');
+  assert(!aos.chatRooms.participants(id).find((p) => p.id === AGENT).sessionId, 'the other agent was not woken');
+
+  setWorking(hs, true);
+  write(hs, [user(task), tool('h1', 'Bash', { command: 'ls' }), result('h1'), say('Draft is ready: "We launch Thursday."')]);
+  let t = dms.roomThread(C, id);
+  assert(t.typing.length === 1 && t.typing[0].agent === 'helper', 'the room shows who is typing');
+  setWorking(hs, false);
+  t = dms.roomThread(C, id, { read: true });
+  const last = t.messages.slice(-1)[0];
+  assert(last.authorKind === 'agent' && last.authorId === 'helper' && last.authorName === 'Helper' && /Draft is ready/.test(last.body) && last.steps.length === 1, 'the reply lands in the room for everyone, steps tucked');
+  assert(t.messages.find((m) => m.seq === m1.message.seq).authorName === 'Alice', 'member messages carry their author name');
+
+  dms.roomSend(C, id, 'make it punchier');
+  const inj = injected.length;
+  const m5 = dms.roomSend(C, id, '@Helper one more pass please');
+  assert(m5.delivered.join() === 'helper' && lane().sessionId === hs, 'a second mention reuses the same session (case-insensitive)');
+  const typed = injected.slice(inj).map((i) => i.text).join(' ');
+  assert(/Carol: make it punchier/.test(typed) && /Carol to you: @Helper one more pass/.test(typed) && !/launch is thursday/.test(typed), 'and is shown only what it missed', typed.slice(0, 200));
+  assert(row(hs).run_as === carol.id, 'now acting for Carol');
+
+  const m6 = dms.roomSend(B, id, '@helper do it for me');
+  assert(m6.ok && m6.delivered.length === 0 && m6.notes.length === 1, 'a member who cannot run the agent posts, but does not wake it');
+
+  const both = dms.roomSend(A, id, '@agent-author and @helper: status?');
+  await settle();
+  assert(both.delivered.length === 2, 'two mentions wake two agents');
+
+  // group DM: unnamed, one person + one agent needs no mention
+  const g = dms.createRoom(A, { agents: ['helper'] });
+  const gs = dms.roomSend(A, g.id, 'quick question');
+  await settle();
+  assert(g.ok && gs.delivered.join() === 'helper' && dms.roomList(A).find((r) => r.id === g.id).name === null, 'one person + one agent: no @ needed');
+
+  // membership changes
+  assert(dms.roomAdd(A, id, { members: [dave.id] }).ok === false, 'cannot add a member who has not joined the team');
+  aos.db.prepare("UPDATE members SET status = 'active', name = 'Dave' WHERE id = ?").run(dave.id);
+  assert(dms.roomAdd(A, id, { members: [dave.id] }).ok && dms.roomList(aos.team.getMember(dave.id)).some((r) => r.id === id), 'adding a member gives them the room');
+  assert(dms.roomRemove(B, id, 'member', carol.id).ok === false, 'a plain member cannot remove someone else');
+  assert(dms.roomRemove(B, id, 'member', bob.id).ok && !dms.roomList(B).some((r) => r.id === id), 'but can leave');
+  assert(dms.roomRename(C, id, 'launch-week').ok && dms.roomList(C).find((r) => r.id === id).name === 'launch-week', 'rename');
+  const nr = dms.roomSend(A, id, '/new');
+  assert(nr.ok && nr.message.authorKind === 'system' && !lane().sessionId, '/new in a room resets every agent there');
+  assert(dms.roomRemove(A, g.id, 'member', alice.id).deleted === true && !aos.chatRooms.get(g.id), 'the last person leaving deletes the room');
+  assert(dms.list(A).contacts.every((c) => c.agent !== ''), 'rooms never leak into the DM contact list');
+}
+
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch { /* scratch */ }
 console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
 process.exit(fail ? 1 : 0);

@@ -1554,7 +1554,7 @@ function Console({ me }: { me: Member }) {
   useEffect(() => {
     if (route === 'chat' || route === 'dm') return // the page itself reports unread while it's open
     let alive = true
-    const tick = async () => { const r = await api.dmList(); if (alive && !r.error) setDmUnread(r.contacts.reduce((n, c) => n + c.unread, 0)) }
+    const tick = async () => { const r = await api.dmList(); if (alive && !r.error) setDmUnread(r.contacts.reduce((n, c) => n + c.unread, 0) + (r.rooms ?? []).reduce((n, c) => n + c.unread, 0)) }
     tick()
     const t = setInterval(tick, 20_000)
     return () => { alive = false; clearInterval(t) }

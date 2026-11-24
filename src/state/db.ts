@@ -494,6 +494,20 @@ function migrate(db: Db): void {
       created_at  INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_chat_messages_room ON chat_messages (room_id, seq);
+    -- Who is in a multi-party room (kind 'room'). An AGENT row is also that agent's LANE in the room: the
+    -- session carrying it there, the transcript sync cursor, and how far into the room it has been shown.
+    CREATE TABLE IF NOT EXISTS chat_participants (
+      room_id      TEXT NOT NULL,
+      kind         TEXT NOT NULL,             -- 'member' | 'agent'
+      id           TEXT NOT NULL,
+      session_id   TEXT,
+      synced_turns INTEGER NOT NULL DEFAULT 0,
+      synced_mark  TEXT,
+      seen_seq     INTEGER NOT NULL DEFAULT 0,
+      added_at     INTEGER NOT NULL,
+      PRIMARY KEY (room_id, kind, id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_participants_who ON chat_participants (kind, id);
     CREATE TABLE IF NOT EXISTS chat_reads (
       room_id       TEXT NOT NULL,
       member_id     TEXT NOT NULL,
@@ -1517,6 +1531,7 @@ function migrate(db: Db): void {
   // The console chat room (chat_rooms.id) this session carries, if any — survives the room moving on to a
   // newer session, so every session a DM ever used stays out of the Sessions lists.
   addColumn(db, 'term_sessions', 'dm_room', 'TEXT');
+  addColumn(db, 'chat_rooms', 'name', 'TEXT'); // kind 'room': its name; NULL = an unnamed group
 
   // SUGGESTED_ASSIGNEE: who an agent thinks should work the task it PROPOSED ('agent:<id>' | member id).
   // Kept apart from `assignee` on purpose: a proposal is not work yet, so the agent's pick is advice the

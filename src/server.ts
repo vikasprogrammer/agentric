@@ -3810,7 +3810,37 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // ── Messages: direct-message an agent like a teammate (src/edge/direct-messages.ts). One durable room
   //    per (member, agent); the session behind it is created/resumed/replaced server-side and never
   //    shown. Same governance as any chat run: provenance chat:<me>, run-as me, gate hook + approvals. ──
-  if (p === '/api/dm' && method === 'GET') return sendJson(res, 200, new DirectMessages(os, tm).list(me));
+  if (p === '/api/dm' && method === 'GET') {
+    const dms = new DirectMessages(os, tm);
+    return sendJson(res, 200, { ...dms.list(me), rooms: dms.roomList(me), people: dms.people() });
+  }
+  // Rooms & group DMs — several members and agents in one conversation. Membership is the only access
+  // rule; an agent runs only when addressed, as the member who addressed it (who must be able to run it).
+  if (p === '/api/rooms' && method === 'POST') {
+    const b = await readBody(req);
+    const r = new DirectMessages(os, tm).createRoom(me, { name: typeof b.name === 'string' ? b.name : undefined, members: Array.isArray(b.members) ? b.members : [], agents: Array.isArray(b.agents) ? b.agents : [] });
+    return r.ok ? sendJson(res, 200, r) : sendJson(res, r.status, { error: r.error });
+  }
+  const roomMatch = p.match(/^\/api\/rooms\/(room_[0-9a-f]+)(?:\/(send|participants))?$/);
+  if (roomMatch) {
+    const dms = new DirectMessages(os, tm);
+    const id = roomMatch[1], sub = roomMatch[2];
+    const out = (r: { ok?: boolean; status?: number; error?: string } & Record<string, unknown>) => (r.ok === false ? sendJson(res, r.status ?? 400, { error: r.error, held: r.held }) : sendJson(res, 200, r));
+    if (!sub && method === 'GET') {
+      const before = Number(url.searchParams.get('before'));
+      return out(dms.roomThread(me, id, { before: url.searchParams.has('before') && Number.isFinite(before) ? before : undefined, read: url.searchParams.get('read') === '1' }) as never);
+    }
+    if (!sub && method === 'PATCH') return out(dms.roomRename(me, id, String((await readBody(req)).name ?? '')));
+    if (sub === 'send' && method === 'POST') return out(dms.roomSend(me, id, String((await readBody(req)).message || '')) as never);
+    if (sub === 'participants' && method === 'POST') {
+      const b = await readBody(req);
+      return out(dms.roomAdd(me, id, { members: Array.isArray(b.members) ? b.members : [], agents: Array.isArray(b.agents) ? b.agents : [] }));
+    }
+    if (sub === 'participants' && method === 'DELETE') {
+      const kind = url.searchParams.get('kind') === 'agent' ? 'agent' : 'member';
+      return out(dms.roomRemove(me, id, kind, url.searchParams.get('id') || ''));
+    }
+  }
   if (p === '/api/dm/contacts' && method === 'POST') {
     const b = await readBody(req);
     const agent = String(b.agent || '').trim();

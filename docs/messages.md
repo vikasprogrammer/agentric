@@ -49,12 +49,32 @@ Store: `src/state/chat-rooms.ts` (`os.chatRooms`). Engine: `src/edge/direct-mess
 
 Owners and admins keep an escape hatch: the conversation menu's *Open the session behind this*.
 
+## Rooms and group messages
+
+A room (`chat_rooms.kind = 'room'`) holds several members and agents; `chat_participants` lists them.
+With a `name` it is a **room**, without one a **group message** — the same thing otherwise.
+
+- **Access is membership.** Only participants can read or post. Any participant can add people or
+  agents (an agent only if the adder may run it); the creator and admins can remove others; anyone can
+  leave; the last person leaving deletes the room.
+- **An agent runs only when addressed** — `@agent-id` (the composer autocompletes it). The one
+  exception is a room of one person and one agent, where there is nobody else to mean. Everything else
+  is people talking, and no agent runs for it.
+- **Each agent has its own session per room** (its *lane*: `chat_participants.session_id` + sync
+  cursor). When addressed it is shown what was said since its last turn (`seen_seq`), then the message.
+- **The agent acts for whoever addressed it** — run-as is the sender, and the sender must be allowed to
+  run that agent. A member who can't gets their message posted with a note, and the agent stays asleep.
+- **An agent's reply never wakes another agent.** Two agents mentioning each other is an unattended loop.
+- `/new` resets every agent's session in the room.
+
+Routes: `POST /api/rooms`, `GET|PATCH /api/rooms/:id`, `POST /api/rooms/:id/send`,
+`POST|DELETE /api/rooms/:id/participants`. `GET /api/dm` also returns `rooms` and `people`.
+
 ## Not built yet
 
-- **Rooms** — several members and agents in one conversation. The tables are already room-shaped
-  (room → authored messages → per-member read cursor); it needs a new `kind`, a membership table, and
-  a rule for which agent a message addresses.
-- **Member ↔ member DMs**, threads, reactions, mentions, search, file attachments
+- **Out-of-band pings** — a message from a person in a room raises the unread badge only; nothing DMs
+  you on Slack/Discord yet. Browsable/joinable public rooms.
+- Threads, reactions, mentions, search, file attachments
   (`stageInboundFiles` is the path — `attachFile` needs a live pane).
 - **Agent-initiated messages** — an agent posting into its DM with a member unprompted (a cron report,
   a finished delegated task). Today a message only arrives as a reply.

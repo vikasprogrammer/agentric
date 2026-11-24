@@ -202,8 +202,13 @@ export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: Run
 export type DmPresence = 'working' | 'online' | 'away'
 /** One thing an agent did (`do`) or noted (`say`) on the way to a reply — hidden until expanded. */
 export interface DmStep { t: 'say' | 'do'; text: string; detail?: string; status?: 'running' | 'ok' | 'error' }
-export interface DmMessage { seq: number; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** client-only: sent, not yet stored */ pending?: boolean }
+export interface DmMessage { seq: number; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** room messages carry who said it */ authorName?: string; authorIcon?: string; authorAvatar?: string; /** client-only: sent, not yet stored */ pending?: boolean }
 export interface DmContact { agent: string; roomId: string; description: string; icon?: string; presence: DmPresence; lastText?: string; lastFromMe?: boolean; lastAt: number; unread: number; sessionId: string | null }
+// Rooms & group DMs: several members and agents in one conversation. `name` null = an unnamed group.
+export interface RoomPerson { id: string; name: string; avatar?: string }
+export interface RoomAgent { id: string; description: string; icon?: string; presence: DmPresence }
+export interface RoomSummary { id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; lastText?: string; lastAuthor?: string; lastAt: number; unread: number }
+export interface RoomThread { room: RoomSummary; messages: DmMessage[]; typing: { agent: string; label: string; steps: DmStep[] }[]; sessionIds: string[]; error?: string }
 export interface DmDirectoryAgent { id: string; description: string; icon?: string; category?: string }
 export interface DmThread { agent: string; roomId: string; sessionId: string | null; presence: DmPresence; messages: DmMessage[]; typing: { label: string; steps: DmStep[]; since?: number } | null; stalled?: boolean; error?: string }
 
@@ -2162,7 +2167,14 @@ export const api = {
   /** Non-technical chat surface: the friendly conversation timeline for a session (poll it). */
   conversation: (id: string) => call<ConversationResp>('GET', `/api/sessions/${id}/conversation`),
   // Messages — DM an agent like a teammate. The session behind a conversation is the server's business.
-  dmList: () => call<{ contacts: DmContact[]; directory: DmDirectoryAgent[]; error?: string }>('GET', '/api/dm'),
+  dmList: () => call<{ contacts: DmContact[]; directory: DmDirectoryAgent[]; rooms?: RoomSummary[]; people?: RoomPerson[]; error?: string }>('GET', '/api/dm'),
+  roomCreate: (input: { name?: string; members: string[]; agents: string[] }) => call<{ ok?: boolean; id?: string; error?: string }>('POST', '/api/rooms', input),
+  roomThread: (id: string, o: { before?: number; read?: boolean } = {}) =>
+    call<RoomThread>('GET', `/api/rooms/${id}?${o.before != null ? `before=${o.before}&` : ''}${o.read ? 'read=1' : ''}`),
+  roomSend: (id: string, message: string) => call<{ ok?: boolean; delivered?: string[]; notes?: string[]; held?: boolean; error?: string }>('POST', `/api/rooms/${id}/send`, { message }),
+  roomAdd: (id: string, input: { members?: string[]; agents?: string[] }) => call<{ ok?: boolean; error?: string }>('POST', `/api/rooms/${id}/participants`, input),
+  roomRemove: (id: string, kind: 'member' | 'agent', who: string) => call<{ ok?: boolean; deleted?: boolean; error?: string }>('DELETE', `/api/rooms/${id}/participants?kind=${kind}&id=${encodeURIComponent(who)}`),
+  roomRename: (id: string, name: string) => call<{ ok?: boolean; error?: string }>('PATCH', `/api/rooms/${id}`, { name }),
   dmAddContact: (agent: string) => call<{ ok?: boolean; error?: string }>('POST', '/api/dm/contacts', { agent }),
   dmRemoveContact: (agent: string) => call<{ ok?: boolean; error?: string }>('DELETE', `/api/dm/${encodeURIComponent(agent)}`),
   dmThread: (agent: string, o: { before?: number; read?: boolean } = {}) =>

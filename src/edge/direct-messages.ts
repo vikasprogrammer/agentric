@@ -24,7 +24,7 @@
 import type { AgentOS } from '../kernel';
 import type { TerminalManager } from '../terminal';
 import { runtimeSupports, type Member } from '../types';
-import type { ChatMessage, ChatRoom, ChatStep } from '../state/chat-rooms';
+import type { ChatMessage, ChatParticipant, ChatRoom, ChatStep } from '../state/chat-rooms';
 import type { ChatTurn } from './conversation';
 
 /** Past this, the next message starts a fresh session (with a recap) instead of resuming this transcript. */
@@ -63,9 +63,38 @@ export interface DmThread {
   stalled: boolean;
 }
 
+// ── Rooms & group DMs (kind 'room') ──
+export interface RoomPerson { id: string; name: string; avatar?: string }
+export interface RoomAgent { id: string; description: string; icon?: string; presence: DmPresence }
+export interface RoomSummary {
+  id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string;
+  lastText?: string; lastAuthor?: string; lastAt: number; unread: number;
+}
+export type RoomMessage = ChatMessage & { authorName: string; authorIcon?: string; authorAvatar?: string };
+export interface RoomThread {
+  room: RoomSummary; messages: RoomMessage[];
+  typing: { agent: string; label: string; steps: ChatStep[] }[];
+  /** Sessions behind the room's agents — used only to attach pending approvals/questions. */
+  sessionIds: string[];
+}
+export type RoomSendResult =
+  | { ok: true; message: ChatMessage; delivered: string[]; notes: string[] }
+  | { ok: false; status: number; error: string; held?: boolean };
+type Fail = { ok: false; status: number; error: string };
+const MAX_ROOM_PEOPLE = 30;
+const MAX_ROOM_AGENTS = 8;
+const ROOM_CONTEXT_MESSAGES = 20;
+const pretty = (id: string): string => id.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
 export type DmSendResult =
   | { ok: true; message: ChatMessage; sessionId: string | null }
   | { ok: false; status: number; error: string; held?: boolean };
+
+/** One agent's session inside one room, as the sync sees it. */
+interface Lane {
+  key: string; roomId: string; agent: string; sessionId: string | null; syncedTurns: number; syncedMark: string | null;
+  save(turns: number, mark: string): void;
+}
 
 /** The live "what is it doing right now" of each room — transient by nature, so memory not a table. */
 const liveTyping = new Map<string, DmTyping>();
@@ -134,17 +163,26 @@ export class DirectMessages {
    * costs one row read.
    */
   sync(room: ChatRoom): { room: ChatRoom; presence: DmPresence; typing: DmTyping | null } {
-    if (!room.sessionId) return { room, presence: 'away', typing: null };
-    const pulse = this.tm.sessionPulse(room.sessionId);
-    if (!pulse) return { room, presence: 'away', typing: null };
+    const r = this.syncLane({
+      key: room.id, roomId: room.id, agent: room.agent, sessionId: room.sessionId, syncedTurns: room.syncedTurns, syncedMark: room.syncedMark,
+      save: (turns, mark) => this.rooms.setSync(room.id, turns, mark),
+    });
+    return { room: this.rooms.dm(room.memberId, room.agent) ?? room, ...r };
+  }
+
+  /** The fold itself, for ONE agent's session in ONE room — a DM's only lane, or one of a room's several. */
+  private syncLane(lane: Lane): { presence: DmPresence; typing: DmTyping | null } {
+    if (!lane.sessionId) return { presence: 'away', typing: null };
+    const pulse = this.tm.sessionPulse(lane.sessionId);
+    if (!pulse) return { presence: 'away', typing: null };
     const presence: DmPresence = pulse.working ? 'working' : pulse.alive ? 'online' : 'away';
     const base = `${pulse.size}:${pulse.mtime}:${pulse.working ? 1 : 0}:${pulse.alive ? 1 : 0}`;
-    if (base === room.syncedMark) {
-      return { room, presence, typing: pulse.working ? liveTyping.get(room.id) ?? { label: 'Working', steps: [] } : null };
+    if (base === lane.syncedMark) {
+      return { presence, typing: pulse.working ? liveTyping.get(lane.key) ?? { label: 'Working', steps: [] } : null };
     }
 
-    const turns = this.tm.sessionConversation(room.sessionId).turns;
-    let i = Math.min(room.syncedTurns, turns.length);
+    const turns = this.tm.sessionConversation(lane.sessionId).turns;
+    let i = Math.min(lane.syncedTurns, turns.length);
     let typing: DmTyping | null = null;
     let unsettled = false;
     const quiet = pulse.mtime ? Date.now() - pulse.mtime : Infinity;
@@ -159,15 +197,42 @@ export class DirectMessages {
       const finished = j < turns.length || (!pulse.working && quiet > (said ? SETTLE_MS : TEXTLESS_DROP_MS));
       if (!finished) { typing = typingOf(seg); unsettled = !pulse.working; break; }
       const msg = foldReply(seg);
-      if (msg) this.rooms.post(room.id, 'agent', room.agent, msg.body, msg.steps, msg.at);
+      if (msg) this.rooms.post(lane.roomId, 'agent', lane.agent, msg.body, msg.steps, msg.at);
       i = j;
     }
     if (pulse.working && !typing) typing = { label: 'Thinking', steps: [] };
-    if (typing) liveTyping.set(room.id, typing); else liveTyping.delete(room.id);
+    if (typing) liveTyping.set(lane.key, typing); else liveTyping.delete(lane.key);
     // An unsettled tail resolves with TIME, not with a change to the file — so leave a mark that can't
     // match, and the next poll looks again.
-    this.rooms.setSync(room.id, i, unsettled ? `${base}:unsettled` : base);
-    return { room: this.rooms.dm(room.memberId, room.agent) ?? room, presence, typing };
+    lane.save(i, unsettled ? `${base}:unsettled` : base);
+    return { presence, typing };
+  }
+
+  /**
+   * Get `body` to `agent`'s session: type it into the warm one, resume a reaped one, or — when there is
+   * nothing usable — start a new session with `firstPrompt()`. Shared by DMs and rooms.
+   */
+  private deliver(me: Member, agent: string, roomId: string, sessionId: string | null, body: string, title: string, firstPrompt: () => string):
+    { ok: true; sessionId: string; fresh: boolean } | { ok: false; status: number; error: string; held?: boolean } {
+    const pulse = sessionId ? this.tm.sessionPulse(sessionId) : undefined;
+    if (sessionId && pulse) {
+      const held = this.tm.holdHumanPrompt(sessionId, body, 'reply', me.email);
+      if (held) return { ok: false, status: 422, error: held, held: true };
+    }
+    // Resumable means there is a transcript to resume: a session that died before writing one (a failed
+    // launch) would only fail the same way again, so that one is replaced rather than relaunched.
+    const usable = !!sessionId && !!pulse && !pulse.archived && pulse.resumable
+      && (pulse.alive || pulse.size > 0)
+      && !(pulse.size > ROLLOVER_BYTES && !pulse.working);
+    if (usable) {
+      this.tm.noteTyper(sessionId!, me.id, 'composer');
+      const r = this.tm.chatSend(sessionId!, body, me.id);
+      if (r === 'paused') return { ok: false, status: 409, error: `${agent} is paused — resume it from Sessions to keep talking` };
+      if (r === 'sent') return { ok: true, sessionId: sessionId!, fresh: false };
+    }
+    const s = this.tm.createSession(agent, title, firstPrompt(), `chat:${me.id}`, false, undefined, undefined, me.id, undefined, true);
+    this.tm.markDmSession(s.id, roomId);
+    return { ok: true, sessionId: s.id, fresh: true };
   }
 
   /** Send the member's message: deliver, resume, or transparently start a fresh session. */
@@ -188,37 +253,13 @@ export class DirectMessages {
     // Sync first so the agent's previous reply lands in the room BEFORE this message, not after it.
     let { room } = this.sync(this.rooms.ensureDm(me.id, agent));
 
-    let sessionId = room.sessionId;
-    const pulse = sessionId ? this.tm.sessionPulse(sessionId) : undefined;
-    if (sessionId && pulse) {
-      const held = this.tm.holdHumanPrompt(sessionId, body, 'reply', me.email);
-      if (held) return { ok: false, status: 422, error: held, held: true };
-    }
-    // Resumable means there is a transcript to resume: a session that died before writing one (a failed
-    // launch) would only fail the same way again, so that one is replaced rather than relaunched.
-    const usable = !!sessionId && !!pulse && !pulse.archived && pulse.resumable
-      && (pulse.alive || pulse.size > 0)
-      && !(pulse.size > ROLLOVER_BYTES && !pulse.working);
-    let delivered = false;
-    if (usable) {
-      this.tm.noteTyper(sessionId!, me.id, 'composer');
-      const r = this.tm.chatSend(sessionId!, body, me.id);
-      if (r === 'paused') return { ok: false, status: 409, error: `${agent} is paused — resume it from Sessions to keep talking` };
-      delivered = r === 'sent';
-    }
-    if (!delivered) {
-      const s = this.tm.createSession(
-        agent, `Direct message · ${me.name || me.email}`, this.firstPrompt(me, room, body),
-        `chat:${me.id}`, false, undefined, undefined, me.id, undefined, true,
-      );
-      sessionId = s.id;
-      this.tm.markDmSession(s.id, room.id);
-      this.rooms.setSession(room.id, s.id);
-      room = this.rooms.dm(me.id, agent) ?? room;
-    }
+    const d = this.deliver(me, agent, room.id, room.sessionId, body, `Direct message · ${me.name || me.email}`, () => this.firstPrompt(me, room, body));
+    if (!d.ok) return d;
+    const sessionId = d.sessionId;
+    if (d.fresh) { this.rooms.setSession(room.id, sessionId); room = this.rooms.dm(me.id, agent) ?? room; }
     const message = again ?? this.rooms.post(room.id, 'member', me.id, body);
     this.rooms.markRead(room.id, me.id);
-    return { ok: true, message, sessionId: sessionId! };
+    return { ok: true, message, sessionId };
   }
 
   private lastFromMember(me: Member, agent: string): ChatMessage | undefined {
@@ -238,6 +279,212 @@ export class DirectMessages {
     const last = this.rooms.last(room.id);
     if (last && last.authorKind === 'system' && last.body === NEW_SESSION_MARKER) return last;
     return this.rooms.post(room.id, 'system', me.id, NEW_SESSION_MARKER);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════════════════════
+  // Rooms & group DMs. Several members and agents in one conversation. Each AGENT has its own
+  // session per room (its "lane"); a message reaches an agent only when it is ADDRESSED to it —
+  // `@agent-id` — except in a room of one person and one agent, where there is nobody else to mean.
+  // Everything else is people talking to each other, and no agent runs for it. An agent's reply
+  // never triggers another agent: two agents mentioning each other is an unattended loop.
+  // The sender must be allowed to run the agent they address (run-as = the sender, as in a DM).
+  // ════════════════════════════════════════════════════════════════════════════════════════════
+
+  private person(id: string): RoomPerson {
+    const m = this.os.team.getMember(id);
+    return { id, name: m?.name || m?.email || 'Former member', avatar: m?.avatar };
+  }
+
+  /** Everyone a room could include — names and avatars only. */
+  people(): RoomPerson[] {
+    return this.os.team.listMembers().filter((m) => m.status === 'active').map((m) => ({ id: m.id, name: m.name || m.email, avatar: m.avatar }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private lane(room: ChatRoom, p: ChatParticipant): Lane {
+    return {
+      key: `${room.id}:${p.id}`, roomId: room.id, agent: p.id, sessionId: p.sessionId, syncedTurns: p.syncedTurns, syncedMark: p.syncedMark,
+      save: (turns, mark) => this.rooms.setLaneSync(room.id, p.id, turns, mark),
+    };
+  }
+
+  /** Sync every agent lane of the room, and describe it for `me`. */
+  private describe(room: ChatRoom, me: Member): { summary: RoomSummary; typing: RoomThread['typing']; sessionIds: string[] } {
+    const parts = this.rooms.participants(room.id);
+    const agents: RoomAgent[] = [];
+    const typing: RoomThread['typing'] = [];
+    const sessionIds: string[] = [];
+    for (const p of parts) {
+      if (p.kind !== 'agent') continue;
+      const r = this.syncLane(this.lane(room, p));
+      const a = this.os.agents.get(p.id);
+      agents.push({ id: p.id, description: a?.description ?? '', icon: a?.icon, presence: r.presence });
+      if (r.typing) typing.push({ agent: p.id, label: r.typing.label, steps: r.typing.steps });
+      if (p.sessionId) sessionIds.push(p.sessionId);
+    }
+    const fresh = this.rooms.get(room.id) ?? room;
+    const last = this.rooms.last(room.id);
+    return {
+      summary: {
+        id: room.id, name: room.name, createdBy: room.memberId, agents,
+        members: parts.filter((p) => p.kind === 'member').map((p) => this.person(p.id)),
+        lastText: last ? clip(last.body.replace(/\s+/g, ' '), 90) : undefined,
+        lastAuthor: !last || last.authorKind === 'system' ? undefined : last.authorKind === 'agent' ? pretty(last.authorId) : last.authorId === me.id ? 'You' : this.person(last.authorId).name.split(' ')[0],
+        lastAt: fresh.lastMessageAt ?? fresh.createdAt, unread: this.rooms.unread(room.id, me.id),
+      },
+      typing, sessionIds,
+    };
+  }
+
+  roomList(me: Member): RoomSummary[] { return this.rooms.roomsFor(me.id).map((r) => this.describe(r, me).summary); }
+
+  private roomFor(me: Member, roomId: string): ChatRoom | Fail {
+    const room = this.rooms.get(roomId);
+    if (!room || room.kind !== 'room') return { ok: false, status: 404, error: 'room not found' };
+    if (!this.rooms.isMember(roomId, me.id)) return { ok: false, status: 403, error: 'you are not in this room' };
+    return room;
+  }
+
+  createRoom(me: Member, input: { name?: string; members?: string[]; agents?: string[] }): { ok: true; id: string } | Fail {
+    const name = (input.name ?? '').trim().replace(/^#/, '').slice(0, 60) || null;
+    const members = [...new Set([me.id, ...(input.members ?? []).map(String)])];
+    const agents = [...new Set((input.agents ?? []).map(String))];
+    if (members.length + agents.length < 2) return { ok: false, status: 400, error: 'add at least one other person or agent' };
+    if (members.length > MAX_ROOM_PEOPLE || agents.length > MAX_ROOM_AGENTS) return { ok: false, status: 400, error: `a room holds up to ${MAX_ROOM_PEOPLE} people and ${MAX_ROOM_AGENTS} agents` };
+    for (const m of members) if (this.os.team.getMember(m)?.status !== 'active') return { ok: false, status: 400, error: 'unknown team member' };
+    for (const a of agents) { const denied = this.canChat(me, a); if (denied) return { ok: false, status: 403, error: denied }; }
+    const room = this.rooms.createRoom(me.id, name);
+    for (const m of members) this.rooms.addParticipant(room.id, 'member', m);
+    for (const a of agents) this.rooms.addParticipant(room.id, 'agent', a);
+    return { ok: true, id: room.id };
+  }
+
+  roomAdd(me: Member, roomId: string, input: { members?: string[]; agents?: string[] }): { ok: true } | Fail {
+    const room = this.roomFor(me, roomId);
+    if ('ok' in room) return room;
+    const parts = this.rooms.participants(roomId);
+    const members = (input.members ?? []).map(String), agents = (input.agents ?? []).map(String);
+    if (parts.filter((p) => p.kind === 'member').length + members.length > MAX_ROOM_PEOPLE || parts.filter((p) => p.kind === 'agent').length + agents.length > MAX_ROOM_AGENTS) {
+      return { ok: false, status: 400, error: `a room holds up to ${MAX_ROOM_PEOPLE} people and ${MAX_ROOM_AGENTS} agents` };
+    }
+    for (const m of members) if (this.os.team.getMember(m)?.status !== 'active') return { ok: false, status: 400, error: 'unknown team member' };
+    for (const a of agents) { const denied = this.canChat(me, a); if (denied) return { ok: false, status: 403, error: denied }; }
+    const who = me.name || me.email;
+    for (const m of members) if (this.rooms.addParticipant(roomId, 'member', m)) this.rooms.post(roomId, 'system', me.id, `${who} added ${this.person(m).name}`);
+    for (const a of agents) if (this.rooms.addParticipant(roomId, 'agent', a)) this.rooms.post(roomId, 'system', me.id, `${who} added ${pretty(a)}`);
+    return { ok: true };
+  }
+
+  /** Leave (remove yourself), or — the room's creator and admins only — remove someone else. */
+  roomRemove(me: Member, roomId: string, kind: 'member' | 'agent', id: string): { ok: true; deleted?: boolean } | Fail {
+    const room = this.roomFor(me, roomId);
+    if ('ok' in room) return room;
+    const self = kind === 'member' && id === me.id;
+    if (!self && room.memberId !== me.id && me.role === 'member') return { ok: false, status: 403, error: 'only the person who made the room, or an admin, can remove others' };
+    if (!this.rooms.removeParticipant(roomId, kind, id)) return { ok: false, status: 404, error: 'not in this room' };
+    liveTyping.delete(`${roomId}:${id}`);
+    const who = me.name || me.email;
+    this.rooms.post(roomId, 'system', me.id, self ? `${who} left` : `${who} removed ${kind === 'agent' ? pretty(id) : this.person(id).name}`);
+    // Nobody left to read it — the room is gone.
+    if (!this.rooms.participants(roomId).some((p) => p.kind === 'member')) { this.rooms.deleteRoom(roomId); return { ok: true, deleted: true }; }
+    return { ok: true };
+  }
+
+  roomRename(me: Member, roomId: string, name: string): { ok: true } | Fail {
+    const room = this.roomFor(me, roomId);
+    if ('ok' in room) return room;
+    const clean = name.trim().replace(/^#/, '').slice(0, 60) || null;
+    this.rooms.rename(roomId, clean);
+    this.rooms.post(roomId, 'system', me.id, clean ? `${me.name || me.email} named this room “${clean}”` : `${me.name || me.email} removed the room name`);
+    return { ok: true };
+  }
+
+  roomThread(me: Member, roomId: string, opts: { before?: number; read?: boolean } = {}): RoomThread | Fail {
+    const room = this.roomFor(me, roomId);
+    if ('ok' in room) return room;
+    const d = this.describe(room, me);
+    if (opts.read) this.rooms.markRead(roomId, me.id);
+    const cache = new Map<string, RoomPerson>();
+    const messages: RoomMessage[] = this.rooms.messages(roomId, { before: opts.before }).map((m) => {
+      if (m.authorKind === 'agent') return { ...m, authorName: pretty(m.authorId), authorIcon: this.os.agents.get(m.authorId)?.icon };
+      let p = cache.get(m.authorId);
+      if (!p) cache.set(m.authorId, (p = this.person(m.authorId)));
+      return { ...m, authorName: p.name, authorAvatar: p.avatar };
+    });
+    return { room: d.summary, messages, typing: d.typing, sessionIds: d.sessionIds };
+  }
+
+  /** Which of the room's agents a message is addressed to. */
+  private addressed(body: string, parts: ChatParticipant[]): string[] {
+    const agents = parts.filter((p) => p.kind === 'agent').map((p) => p.id);
+    const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const named = new Set<string>();
+    for (const m of body.matchAll(/@([\w.-]+)/g)) {
+      const want = squash(m[1]);
+      const hit = agents.find((a) => squash(a) === want);
+      if (hit) named.add(hit);
+    }
+    if (named.size) return [...named];
+    // One person, one agent: there is nobody else the message could be for.
+    return agents.length === 1 && parts.filter((p) => p.kind === 'member').length === 1 ? agents : [];
+  }
+
+  roomSend(me: Member, roomId: string, text: string): RoomSendResult {
+    const room = this.roomFor(me, roomId);
+    if ('ok' in room) return room;
+    let body = text.trim();
+    if (!body) return { ok: false, status: 400, error: 'message is required' };
+    let parts = this.rooms.participants(roomId);
+    // Fold every agent's pending reply into the room BEFORE this message, so the order reads true.
+    for (const p of parts) if (p.kind === 'agent') this.syncLane(this.lane(room, p));
+
+    const cmd = NEW_COMMAND.exec(body);
+    if (cmd) {
+      const marker = this.rooms.post(roomId, 'system', me.id, NEW_SESSION_MARKER);
+      for (const p of parts) if (p.kind === 'agent') { this.rooms.setLaneSession(roomId, p.id, null); this.rooms.setLaneSeen(roomId, p.id, marker.seq); liveTyping.delete(`${roomId}:${p.id}`); }
+      body = (cmd[1] ?? '').trim();
+      if (!body) return { ok: true, message: marker, delivered: [], notes: [] };
+      parts = this.rooms.participants(roomId);
+    }
+
+    const who = me.name || me.email;
+    const label = room.name ? `#${room.name}` : 'group chat';
+    const history = this.rooms.messages(roomId, { limit: 60 });
+    const delivered: string[] = [], notes: string[] = [];
+    const lanes = new Map(parts.filter((p) => p.kind === 'agent').map((p) => [p.id, p]));
+    for (const agent of this.addressed(body, parts)) {
+      const denied = this.canChat(me, agent);
+      if (denied) { notes.push(`${pretty(agent)} didn't get this — ${denied}.`); continue; }
+      const p = lanes.get(agent)!;
+      // What the agent missed: everything said in the room since it was last shown, minus its own words.
+      const missed = history.filter((m) => m.seq > p.seenSeq && m.authorKind !== 'system' && !(m.authorKind === 'agent' && m.authorId === agent)).slice(-ROOM_CONTEXT_MESSAGES)
+        .map((m) => `${m.authorKind === 'agent' ? pretty(m.authorId) : m.authorId === me.id ? who : this.person(m.authorId).name}: ${clip(m.body.replace(/\s+/g, ' '), RECAP_CHARS)}`);
+      const turn = `[${label}] ${missed.length ? `Said since your last turn — ${missed.join(' | ')} — ` : ''}${who} to you: ${body}`;
+      const d = this.deliver(me, agent, roomId, p.sessionId, turn, `${room.name ? `#${room.name}` : 'Group chat'} · ${pretty(agent)}`, () => this.roomPrompt(room, parts, agent, missed, who, body));
+      if (!d.ok) { if (d.held) return d; notes.push(`${pretty(agent)} didn't get this — ${d.error}.`); continue; }
+      if (d.fresh) this.rooms.setLaneSession(roomId, agent, d.sessionId);
+      delivered.push(agent);
+    }
+    const message = this.rooms.post(roomId, 'member', me.id, body);
+    for (const agent of delivered) this.rooms.setLaneSeen(roomId, agent, message.seq);
+    this.rooms.markRead(roomId, me.id);
+    return { ok: true, message, delivered, notes };
+  }
+
+  /** The opening prompt of an agent's session in a room: where it is, who is there, how to behave. */
+  private roomPrompt(room: ChatRoom, parts: ChatParticipant[], agent: string, missed: string[], who: string, body: string): string {
+    const people = parts.filter((p) => p.kind === 'member').map((p) => this.person(p.id).name);
+    const others = parts.filter((p) => p.kind === 'agent' && p.id !== agent).map((p) => pretty(p.id));
+    const lines = [
+      `You are ${pretty(agent)}, taking part in ${room.name ? `the room "#${room.name}"` : 'a group chat'} in the Agentric console — a shared chat, like a channel with colleagues.`,
+      `People here: ${people.join(', ')}.${others.length ? ` Other agents here: ${others.join(', ')}.` : ''}`,
+      'You are only brought in when someone addresses you. Each time, you are shown what was said since your last turn, then the message for you.',
+      'Everyone in the room sees ONLY the final message you write each turn; your tool calls and interim notes are tucked away behind it.',
+      'So answer the way a teammate would in a group chat: reply to the person who asked, lead with the answer, keep it short, and do the work rather than describing it. You act on behalf of whoever addressed you.',
+    ];
+    if (missed.length) { lines.push('', 'Said in the room so far (most recent last):'); lines.push(...missed); }
+    lines.push('', `${who} to you: ${body}`);
+    return lines.join('\n');
   }
 
   /** The opening prompt of a session behind a DM: what this is, the recent conversation, the message. */
