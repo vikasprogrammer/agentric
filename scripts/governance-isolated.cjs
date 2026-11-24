@@ -27,11 +27,56 @@ fs.writeFileSync(path.join(dir, '.credentials.json'), JSON.stringify({
   },
 }), { mode: 0o600 });
 
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const r = spawnSync(npm, ['run', '-s', 'test:governance:run'], {
-  stdio: 'inherit',
-  env: { ...process.env, CLAUDE_CONFIG_DIR: dir, AOS_NO_TTYD: process.env.AOS_NO_TTYD || '1' },
+// ── run the chain ────────────────────────────────────────────────────────────────────────────────
+// `test:governance:run` in package.json stays the single list of suites (add yours there). It used to be
+// executed as written — one `&&` chain, 169 scripts back to back, ~100 s — and that serial run was the
+// whole wait of every deploy (each box gates its restart on it) and every PR. The suites are isolated
+// by construction (own scratch home, ephemeral ports), so they run in a worker pool instead.
+//
+// Parallelism must never be able to turn the gate red on its own: a suite that fails in the pool is
+// re-run ALONE, and only a failure that repeats there counts. `AOS_GOV_SERIAL=1` restores the old order.
+const { spawn } = require('child_process');
+const env = { ...process.env, CLAUDE_CONFIG_DIR: dir, AOS_NO_TTYD: process.env.AOS_NO_TTYD || '1' };
+const steps = require(path.join(__dirname, '..', 'package.json')).scripts['test:governance:run'].split('&&').map((x) => x.trim()).filter(Boolean);
+const finish = (code) => { fs.rmSync(dir, { recursive: true, force: true }); process.exit(code); };
+const name = (cmd) => (/scripts\/([\w.-]+)\.cjs/.exec(cmd) || [, cmd])[1];
+
+const runOne = (cmd) => new Promise((resolve) => {
+  const started = Date.now();
+  const child = spawn(cmd, { shell: true, env, cwd: path.join(__dirname, '..') });
+  let out = '';
+  child.stdout.on('data', (d) => (out += d));
+  child.stderr.on('data', (d) => (out += d));
+  child.on('error', (e) => resolve({ cmd, code: 1, out: out + String(e), ms: Date.now() - started }));
+  child.on('close', (code) => resolve({ cmd, code: code ?? 1, out, ms: Date.now() - started }));
 });
-fs.rmSync(dir, { recursive: true, force: true });
-if (r.error) { console.error(r.error.message); process.exit(1); }
-process.exit(r.status ?? 1);
+
+(async () => {
+  const t0 = Date.now();
+  const serial = process.env.AOS_GOV_SERIAL === '1';
+  const width = serial ? 1 : Math.max(1, Math.min(Number(process.env.AOS_GOV_JOBS) || 8, os.cpus().length, steps.length));
+  const results = [];
+  let next = 0, asserts = 0;
+  await Promise.all(Array.from({ length: width }, async () => {
+    while (next < steps.length) {
+      const r = await runOne(steps[next++]);
+      results.push(r);
+      if (serial) process.stdout.write(r.out);
+    }
+  }));
+  let failed = results.filter((r) => r.code !== 0);
+  if (failed.length && !serial) {
+    console.log(`\n${failed.length} suite(s) failed in the parallel pass — re-running each alone: ${failed.map((r) => name(r.cmd)).join(', ')}`);
+    const again = [];
+    for (const r of failed) again.push(await runOne(r.cmd));
+    for (const r of again) if (r.code === 0) console.log(`  \x1b[33m~ ${name(r.cmd)} passes alone — it is sensitive to running alongside others; worth fixing\x1b[0m`);
+    failed = again.filter((r) => r.code !== 0);
+  }
+  for (const r of results) { const m = /(\d+) passed/.exec(r.out.replace(/\x1b\[[0-9;]*m/g, '').split('\n').reverse().find((l) => /\d+ passed/.test(l)) || ''); if (m) asserts += Number(m[1]); }
+  for (const r of failed) console.log(`\n\x1b[31m✗ ${name(r.cmd)}\x1b[0m\n${r.out}`);
+  const slow = [...results].sort((a, b) => b.ms - a.ms).slice(0, 3).map((r) => `${name(r.cmd)} ${(r.ms / 1000).toFixed(1)}s`).join(', ');
+  const secs = ((Date.now() - t0) / 1000).toFixed(0);
+  if (failed.length) { console.log(`\n\x1b[31m${failed.length} of ${steps.length} suites failed\x1b[0m (${secs}s)`); return finish(1); }
+  console.log(`\x1b[32m${steps.length} suites passed, 0 failed\x1b[0m — ${asserts} assertions in ${secs}s${serial ? '' : `, ${width} at a time`} (slowest: ${slow})`);
+  finish(0);
+})().catch((e) => { console.error(e); finish(1); });

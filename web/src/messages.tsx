@@ -475,7 +475,10 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
 
   const all = useMemo(() => {
     const server = [...older, ...(view?.messages ?? [])]
-    const mine: DmMessage[] = outgoing.map((o) => ({ seq: -o.key, authorKind: 'member', authorId: me.id, body: o.text, createdAt: o.at, pending: true }))
+    // The socket can deliver the stored message BEFORE the send request returns. An optimistic bubble
+    // whose text has already come back from the server is that same message — show it once.
+    const landed = (o: Outgoing) => !o.error && server.some((m) => m.authorKind === 'member' && m.authorId === me.id && m.createdAt >= o.at - 3000 && m.body === o.text)
+    const mine: DmMessage[] = outgoing.filter((o) => !landed(o)).map((o) => ({ seq: -o.key, authorKind: 'member', authorId: me.id, body: o.text, createdAt: o.at, pending: true }))
     return [...server, ...mine]
   }, [older, view, outgoing, me.id])
 

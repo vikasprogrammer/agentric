@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.476.1] - 2026-11-24
+### Fixed
+- **Deploys and PR checks wait ~20 s on the test suite instead of ~100 s.** The 144 governance suites
+  ran back to back; each box gates its restart on that run, so it was nearly the whole wait of a deploy.
+  They now run 8 at a time. A suite that fails in the pool is re-run alone and only a repeat counts, so
+  parallelism can't turn the gate red by itself (`AOS_GOV_SERIAL=1` restores the old order).
+- **A sent message no longer shows twice for a moment in Messages.** The socket could deliver the stored
+  message before the send request returned, so the optimistic bubble and the real one were both on screen.
+
 ## [0.476.0] - 2026-11-24
 ### Added
 - **Messages: the working parts of a conversation, inline.** Approvals, questions, proposals and
