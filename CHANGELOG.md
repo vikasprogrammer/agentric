@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.475.0] - 2026-11-24
+### Added
+- **Rooms and group messages.** Messages can now hold several people and agents in one conversation: name
+  it for a room, leave the name off for a group message (two people with no agent is a plain person-to-
+  person DM). An agent runs only when `@mentioned` (the composer autocompletes), gets its own hidden
+  session per room, is shown what it missed since its last turn, and acts as whoever addressed it — who
+  must be allowed to run it. An agent's reply never wakes another agent. People and agents can be added,
+  removed and the room renamed from its details panel. See `docs/messages.md`.
+  **For users:** You can now create rooms and group messages with teammates and agents together — type `@` to bring an agent into the conversation. [Open Messages](#/chat/new-room)
+
 ## [0.474.0] - 2026-11-24
 ### Added
 - **`/new` in Messages starts a new session.** Typed alone it drops a "New session" marker in the
