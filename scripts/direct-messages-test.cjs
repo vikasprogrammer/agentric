@@ -629,6 +629,20 @@ console.log('\n\x1b[1m14e) the room orchestrator: untagged messages find their a
   await settle();
   assert(tap.delivered.join() === 'agent-author' && /the build looks odd/.test(row(lane(AGENT).sessionId).task), 'tapping a pill brings that agent in, with the message it was about');
 
+  // naming an agent without an @ is addressing it — deterministically, in auto AND suggest
+  dms.roomSend(C, rid, 'ok');
+  const n0 = asked.length, i0 = injected.length;
+  const nm = dms.roomSend(A, rid, 'Hey Agent Author, are you there?');
+  assert(nm.delivered.join() === 'agent-author' && asked.length === n0 && /Hey Agent Author, are you there\?/.test(injected.slice(i0).map((i) => i.text).join(' ')), 'an agent named in plain words gets the message — no @, no model call');
+  dms.roomSend(C, rid, 'ok');
+  assert(dms.roomSend(A, rid, 'hey agentauthor you there').delivered.join() === 'agent-author' && dms.roomSend(A, rid, 'agent_author: ping').delivered.join() === 'agent-author', 'however the name is spaced');
+  dms.roomSend(C, rid, 'ok');
+  answer = { agents: [], confidence: 0.9, reason: 'chatter' };
+  assert(dms.roomSend(A, rid, 'the helpers at the venue were great').delivered.length === 0, 'but only as a whole word ("helpers" is not Helper)');
+  await tick();
+  const ev = aos.db.prepare("SELECT data FROM audit_events WHERE type = 'chat.room.routed' ORDER BY ts").all().map((r) => JSON.parse(r.data).how);
+  assert(ev.includes('named') && ev.includes('routed') && ev.includes('nobody') && ev.includes('suggested'), 'every decision is audited — including "nobody"', ev.join(','));
+
   const a0 = asked.length;
   dms.roomSend(A, rid, '@carol what do you think?');
   await tick();

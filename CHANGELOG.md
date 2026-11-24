@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.480.2] - 2026-11-24
+### Fixed
+- **Naming an agent in a room reaches it without an `@`.** "Hey infraops, are you there?" got no answer:
+  with no `@` the message went to the orchestrator's model, which read it as small talk and woke nobody.
+  A message that contains an agent's name as a whole word ("infraops", "infra ops", "Infra-Ops") is now
+  delivered to that agent directly — no model call — in automatic and suggest rooms. The model is also
+  told that a check-in addressed to an agent is for that agent, and every routing decision (including
+  "nobody") is now audited as `chat.room.routed`.
+
 ## [0.480.1] - 2026-11-24
 ### Changed
 - **Tagging two agents yourself now gets one combined answer too** — the same merge the orchestrator

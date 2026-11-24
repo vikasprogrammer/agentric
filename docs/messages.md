@@ -105,6 +105,8 @@ A room message that addresses nobody (no `@agent`, no `@person`, not the one-per
 a thread with a single agent in it) goes to `orchestrate` (`chat_rooms.orchestrate`: `auto` default /
 `suggest` / `off`, set from the room's details panel):
 
+0. **Named** — the message contains an agent's name as a whole word (`infra-ops` ← "infraops", "infra
+   ops") → delivered to it. Deterministic, no model call; works in `suggest` too.
 1. **Sticky** — the previous message in that stream was an agent's, under 10 minutes ago → this is the
    next line of that exchange. Delivered synchronously, no model call.
 2. **Route** — one call to the router's own brain (`routerBrain`: the tenant's LLM, else a tool-less
