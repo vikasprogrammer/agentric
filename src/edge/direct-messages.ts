@@ -839,6 +839,11 @@ export class DirectMessages {
     }
     const message = this.rooms.post(roomId, 'member', me.id, body, undefined, Date.now(), { files: files.map((f) => f.name), thread: root?.seq, mentions: this.peopleMentioned(body, parts, me.id) });
     for (const agent of delivered) this.rooms.setLaneSeen(roomId, agent, message.seq);
+    // Several agents were asked the same thing (the person tagged them): their answers come back as ONE
+    // combined reply too, exactly as when the orchestrator fans a message out itself.
+    if (delivered.length > 1 && room.orchestrate !== 'off') {
+      this.rooms.addJob({ roomId, kind: 'fanout', agent: delivered.join(','), memberId: me.id, request: body, status: 'running', thread: root?.seq, data: { seq: message.seq, replies: {} } });
+    }
     // Nobody was addressed: the room's orchestrator decides whether an agent should pick this up.
     // (Not when it was addressed to a PERSON — `@priya` is for Priya.)
     if (!to.length && !message.mentions?.length) for (const a of this.orchestrate(me, room, parts, message)) delivered.push(a);
