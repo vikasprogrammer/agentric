@@ -20,6 +20,18 @@ import { Textarea } from '@/components/ui/textarea'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { api, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
 
+/** Search people/agents by NAME first; a description match only ranks after every name match — otherwise
+ *  typing "engin" lists half the fleet (anything whose blurb says "engineer") above the Engineer. */
+function rankAgents<T extends { id: string; description?: string; category?: string }>(agents: T[], q: string): T[] {
+  const s = q.trim().toLowerCase()
+  if (!s) return agents
+  const name = (a: T) => `${a.id} ${a.id.replace(/[-_]+/g, ' ')}`.toLowerCase()
+  const byName = agents.filter((a) => name(a).includes(s))
+  // Once a name matches, that is what was meant: drop the description-only hits entirely.
+  if (byName.length) return [...byName.filter((a) => name(a).startsWith(s)), ...byName.filter((a) => !name(a).startsWith(s))]
+  return agents.filter((a) => (a.description || '').toLowerCase().includes(s) || (a.category || '').toLowerCase().includes(s))
+}
+
 const prettyAgent = (id: string): string => id.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
 /** A stable, pleasant colour per agent — the avatar tile is how you tell contacts apart at a glance. */
@@ -126,10 +138,7 @@ function MessageRow({ m, grouped, name, avatar }: { m: DmMessage; grouped: boole
 /** Browse the agents you can talk to and add them as contacts. */
 function Directory({ agents, renderIcon, onAdd, onClose, hasContacts }: { agents: DmDirectoryAgent[]; renderIcon: IconRenderer; onAdd: (id: string) => void; onClose?: () => void; hasContacts: boolean }) {
   const [q, setQ] = useState('')
-  const shown = useMemo(() => {
-    const s = q.trim().toLowerCase()
-    return s ? agents.filter((a) => a.id.toLowerCase().includes(s) || (a.description || '').toLowerCase().includes(s) || (a.category || '').toLowerCase().includes(s)) : agents
-  }, [agents, q])
+  const shown = useMemo(() => rankAgents(agents, q), [agents, q])
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col gap-3 px-6 py-8">
       <div className="flex items-start justify-between gap-3">
@@ -217,7 +226,7 @@ function Picker({ people, agents, renderIcon, pickedPeople, pickedAgents, onPeop
     </button>
   )
   const ps = people.filter((p) => !s || p.name.toLowerCase().includes(s))
-  const as = agents.filter((a) => !s || a.id.toLowerCase().includes(s) || (a.description || '').toLowerCase().includes(s))
+  const as = rankAgents(agents, q)
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
       <div className="relative">

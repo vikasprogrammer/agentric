@@ -415,6 +415,12 @@ if [ "$DRY" -eq 1 ]; then say "dry run — nothing changed"; exit 0; fi
 
 # Build output is captured, not streamed: tsc says nothing on success and vite writes its chunk-size
 # advice to stderr on every run. On failure the log is printed, so nothing is actually hidden.
+# The console is built into web/dist.next and only swapped into web/dist right before the restart. The
+# server serves web/dist straight off disk, so building in place put the NEW console in front of the OLD
+# server for as long as the test suite took (~4 min on a remote box) — every new screen in that window
+# called routes the running server did not have yet (live, 2026-11-24: "Create room" → "not found").
+swap_console='if [ -d web/dist.next ]; then rm -rf web/dist.old; [ ! -d web/dist ] || mv web/dist web/dist.old; mv web/dist.next web/dist; rm -rf web/dist.old; fi'
+
 build_local() { # <checkout> — runs in its own subshell; its whole output is one job log
   CHECKOUT="$1"
   K="$(key_for "$CHECKOUT")"
@@ -439,7 +445,7 @@ build_local() { # <checkout> — runs in its own subshell; its whole output is o
   npm run build >"$STATE/$K.build" 2>&1 \
     || { tail -30 "$STATE/$K.build" >&2; fail "server build failed in $CHECKOUT — every live server untouched, still on its old code"; }
   say "building console"
-  (cd web && npm run build >"$STATE/$K.build" 2>&1) \
+  (cd web && npm run build -- --outDir dist.next --emptyOutDir >"$STATE/$K.build" 2>&1) \
     || { tail -30 "$STATE/$K.build" >&2; fail "web build failed in $CHECKOUT — every live server untouched, still on its old code"; }
 
   if [ "$SKIP_TESTS" -eq 1 ]; then
@@ -477,7 +483,7 @@ build_remote() { # <tenant> <ssh-target> <checkout>
   on_remote "$SSHT" "cd '$CHECKOUT' && npm run build >/tmp/aos-make-live-$K.build 2>&1" \
     || { on_remote "$SSHT" "tail -30 /tmp/aos-make-live-$K.build" >&2 || true; fail "$TENANT: server build failed on $SSHT — every live server untouched"; }
   say "$TENANT: building console"
-  on_remote "$SSHT" "cd '$CHECKOUT/web' && npm run build >/tmp/aos-make-live-$K.build 2>&1" \
+  on_remote "$SSHT" "cd '$CHECKOUT/web' && npm run build -- --outDir dist.next --emptyOutDir >/tmp/aos-make-live-$K.build 2>&1" \
     || { on_remote "$SSHT" "tail -30 /tmp/aos-make-live-$K.build" >&2 || true; fail "$TENANT: web build failed on $SSHT — every live server untouched"; }
 
   if [ "$SKIP_TESTS" -eq 1 ]; then
@@ -529,6 +535,7 @@ while IFS=: read -r TENANT CHECKOUT PORT LABEL; do
   VERSION="$(node -p "require('$CHECKOUT/package.json').version")"
   LOG="$(log_for "$TENANT")"
 
+  (cd "$CHECKOUT" && eval "$swap_console") # no-op for a second tenant on the same checkout
   say "restarting $LABEL (:$PORT)"
   launchctl kickstart -k "gui/$(id -u)/$LABEL"
 
@@ -564,6 +571,7 @@ while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
   OLD="$(cat "$STATE/$(key_for "$SSHT$CHECKOUT").old")"
   VERSION="$(on_remote "$SSHT" "node -p \"require('$CHECKOUT/package.json').version\"")"
 
+  on_remote "$SSHT" "cd '$CHECKOUT' && $swap_console"
   say "restarting $UNIT on $SSHT (:$PORT)"
   on_remote "$SSHT" "sudo systemctl restart '$UNIT'"
 
