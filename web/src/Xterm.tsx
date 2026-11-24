@@ -41,6 +41,17 @@ const S_OUTPUT = 48 // '0'
 const S_TITLE = 49 // '1'
 const S_PREFS = 50 // '2'
 
+// ── wheel pacing ─────────────────────────────────────────────────────────────────────────────────────
+// Pixels of wheel/trackpad travel per wheel event forwarded to the app (claude's TUI scrolls up to 3
+// lines per event, tmux copy-mode 5). ~2 events per mouse-wheel click; a trackpad flick scales with
+// distance instead of with how many tiny events the OS emitted. Raise to scroll slower.
+const WHEEL_PX = 50
+// A wheel reporting in LINES (Firefox, deltaMode 1: 3 per click) is converted at this many px per line,
+// so one click lands on the same ~100px as Chrome's pixel-mode click.
+const WHEEL_LINE_PX = 100 / 3
+// Touch drag: lines of finger travel per forwarded wheel event (see the touch handler).
+const TOUCH_LINES_PER_NOTCH = 3
+
 // ── mouse-tracking stripper ──────────────────────────────────────────────────────────────────────────
 // The DECSET private modes that make xterm switch into "forward the mouse to the app" (and thus disable
 // selection). We drop these from the output stream; every other private mode — SGR encoding (1006),
@@ -319,21 +330,38 @@ export function Xterm({
     // wheel-button events (button 64 up / 65 down) and send them down, so claude scrolls its conversation
     // and tmux scrolls its scrollback exactly as if we'd never stripped the mode. When no app wants the
     // mouse, return true to let xterm do its own local scrollback scroll.
+    //
+    // Rate it by DISTANCE, not by event count. A mouse wheel sends one ~100px event per click, but a
+    // trackpad (and its momentum tail) sends a stream of tiny 2–20px events, ~60/s. Rounding each event up
+    // to at least one notch turned every one of those into a wheel event, and claude scrolls up to 3 lines
+    // per event (tmux copy-mode: 5) — so a light two-finger flick flew through hundreds of lines. Now the
+    // pixel delta accumulates and a notch is sent per WHEEL_PX of travel; a direction change drops the
+    // remainder so reversing responds at once instead of first paying off the opposite residue.
     let appMouseWanted = false
+    let wheelAcc = 0
     term.attachCustomWheelEventHandler((e) => {
       if (!appMouseWanted || e.deltaY === 0) return true
-      const rect = host.getBoundingClientRect()
-      const col = Math.min(term.cols, Math.max(1, Math.floor(((e.clientX - rect.left) / rect.width) * term.cols) + 1))
-      const rowY = Math.min(term.rows, Math.max(1, Math.floor(((e.clientY - rect.top) / rect.height) * term.rows) + 1))
-      const btn = e.deltaY < 0 ? 64 : 65
-      const notches = e.deltaMode === 1 ? Math.abs(e.deltaY) // lines
-        : e.deltaMode === 2 ? Math.abs(e.deltaY) * term.rows // pages
-        : Math.max(1, Math.round(Math.abs(e.deltaY) / 40)) // pixels
-      let seq = ''
-      for (let k = 0; k < Math.min(notches, 8); k++) seq += `\x1b[<${btn};${col};${rowY}M`
-      send(C_INPUT + seq)
+      const px = e.deltaMode === 1 ? e.deltaY * WHEEL_LINE_PX // lines (Firefox mouse: 3 per click)
+        : e.deltaMode === 2 ? e.deltaY * term.rows * WHEEL_LINE_PX // pages
+        : e.deltaY // pixels (Chrome/Safari, every trackpad)
+      if (Math.sign(px) !== Math.sign(wheelAcc)) wheelAcc = 0
+      wheelAcc += px
+      const notches = Math.trunc(wheelAcc / WHEEL_PX)
+      if (notches === 0) return false // still consumed — the local alt-screen buffer has nothing to scroll
+      wheelAcc -= notches * WHEEL_PX
+      sendWheel(notches < 0 ? 64 : 65, Math.abs(notches), e.clientX, e.clientY)
       return false // handled — don't let xterm also scroll its (empty, on the alt-screen) local buffer
     })
+    /** Send `n` SGR wheel events (button 64 up / 65 down) at the cell under the pointer, capped so one
+     *  burst can never fling the view a whole conversation. */
+    const sendWheel = (btn: 64 | 65, n: number, clientX: number, clientY: number) => {
+      const rect = host.getBoundingClientRect()
+      const col = Math.min(term.cols, Math.max(1, Math.floor(((clientX - rect.left) / rect.width) * term.cols) + 1))
+      const rowY = Math.min(term.rows, Math.max(1, Math.floor(((clientY - rect.top) / rect.height) * term.rows) + 1))
+      let seq = ''
+      for (let k = 0; k < Math.min(n, 8); k++) seq += `\x1b[<${btn};${col};${rowY}M`
+      send(C_INPUT + seq)
+    }
     const mouseFilter = stripMouseTracking((w) => { appMouseWanted = w })
 
     // ── socket ───────────────────────────────────────────────────────────────────────────────────
@@ -417,21 +445,16 @@ export function Xterm({
       const cellH = host.clientHeight / Math.max(1, term.rows)
       touchAcc += (touchY - t.clientY)
       touchY = t.clientY
-      const lines = Math.trunc(touchAcc / cellH)
+      // While the app owns the scroll, each wheel event moves it several lines, so a notch is sent per
+      // TOUCH_LINES_PER_NOTCH lines of finger travel — the content then tracks the finger instead of
+      // racing ahead of it. Locally xterm scrolls exactly one line per line.
+      const step = appMouseWanted ? cellH * TOUCH_LINES_PER_NOTCH : cellH
+      const lines = Math.trunc(touchAcc / step)
       if (lines === 0) return
-      touchAcc -= lines * cellH
+      touchAcc -= lines * step
       e.preventDefault()
-      if (appMouseWanted) {
-        const rect = host.getBoundingClientRect()
-        const col = Math.min(term.cols, Math.max(1, Math.floor(((t.clientX - rect.left) / rect.width) * term.cols) + 1))
-        const rowY = Math.min(term.rows, Math.max(1, Math.floor(((t.clientY - rect.top) / rect.height) * term.rows) + 1))
-        const btn = lines > 0 ? 65 : 64
-        let seq = ''
-        for (let k = 0; k < Math.min(Math.abs(lines), 8); k++) seq += `\x1b[<${btn};${col};${rowY}M`
-        send(C_INPUT + seq)
-      } else {
-        term.scrollLines(lines)
-      }
+      if (appMouseWanted) sendWheel(lines > 0 ? 65 : 64, Math.abs(lines), t.clientX, t.clientY)
+      else term.scrollLines(lines)
     }
     const onTouchEnd = () => { touchY = null }
     host.addEventListener('touchstart', onTouchStart, { passive: true })
