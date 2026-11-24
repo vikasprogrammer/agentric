@@ -72,16 +72,18 @@ function shortWhen(ts: number): string {
 }
 
 /** The work behind a reply — collapsed to a single quiet line until someone wants to look. */
-function Steps({ steps, live = false }: { steps: DmStep[]; live?: boolean }) {
+function Steps({ steps, live = false, took }: { steps: DmStep[]; live?: boolean; took?: number }) {
   const [open, setOpen] = useState(false)
   const done = steps.filter((s) => s.t === 'do')
-  if (steps.length === 0) return null
+  // A reply with no steps still says how long it took, once that is long enough to be worth saying.
+  if (steps.length === 0) return took && took >= 5000 ? <div className="mt-1 text-[11px] text-muted-foreground">took {span(took)}</div> : null
   const failed = done.filter((s) => s.status === 'error').length
   return (
     <div className="mt-1">
       <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-1 rounded text-[11px] text-muted-foreground hover:text-foreground">
         <ChevronRight className={`h-3 w-3 transition-transform ${open ? 'rotate-90' : ''}`} />
         {live ? 'Show progress' : `${done.length || steps.length} step${(done.length || steps.length) === 1 ? '' : 's'}`}
+        {!live && took ? <span> · {span(took)}</span> : null}
         {failed > 0 && <span className="text-amber-600"> · {failed} retried</span>}
       </button>
       {open && (
@@ -99,6 +101,17 @@ function Steps({ steps, live = false }: { steps: DmStep[]; live?: boolean }) {
       )}
     </div>
   )
+}
+
+/** "42s" / "3m 05s" — how long something has taken. */
+const span = (ms: number): string => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` }
+
+/** A live count of how long an agent has been at it. Ticks locally; `since` comes from the server. */
+function Elapsed({ since }: { since?: number }) {
+  const [, tick] = useState(0)
+  useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t) }, [])
+  if (!since) return null
+  return <span className="tabular-nums text-muted-foreground">· {span(Date.now() - since)}</span>
 }
 
 function TypingDots() {
@@ -135,7 +148,7 @@ function MessageRow({ m, grouped, name, avatar, onThread }: { m: DmMessage; grou
         {m.tag === 'bg' && <span className="mb-0.5 inline-flex items-center gap-1 rounded bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground"><Loader2 className="h-2.5 w-2.5" />{m.authorKind === 'agent' ? 'Background result' : 'Sent to the background'}</span>}
         {body}
         {m.files && <div className="mt-1 flex flex-wrap gap-1">{m.files.map((f, i) => <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"><Paperclip className="h-3 w-3" />{f}</span>)}</div>}
-        {m.steps && <Steps steps={m.steps} />}
+        {(m.steps || m.took) && <Steps steps={m.steps ?? []} took={m.took} />}
         {onThread && !!m.replies && (
           <button onClick={onThread} className="mt-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-xs font-medium text-primary hover:bg-primary/10">
             <MessageSquareReply className="h-3.5 w-3.5" /> {m.replies} {m.replies === 1 ? 'reply' : 'replies'}
@@ -195,7 +208,7 @@ type Target = { kind: 'dm'; contact: DmContact } | { kind: 'room'; room: RoomSum
 /** Both kinds of thread, in the one shape the conversation renders. */
 interface View {
   messages: DmMessage[]
-  typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null }[]
+  typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null; since?: number }[]
   threadView?: ThreadView | null
   sessionIds: string[]
   stalled: boolean
@@ -410,7 +423,7 @@ function RoomDetails({ me, room, people, agents, renderIcon, onChanged, onLeft, 
 /** A thread, beside the conversation: the message it hangs off, the replies under it, and a reply box. */
 function ThreadPanel({ view, typing, nameOf, avatarOf, onClose, onSend }: {
   view: ThreadView | null | undefined
-  typing: { agent: string; label: string }[]
+  typing: { agent: string; label: string; since?: number }[]
   nameOf: (m: DmMessage) => string
   avatarOf: (m: DmMessage) => ReactNode
   onClose: () => void
@@ -455,7 +468,7 @@ function ThreadPanel({ view, typing, nameOf, avatarOf, onClose, onSend }: {
         )}
       </div>
       <div className="min-h-[1.25rem] shrink-0 px-4">
-        {typing.map((t) => <div key={t.agent} className="flex items-center gap-2 pb-1 text-xs text-muted-foreground"><TypingDots /><span><span className="font-medium text-foreground">{prettyAgent(t.agent)}</span> is replying…</span></div>)}
+        {typing.map((t) => <div key={t.agent} className="flex items-center gap-2 pb-1 text-xs text-muted-foreground"><TypingDots /><span><span className="font-medium text-foreground">{prettyAgent(t.agent)}</span> is replying…</span><Elapsed since={t.since} /></div>)}
       </div>
       <div className="shrink-0 px-4 pb-4">
         <div className="flex items-end gap-2 rounded-xl border bg-background p-1.5 focus-within:border-primary/60">
@@ -878,6 +891,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <TypingDots />
                 <span><span className="font-medium text-foreground">{prettyAgent(t.agent)}</span> is {t.label === 'Writing' ? 'writing…' : t.label === 'Thinking' ? 'thinking…' : 'working on it…'}</span>
+                <Elapsed since={t.since} />
                 {i === 0 && <button onClick={stopNow} className="ml-1 inline-flex items-center gap-1 rounded border px-1.5 py-px text-[11px] hover:bg-muted hover:text-foreground" title="Stop what the agent is doing (the conversation stays)"><Square className="h-2.5 w-2.5 fill-current" /> Stop</button>}
               </div>
               <Steps steps={t.steps} live />

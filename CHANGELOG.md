@@ -8,6 +8,11 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.477.2] - 2026-11-24
+### Added
+- **Messages shows how long an agent has been working.** The "working on it…" line now carries a live
+  timer counted from when the turn started, and each reply records how long it took (next to its steps).
+
 ## [0.477.1] - 2026-11-24
 ### Changed
 - **Cockpit's "Chat" launch opens Messages.** The request is sent as the next message in your

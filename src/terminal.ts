@@ -3089,7 +3089,7 @@ export class TerminalManager {
    * is its pane up, is a turn in flight — plus the transcript's size/mtime so the caller can skip parsing
    * a file that hasn't moved. One row read, the cached liveness poll and one stat; no transcript parse.
    */
-  sessionPulse(sessionId: string): { agent: string; status: string; alive: boolean; working: boolean; archived: boolean; resumable: boolean; size: number; mtime: number } | undefined {
+  sessionPulse(sessionId: string): { agent: string; status: string; alive: boolean; working: boolean; archived: boolean; resumable: boolean; size: number; mtime: number; busySince: number | null } | undefined {
     const r = this.db
       .prepare('SELECT id, agent, tmux, status, busy_since, last_activity, created_at, archived_at, claude_session_id FROM term_sessions WHERE id = ?')
       .get<{ id: string; agent: string; tmux: string; status: string; busy_since: number | null; last_activity: number | null; created_at: number; archived_at: number | null; claude_session_id: string | null }>(sessionId);
@@ -3100,7 +3100,7 @@ export class TerminalManager {
       agent: r.agent, status: r.status,
       alive: this.launching.has(sessionId) || (names ? names.has(r.tmux) : r.status === 'running'),
       working: this.isWorking(r, names), archived: r.archived_at != null, resumable: !!r.claude_session_id,
-      size: mark?.size ?? 0, mtime: mark?.mtime ?? 0,
+      size: mark?.size ?? 0, mtime: mark?.mtime ?? 0, busySince: r.busy_since,
     };
   }
 
