@@ -202,7 +202,7 @@ export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: Run
 export type DmPresence = 'working' | 'online' | 'away'
 /** One thing an agent did (`do`) or noted (`say`) on the way to a reply — hidden until expanded. */
 export interface DmStep { t: 'say' | 'do'; text: string; detail?: string; status?: 'running' | 'ok' | 'error' }
-export interface DmMessage { seq: number; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** room messages carry who said it */ authorName?: string; authorIcon?: string; authorAvatar?: string; /** 'bg' = background request/result · 'proactive' = the agent wrote first */ tag?: string; /** a reply: the seq of the message it sits under */ threadId?: number; /** on a main message: its reply count + last reply time */ replies?: number; lastReplyAt?: number; mentions?: string[]; /** names of files sent with it */ files?: string[]; /** client-only: sent, not yet stored */ pending?: boolean }
+export interface DmMessage { seq: number; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** room messages carry who said it */ authorName?: string; authorIcon?: string; authorAvatar?: string; /** 'bg' = background request/result · 'proactive' = the agent wrote first */ tag?: string; /** a reply: the seq of the message it sits under */ threadId?: number; /** on a main message: its reply count + last reply time */ replies?: number; lastReplyAt?: number; mentions?: string[]; /** agent reply: how long the turn took, ms */ took?: number; /** names of files sent with it */ files?: string[]; /** client-only: sent, not yet stored */ pending?: boolean }
 export type NotifyLevel = 'all' | 'mentions' | 'mute'
 export interface ThreadView { root: DmMessage; replies: DmMessage[] }
 export interface DmContact { agent: string; roomId: string; description: string; icon?: string; presence: DmPresence; lastText?: string; lastFromMe?: boolean; lastAt: number; unread: number; notify?: NotifyLevel; sessionId: string | null }
@@ -210,7 +210,7 @@ export interface DmContact { agent: string; roomId: string; description: string;
 export interface RoomPerson { id: string; name: string; avatar?: string }
 export interface RoomAgent { id: string; description: string; icon?: string; presence: DmPresence }
 export interface RoomSummary { id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; lastText?: string; lastAuthor?: string; lastAt: number; unread: number; mentions?: number; notify?: NotifyLevel }
-export interface RoomThread { room: RoomSummary; messages: DmMessage[]; typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null }[]; threadView?: ThreadView | null; sessionIds: string[]; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; peopleTyping?: string[]; error?: string }
+export interface RoomThread { room: RoomSummary; messages: DmMessage[]; typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null; since?: number }[]; threadView?: ThreadView | null; sessionIds: string[]; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; peopleTyping?: string[]; error?: string }
 /** A background run or reminder still in flight in a conversation. */
 export interface DmJob { id: string; kind: 'bg' | 'remind'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null }
 /** Work the conversation's agent handed to another agent. */

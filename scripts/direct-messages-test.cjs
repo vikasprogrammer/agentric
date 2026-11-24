@@ -90,12 +90,14 @@ console.log('\n\x1b[1m2) first message starts a hidden session; the turn folds i
   let t = dms.thread(alice, AGENT);
   assert(t.messages.length === 1 && t.typing && t.presence === 'working', 'mid-turn: only my message + a typing indicator', JSON.stringify(t.typing));
   assert(t.typing.steps.length === 2, 'typing carries the live steps');
+  assert(typeof t.typing.since === 'number' && t.typing.since <= Date.now(), 'and when the turn started — for the working-time counter');
   write(s1, [result('t1'), say('Three tasks are open: A, B and C.'), tool('t2', 'mcp__agentos__report', { summary: 'x' }), result('t2')]);
   setWorking(s1, false);
   t = dms.thread(alice, AGENT);
   const reply = t.messages[t.messages.length - 1];
   assert(t.messages.length === 2 && reply.authorKind === 'agent' && reply.body === 'Three tasks are open: A, B and C.', 'turn end → one agent message = its last prose', JSON.stringify(t.messages.map((m) => m.body)));
   assert(reply.steps && reply.steps.length === 3 && reply.steps[0].t === 'say' && reply.steps[1].t === 'do', 'narration + tool calls kept as steps');
+  assert(reply.took >= 1000 && reply.took < 600000, 'the reply records how long the turn took', String(reply.took));
   assert(!t.typing && t.presence === 'online', 'typing cleared; warm pane = online');
   assert(!t.messages.some((m) => /direct-message conversation/.test(m.body)), 'the opening prompt never appears as a message');
   assert(tm.listSessions().find((s) => s.id === s1).dm === true, 'the session is flagged dm (hidden from the Sessions lists)');

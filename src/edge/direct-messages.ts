@@ -101,7 +101,7 @@ export interface RoomSummary {
 export type RoomMessage = ChatMessage & { authorName: string; authorIcon?: string; authorAvatar?: string };
 export interface RoomThread {
   room: RoomSummary; messages: RoomMessage[];
-  typing: { agent: string; label: string; steps: ChatStep[]; thread?: number | null }[];
+  typing: { agent: string; label: string; steps: ChatStep[]; thread?: number | null; since?: number }[];
   threadView?: ThreadView | null;
   /** Sessions behind the room's agents — used only to attach pending approvals/questions. */
   sessionIds: string[];
@@ -127,7 +127,7 @@ interface Lane {
   key: string; roomId: string; agent: string; sessionId: string | null; syncedTurns: number; syncedMark: string | null;
   save(turns: number, mark: string): void;
   /** Put a finished reply into the room (and do whatever a reply there triggers). */
-  post(m: { body: string; steps: ChatStep[]; at: number }, thread: number | null): void;
+  post(m: { body: string; steps: ChatStep[]; at: number; took?: number }, thread: number | null): void;
 }
 
 /** Fires `changed` (with the AgentOS it happened in) whenever a room gains a message — what the chat
@@ -273,7 +273,7 @@ export class DirectMessages {
     const r = this.syncLane({
       key: room.id, roomId: room.id, agent: room.agent, sessionId: room.sessionId, syncedTurns: room.syncedTurns, syncedMark: room.syncedMark,
       save: (turns, mark) => this.rooms.setSync(room.id, turns, mark),
-      post: (m, thread) => { this.postAgent(room, room.agent, m.body, m.steps, m.at, { thread }); },
+      post: (m, thread) => { this.postAgent(room, room.agent, m.body, m.steps, m.at, { thread, took: m.took }); },
     });
     return { room: this.rooms.dm(room.memberId, room.agent) ?? room, ...r };
   }
@@ -286,7 +286,7 @@ export class DirectMessages {
     const presence: DmPresence = pulse.working ? 'working' : pulse.alive ? 'online' : 'away';
     const base = `${pulse.size}:${pulse.mtime}:${pulse.working ? 1 : 0}:${pulse.alive ? 1 : 0}`;
     if (base === lane.syncedMark) {
-      return { presence, typing: pulse.working ? liveTyping.get(lane.key) ?? { label: 'Working', steps: [] } : null };
+      return { presence, typing: pulse.working ? liveTyping.get(lane.key) ?? { label: 'Working', steps: [], since: pulse.busySince ?? undefined } : null };
     }
 
     const turns = this.tm.sessionConversation(lane.sessionId).turns;
@@ -295,9 +295,11 @@ export class DirectMessages {
     let unsettled = false;
     const quiet = pulse.mtime ? Date.now() - pulse.mtime : Infinity;
     let thread = threadBefore(turns, i);
+    // When the message being answered was said — the previous user turn, if the cursor sits just past one.
+    let asked: number | undefined = i > 0 && turns[i - 1].kind === 'user' ? turns[i - 1].ts || undefined : undefined;
     while (i < turns.length) {
       const u = turns[i];
-      if (u.kind === 'user') { const x = threadOfTurn(u.text); if (x !== undefined) thread = x; i++; continue; }
+      if (u.kind === 'user') { const x = threadOfTurn(u.text); if (x !== undefined) thread = x; if (u.ts) asked = u.ts; i++; continue; }
       let j = i;
       while (j < turns.length && turns[j].kind !== 'user') j++;
       // A run of agent turns is a finished reply once something came after it, or the turn has ended AND
@@ -305,12 +307,15 @@ export class DirectMessages {
       const seg = turns.slice(i, j);
       const said = seg.some((t) => t.kind === 'assistant' && t.text.trim());
       const finished = j < turns.length || (!pulse.working && quiet > (said ? SETTLE_MS : TEXTLESS_DROP_MS));
-      if (!finished) { typing = { ...typingOf(seg), thread }; unsettled = !pulse.working; break; }
+      // `since` = when the turn started (the working stamp), which is what a "working for 42s" counter
+      // should count from — the segment's first line would hide the time spent before the first output.
+      if (!finished) { typing = { ...typingOf(seg), thread, since: pulse.busySince ?? asked ?? seg[0]?.ts }; unsettled = !pulse.working; break; }
       const msg = foldReply(seg);
-      if (msg) lane.post(msg, thread);
+      // How long the turn took: from the message it answers to its last word.
+      if (msg) lane.post({ ...msg, took: asked && msg.at > asked ? msg.at - asked : undefined }, thread);
       i = j;
     }
-    if (pulse.working && !typing) typing = { label: 'Thinking', steps: [] };
+    if (pulse.working && !typing) typing = { label: 'Thinking', steps: [], since: pulse.busySince ?? undefined };
     if (typing) liveTyping.set(lane.key, typing); else liveTyping.delete(lane.key);
     // An unsettled tail resolves with TIME, not with a change to the file — so leave a mark that can't
     // match, and the next poll looks again.
@@ -432,7 +437,7 @@ export class DirectMessages {
     return {
       key: `${room.id}:${p.id}`, roomId: room.id, agent: p.id, sessionId: p.sessionId, syncedTurns: p.syncedTurns, syncedMark: p.syncedMark,
       save: (turns, mark) => this.rooms.setLaneSync(room.id, p.id, turns, mark),
-      post: (m, thread) => { this.relay(room, p.id, this.postAgent(room, p.id, m.body, m.steps, m.at, { thread })); },
+      post: (m, thread) => { this.relay(room, p.id, this.postAgent(room, p.id, m.body, m.steps, m.at, { thread, took: m.took })); },
     };
   }
 
@@ -447,7 +452,7 @@ export class DirectMessages {
       const r = this.syncLane(this.lane(room, p));
       const a = this.os.agents.get(p.id);
       agents.push({ id: p.id, description: a?.description ?? '', icon: a?.icon, presence: r.presence });
-      if (r.typing) typing.push({ agent: p.id, label: r.typing.label, steps: r.typing.steps, thread: r.typing.thread ?? null });
+      if (r.typing) typing.push({ agent: p.id, label: r.typing.label, steps: r.typing.steps, thread: r.typing.thread ?? null, since: r.typing.since });
       if (p.sessionId) sessionIds.push(p.sessionId);
     }
     const fresh = this.rooms.get(room.id) ?? room;
@@ -689,11 +694,11 @@ export class DirectMessages {
   // ════════════════════════════════════════════════════════════════════════════════════════════
 
   /** Put an agent's message in a room; in a DM, ping the person if they are not looking. */
-  private postAgent(room: ChatRoom, agent: string, body: string, steps: ChatStep[] | undefined, at: number, extra: { tag?: string; thread?: number | null } = {}): ChatMessage {
+  private postAgent(room: ChatRoom, agent: string, body: string, steps: ChatStep[] | undefined, at: number, extra: { tag?: string; thread?: number | null; took?: number } = {}): ChatMessage {
     // A reply whose thread has gone (or was never a main-stream message) lands in the main stream instead.
     const thread = extra.thread && this.threadRoot(room.id, extra.thread) ? extra.thread : null;
     const mentions = room.kind === 'room' ? this.peopleMentioned(body, this.rooms.participants(room.id)) : undefined;
-    const msg = this.rooms.post(room.id, 'agent', agent, body, steps, at, { tag: extra.tag, thread, mentions });
+    const msg = this.rooms.post(room.id, 'agent', agent, body, steps, at, { tag: extra.tag, thread, mentions, took: extra.took });
     chatBus.emit('changed', this.os);
     this.notify(room, msg);
     return msg;

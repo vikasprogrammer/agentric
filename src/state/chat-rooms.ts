@@ -39,6 +39,8 @@ export interface ChatMessage {
   replies?: number; lastReplyAt?: number;
   /** Member ids this message @mentions. */
   mentions?: string[];
+  /** An agent reply: how long the turn that produced it took, in ms. */
+  took?: number;
 }
 export type NotifyLevel = 'all' | 'mentions' | 'mute';
 
@@ -62,10 +64,10 @@ const toRoom = (r: RoomRow): ChatRoom => ({
 });
 
 function toMsg(r: MsgRow): ChatMessage {
-  let steps: ChatStep[] | undefined, tag: string | undefined, files: string[] | undefined;
-  if (r.meta) { try { const m = JSON.parse(r.meta); if (Array.isArray(m.steps) && m.steps.length) steps = m.steps; if (typeof m.tag === 'string') tag = m.tag; if (Array.isArray(m.files) && m.files.length) files = m.files.map(String); } catch { /* a bad meta blob is just a message without detail */ } }
+  let steps: ChatStep[] | undefined, tag: string | undefined, files: string[] | undefined, took: number | undefined;
+  if (r.meta) { try { const m = JSON.parse(r.meta); if (Array.isArray(m.steps) && m.steps.length) steps = m.steps; if (typeof m.tag === 'string') tag = m.tag; if (Array.isArray(m.files) && m.files.length) files = m.files.map(String); if (typeof m.took === 'number' && m.took > 0) took = m.took; } catch { /* a bad meta blob is just a message without detail */ } }
   const mentions = r.mentions ? r.mentions.split(',').filter(Boolean) : undefined;
-  return { tag, files, threadId: r.thread_id ?? undefined, replies: r.replies || undefined, lastReplyAt: r.last_reply_at ?? undefined, mentions: mentions?.length ? mentions : undefined, seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : r.author_kind === 'system' ? 'system' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
+  return { tag, files, took, threadId: r.thread_id ?? undefined, replies: r.replies || undefined, lastReplyAt: r.last_reply_at ?? undefined, mentions: mentions?.length ? mentions : undefined, seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : r.author_kind === 'system' ? 'system' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
 }
 
 export class ChatRoomStore {
@@ -107,14 +109,14 @@ export class ChatRoomStore {
     this.db.prepare('UPDATE chat_rooms SET synced_turns = ?, synced_mark = ? WHERE id = ?').run(turns, mark, roomId);
   }
 
-  post(roomId: string, authorKind: 'member' | 'agent' | 'system', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now(), extra: { tag?: string; files?: string[]; thread?: number | null; mentions?: string[] } = {}): ChatMessage {
-    const m = { ...(steps?.length ? { steps } : {}), ...(extra.tag ? { tag: extra.tag } : {}), ...(extra.files?.length ? { files: extra.files } : {}) };
+  post(roomId: string, authorKind: 'member' | 'agent' | 'system', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now(), extra: { tag?: string; files?: string[]; thread?: number | null; mentions?: string[]; took?: number } = {}): ChatMessage {
+    const m = { ...(steps?.length ? { steps } : {}), ...(extra.tag ? { tag: extra.tag } : {}), ...(extra.files?.length ? { files: extra.files } : {}), ...(extra.took && extra.took > 0 ? { took: Math.round(extra.took) } : {}) };
     const meta = Object.keys(m).length ? JSON.stringify(m) : null;
     const mentions = extra.mentions?.length ? `,${extra.mentions.join(',')},` : null;
     const r = this.db.prepare('INSERT INTO chat_messages (room_id, author_kind, author_id, body, meta, created_at, thread_id, mentions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(roomId, authorKind, authorId, body, meta, at, extra.thread ?? null, mentions);
     this.db.prepare('UPDATE chat_rooms SET last_message_at = ? WHERE id = ?').run(Date.now(), roomId);
-    return { seq: Number(r.lastInsertRowid), roomId, authorKind, authorId, body, steps: steps?.length ? steps : undefined, createdAt: at, tag: extra.tag, files: extra.files?.length ? extra.files : undefined, threadId: extra.thread ?? undefined, mentions: extra.mentions?.length ? extra.mentions : undefined };
+    return { seq: Number(r.lastInsertRowid), roomId, authorKind, authorId, body, steps: steps?.length ? steps : undefined, createdAt: at, tag: extra.tag, files: extra.files?.length ? extra.files : undefined, threadId: extra.thread ?? undefined, mentions: extra.mentions?.length ? extra.mentions : undefined, took: extra.took && extra.took > 0 ? Math.round(extra.took) : undefined };
   }
 
   /** Messages after `after` (oldest first); with no cursor, the newest `limit`. `before` pages backwards. */
