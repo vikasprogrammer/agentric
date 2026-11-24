@@ -1,8 +1,12 @@
 # Messages — direct messages with agents
 
-The console's **Messages** page (`#/dm`) lets a member talk to an agent the way they talk to a
+The console's **Messages** page (`#/chat`) lets a member talk to an agent the way they talk to a
 teammate: a contact list, one endless conversation per contact, presence, unread counts. No sessions,
 terminals or runs appear on the page.
+
+It replaces the older **Chat** page (one session per conversation, a list of chats to manage), which is
+deprecated: its code is still in `web/src/App.tsx` (`ChatPage`) and renders only for a `#/chat/ses_…`
+deep link, which Cockpit's chat launch still produces. `#/dm`, Messages' first address, redirects.
 
 Governance is unchanged. Behind every conversation is an ordinary governed session (provenance
 `chat:<member>`, run-as the member, gate hook, approvals). This page only hides the plumbing.

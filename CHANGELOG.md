@@ -8,16 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.473.1] - 2026-11-24
+### Changed
+- **Messages took over `#/chat`; the old Chat page is deprecated.** The sidebar's Messages item and every
+  link now use `#/chat` (`#/dm` redirects). The old session-per-conversation Chat page left the nav — its
+  code stays for now and renders only for a `#/chat/ses_…` deep link (Cockpit's chat launch).
+
 ## [0.473.0] - 2026-11-24
 ### Added
-- **Messages — talk to agents like teammates.** A new console page (`#/dm`) with a contact list and one
+- **Messages — talk to agents like teammates.** A new console page (`#/chat`) with a contact list and one
   endless conversation per agent: presence, unread counts, typing indicator, day dividers, grouped
   messages. The governed session behind a conversation is created, resumed and replaced server-side
   and never shown — a whole turn folds into ONE reply with its tool calls tucked behind an expandable
   "N steps", approvals/questions appear inline, and a message nobody picked up offers a retry.
   Conversations are durable rows (`chat_rooms`/`chat_messages`), shaped for multi-party rooms next.
   See `docs/messages.md`.
-  **For users:** You can now add agents as contacts and message them like anyone else on the team — they keep the conversation going and you never have to open a session. [Open Messages](#/dm)
+  **For users:** You can now add agents as contacts and message them like anyone else on the team — they keep the conversation going and you never have to open a session. [Open Messages](#/chat)
 
 ## [0.472.5] - 2026-11-24
 ### Fixed
