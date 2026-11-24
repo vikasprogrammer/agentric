@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.472.5] - 2026-11-24
+### Fixed
+- **Opening or refreshing a session left the cursor outside the chat.** The browser terminal never took
+  keyboard focus, so you had to click into the pane before typing to the agent. It now focuses itself as
+  soon as it connects — on a page refresh, on opening a session, and after a reload/take-over reconnect —
+  unless you're already typing in another field (a search box, a rename input), which it leaves alone.
+  **For users:** Open or refresh a session and you can start typing to the agent right away — no click needed.
+
 ## [0.472.4] - 2026-11-24
 ### Fixed
 - **Session terminal scrolled far too fast on a trackpad.** The console's wheel bridge turned every
