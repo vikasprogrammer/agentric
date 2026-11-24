@@ -21,6 +21,7 @@ import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDis
 import { chooseAgent, dispatch, routerBrain, RouterCandidate } from './router';
 import { reviewGoals } from './goal-review';
 import { reviewBets } from './bet-review';
+import { DirectMessages } from './direct-messages';
 import { reviewLoginExpiry } from './login-expiry';
 import { recordCapabilityGap } from './capability-gap';
 import { SOCIAL_REPLY } from './intent';
@@ -2384,6 +2385,9 @@ export class Automations {
     this.sweepStuckGoals(now);
     this.sweepCompletedGoals();
     this.sweepGoalMetrics(now);
+    // Console chat: fold finished replies in, pass agent→agent mentions on, finish background runs, fire
+    // reminders — the work a conversation needs done while nobody has it open. Self-throttled.
+    try { new DirectMessages(this.os, this.tm).sweep(now.getTime()); } catch { /* never let chat upkeep take down the scheduler */ }
     this.sweepExpiredQuestions(now);
     this.sweepBets(now);
     this.sweepLoginExpiry(now);

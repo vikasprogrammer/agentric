@@ -1119,6 +1119,28 @@ const TOOLS = [
     },
   },
   {
+    name: 'message_send',
+    description:
+      'Send a message in the console\'s Messages (the in-app chat people use to talk to agents) — for when ' +
+      'YOU have something to tell someone and they did not just ask: a scheduled report, the result of a long ' +
+      'job, a follow-up you promised. With no arguments beyond `text` it goes to the person you are working ' +
+      'for, in their direct-message conversation with you. `to` (a teammate\'s email or name) messages someone ' +
+      'else; `room` (a room name or id you are a member of) posts there instead. They are pinged on ' +
+      'Slack/Discord if they are away. Do NOT use it to answer inside a chat conversation you are already ' +
+      'in — there your reply is posted automatically when your turn ends. Posting starts no work and ' +
+      'grants nothing; keep it short and lead with the point.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        text: { type: 'string', description: 'The message (markdown). Lead with the point.' },
+        to: { type: 'string', description: 'A teammate\'s email or name. Omit to message the person this run acts for.' },
+        room: { type: 'string', description: 'A room name or id you belong to — posts there instead of a direct message.' },
+      },
+      required: ['text'],
+    },
+  },
+  {
     name: 'stop',
     description:
       'End THIS session now — the clean way to finish. Call it when the work is done, or when you are ' +
@@ -2908,6 +2930,16 @@ async function unschedule(args: Record<string, unknown>): Promise<string> {
   return d.cancelled ? `Cancelled scheduled task ${id}.` : `Nothing to cancel for ${id} (already fired, or not yours).`;
 }
 
+async function messageSend(args: Record<string, unknown>): Promise<string> {
+  const res = await fetch(AOS_URL + '/api/agent/message', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, text: String(args.text ?? ''), to: args.to ? String(args.to) : undefined, room: args.room ? String(args.room) : undefined }),
+  });
+  const d = (await res.json()) as { ok?: boolean; where?: string; error?: string };
+  return d.ok ? `Sent to ${d.where}.` : `Could not send: ${d.error ?? 'unknown error'}`;
+}
+
 async function stop(args: Record<string, unknown>): Promise<string> {
   const reason = String(args.reason ?? '').trim();
   const res = await fetch(AOS_URL + '/api/agent/stop', {
@@ -3992,6 +4024,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'session_open' ? await sessionOpen(args)
         : name === 'schedule' ? await schedule(args)
         : name === 'unschedule' ? await unschedule(args)
+        : name === 'message_send' ? await messageSend(args)
         : name === 'stop' ? await stop(args)
         : name === 'handoff' ? await handoff(args)
         : name === 'task_create' ? await taskCreate(args)

@@ -77,7 +77,8 @@ import { planTaskReconcile, applyTaskReconcile } from './edge/task-reconcile';
 import { planLibraryTidy, applyLibraryTidy } from './edge/library-tidy';
 import { planSessionTidy, applySessionTidy } from './edge/session-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
-import { DirectMessages } from './edge/direct-messages';
+import { DirectMessages, type InboundFile } from './edge/direct-messages';
+import { chatUpgrade } from './edge/chat-socket';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { UpdateWatch } from './edge/update-watch';
@@ -437,6 +438,8 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
     if (!rt) return void socket.destroy();
     // Hosted-app WebSocket upgrades (e.g. an app's live channel) route to the app's own port.
     if ((req.url || '').startsWith('/apps/')) return void appUpgrade(rt.os, rt.apps, req, socket, head);
+    // Messages push channel (src/edge/chat-socket.ts) — login-gated by the same cookie as the API.
+    if ((req.url || '').split('?')[0] === '/api/chat/ws') return void chatUpgrade(rt.os, rt.tm, rt.os.team.resolveSession(parseCookies(req)['aos_sid'] || '') ?? undefined, req, socket);
     if (UID_ISOLATION) terminalUpgrade(rt.os, rt.tm, req, socket, head);
     else sharedTerminalUpgrade(rt.os, rt.tm, rt.ttydPort, req, socket, head);
   });
@@ -1601,6 +1604,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const r = tm.handoffSession(session, String(b.note || ''), { title: typeof b.title === 'string' ? b.title : undefined, by: agent });
     return sendJson(res, r.ok ? 200 : 400, r);
+  }
+  // An agent writes FIRST in Messages (the `message_send` tool): into its DM with a person, or a room it
+  // is in. Posting runs nothing; audited `chat.message.sent`. See DirectMessages.agentPost.
+  if (method === 'POST' && p === '/api/agent/message') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const r = new DirectMessages(os, tm).agentPost(session, agent, { to: b.to ? String(b.to) : undefined, room: b.room ? String(b.room) : undefined, text: String(b.text || '') });
+    return r.ok ? sendJson(res, 200, r) : sendJson(res, r.status, { error: r.error });
   }
   if (method === 'POST' && p === '/api/agent/stop') {
     const b = await readBody(req);
@@ -3810,6 +3824,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // ── Messages: direct-message an agent like a teammate (src/edge/direct-messages.ts). One durable room
   //    per (member, agent); the session behind it is created/resumed/replaced server-side and never
   //    shown. Same governance as any chat run: provenance chat:<me>, run-as me, gate hook + approvals. ──
+  // Files sent with a chat message arrive inline (base64) and are staged into the agent's .inbox/.
+  const chatFiles = (b: Record<string, unknown>): InboundFile[] => (Array.isArray(b.files) ? b.files : []).slice(0, 6)
+    .map((f: { name?: unknown; dataB64?: unknown }) => ({ name: String(f?.name || 'file'), data: Buffer.from(String(f?.dataB64 || ''), 'base64') })).filter((f: InboundFile) => f.data.length > 0);
+  const tooBig = () => Number(req.headers['content-length'] || 0) > 24 * 1024 * 1024;
   if (p === '/api/dm' && method === 'GET') {
     const dms = new DirectMessages(os, tm);
     return sendJson(res, 200, { ...dms.list(me), rooms: dms.roomList(me), people: dms.people() });
@@ -3821,7 +3839,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const r = new DirectMessages(os, tm).createRoom(me, { name: typeof b.name === 'string' ? b.name : undefined, members: Array.isArray(b.members) ? b.members : [], agents: Array.isArray(b.agents) ? b.agents : [] });
     return r.ok ? sendJson(res, 200, r) : sendJson(res, r.status, { error: r.error });
   }
-  const roomMatch = p.match(/^\/api\/rooms\/(room_[0-9a-f]+)(?:\/(send|participants))?$/);
+  const roomMatch = p.match(/^\/api\/rooms\/(room_[0-9a-f]+)(?:\/(send|participants|stop))?$/);
   if (roomMatch) {
     const dms = new DirectMessages(os, tm);
     const id = roomMatch[1], sub = roomMatch[2];
@@ -3831,7 +3849,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return out(dms.roomThread(me, id, { before: url.searchParams.has('before') && Number.isFinite(before) ? before : undefined, read: url.searchParams.get('read') === '1' }) as never);
     }
     if (!sub && method === 'PATCH') return out(dms.roomRename(me, id, String((await readBody(req)).name ?? '')));
-    if (sub === 'send' && method === 'POST') return out(dms.roomSend(me, id, String((await readBody(req)).message || '')) as never);
+    if (sub === 'send' && method === 'POST') {
+      if (tooBig()) return sendJson(res, 413, { error: 'attachments too large (max ~16MB per message)' });
+      const b = await readBody(req);
+      return out(dms.roomSend(me, id, String(b.message || ''), { files: chatFiles(b) }) as never);
+    }
+    if (sub === 'stop' && method === 'POST') {
+      const room = dms.roomOf(me, id);
+      return room ? sendJson(res, 200, dms.stop(me, room)) : sendJson(res, 404, { error: 'room not found' });
+    }
     if (sub === 'participants' && method === 'POST') {
       const b = await readBody(req);
       return out(dms.roomAdd(me, id, { members: Array.isArray(b.members) ? b.members : [], agents: Array.isArray(b.agents) ? b.agents : [] }));
@@ -3850,7 +3876,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.chatRooms.ensureDm(me.id, agent);
     return sendJson(res, 200, { ok: true });
   }
-  const dmMatch = p.match(/^\/api\/dm\/([\w.-]+)(?:\/(send|reset))?$/);
+  const jobCancel = p.match(/^\/api\/chat\/jobs\/(job_[0-9a-f]+)\/cancel$/);
+  if (jobCancel && method === 'POST') {
+    const r = new DirectMessages(os, tm).cancelJob(me, jobCancel[1]);
+    return r.ok ? sendJson(res, 200, r) : sendJson(res, r.status, { error: r.error });
+  }
+  const dmMatch = p.match(/^\/api\/dm\/([\w.-]+)(?:\/(send|reset|stop))?$/);
   if (dmMatch && dmMatch[1] !== 'contacts') {
     const agent = dmMatch[1];
     const dms = new DirectMessages(os, tm);
@@ -3866,10 +3897,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, 200, { ok: true });
     }
     if (dmMatch[2] === 'send' && method === 'POST') {
+      if (tooBig()) return sendJson(res, 413, { error: 'attachments too large (max ~16MB per message)' });
       const b = await readBody(req);
-      const r = dms.send(me, agent, String(b.message || ''), { retry: b.retry === true });
+      const r = dms.send(me, agent, String(b.message || ''), { retry: b.retry === true, files: chatFiles(b) });
       if (!r.ok) return sendJson(res, r.status, { error: r.error, held: r.held });
-      return sendJson(res, 200, { ok: true, message: r.message });
+      return sendJson(res, 200, { ok: true, message: r.message, notes: r.notes ?? [] });
+    }
+    if (dmMatch[2] === 'stop' && method === 'POST') {
+      const room = os.chatRooms.dm(me.id, agent);
+      return sendJson(res, 200, room ? dms.stop(me, room) : { ok: true, stopped: [] });
     }
     if (dmMatch[2] === 'reset' && method === 'POST') { dms.reset(me, agent); return sendJson(res, 200, { ok: true }); }
   }

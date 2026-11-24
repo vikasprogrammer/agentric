@@ -2184,7 +2184,7 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onPause={pauseSession} onUnpause={unpauseSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} doneToday={doneToday} members={members} agents={state?.agents ?? []} maturity={maturity} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} agents={state?.agents ?? []} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
-          {route === 'chat' && !legacyChat && <MessagesPage me={me} selected={detail} onSelect={(a) => nav('chat', a)} messages={messages} renderIcon={(icon, cls) => <AgentIcon icon={icon} className={cls} />} renderPending={(m) => <PendingCard m={m} />} onUnread={setDmUnread} onOpenSession={me.role === 'member' ? undefined : (id) => nav('sessions', 'aos-' + id)} />}
+          {route === 'chat' && !legacyChat && <MessagesPage me={me} selected={detail} onSelect={(a) => nav('chat', a)} messages={messages} renderIcon={(icon, cls) => <AgentIcon icon={icon} className={cls} />} renderCard={(m) => chatCard(m, me, members, state?.agents ?? [], openTerminal)} onUnread={setDmUnread} onOpenSession={me.role === 'member' ? undefined : (id) => nav('sessions', 'aos-' + id)} />}
           {route === 'cockpit' && <CockpitPage agents={state?.agents ?? []} sessions={sessions} onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
           {legacyChat && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
@@ -6307,6 +6307,46 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
       </div>
     </div>
   )
+}
+
+/** What an inbox message looks like INSIDE a Messages conversation — or null when it doesn't belong there
+ *  (progress updates, completions and notifications are the conversation itself, not cards in it).
+ *  A decision still open renders with its controls, exactly as the Inbox would; a settled one collapses
+ *  to a single line so the history stays readable. */
+function chatCard(m: Msg, me: Member, members: Member[], agents: AgentInfo[], onOpen: (tmux: string, title: string) => void): ReactNode {
+  const open = (m.status ?? 'pending') === 'pending'
+  if (m.type === 'approval' || m.type === 'question') {
+    if (open) return <PendingCard m={m} />
+    const ok = m.status === 'approved' || m.status === 'answered'
+    return (
+      <div className="flex items-start gap-2 text-xs text-muted-foreground">
+        {ok ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" /> : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+        <span className="min-w-0">
+          {m.type === 'approval'
+            ? <>{m.status === 'approved' ? 'Approved' : m.status === 'rejected' ? 'Declined' : 'Cancelled'} — {m.policyReason || m.title}{m.resolvedBy ? ` · ${m.resolvedBy}` : ''}</>
+            : <><span className="italic">{m.body || m.title}</span>{m.status === 'answered' ? <> → <span className="font-medium text-foreground">{m.answer}</span>{m.answeredBy ? ` · ${m.answeredBy}` : ''}</> : ' — no answer'}</>}
+        </span>
+      </div>
+    )
+  }
+  if (m.type === 'artifact') {
+    const meta = (m.args ?? {}) as { artifactId?: string; filename?: string }
+    if (!meta.artifactId) return null
+    const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(meta.filename || '')
+    return (
+      <a href={navHref('artifacts', meta.artifactId)} className="group block max-w-[20rem] overflow-hidden rounded-xl border bg-card transition hover:border-primary">
+        {isImage && <img src={api.artifactRawUrl(meta.artifactId)} alt={m.body} loading="lazy" className="max-h-44 w-full object-cover" />}
+        <div className="flex items-center gap-2 px-3 py-2 text-sm">
+          {isImage ? <ImageIcon className="h-4 w-4 shrink-0 text-muted-foreground" /> : <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />}
+          <span className="min-w-0 flex-1 truncate font-medium" title={m.body}>{m.body || meta.filename}</span>
+          <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition group-hover:opacity-100" />
+        </div>
+      </a>
+    )
+  }
+  // Proposals and requests (a task, an automation, a skill, an agent edit, a secret …) — decidable here.
+  if (isActionRequired(m) && m.type !== 'notification') return <ActionItem m={m} me={me} members={members} agents={agents} onOpen={onOpen} onDismiss={() => { void api.dismissMessage(m.id) }} />
+  return null
 }
 
 /** An approval or question waiting on the reader, as an inline card — the one piece of machinery a
