@@ -23,7 +23,8 @@ export interface ChatRoom {
 }
 
 export interface ChatMessage {
-  seq: number; roomId: string; authorKind: 'member' | 'agent'; authorId: string; body: string;
+  /** 'system' = a marker the room itself wrote (e.g. "New session"), not something anyone said. */
+  seq: number; roomId: string; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string;
   steps?: ChatStep[]; createdAt: number;
 }
 
@@ -41,7 +42,7 @@ const toRoom = (r: RoomRow): ChatRoom => ({
 function toMsg(r: MsgRow): ChatMessage {
   let steps: ChatStep[] | undefined;
   if (r.meta) { try { const m = JSON.parse(r.meta); if (Array.isArray(m.steps) && m.steps.length) steps = m.steps; } catch { /* a bad meta blob is just a message without detail */ } }
-  return { seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
+  return { seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : r.author_kind === 'system' ? 'system' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
 }
 
 export class ChatRoomStore {
@@ -83,7 +84,7 @@ export class ChatRoomStore {
     this.db.prepare('UPDATE chat_rooms SET synced_turns = ?, synced_mark = ? WHERE id = ?').run(turns, mark, roomId);
   }
 
-  post(roomId: string, authorKind: 'member' | 'agent', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now()): ChatMessage {
+  post(roomId: string, authorKind: 'member' | 'agent' | 'system', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now()): ChatMessage {
     const meta = steps?.length ? JSON.stringify({ steps }) : null;
     const r = this.db.prepare('INSERT INTO chat_messages (room_id, author_kind, author_id, body, meta, created_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(roomId, authorKind, authorId, body, meta, at);

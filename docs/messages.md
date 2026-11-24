@@ -43,6 +43,10 @@ Store: `src/state/chat-rooms.ts` (`os.chatRooms`). Engine: `src/edge/direct-mess
 - **Silence is reported.** A sent message with no reply and nothing running reads `stalled`, and the
   page offers *Try again* (re-delivers without posting twice).
 
+- **`/new` starts a new session.** Typed alone it posts a "New session" marker; `/new <text>` also sends
+  the text. The history stays on screen, but the marker is the recap boundary — the new session is told
+  nothing from before it. The command never reaches the agent. Same as the menu's *New session*.
+
 Owners and admins keep an escape hatch: the conversation menu's *Open the session behind this*.
 
 ## Not built yet

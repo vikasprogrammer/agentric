@@ -289,7 +289,7 @@ function Conversation({ me, contact, messages, renderIcon, renderPending, onChan
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={async () => { await api.dmReset(agent); load() }}>
-              <RotateCcw className="mr-2 h-3.5 w-3.5" /> Start fresh (keeps history)
+              <RotateCcw className="mr-2 h-3.5 w-3.5" /> New session (or type /new)
             </DropdownMenuItem>
             <DropdownMenuItem onClick={async () => { await api.dmRemoveContact(agent); onRemoved() }}>
               <UserMinus className="mr-2 h-3.5 w-3.5" /> Remove from contacts
@@ -331,7 +331,11 @@ function Conversation({ me, contact, messages, renderIcon, renderPending, onChan
                   <div className="h-px flex-1 bg-border" />
                 </div>
               )}
-              <MessageRow m={m} grouped={grouped} name={m.authorKind === 'agent' ? name : (me.name || 'You')} avatar={m.authorKind === 'agent' ? agentAvatar : myAvatar} />
+              {m.authorKind === 'system' ? (
+                <div className="my-3 flex items-center gap-3 px-5 text-[11px] text-muted-foreground">
+                  <div className="h-px flex-1 border-t border-dashed" /><RotateCcw className="h-3 w-3" /> {m.body} · {clock(m.createdAt)}<div className="h-px flex-1 border-t border-dashed" />
+                </div>
+              ) : <MessageRow m={m} grouped={grouped} name={m.authorKind === 'agent' ? name : (me.name || 'You')} avatar={m.authorKind === 'agent' ? agentAvatar : myAvatar} />}
               {failed && (
                 <div className="flex items-center gap-2 pl-[4.25rem] text-xs text-destructive">
                   <CircleAlert className="h-3.5 w-3.5" /> {failed}
@@ -377,7 +381,7 @@ function Conversation({ me, contact, messages, renderIcon, renderPending, onChan
             className="max-h-48 min-h-[44px] resize-none border-0 bg-transparent text-sm shadow-none focus-visible:ring-0"
           />
           <div className="flex items-center justify-between px-2 pb-1.5">
-            <span className="pl-1 text-[10px] text-muted-foreground"><kbd className="font-sans">Enter</kbd> to send · <kbd className="font-sans">Shift+Enter</kbd> for a new line</span>
+            <span className="pl-1 text-[10px] text-muted-foreground"><kbd className="font-sans">Enter</kbd> to send · <kbd className="font-sans">Shift+Enter</kbd> for a new line · <kbd className="font-sans">/new</kbd> starts a new session</span>
             <Button size="icon" className="h-7 w-7" disabled={!draft.trim()} onClick={submit} aria-label="Send"><Send className="h-3.5 w-3.5" /></Button>
           </div>
         </div>

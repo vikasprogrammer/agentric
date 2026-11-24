@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.474.0] - 2026-11-24
+### Added
+- **`/new` in Messages starts a new session.** Typed alone it drops a "New session" marker in the
+  conversation; `/new <text>` also sends the text into the fresh session. History stays visible, but the
+  new session is told nothing from before the marker (the recap stops there). The menu's "Start fresh"
+  became "New session" and does the same.
+  **For users:** Type `/new` in a conversation to start over with an agent — your history stays, but the agent begins with a clean slate. [Open Messages](#/chat)
+
 ## [0.473.1] - 2026-11-24
 ### Changed
 - **Messages took over `#/chat`; the old Chat page is deprecated.** The sidebar's Messages item and every

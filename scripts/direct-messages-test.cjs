@@ -154,11 +154,11 @@ console.log('\n\x1b[1m6) reset + remove contact keep history\x1b[0m');
 {
   const n = dms.thread(alice, AGENT).messages.length;
   dms.reset(alice, AGENT);
-  assert(aos.chatRooms.dm(alice.id, AGENT).sessionId === null && dms.thread(alice, AGENT).messages.length === n, 'reset drops the session, keeps messages');
+  assert(aos.chatRooms.dm(alice.id, AGENT).sessionId === null && dms.thread(alice, AGENT).messages.length === n + 1, 'reset drops the session, keeps messages (+ a marker)');
   aos.chatRooms.hide(aos.chatRooms.dm(alice.id, AGENT).id);
   assert(dms.list(alice).contacts.length === 0 && dms.list(alice).directory.some((a) => a.id === AGENT), 'removed contact returns to the directory');
   aos.chatRooms.ensureDm(alice.id, AGENT);
-  assert(dms.thread(alice, AGENT).messages.length === n, 're-adding picks the conversation back up');
+  assert(dms.thread(alice, AGENT).messages.length === n + 1, 're-adding picks the conversation back up');
 }
 
 console.log('\n\x1b[1m6b) `working` reading false mid-turn does not cut a reply in half\x1b[0m');
@@ -194,6 +194,27 @@ console.log('\n\x1b[1m7) a session that died before answering: stalled → retry
   assert(dms.thread(alice, AGENT).messages.length === n, 'and does not post the message twice');
   const task = row(again.sessionId).task;
   assert((task.match(/are you there\?/g) || []).length === 1, 'the retried message appears once in the new prompt');
+}
+
+console.log('\n\x1b[1m8) /new starts a new session with a clean slate\x1b[0m');
+{
+  const before = dms.send(alice, AGENT, 'remember the word pineapple');
+  await settle();
+  const r = dms.send(alice, AGENT, '/new');
+  assert(r.ok && r.sessionId === null && r.message.authorKind === 'system', '/new alone posts a marker and sends nothing');
+  assert(aos.chatRooms.dm(alice.id, AGENT).sessionId === null, 'the room has no session');
+  assert(dms.send(alice, AGENT, ' /NEW ').message.seq === r.message.seq, 'a second /new does not stack markers');
+  const n = spawned.length;
+  const r2 = dms.send(alice, AGENT, 'what word?');
+  await settle();
+  assert(r2.ok && r2.sessionId !== before.sessionId && spawned.length === n + 1, 'the next message launches a different session');
+  const task = row(r2.sessionId).task;
+  assert(!/pineapple/.test(task) && !/Earlier in this conversation/.test(task), 'which is told nothing from before the marker');
+  assert(!dms.thread(alice, AGENT).messages.some((m) => m.authorKind === 'member' && /^\/new/i.test(m.body)), '/new is never stored as something I said');
+  const r3 = dms.send(alice, AGENT, '/new summarise the roadmap');
+  assert(r3.ok && r3.sessionId !== r2.sessionId && r3.message.body === 'summarise the roadmap', '/new <text> starts a session and sends the text');
+  assert(!/\/new/.test(row(r3.sessionId).task), 'the command itself never reaches the agent');
+  assert(dms.list(alice).contacts[0].unread === 0, 'markers do not count as unread');
 }
 
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch { /* scratch */ }

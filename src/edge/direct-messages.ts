@@ -36,6 +36,9 @@ const MAX_STEPS = 60;
 const STEP_CHARS = 1500;
 /** How long a sent message may sit with nothing running before the UI offers a retry. */
 const STALL_MS = 20_000;
+/** `/new` alone starts a new session; `/new <text>` starts one and sends `<text>` into it. */
+const NEW_COMMAND = /^\/new(?:\s+([\s\S]+))?$/i;
+export const NEW_SESSION_MARKER = 'New session';
 /** A reply is only folded once its transcript has been quiet this long. The session's `working` flag is
  *  the main signal, but it can read false for a moment mid-turn (seen live right after launch) — and a
  *  reply folded then is cut in half: the interim note becomes "the message" and its steps are lost. */
@@ -61,7 +64,7 @@ export interface DmThread {
 }
 
 export type DmSendResult =
-  | { ok: true; message: ChatMessage; sessionId: string }
+  | { ok: true; message: ChatMessage; sessionId: string | null }
   | { ok: false; status: number; error: string; held?: boolean };
 
 /** The live "what is it doing right now" of each room — transient by nature, so memory not a table. */
@@ -171,10 +174,17 @@ export class DirectMessages {
   send(me: Member, agent: string, text: string, opts: { retry?: boolean } = {}): DmSendResult {
     // A retry re-delivers the member's last message rather than posting it a second time.
     const again = opts.retry ? this.lastFromMember(me, agent) : undefined;
-    const body = (again?.body ?? text).trim();
+    let body = (again?.body ?? text).trim();
     if (!body) return { ok: false, status: 400, error: 'message is required' };
     const denied = this.canChat(me, agent);
     if (denied) return { ok: false, status: 403, error: denied };
+    // `/new` — the person asks for a clean slate. Never delivered to the agent as text.
+    const cmd = again ? null : NEW_COMMAND.exec(body);
+    if (cmd) {
+      const marker = this.reset(me, agent);
+      body = (cmd[1] ?? '').trim();
+      if (!body) return { ok: true, message: marker, sessionId: null };
+    }
     // Sync first so the agent's previous reply lands in the room BEFORE this message, not after it.
     let { room } = this.sync(this.rooms.ensureDm(me.id, agent));
 
@@ -217,20 +227,26 @@ export class DirectMessages {
     return last && last.authorKind === 'member' ? last : undefined;
   }
 
-  /** Forget the session behind the room (history stays). The next message starts clean — the escape
-   *  hatch from a wedged or confused conversation. */
-  reset(me: Member, agent: string): void {
-    const room = this.rooms.dm(me.id, agent);
-    if (!room) return;
+  /** Start a NEW session behind the room: the visible history stays, but the next message opens a
+   *  session that knows nothing of it. Behind `/new` and the menu's "New session". */
+  reset(me: Member, agent: string): ChatMessage {
+    const room = this.rooms.ensureDm(me.id, agent);
     this.sync(room);
     this.rooms.setSession(room.id, null);
     liveTyping.delete(room.id);
+    // The marker is also the recap boundary: a new session is told nothing from before it.
+    const last = this.rooms.last(room.id);
+    if (last && last.authorKind === 'system' && last.body === NEW_SESSION_MARKER) return last;
+    return this.rooms.post(room.id, 'system', me.id, NEW_SESSION_MARKER);
   }
 
   /** The opening prompt of a session behind a DM: what this is, the recent conversation, the message. */
   private firstPrompt(me: Member, room: ChatRoom, body: string): string {
     const who = me.name || me.email;
-    const recent = this.rooms.messages(room.id, { limit: RECAP_MESSAGES });
+    let recent = this.rooms.messages(room.id, { limit: RECAP_MESSAGES });
+    // Nothing from before the last "New session" marker — that is what the person asked for.
+    const cut = recent.map((m) => m.authorKind).lastIndexOf('system');
+    if (cut >= 0) recent = recent.slice(cut + 1);
     // On a retry the message being delivered is already the room's last row — don't recap it too.
     const tail = recent[recent.length - 1];
     if (tail && tail.authorKind === 'member' && tail.body === body) recent.pop();
