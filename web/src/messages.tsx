@@ -286,6 +286,26 @@ function roomTitle(r: RoomSummary, meId: string): string {
   return names.join(', ') || 'Just you'
 }
 
+/** Someone the `@` picker can insert: a room's agent, a person in it, or everyone. `id` is the text after the @. */
+interface MentionTarget { id: string; title: string; icon?: string; person?: { name: string; avatar?: string }; everyone?: boolean }
+function mentionTargets(room: RoomSummary | undefined, meId: string): MentionTarget[] {
+  if (!room) return []
+  const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const others = room.members.filter((m) => m.id !== meId)
+  const firsts = others.map((m) => squash(m.name.split(/\s+/)[0]))
+  return [
+    ...room.agents.map((a) => ({ id: a.id, title: prettyAgent(a.id), icon: a.icon })),
+    // A first name when it is unambiguous here, the whole name otherwise — both forms the server resolves.
+    ...others.map((m, i) => ({ id: firsts.filter((f) => f === firsts[i]).length === 1 && firsts[i] ? firsts[i] : squash(m.name), title: m.name, person: m })).filter((t) => t.id),
+    ...(others.length > 1 ? [{ id: 'everyone', title: 'Everyone in this room', everyone: true }] : []),
+  ]
+}
+function MentionGlyph({ t, renderIcon }: { t: MentionTarget; renderIcon: IconRenderer }) {
+  if (t.person) return <PersonAvatar p={t.person} className="h-6 w-6 rounded-md text-[10px]" />
+  if (t.everyone) return <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted"><Users className="h-3.5 w-3.5 text-muted-foreground" /></span>
+  return <Avatar agent={t.id} icon={t.icon} renderIcon={renderIcon} size="sm" />
+}
+
 function PersonAvatar({ p, className = 'h-9 w-9 rounded-lg text-sm' }: { p: { name: string; avatar?: string }; className?: string }) {
   return p.avatar
     ? <img src={p.avatar} alt="" className={`shrink-0 object-cover ${className}`} />
@@ -387,6 +407,16 @@ function RoomDetails({ me, room, people, agents, renderIcon, onChanged, onLeft, 
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name this room" maxLength={60} className="h-8 text-sm" />
         <Button type="submit" size="sm" variant="outline" className="h-8" disabled={name.trim() === (room.name ?? '')}><Pencil className="h-3.5 w-3.5" /></Button>
       </form>
+      {!adding && room.agents.length > 0 && (
+        <label className="block shrink-0 text-xs text-muted-foreground">
+          When nobody is @mentioned, agents
+          <select value={room.orchestrate ?? 'auto'} onChange={(e) => act(() => api.roomOrchestrate(room.id, e.target.value as 'auto' | 'suggest' | 'off'))} className="mt-1 block h-8 w-full rounded-md border bg-background px-2 text-sm text-foreground">
+            <option value="auto">join in when it's clearly theirs</option>
+            <option value="suggest">are suggested — I choose</option>
+            <option value="off">stay quiet (only when @mentioned)</option>
+          </select>
+        </label>
+      )}
       {adding ? (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
           <Picker people={people.filter((p) => !room.members.some((m) => m.id === p.id))} agents={agents.filter((a) => !room.agents.some((r) => r.id === a.id))} renderIcon={renderIcon} pickedPeople={pp} pickedAgents={aa} onPeople={setPp} onAgents={setAa} />
@@ -433,7 +463,7 @@ function ThreadPanel({ view, typing, nameOf, avatarOf, agents, renderIcon, onClo
   nameOf: (m: DmMessage) => string
   avatarOf: (m: DmMessage) => ReactNode
   /** The room's agents, for `@` — empty in a DM. */
-  agents: { id: string; icon?: string }[]
+  agents: MentionTarget[]
   renderIcon: IconRenderer
   onClose: () => void
   onSend: (text: string, files: File[]) => Promise<{ error?: string; notes?: string[] }>
@@ -463,7 +493,7 @@ function ThreadPanel({ view, typing, nameOf, avatarOf, agents, renderIcon, onClo
   const slash = /^\/([a-z]*)$/i.exec(draft)
   const at = !slash && agents.length ? /(^|\s)@([\w.-]*)$/.exec(draft) : null
   const commands = slash ? COMMANDS.filter((c) => c.name.startsWith(slash[1].toLowerCase())) : []
-  const mentions = at ? agents.filter((a) => a.id.toLowerCase().includes(at[2].toLowerCase()) || prettyAgent(a.id).toLowerCase().includes(at[2].toLowerCase())) : []
+  const mentions = at ? agents.filter((a) => a.id.includes(at[2].toLowerCase()) || a.title.toLowerCase().includes(at[2].toLowerCase())) : []
   const menu = commands.length || mentions.length
   const choose = (i: number) => {
     if (commands.length) setDraft(`/${commands[i].name} `)
@@ -515,7 +545,7 @@ function ThreadPanel({ view, typing, nameOf, avatarOf, agents, renderIcon, onClo
             ))}
             {!commands.length && mentions.map((a, i) => (
               <button key={a.id} onMouseDown={(e) => { e.preventDefault(); choose(i) }} className={`flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm ${i === Math.min(pick, menu - 1) ? 'bg-muted' : ''}`}>
-                <Avatar agent={a.id} icon={a.icon} renderIcon={renderIcon} size="sm" /><span className="min-w-0 flex-1 truncate font-medium">{prettyAgent(a.id)}</span><span className="shrink-0 font-mono text-[11px] text-muted-foreground">@{a.id}</span>
+                <MentionGlyph t={a} renderIcon={renderIcon} /><span className="min-w-0 flex-1 truncate font-medium">{a.title}</span><span className="shrink-0 font-mono text-[11px] text-muted-foreground">@{a.id}</span>
               </button>
             ))}
           </div>
@@ -770,7 +800,8 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   const applyCommand = (name: string) => { setDraft(`/${name} `); setCmdPick(0); inputRef.current?.focus() }
 
   // @mention autocomplete (rooms): the word being typed at the caret, matched against the room's agents.
-  const mentionable = useMemo(() => (room?.agents ?? []).filter((a) => !mention || a.id.toLowerCase().includes(mention.q) || prettyAgent(a.id).toLowerCase().includes(mention.q)), [room, mention?.q])
+  const targets = useMemo(() => mentionTargets(room, me.id), [room, me.id])
+  const mentionable = useMemo(() => targets.filter((a) => !mention || a.id.includes(mention.q) || a.title.toLowerCase().includes(mention.q)), [targets, mention?.q])
   const typedAt = useRef(0)
   const onDraft = (value: string, caret: number) => {
     setDraft(value)
@@ -913,7 +944,9 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
                 )}
                 {m.authorKind === 'system' ? (
                   <div className="my-3 flex items-center gap-3 px-5 text-[11px] text-muted-foreground">
-                    <div className="h-px flex-1 border-t border-dashed" />{m.body === 'New session' && <RotateCcw className="h-3 w-3" />} {m.body} · {clock(m.createdAt)}<div className="h-px flex-1 border-t border-dashed" />
+                    <div className="h-px flex-1 border-t border-dashed" />{m.body === 'New session' && <RotateCcw className="h-3 w-3" />} {m.body} · {clock(m.createdAt)}
+                    {m.actions && m.seq === newestSeq && m.actions.map((a, k) => <button key={k} onClick={() => send(a)} className="rounded-full border border-primary/40 bg-primary/5 px-2.5 py-0.5 font-medium text-primary hover:bg-primary hover:text-primary-foreground">{a.split(' ')[0]}</button>)}
+                    <div className="h-px flex-1 border-t border-dashed" />
                   </div>
                 ) : <MessageRow m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} onThread={m.seq > 0 ? () => onThread(m.seq) : undefined} onAction={m.seq === newestSeq && !m.replies ? (t) => send(t) : undefined} />}
                 {failed && (
@@ -980,7 +1013,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
             <div className="absolute bottom-full left-5 z-10 mb-1 w-72 overflow-hidden rounded-lg border bg-popover shadow-md">
               {mentionable.map((a, i) => (
                 <button key={a.id} onMouseDown={(e) => { e.preventDefault(); applyMention(a.id) }} className={`flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm ${i === Math.min(mention.pick, mentionable.length - 1) ? 'bg-muted' : ''}`}>
-                  <Avatar agent={a.id} icon={a.icon} renderIcon={renderIcon} size="sm" /><span className="min-w-0 flex-1 truncate font-medium">{prettyAgent(a.id)}</span><span className="shrink-0 font-mono text-[11px] text-muted-foreground">@{a.id}</span>
+                  <MentionGlyph t={a} renderIcon={renderIcon} /><span className="min-w-0 flex-1 truncate font-medium">{a.title}</span><span className="shrink-0 font-mono text-[11px] text-muted-foreground">@{a.id}</span>
                 </button>
               ))}
             </div>
@@ -1009,7 +1042,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
               className="max-h-48 min-h-[44px] resize-none border-0 bg-transparent text-sm shadow-none focus-visible:ring-0"
             />
             <div className="flex items-center justify-between px-2 pb-1.5">
-              <span className="pl-1 text-[10px] text-muted-foreground"><kbd className="font-sans">Enter</kbd> to send · <kbd className="font-sans">Shift+Enter</kbd> for a new line{isRoom && room!.agents.length > 0 ? <> · <kbd className="font-sans">@</kbd> an agent to bring them in</> : null} · <kbd className="font-sans">/</kbd> for commands</span>
+              <span className="pl-1 text-[10px] text-muted-foreground"><kbd className="font-sans">Enter</kbd> to send · <kbd className="font-sans">Shift+Enter</kbd> for a new line{isRoom ? <> · <kbd className="font-sans">@</kbd> to mention someone</> : null} · <kbd className="font-sans">/</kbd> for commands</span>
               <span className="flex shrink-0 items-center gap-1">
                 <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" onClick={() => fileRef.current?.click()} title="Attach files (or paste / drop them)" aria-label="Attach files"><Paperclip className="h-3.5 w-3.5" /></Button>
                 <Button size="icon" className="h-7 w-7" disabled={!draft.trim() && files.length === 0} onClick={submit} aria-label="Send"><Send className="h-3.5 w-3.5" /></Button>
@@ -1030,7 +1063,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
         <ThreadPanel
           view={view?.threadView} typing={(view?.typing ?? []).filter((t) => t.thread === openThread)} nameOf={nameOf} avatarOf={avatarOf}
           onClose={() => onThread(0)}
-          agents={isRoom ? room!.agents : []} renderIcon={renderIcon}
+          agents={targets} renderIcon={renderIcon}
           onSend={async (text, attached) => {
             let payload: ChatFile[] | undefined
             if (attached.length) {

@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.479.0] - 2026-11-24
+### Added
+- **Rooms have an orchestrator.** A message nobody was @mentioned in still finds its agent: if you were
+  just talking to one, your next line goes to it (no model call); otherwise one small model call over the
+  room's agents and the recent conversation decides. A confident pick is handed the message and the room
+  says who took it and why; an unsure one is offered as one-tap pills; people talking to each other wake
+  nobody. Per room: automatic (default), suggest only, or off. Runs as the sender, who must be allowed to
+  run that agent. Audited `chat.routed`.
+  **For users:** In a room you no longer need to @mention an agent — just say what you need and the right one picks it up. [Open Messages](#/chat)
+- **`@` mentions people too.** The `@` picker in rooms and threads now lists the people in the room and
+  "everyone" alongside its agents.
+
 ## [0.478.0] - 2026-11-24
 ### Added
 - **Quick-action pills.** An agent can end a message with `[[actions: Go ahead | Show me the plan | Not now]]`

@@ -25,7 +25,8 @@ import type { AgentOS } from '../kernel';
 import type { TerminalManager } from '../terminal';
 import { runtimeSupports, type Member } from '../types';
 import { EventEmitter } from 'node:events';
-import type { ChatJob, ChatMessage, ChatParticipant, ChatRoom, ChatStep, NotifyLevel } from '../state/chat-rooms';
+import type { ChatJob, ChatMessage, ChatParticipant, ChatRoom, ChatStep, NotifyLevel, OrchestrateMode } from '../state/chat-rooms';
+import { routerBrain, type Brain } from './router';
 import type { ChatTurn } from './conversation';
 
 /** Past this, the next message starts a fresh session (with a recap) instead of resuming this transcript. */
@@ -93,7 +94,7 @@ export interface DmThread {
 export interface RoomPerson { id: string; name: string; avatar?: string }
 export interface RoomAgent { id: string; description: string; icon?: string; presence: DmPresence }
 export interface RoomSummary {
-  id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string;
+  id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; orchestrate: OrchestrateMode;
   lastText?: string; lastAuthor?: string; lastAt: number; unread: number;
   /** Unread messages that @mention the viewer, and the viewer's notification level here. */
   mentions: number; notify: NotifyLevel;
@@ -136,6 +137,38 @@ export const chatBus = new EventEmitter();
 chatBus.setMaxListeners(0);
 
 /** How an away-ping reaches a person (Slack/Discord DM via the identity map) — set per tenant at boot. */
+/** The orchestrator's model, per tenant — set by tests; otherwise the router's own (`routerBrain`). */
+const brains = new WeakMap<AgentOS, Brain>();
+export function setRoomBrain(os: AgentOS, brain: Brain | null): void { if (brain) brains.set(os, brain); else brains.delete(os); }
+/** Rooms with a routing decision in flight. */
+const routing = new Set<string>();
+/** An untagged message right after an agent's reply (same stream, within this long) is still for that agent. */
+const STICKY_MS = 10 * 60_000;
+/** Confidence needed to hand a message over without asking, and to even suggest it. */
+const ROUTE_AUTO_AT = 0.6;
+const ROUTE_SUGGEST_AT = 0.35;
+const ROUTE_SYSTEM = [
+  'You coordinate a team chat room. People talk to each other here, and several AI agents are present.',
+  'Someone just posted a message WITHOUT addressing anyone. Decide whether an agent should pick it up.',
+  '- Conversation between people, a reaction, thanks, small talk, or anything needing no work or answer from an agent → nobody.',
+  '- A request or question that clearly belongs to one agent\'s job → that agent.',
+  '- Name two agents only when the task genuinely needs both.',
+  '- When in doubt, prefer nobody: waking the wrong agent is worse than a person typing an @.',
+  'Use only the agent ids listed. Reply with ONLY this JSON and nothing else:',
+  '{"agents":["<id>"],"confidence":<0..1>,"reason":"<why, at most 10 words>"}',
+].join('\n');
+function parseRoute(out: string | null | undefined, ids: string[]): { agents: string[]; confidence: number; reason: string } | null {
+  if (!out) return null;
+  const m = /\{[\s\S]*\}/.exec(out);
+  if (!m) return null;
+  try {
+    const j = JSON.parse(m[0]) as { agents?: unknown; confidence?: unknown; reason?: unknown };
+    const agents = [...new Set((Array.isArray(j.agents) ? j.agents : []).map(String).filter((a) => ids.includes(a)))];
+    const confidence = Math.max(0, Math.min(1, Number(j.confidence) || 0));
+    return { agents, confidence, reason: clip(String(j.reason ?? '').replace(/\s+/g, ' ').trim(), 90) };
+  } catch { return null; }
+}
+
 const pingers = new WeakMap<AgentOS, (member: Member, text: string) => void>();
 export function setChatPinger(os: AgentOS, fn: (member: Member, text: string) => void): void { pingers.set(os, fn); }
 /** People typing in a room right now: roomId → memberId → when that stops being true. Transient by
@@ -461,7 +494,7 @@ export class DirectMessages {
     const last = this.rooms.last(room.id);
     return {
       summary: {
-        id: room.id, name: room.name, createdBy: room.memberId, agents,
+        id: room.id, name: room.name, createdBy: room.memberId, agents, orchestrate: room.orchestrate,
         members: parts.filter((p) => p.kind === 'member').map((p) => this.person(p.id)),
         lastText: last ? clip(last.body.replace(/\s+/g, ' '), 90) : undefined,
         lastAuthor: !last || last.authorKind === 'system' ? undefined : last.authorKind === 'agent' ? pretty(last.authorId) : last.authorId === me.id ? 'You' : this.person(last.authorId).name.split(' ')[0],
@@ -524,6 +557,75 @@ export class DirectMessages {
     // Nobody left to read it — the room is gone.
     if (!this.rooms.participants(roomId).some((p) => p.kind === 'member')) { this.rooms.deleteRoom(roomId); return { ok: true, deleted: true }; }
     return { ok: true };
+  }
+
+  roomSetOrchestrate(me: Member, roomId: string, mode: OrchestrateMode): { ok: true } | Fail {
+    const room = this.roomFor(me, roomId);
+    if ('ok' in room) return room;
+    if (room.orchestrate === mode) return { ok: true };
+    this.rooms.setOrchestrate(roomId, mode);
+    this.rooms.post(roomId, 'system', me.id, `${me.name || me.email} set agents to ${mode === 'auto' ? 'join in automatically' : mode === 'suggest' ? 'be suggested, not brought in automatically' : 'answer only when @mentioned'}`);
+    chatBus.emit('changed', this.os);
+    return { ok: true };
+  }
+
+  // ── The room orchestrator ───────────────────────────────────────────────────────────────────
+  // A message nobody was addressed in still usually has an owner. Rather than make people remember
+  // who does what, the room decides: STICKY first (you were just talking to an agent — it's still
+  // for them; no model call), else ONE small model call over the room's agents and the recent
+  // conversation. It routes only when confident, says why in the room, and otherwise offers one-tap
+  // pills or stays out of it — people talking to each other must not wake anything. Everything it
+  // starts runs as the sender, who must be allowed to run that agent, at hop 0.
+
+  /** Decide what to do with an unaddressed message. Returns the agents handed it synchronously (sticky). */
+  private orchestrate(me: Member, room: ChatRoom, parts: ChatParticipant[], message: ChatMessage): string[] {
+    if (room.orchestrate === 'off' || message.body.trim().length < 3) return [];
+    const eligible = parts.filter((p) => p.kind === 'agent' && !this.canChat(me, p.id)).map((p) => p.id);
+    if (!eligible.length) return [];
+    const thread = message.threadId ?? null;
+    const stream = (thread ? this.rooms.replies(room.id, thread) : this.rooms.messages(room.id, { limit: 30 })).filter((m) => m.authorKind !== 'system' && m.seq < message.seq);
+    // Sticky: the last thing said here was an agent's, moments ago — this is the next line of that exchange.
+    const prev = stream[stream.length - 1];
+    if (prev && prev.authorKind === 'agent' && eligible.includes(prev.authorId) && message.createdAt - prev.createdAt < STICKY_MS) {
+      const d = this.roomDeliver(me, room, parts, prev.authorId, `${message.body}${this.threadHint(this.threadRoot(room.id, thread))}`, me.name || me.email, 0, message.seq, thread);
+      return d.ok ? [prev.authorId] : [];
+    }
+    void this.route(me, room, message, eligible, stream.slice(-12)).catch(() => { /* routing is best-effort; the message is already posted */ });
+    return [];
+  }
+
+  /** The model half: ask who should take it, then hand it over (auto) or offer pills (suggest / unsure). */
+  private async route(me: Member, room: ChatRoom, message: ChatMessage, eligible: string[], recent: ChatMessage[]): Promise<void> {
+    if (routing.has(room.id)) return; // one decision at a time per room; a later message rides along as context
+    const brain = brains.get(this.os) ?? routerBrain(this.os, () => this.tm.outOfBandCredentialEnv());
+    if (!brain) return;
+    routing.add(room.id);
+    let pick: { agents: string[]; confidence: number; reason: string } | null = null;
+    try {
+      const who = me.name || me.email;
+      const roster = eligible.map((id) => `- ${id}: ${clip((this.os.agents.get(id)?.description ?? '').replace(/\s+/g, ' '), 300)}`).join('\n');
+      const convo = recent.map((m) => `${m.authorKind === 'agent' ? `${m.authorId} (agent)` : this.person(m.authorId).name}: ${clip(m.body.replace(/\s+/g, ' '), 300)}`).join('\n');
+      pick = parseRoute(await brain(ROUTE_SYSTEM, `Agents in this room:\n${roster}\n\n${convo ? `Recent conversation (oldest first):\n${convo}\n\n` : ''}New message from ${who}:\n${clip(message.body, 2000)}`), eligible);
+    } finally { routing.delete(room.id); }
+    if (!pick || !pick.agents.length || pick.confidence < ROUTE_SUGGEST_AT) return;
+    const now = this.rooms.get(room.id);
+    if (!now || now.orchestrate === 'off' || !this.rooms.message(room.id, message.seq)) return;
+    const parts = this.rooms.participants(room.id);
+    const thread = message.threadId ?? null;
+    const why = pick.reason ? ` — ${pick.reason}` : '';
+    if (now.orchestrate === 'auto' && pick.confidence >= ROUTE_AUTO_AT) {
+      const took: string[] = [];
+      for (const a of pick.agents.slice(0, 2)) {
+        const d = this.roomDeliver(me, now, parts, a, `${message.body}${this.threadHint(this.threadRoot(room.id, thread))}`, me.name || me.email, 0, message.seq, thread);
+        if (d.ok) took.push(a);
+      }
+      if (took.length) this.rooms.post(room.id, 'system', me.id, `→ ${took.map(pretty).join(' and ')} picked this up${why}`, undefined, Date.now(), { thread });
+    } else {
+      // Not sure enough to act (or the room only wants suggestions): offer the hand-off as one-tap replies.
+      this.rooms.post(room.id, 'system', me.id, `Bring someone in?${why}`, undefined, Date.now(), { thread, actions: pick.agents.slice(0, 3).map((a) => `@${a} can you take this?`) });
+    }
+    this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: me.id, type: 'chat.routed', data: { room: room.id, agents: pick.agents, confidence: pick.confidence, mode: now.orchestrate } });
+    chatBus.emit('changed', this.os);
   }
 
   roomRename(me: Member, roomId: string, name: string): { ok: true } | Fail {
@@ -619,6 +721,9 @@ export class DirectMessages {
     }
     const message = this.rooms.post(roomId, 'member', me.id, body, undefined, Date.now(), { files: files.map((f) => f.name), thread: root?.seq, mentions: this.peopleMentioned(body, parts, me.id) });
     for (const agent of delivered) this.rooms.setLaneSeen(roomId, agent, message.seq);
+    // Nobody was addressed: the room's orchestrator decides whether an agent should pick this up.
+    // (Not when it was addressed to a PERSON — `@priya` is for Priya.)
+    if (!to.length && !message.mentions?.length) for (const a of this.orchestrate(me, room, parts, message)) delivered.push(a);
     this.notify(room, message);
     this.rooms.markRead(roomId, me.id);
     chatBus.emit('changed', this.os);

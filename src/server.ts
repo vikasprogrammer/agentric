@@ -3848,7 +3848,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const before = Number(url.searchParams.get('before'));
       return out(dms.roomThread(me, id, { before: url.searchParams.has('before') && Number.isFinite(before) ? before : undefined, thread: Number(url.searchParams.get('thread')) || undefined, read: url.searchParams.get('read') === '1' }) as never);
     }
-    if (!sub && method === 'PATCH') return out(dms.roomRename(me, id, String((await readBody(req)).name ?? '')));
+    if (!sub && method === 'PATCH') {
+      const b = await readBody(req);
+      if (typeof b.orchestrate === 'string') return out(dms.roomSetOrchestrate(me, id, b.orchestrate === 'off' || b.orchestrate === 'suggest' ? b.orchestrate : 'auto'));
+      return out(dms.roomRename(me, id, String(b.name ?? '')));
+    }
     if (sub === 'send' && method === 'POST') {
       if (tooBig()) return sendJson(res, 413, { error: 'attachments too large (max ~16MB per message)' });
       const b = await readBody(req);

@@ -209,7 +209,7 @@ export interface DmContact { agent: string; roomId: string; description: string;
 // Rooms & group DMs: several members and agents in one conversation. `name` null = an unnamed group.
 export interface RoomPerson { id: string; name: string; avatar?: string }
 export interface RoomAgent { id: string; description: string; icon?: string; presence: DmPresence }
-export interface RoomSummary { id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; lastText?: string; lastAuthor?: string; lastAt: number; unread: number; mentions?: number; notify?: NotifyLevel }
+export interface RoomSummary { id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; lastText?: string; lastAuthor?: string; lastAt: number; unread: number; mentions?: number; notify?: NotifyLevel; /** how untagged messages reach agents */ orchestrate?: 'auto' | 'suggest' | 'off' }
 export interface RoomThread { room: RoomSummary; messages: DmMessage[]; typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null; since?: number }[]; threadView?: ThreadView | null; sessionIds: string[]; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; peopleTyping?: string[]; error?: string }
 /** A background run or reminder still in flight in a conversation. */
 export interface DmJob { id: string; kind: 'bg' | 'remind'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null }
@@ -2181,6 +2181,7 @@ export const api = {
   roomSend: (id: string, message: string, files?: ChatFile[], thread?: number) => call<{ ok?: boolean; delivered?: string[]; notes?: string[]; held?: boolean; error?: string }>('POST', `/api/rooms/${id}/send`, { message, files, thread }),
   roomAdd: (id: string, input: { members?: string[]; agents?: string[] }) => call<{ ok?: boolean; error?: string }>('POST', `/api/rooms/${id}/participants`, input),
   roomRemove: (id: string, kind: 'member' | 'agent', who: string) => call<{ ok?: boolean; deleted?: boolean; error?: string }>('DELETE', `/api/rooms/${id}/participants?kind=${kind}&id=${encodeURIComponent(who)}`),
+  roomOrchestrate: (id: string, orchestrate: 'auto' | 'suggest' | 'off') => call<{ ok?: boolean; error?: string }>('PATCH', `/api/rooms/${id}`, { orchestrate }),
   roomRename: (id: string, name: string) => call<{ ok?: boolean; error?: string }>('PATCH', `/api/rooms/${id}`, { name }),
   dmAddContact: (agent: string) => call<{ ok?: boolean; error?: string }>('POST', '/api/dm/contacts', { agent }),
   dmRemoveContact: (agent: string) => call<{ ok?: boolean; error?: string }>('DELETE', `/api/dm/${encodeURIComponent(agent)}`),
