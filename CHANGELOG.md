@@ -7,6 +7,10 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+- **Deploys no longer re-run the test suite on remote boxes** when this deploy's own local checkout runs
+  it for the same commit (CI has too). The remote runs were the long pole — 4+ minutes on the slowest box,
+  with every tenant's restart waiting behind it. A remote-only deploy (`--only <remote>`) still runs it
+  there, and `--remote-tests` forces it everywhere. Dev tooling only — no version bump.
 
 ## [0.477.0] - 2026-11-24
 ### Added

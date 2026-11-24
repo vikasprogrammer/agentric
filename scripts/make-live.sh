@@ -10,6 +10,8 @@
 #   scripts/make-live.sh --only <tenant> # …to one of them
 #   scripts/make-live.sh --dry-run       # show what WOULD deploy, change nothing
 #   scripts/make-live.sh --skip-tests    # skip the governance suite gate
+#   scripts/make-live.sh --remote-tests  # also run the suite ON each remote box (default: the local run
+#                                        # of the same commit covers them; a remote-only deploy still runs it)
 #   scripts/make-live.sh --force         # discard local changes in a live checkout
 #   scripts/make-live.sh --force-lock    # break another run's lock (see below) and deploy anyway
 #
@@ -68,12 +70,13 @@ ENV_FILE="${AOS_LIVE_ENV:-$HOME/.agentric-live.env}"
 
 REF="${AOS_LIVE_REF:-origin/main}"
 
-DRY=0; SKIP_TESTS=0; FORCE=0; FORCE_LOCK=0; ONLY=""
+DRY=0; SKIP_TESTS=0; FORCE=0; FORCE_LOCK=0; ONLY=""; REMOTE_TESTS=0
 ORIG_ARGS="$*"   # recorded in the lock meta, so a refusal can say what the holder is doing
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)    DRY=1 ;;
     --skip-tests) SKIP_TESTS=1 ;;
+    --remote-tests) REMOTE_TESTS=1 ;;
     --force)      FORCE=1 ;;
     --force-lock) FORCE_LOCK=1 ;;
     --only)       shift; ONLY="${1:?--only needs a tenant slug}" ;;
@@ -403,7 +406,13 @@ while IFS=: read -r TENANT SSHT CHECKOUT PORT UNIT; do
   # A remote's suite run is skipped only by another remote on the SAME host at the SAME commit.
   case " $REMOTE_SEEN " in
     *" $SSHT|$NEW "*) ;;
-    *) : >"$STATE/$K.suite"; REMOTE_SEEN="$REMOTE_SEEN $SSHT|$NEW" ;;
+    *)
+      # A remote box re-runs the suite only when nothing closer has: the same commit is already tested by
+      # CI and by this deploy's own local checkout, and the remote run was the whole wait of a deploy —
+      # the slowest box (2 cores) took 4+ minutes and every other tenant's restart queued behind it.
+      # What is given up is catching breakage specific to that box; `--remote-tests` brings it back.
+      if [ "$REMOTE_TESTS" -eq 1 ] || ! printf '%s' "$LOCAL_NEWS" | grep -qx "$NEW"; then : >"$STATE/$K.suite"; else : >"$STATE/$K.covered"; fi
+      REMOTE_SEEN="$REMOTE_SEEN $SSHT|$NEW" ;;
   esac
 done <<EOF
 $REMOTES
@@ -488,6 +497,8 @@ build_remote() { # <tenant> <ssh-target> <checkout>
 
   if [ "$SKIP_TESTS" -eq 1 ]; then
     say "$TENANT: skipping governance suite (--skip-tests)"
+  elif [ -f "$STATE/$K.covered" ]; then
+    say "$TENANT: governance suite covered by this deploy's local run of ${NEW:0:7} — not repeated on $SSHT (--remote-tests to force)"
   elif [ ! -f "$STATE/$K.suite" ]; then
     say "$TENANT: governance suite already run for ${NEW:0:7} on $SSHT — not repeating it"
   else
