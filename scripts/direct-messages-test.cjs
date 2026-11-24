@@ -266,12 +266,13 @@ console.log('\n\x1b[1m9) rooms: membership, @-addressing, a session per agent, c
   assert(last.authorKind === 'agent' && last.authorId === 'helper' && last.authorName === 'Helper' && /Draft is ready/.test(last.body) && last.steps.length === 1, 'the reply lands in the room for everyone, steps tucked');
   assert(t.messages.find((m) => m.seq === m1.message.seq).authorName === 'Alice', 'member messages carry their author name');
 
-  dms.roomSend(C, id, 'make it punchier');
   const inj = injected.length;
+  const sticky = dms.roomSend(C, id, 'make it punchier');
+  assert(sticky.delivered.join() === 'helper', 'an untagged line right after an agent\'s reply goes straight to that agent');
   const m5 = dms.roomSend(C, id, '@Helper one more pass please');
   assert(m5.delivered.join() === 'helper' && lane().sessionId === hs, 'a second mention reuses the same session (case-insensitive)');
   const typed = injected.slice(inj).map((i) => i.text).join(' ');
-  assert(/Carol: make it punchier/.test(typed) && /Carol to you: @Helper one more pass/.test(typed) && !/launch is thursday/.test(typed), 'and is shown only what it missed', typed.slice(0, 200));
+  assert(/Carol to you: make it punchier/.test(typed) && /Carol to you: @Helper one more pass/.test(typed) && !/launch is thursday/.test(typed), 'and is never shown again what it has already seen', typed.slice(0, 200));
   assert(row(hs).run_as === carol.id, 'now acting for Carol');
 
   const m6 = dms.roomSend(B, id, '@helper do it for me');
@@ -576,6 +577,78 @@ console.log('\n\x1b[1m14d) in a thread: commands and files go where they were ty
   const tagged = rt.messages.find((m) => m.authorKind === 'agent');
   assert(tagged.mentions.join() === C.id && pings.length === 1 && pings[0].to === C.id && /Helper mentioned you in #tagging/.test(pings[0].text), "an agent's @person is a mention — that person is pinged");
   assert(dms.roomList(C).find((r) => r.id === rid).mentions === 1, 'and sees the red mention badge');
+}
+
+console.log('\n\x1b[1m14e) the room orchestrator: untagged messages find their agent — or nobody\x1b[0m');
+{
+  const { setRoomBrain } = require(path.join(ROOT, 'dist/edge/direct-messages.js'));
+  const A = aos.team.getMember(alice.id);
+  const C = aos.team.getMember(aos.team.getMemberByEmail('carol@example.com').id);
+  const asked = [];
+  let answer = { agents: ['helper'], confidence: 0.9, reason: 'asks for a draft' };
+  setRoomBrain(aos, async (system, user) => { asked.push(user); return 'Sure: ' + JSON.stringify(answer); });
+  const tick = () => new Promise((r) => setTimeout(r, 60));
+  const rid = dms.createRoom(A, { name: 'orch', members: [C.id], agents: [AGENT, 'helper'] }).id;
+  assert(dms.roomList(A).find((r) => r.id === rid).orchestrate === 'auto', 'a room orchestrates automatically by default');
+  const lane = (a) => aos.chatRooms.participants(rid).find((p) => p.id === a);
+
+  const m1 = dms.roomSend(A, rid, 'can someone draft the release notes?');
+  await tick(); await settle();
+  assert(m1.ok && m1.delivered.length === 0 && asked.length === 1 && /helper: /.test(asked[0]) && /New message from Alice:\ncan someone draft/.test(asked[0]), 'an untagged message is put to the model with the room\'s agents');
+  const hs = lane('helper').sessionId;
+  assert(hs && row(hs).run_as === alice.id && lane('helper').hop === 0 && /can someone draft the release notes\?/.test(row(hs).task), 'a confident pick is handed the message, as the sender');
+  assert(!lane(AGENT).sessionId, 'and only that agent is woken');
+  let t = dms.roomThread(A, rid);
+  assert(t.messages.some((m) => m.authorKind === 'system' && /→ Helper picked this up — asks for a draft/.test(m.body)), 'the room says who picked it up and why');
+
+  setWorking(hs, true); write(hs, [user(row(hs).task), say('Draft is up.')]); setWorking(hs, false);
+  dms.roomThread(A, rid);
+  const before = asked.length, inj = injected.length;
+  const m2 = dms.roomSend(A, rid, 'shorter please');
+  assert(m2.delivered.join() === 'helper' && asked.length === before && /shorter please/.test(injected.slice(inj).map((i) => i.text).join(' ')), 'sticky: the next line after an agent\'s reply goes to it — no model call');
+
+  dms.roomSend(C, rid, 'nice work both');           // now a person spoke last → not sticky
+  answer = { agents: [], confidence: 0.9, reason: 'people chatting' };
+  await tick();
+  const n = dms.roomThread(A, rid).messages.length;
+  dms.roomSend(A, rid, 'lunch at 1?');
+  await tick();
+  assert(dms.roomThread(A, rid).messages.length === n + 1, '"nobody" wakes nobody and says nothing');
+
+  answer = { agents: ['agent-author', 'helper'], confidence: 0.45, reason: 'could be either' };
+  dms.roomSend(C, rid, 'the build looks odd');
+  await tick();
+  t = dms.roomThread(A, rid);
+  const sug = t.messages[t.messages.length - 1];
+  assert(sug.authorKind === 'system' && /Bring someone in\? — could be either/.test(sug.body) && sug.actions.join('|') === '@agent-author can you take this?|@helper can you take this?', 'unsure → it offers the hand-off as pills instead of guessing');
+  assert(!lane(AGENT).sessionId, 'without waking anyone');
+  const tap = dms.roomSend(C, rid, sug.actions[0]);
+  await settle();
+  assert(tap.delivered.join() === 'agent-author' && /the build looks odd/.test(row(lane(AGENT).sessionId).task), 'tapping a pill brings that agent in, with the message it was about');
+
+  const a0 = asked.length;
+  dms.roomSend(A, rid, '@carol what do you think?');
+  await tick();
+  assert(asked.length === a0, 'a message addressed to a PERSON is not routed');
+  dms.roomSend(aos.team.getMember(bob.id), rid, 'x');   // not a member → refused anyway
+  answer = { agents: ['helper'], confidence: 0.95, reason: 'x' };
+  assert(dms.roomSetOrchestrate(A, rid, 'suggest').ok && dms.roomList(A).find((r) => r.id === rid).orchestrate === 'suggest', 'the mode is a room setting');
+  dms.roomSend(C, rid, 'sum up the thread so far for me');
+  await tick();
+  t = dms.roomThread(A, rid);
+  assert(t.messages[t.messages.length - 1].actions?.join() === '@helper can you take this?', 'suggest mode never acts — even when sure, it offers');
+  dms.roomSetOrchestrate(A, rid, 'off');
+  const a1 = asked.length;
+  dms.roomSend(C, rid, 'please write the changelog');
+  await tick();
+  assert(asked.length === a1, 'off: untagged messages reach no model and no agent');
+  setRoomBrain(aos, async () => 'not json at all');
+  dms.roomSetOrchestrate(A, rid, 'auto');
+  const cnt = dms.roomThread(A, rid).messages.length;
+  dms.roomSend(C, rid, 'anyone able to check the logs?');
+  await tick();
+  assert(dms.roomThread(A, rid).messages.length === cnt + 1, 'a model that answers nonsense routes nothing');
+  setRoomBrain(aos, null);
 }
 
 console.log('\n\x1b[1m15) the chat socket pushes threads and lists\x1b[0m');

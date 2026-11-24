@@ -23,7 +23,10 @@ export interface ChatRoom {
   id: string; kind: 'dm' | 'room'; name: string | null; memberId: string; agent: string; sessionId: string | null;
   syncedTurns: number; syncedMark: string | null; hidden: boolean; createdAt: number; lastMessageAt: number | null;
   pingedAt: number | null;
+  /** A room's orchestrator: route untagged messages to agents automatically, only suggest, or never. */
+  orchestrate: OrchestrateMode;
 }
+export type OrchestrateMode = 'auto' | 'suggest' | 'off';
 
 export interface ChatMessage {
   /** 'system' = a marker the room itself wrote (e.g. "New session"), not something anyone said. */
@@ -57,7 +60,7 @@ const toJob = (r: JobRow): ChatJob => ({ id: r.id, roomId: r.room_id, kind: r.ki
 
 interface RoomRow {
   id: string; kind: string; name?: string | null; member_id: string; agent: string; session_id: string | null;
-  synced_turns: number; synced_mark: string | null; hidden: number; created_at: number; last_message_at: number | null; pinged_at?: number | null;
+  synced_turns: number; synced_mark: string | null; hidden: number; created_at: number; last_message_at: number | null; pinged_at?: number | null; orchestrate?: string | null;
 }
 interface MsgRow { seq: number; room_id: string; author_kind: string; author_id: string; body: string; meta: string | null; created_at: number; thread_id?: number | null; mentions?: string | null; replies?: number | null; last_reply_at?: number | null }
 const MAIN = `m.*, (SELECT COUNT(*) FROM chat_messages r WHERE r.thread_id = m.seq) AS replies, (SELECT MAX(r.created_at) FROM chat_messages r WHERE r.thread_id = m.seq) AS last_reply_at`;
@@ -65,6 +68,7 @@ const MAIN = `m.*, (SELECT COUNT(*) FROM chat_messages r WHERE r.thread_id = m.s
 const toRoom = (r: RoomRow): ChatRoom => ({
   id: r.id, kind: r.kind === 'room' ? 'room' : 'dm', name: r.name ?? null, memberId: r.member_id, agent: r.agent, sessionId: r.session_id,
   syncedTurns: r.synced_turns, syncedMark: r.synced_mark, hidden: !!r.hidden, createdAt: r.created_at, lastMessageAt: r.last_message_at, pingedAt: r.pinged_at ?? null,
+  orchestrate: r.orchestrate === 'off' || r.orchestrate === 'suggest' ? r.orchestrate : 'auto',
 });
 
 function toMsg(r: MsgRow): ChatMessage {
@@ -210,6 +214,8 @@ export class ChatRoomStore {
     this.db.prepare("INSERT INTO chat_rooms (id, kind, name, member_id, agent, created_at) VALUES (?, 'room', ?, ?, '', ?)").run(id, name, creatorId, Date.now());
     return this.get(id)!;
   }
+
+  setOrchestrate(roomId: string, mode: OrchestrateMode): void { this.db.prepare('UPDATE chat_rooms SET orchestrate = ? WHERE id = ?').run(mode === 'auto' ? null : mode, roomId); }
 
   rename(roomId: string, name: string | null): void { this.db.prepare('UPDATE chat_rooms SET name = ? WHERE id = ?').run(name, roomId); }
 

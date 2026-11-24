@@ -99,6 +99,28 @@ through a proxy the page keeps polling. Cookie-authenticated, same-origin only.
 The same socket carries "I'm typing" from a person in a room to the others there (`peopleTyping`; expires after
 5 s, cleared on send). It has no REST fallback — without the socket nobody sees it, and nothing breaks.
 
+## The room orchestrator
+
+A room message that addresses nobody (no `@agent`, no `@person`, not the one-person-one-agent case, not
+a thread with a single agent in it) goes to `orchestrate` (`chat_rooms.orchestrate`: `auto` default /
+`suggest` / `off`, set from the room's details panel):
+
+1. **Sticky** — the previous message in that stream was an agent's, under 10 minutes ago → this is the
+   next line of that exchange. Delivered synchronously, no model call.
+2. **Route** — one call to the router's own brain (`routerBrain`: the tenant's LLM, else a tool-less
+   `claude -p` on Haiku) with the room's agents + descriptions, the last 12 messages and the new one. It
+   answers `{agents, confidence, reason}`.
+   - `auto` and confidence ≥ 0.6 → handed to ≤2 agents; a system line says who picked it up and why.
+   - otherwise, confidence ≥ 0.35 → a system line with quick-action pills (`@agent can you take this?`).
+   - below that, or "nobody" → nothing at all.
+
+It never widens access: only agents the SENDER may run are candidates, the run acts as the sender, at
+hop 0. One decision in flight per room. The message is posted before the model is asked, so a slow or
+failed call costs nothing but the routing. Tests inject the brain with `setRoomBrain`.
+
+Not built: routing an agent's follow-up to another agent, fan-out-and-merge, stuck detection, a rolling
+room summary.
+
 ## Quick actions
 
 An agent ends a message with one line — `[[actions: Go ahead | Show me the plan | Not now]]` — and
