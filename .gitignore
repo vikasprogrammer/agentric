@@ -4,6 +4,9 @@
 # stray `git add -A`, breaking every checkout that pulled it. Match name-only so symlinks are ignored too.
 /node_modules
 dist/
+# make-live.sh stages the console build here and swaps it into web/dist at restart time
+dist.next/
+dist.old/
 /data
 .env
 *.log

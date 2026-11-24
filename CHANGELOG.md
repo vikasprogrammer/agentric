@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.475.1] - 2026-11-24
+### Fixed
+- **A deploy no longer serves the new console ahead of the new server.** `make-live.sh` built the console
+  in place, and the server serves `web/dist` off disk — so for as long as the test suite ran (~4 min on a
+  remote box) new screens called routes the running server didn't have yet (live: "Create room" → "not
+  found"). The console now builds into `web/dist.next` and is swapped in right before the restart.
+- **Messages search matches names before descriptions.** Typing "engin" listed every agent whose blurb
+  says "engineer"; a name match now wins outright, and description matches show only when no name does.
+
 ## [0.475.0] - 2026-11-24
 ### Added
 - **Rooms and group messages.** Messages can now hold several people and agents in one conversation: name
