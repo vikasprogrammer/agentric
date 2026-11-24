@@ -2021,7 +2021,7 @@ function Console({ me }: { me: Member }) {
   }
   // A live terminal takes the whole content area (no padding/scroll wrapper).
   // DEPRECATED: the old Chat page (one session per conversation). Messages owns #/chat now; the old page is
-  // kept only for a deep link that names a SESSION (`#/chat/ses_…`, which Cockpit's chat launch still makes).
+  // kept only for an old deep link that names a SESSION (`#/chat/ses_…`). Nothing in the console links there any more.
   const legacyChat = route === 'chat' && detail.startsWith('ses_')
   // #/dm was Messages' first address — keep old links working.
   useEffect(() => { if (route === 'dm') nav('chat', detail) }, [route, detail])
@@ -5762,10 +5762,13 @@ function CockpitPage({ agents, sessions, onOpenChat, onOpenTerminal, nav }: {
       if (r.error || !r.tmux) { setErr(r.error || 'could not start the session'); return }
       onOpenTerminal(r.tmux, `${prettyAgent(agentId)} · ${r.id}`)
     } else {
-      const r = await api.startChat(agentId, text)
+      // Chat = Messages: the request becomes the next message in your conversation with that agent
+      // (added to your contacts if it isn't one yet), and you land in that conversation.
+      const added = await api.dmAddContact(agentId)
+      const r = added.error ? added : await api.dmSend(agentId, text)
       setBusy(false)
-      if (r.error || !r.id) { setErr(r.error || 'could not start the chat'); return }
-      onOpenChat(r.id)
+      if (r.error) { setErr(r.error || 'could not send the message'); return }
+      onOpenChat(agentId)
     }
   }
 
@@ -5912,7 +5915,7 @@ function CockpitPage({ agents, sessions, onOpenChat, onOpenTerminal, nav }: {
               )}
               <div className="mt-3 flex items-center gap-3 text-xs">
                 <button onClick={() => runPreview('work')} className="text-muted-foreground underline-offset-2 hover:underline">Not what you meant? Route to an agent instead →</button>
-                {preview.run && !runThinking && runAnswer && <button onClick={() => onOpenChat(preview.run!.sessionId)} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>}
+                {preview.run && !runThinking && runAnswer && <button onClick={() => onOpenTerminal('aos-' + preview.run!.sessionId, 'Cockpit answer')} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>}
               </div>
             </div>
           )}
@@ -5932,7 +5935,7 @@ function CockpitPage({ agents, sessions, onOpenChat, onOpenTerminal, nav }: {
                   ? <div className="mt-3 rounded-lg border bg-muted/40 p-3"><div className="md max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{runAnswer}</ReactMarkdown></div>
                       <div className="mt-2 flex gap-3 text-xs">
                         <button onClick={() => nav(preview.surface === 'automations' ? 'inbox' : 'tasks')} className="text-muted-foreground underline-offset-2 hover:underline">{preview.surface === 'automations' ? 'Review in Inbox →' : 'Open Tasks →'}</button>
-                        <button onClick={() => onOpenChat(runId)} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>
+                        <button onClick={() => onOpenTerminal('aos-' + runId, 'Cockpit action')} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>
                       </div>
                     </div>
                   : <div className="mt-3 flex items-center gap-2 py-1 text-sm text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" />Setting it up…</div>
@@ -5955,7 +5958,7 @@ function CockpitPage({ agents, sessions, onOpenChat, onOpenTerminal, nav }: {
               <div className="flex items-center gap-2 text-xs">
                 <span className="text-muted-foreground">Launch in</span>
                 <div className="inline-flex rounded-lg border p-0.5">
-                  <button onClick={() => setLaunch('chat')} className={`flex items-center gap-1 rounded-md px-2 py-1 ${mode === 'chat' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><MessageSquare className="h-3.5 w-3.5" />Chat</button>
+                  <button onClick={() => setLaunch('chat')} className={`flex items-center gap-1 rounded-md px-2 py-1 ${mode === 'chat' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><MessageSquare className="h-3.5 w-3.5" />Messages</button>
                   <button onClick={() => setLaunch('terminal')} className={`flex items-center gap-1 rounded-md px-2 py-1 ${mode === 'terminal' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><TerminalSquare className="h-3.5 w-3.5" />Terminal</button>
                 </div>
               </div>

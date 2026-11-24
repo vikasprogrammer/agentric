@@ -5,8 +5,8 @@ teammate: a contact list, one endless conversation per contact, presence, unread
 terminals or runs appear on the page.
 
 It replaces the older **Chat** page (one session per conversation, a list of chats to manage), which is
-deprecated: its code is still in `web/src/App.tsx` (`ChatPage`) and renders only for a `#/chat/ses_…`
-deep link, which Cockpit's chat launch still produces. `#/dm`, Messages' first address, redirects.
+deprecated: its code is still in `web/src/App.tsx` (`ChatPage`) and renders only for an old `#/chat/ses_…`
+deep link — nothing in the console links there any more (Cockpit's chat launch sends a message here). `#/dm`, Messages' first address, redirects.
 
 Governance is unchanged. Behind every conversation is an ordinary governed session (provenance
 `chat:<member>`, run-as the member, gate hook, approvals). This page only hides the plumbing.
