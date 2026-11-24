@@ -209,10 +209,10 @@ export interface DmContact { agent: string; roomId: string; description: string;
 // Rooms & group DMs: several members and agents in one conversation. `name` null = an unnamed group.
 export interface RoomPerson { id: string; name: string; avatar?: string }
 export interface RoomAgent { id: string; description: string; icon?: string; presence: DmPresence }
-export interface RoomSummary { id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; lastText?: string; lastAuthor?: string; lastAt: number; unread: number; mentions?: number; notify?: NotifyLevel; /** how untagged messages reach agents */ orchestrate?: 'auto' | 'suggest' | 'off' }
+export interface RoomSummary { id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; lastText?: string; lastAuthor?: string; lastAt: number; unread: number; mentions?: number; notify?: NotifyLevel; /** how untagged messages reach agents */ orchestrate?: 'auto' | 'suggest' | 'off'; /** the orchestrator's rolling summary */ summary?: string }
 export interface RoomThread { room: RoomSummary; messages: DmMessage[]; typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null; since?: number }[]; threadView?: ThreadView | null; sessionIds: string[]; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; peopleTyping?: string[]; error?: string }
 /** A background run or reminder still in flight in a conversation. */
-export interface DmJob { id: string; kind: 'bg' | 'remind'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null }
+export interface DmJob { id: string; kind: 'bg' | 'remind' | 'fanout'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null }
 /** Work the conversation's agent handed to another agent. */
 export interface DmHandoff { sessionId: string; agent: string; title: string; status: string; working: boolean; blocked: boolean; summary?: string; createdAt: number; kind: string }
 export interface ChatFile { name: string; dataB64: string }

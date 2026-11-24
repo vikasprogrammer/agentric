@@ -25,6 +25,8 @@ export interface ChatRoom {
   pingedAt: number | null;
   /** A room's orchestrator: route untagged messages to agents automatically, only suggest, or never. */
   orchestrate: OrchestrateMode;
+  /** A room's rolling summary, and the seq of the last message it covers. */
+  summary: string | null; summarySeq: number;
 }
 export type OrchestrateMode = 'auto' | 'suggest' | 'off';
 
@@ -50,17 +52,20 @@ export interface ChatMessage {
 export type NotifyLevel = 'all' | 'mentions' | 'mute';
 
 export interface ChatJob {
-  id: string; roomId: string; kind: 'bg' | 'remind'; agent: string; memberId: string; request: string;
+  /** 'fanout' = a message the orchestrator gave to several agents; `agent` is their ids, comma-joined. */
+  id: string; roomId: string; kind: 'bg' | 'remind' | 'fanout'; agent: string; memberId: string; request: string;
   sessionId: string | null; status: 'running' | 'scheduled' | 'done' | 'failed' | 'cancelled'; dueAt: number | null; createdAt: number; finishedAt: number | null;
   /** The thread it was started in — its result / reminder goes back there. */
   threadId: number | null;
+  data: Record<string, unknown>;
 }
-interface JobRow { id: string; room_id: string; kind: string; agent: string; member_id: string; request: string; session_id: string | null; status: string; due_at: number | null; created_at: number; finished_at: number | null; thread_id?: number | null }
-const toJob = (r: JobRow): ChatJob => ({ id: r.id, roomId: r.room_id, kind: r.kind === 'remind' ? 'remind' : 'bg', agent: r.agent, memberId: r.member_id, request: r.request, sessionId: r.session_id, status: r.status as ChatJob['status'], dueAt: r.due_at, createdAt: r.created_at, finishedAt: r.finished_at, threadId: r.thread_id ?? null });
+interface JobRow { id: string; room_id: string; kind: string; agent: string; member_id: string; request: string; session_id: string | null; status: string; due_at: number | null; created_at: number; finished_at: number | null; thread_id?: number | null; data?: string | null }
+const jobData = (s?: string | null): Record<string, unknown> => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
+const toJob = (r: JobRow): ChatJob => ({ data: jobData(r.data), id: r.id, roomId: r.room_id, kind: r.kind === 'remind' ? 'remind' : r.kind === 'fanout' ? 'fanout' : 'bg', agent: r.agent, memberId: r.member_id, request: r.request, sessionId: r.session_id, status: r.status as ChatJob['status'], dueAt: r.due_at, createdAt: r.created_at, finishedAt: r.finished_at, threadId: r.thread_id ?? null });
 
 interface RoomRow {
   id: string; kind: string; name?: string | null; member_id: string; agent: string; session_id: string | null;
-  synced_turns: number; synced_mark: string | null; hidden: number; created_at: number; last_message_at: number | null; pinged_at?: number | null; orchestrate?: string | null;
+  synced_turns: number; synced_mark: string | null; hidden: number; created_at: number; last_message_at: number | null; pinged_at?: number | null; orchestrate?: string | null; summary?: string | null; summary_seq?: number | null;
 }
 interface MsgRow { seq: number; room_id: string; author_kind: string; author_id: string; body: string; meta: string | null; created_at: number; thread_id?: number | null; mentions?: string | null; replies?: number | null; last_reply_at?: number | null }
 const MAIN = `m.*, (SELECT COUNT(*) FROM chat_messages r WHERE r.thread_id = m.seq) AS replies, (SELECT MAX(r.created_at) FROM chat_messages r WHERE r.thread_id = m.seq) AS last_reply_at`;
@@ -69,6 +74,7 @@ const toRoom = (r: RoomRow): ChatRoom => ({
   id: r.id, kind: r.kind === 'room' ? 'room' : 'dm', name: r.name ?? null, memberId: r.member_id, agent: r.agent, sessionId: r.session_id,
   syncedTurns: r.synced_turns, syncedMark: r.synced_mark, hidden: !!r.hidden, createdAt: r.created_at, lastMessageAt: r.last_message_at, pingedAt: r.pinged_at ?? null,
   orchestrate: r.orchestrate === 'off' || r.orchestrate === 'suggest' ? r.orchestrate : 'auto',
+  summary: r.summary ?? null, summarySeq: r.summary_seq ?? 0,
 });
 
 function toMsg(r: MsgRow): ChatMessage {
@@ -275,10 +281,11 @@ export class ChatRoomStore {
   allRooms(): ChatRoom[] { return this.db.prepare("SELECT * FROM chat_rooms WHERE kind = 'room'").all<RoomRow>().map(toRoom); }
 
   // ── Jobs: background runs + reminders ──
-  addJob(j: { roomId: string; kind: 'bg' | 'remind'; agent: string; memberId: string; request: string; sessionId?: string | null; status: ChatJob['status']; dueAt?: number | null; thread?: number | null }): ChatJob {
+  addJob(j: { data?: Record<string, unknown>; roomId: string; kind: 'bg' | 'remind' | 'fanout'; agent: string; memberId: string; request: string; sessionId?: string | null; status: ChatJob['status']; dueAt?: number | null; thread?: number | null }): ChatJob {
     const id = `job_${randomBytes(6).toString('hex')}`;
     this.db.prepare('INSERT INTO chat_jobs (id, room_id, kind, agent, member_id, request, session_id, status, due_at, created_at, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, j.roomId, j.kind, j.agent, j.memberId, j.request, j.sessionId ?? null, j.status, j.dueAt ?? null, Date.now(), j.thread ?? null);
+    if (j.data) this.setJobData(id, j.data);
     return this.job(id)!;
   }
   job(id: string): ChatJob | undefined { const r = this.db.prepare('SELECT * FROM chat_jobs WHERE id = ?').get<JobRow>(id); return r ? toJob(r) : undefined; }
@@ -288,6 +295,12 @@ export class ChatRoomStore {
       ? this.db.prepare("SELECT * FROM chat_jobs WHERE status IN ('running','scheduled') AND room_id = ? ORDER BY created_at").all<JobRow>(roomId)
       : this.db.prepare("SELECT * FROM chat_jobs WHERE status IN ('running','scheduled') ORDER BY created_at").all<JobRow>();
     return rows.map(toJob);
+  }
+  setJobData(id: string, data: Record<string, unknown>): void { this.db.prepare('UPDATE chat_jobs SET data = ? WHERE id = ?').run(JSON.stringify(data), id); }
+  setSummary(roomId: string, summary: string, seq: number): void { this.db.prepare('UPDATE chat_rooms SET summary = ?, summary_seq = ? WHERE id = ?').run(summary, seq, roomId); }
+  /** How many main-stream messages (not markers) came after `seq`. */
+  countAfter(roomId: string, seq: number): number {
+    return this.db.prepare("SELECT COUNT(*) AS c FROM chat_messages WHERE room_id = ? AND thread_id IS NULL AND author_kind != 'system' AND seq > ?").get<{ c: number }>(roomId, seq)?.c ?? 0;
   }
   finishJob(id: string, status: 'done' | 'failed' | 'cancelled'): void { this.db.prepare('UPDATE chat_jobs SET status = ?, finished_at = ? WHERE id = ?').run(status, Date.now(), id); }
 

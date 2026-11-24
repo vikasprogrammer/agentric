@@ -95,6 +95,8 @@ export interface RoomPerson { id: string; name: string; avatar?: string }
 export interface RoomAgent { id: string; description: string; icon?: string; presence: DmPresence }
 export interface RoomSummary {
   id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; orchestrate: OrchestrateMode;
+  /** The orchestrator's rolling summary of the room, once there is enough to summarise. */
+  summary?: string;
   lastText?: string; lastAuthor?: string; lastAt: number; unread: number;
   /** Unread messages that @mention the viewer, and the viewer's notification level here. */
   mentions: number; notify: NotifyLevel;
@@ -147,12 +149,38 @@ const STICKY_MS = 10 * 60_000;
 /** Confidence needed to hand a message over without asking, and to even suggest it. */
 const ROUTE_AUTO_AT = 0.6;
 const ROUTE_SUGGEST_AT = 0.35;
+/** The orchestrator posts under this name (a merged answer, a nudge). It is not an agent and runs nothing. */
+export const ORCHESTRATOR = 'orchestrator';
+/** How long a fan-out waits for a straggler before merging what it has. */
+const FANOUT_WAIT_MS = 10 * 60_000;
+const MERGE_SYSTEM = [
+  'You coordinate a team chat room. One person asked something and several AI agents each answered separately.',
+  'Write the ONE reply that person needs, in plain language, at most 150 words:',
+  '- Lead with the answer or recommendation.',
+  '- Say where the agents agree; where they differ, say who said what and which you would go with and why.',
+  '- Do not repeat their answers in full, do not add facts they did not give, no preamble, no sign-off.',
+].join('\n');
+/** Working this long AND silent this long → the room is told. Waiting on a person this long → they are tagged. */
+const STUCK_WORKING_MS = 10 * 60_000;
+const STUCK_QUIET_MS = 4 * 60_000;
+const STUCK_WAITING_MS = 3 * 60_000;
+const nudged = new Set<string>();
+/** A room is summarised every this-many new messages; the latest few stay out of the summary, verbatim. */
+const SUMMARY_EVERY = 30;
+const SUMMARY_KEEP = 10;
+const summarising = new Set<string>();
+const SUMMARY_SYSTEM = [
+  'You keep the running summary of a team chat room, so that someone (or an AI agent) joining late can catch up in seconds.',
+  'Given the summary so far and the new messages, write the UPDATED summary — at most 180 words, plain prose or a few short bullets:',
+  '- what is being worked on and why, decisions made (and by whom), what is still open, who is doing what.',
+  '- Keep names. Drop greetings, thanks and chatter. Do not invent anything. Output only the summary.',
+].join('\n');
 const ROUTE_SYSTEM = [
   'You coordinate a team chat room. People talk to each other here, and several AI agents are present.',
   'Someone just posted a message WITHOUT addressing anyone. Decide whether an agent should pick it up.',
   '- Conversation between people, a reaction, thanks, small talk, or anything needing no work or answer from an agent → nobody.',
   '- A request or question that clearly belongs to one agent\'s job → that agent.',
-  '- Name two agents only when the task genuinely needs both.',
+  '- Name two agents only when the task genuinely needs both — each answers separately and their answers are merged into one reply.',
   '- When in doubt, prefer nobody: waking the wrong agent is worse than a person typing an @.',
   'Use only the agent ids listed. Reply with ONLY this JSON and nothing else:',
   '{"agents":["<id>"],"confidence":<0..1>,"reason":"<why, at most 10 words>"}',
@@ -204,7 +232,7 @@ const MAX_FILES = 6;
 
 /** A hand-off the conversation's agent made to another agent — shown inline as a status card. */
 export interface DmHandoff { sessionId: string; agent: string; title: string; status: string; working: boolean; blocked: boolean; summary?: string; createdAt: number; kind: string }
-export interface DmJob { id: string; kind: 'bg' | 'remind'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null; thread: number | null }
+export interface DmJob { id: string; kind: 'bg' | 'remind' | 'fanout'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null; thread: number | null }
 export interface InboundFile { name: string; data: Buffer }
 /** What both thread shapes carry beyond the messages themselves. */
 export interface ThreadExtras {
@@ -221,6 +249,7 @@ const COMMANDS: { name: string; usage: string; help: string }[] = [
   { name: 'task', usage: '/task <title>', help: 'File a task on the board for this agent' },
   { name: 'remind', usage: '/remind <30m|2h|1d> <what>', help: 'Bring this up again later' },
   { name: 'status', usage: '/status', help: 'What is running in this conversation' },
+  { name: 'summary', usage: '/summary', help: 'The room so far, in a few lines' },
   { name: 'help', usage: '/help', help: 'List these commands' },
 ];
 export const CHAT_COMMANDS = COMMANDS;
@@ -472,7 +501,7 @@ export class DirectMessages {
     return {
       key: `${room.id}:${p.id}`, roomId: room.id, agent: p.id, sessionId: p.sessionId, syncedTurns: p.syncedTurns, syncedMark: p.syncedMark,
       save: (turns, mark) => this.rooms.setLaneSync(room.id, p.id, turns, mark),
-      post: (m, thread) => { this.relay(room, p.id, this.postAgent(room, p.id, m.body, m.steps, m.at, { thread, took: m.took })); },
+      post: (m, thread) => { const msg = this.postAgent(room, p.id, m.body, m.steps, m.at, { thread, took: m.took }); this.relay(room, p.id, msg); this.fanoutReply(room, p.id, msg); },
     };
   }
 
@@ -494,7 +523,7 @@ export class DirectMessages {
     const last = this.rooms.last(room.id);
     return {
       summary: {
-        id: room.id, name: room.name, createdBy: room.memberId, agents, orchestrate: room.orchestrate,
+        id: room.id, name: room.name, createdBy: room.memberId, agents, orchestrate: room.orchestrate, summary: fresh.summary ?? undefined,
         members: parts.filter((p) => p.kind === 'member').map((p) => this.person(p.id)),
         lastText: last ? clip(last.body.replace(/\s+/g, ' '), 90) : undefined,
         lastAuthor: !last || last.authorKind === 'system' ? undefined : last.authorKind === 'agent' ? pretty(last.authorId) : last.authorId === me.id ? 'You' : this.person(last.authorId).name.split(' ')[0],
@@ -597,7 +626,7 @@ export class DirectMessages {
   /** The model half: ask who should take it, then hand it over (auto) or offer pills (suggest / unsure). */
   private async route(me: Member, room: ChatRoom, message: ChatMessage, eligible: string[], recent: ChatMessage[]): Promise<void> {
     if (routing.has(room.id)) return; // one decision at a time per room; a later message rides along as context
-    const brain = brains.get(this.os) ?? routerBrain(this.os, () => this.tm.outOfBandCredentialEnv());
+    const brain = this.brain();
     if (!brain) return;
     routing.add(room.id);
     let pick: { agents: string[]; confidence: number; reason: string } | null = null;
@@ -620,12 +649,101 @@ export class DirectMessages {
         if (d.ok) took.push(a);
       }
       if (took.length) this.rooms.post(room.id, 'system', me.id, `→ ${took.map(pretty).join(' and ')} picked this up${why}`, undefined, Date.now(), { thread });
+      // Fan-out: more than one agent is on it — remember that, so their answers come back as ONE reply.
+      if (took.length > 1) this.rooms.addJob({ roomId: room.id, kind: 'fanout', agent: took.join(','), memberId: me.id, request: message.body, status: 'running', thread, data: { seq: message.seq, replies: {} } });
     } else {
       // Not sure enough to act (or the room only wants suggestions): offer the hand-off as one-tap replies.
       this.rooms.post(room.id, 'system', me.id, `Bring someone in?${why}`, undefined, Date.now(), { thread, actions: pick.agents.slice(0, 3).map((a) => `@${a} can you take this?`) });
     }
     this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: me.id, type: 'chat.routed', data: { room: room.id, agents: pick.agents, confidence: pick.confidence, mode: now.orchestrate } });
     chatBus.emit('changed', this.os);
+  }
+
+  /** The orchestrator's model. `maxTokens` > the routing default when it has prose to write. */
+  private brain(maxTokens?: number): Brain | null {
+    return brains.get(this.os) ?? routerBrain(this.os, () => this.tm.outOfBandCredentialEnv(), maxTokens ? { maxTokens } : {});
+  }
+
+  // ── Fan-out and merge ──
+  /** An agent answered: if that completes a fan-out, merge the answers into one. */
+  private fanoutReply(room: ChatRoom, agent: string, msg: ChatMessage): void {
+    for (const job of this.rooms.openJobs(room.id)) {
+      if (job.kind !== 'fanout' || (job.threadId ?? null) !== (msg.threadId ?? null)) continue;
+      const agents = job.agent.split(',');
+      const data = job.data as { seq?: number; replies?: Record<string, number> };
+      const replies = { ...(data.replies ?? {}) };
+      if (!agents.includes(agent) || replies[agent] || msg.seq <= (data.seq ?? 0)) continue;
+      replies[agent] = msg.seq;
+      this.rooms.setJobData(job.id, { ...data, replies });
+      if (agents.every((a) => replies[a])) void this.merge({ ...job, data: { ...data, replies } }).catch(() => {});
+    }
+  }
+
+  /** Write the ONE reply a fan-out owes the person: what the agents said, where they agree, where they don't. */
+  private async merge(job: ChatJob): Promise<void> {
+    if (this.rooms.job(job.id)?.status !== 'running') return;
+    this.rooms.finishJob(job.id, 'done'); // first — so a second trigger (the timeout, a late reply) can't merge twice
+    const room = this.rooms.get(job.roomId);
+    const replies = Object.entries((job.data as { replies?: Record<string, number> }).replies ?? {})
+      .map(([agent, seq]) => ({ agent, msg: room ? this.rooms.message(room.id, seq) : undefined })).filter((r) => r.msg);
+    const brain = this.brain(700);
+    if (!room || replies.length < 2 || !brain) { chatBus.emit('changed', this.os); return; } // one answer needs no merging
+    const asker = this.person(job.memberId).name;
+    const out = await brain(MERGE_SYSTEM, `${asker} asked:\n${clip(job.request, 1500)}\n\n${replies.map((r) => `--- ${pretty(r.agent)} answered ---\n${clip(r.msg!.body, 3000)}`).join('\n\n')}`);
+    const text = (out ?? '').trim();
+    if (!text) return;
+    const back = job.threadId && this.threadRoot(room.id, job.threadId) ? job.threadId : null;
+    const msg = this.rooms.post(room.id, 'agent', ORCHESTRATOR, text, undefined, Date.now(), { tag: 'summary', thread: back });
+    this.notify(room, msg);
+    chatBus.emit('changed', this.os);
+  }
+
+  // ── Stuck detection ──
+  /** Notice a lane that needs someone: working a long time in silence, or waiting on a person who hasn't seen it. */
+  private watch(room: ChatRoom, agent: string, sessionId: string | null, acting: string | null): void {
+    if (!sessionId || (room.kind === 'room' && room.orchestrate === 'off')) return;
+    const pulse = this.tm.sessionPulse(sessionId);
+    if (!pulse) return;
+    const now = Date.now();
+    const once = (key: string): boolean => { if (nudged.has(key)) return false; if (nudged.size > 5000) nudged.clear(); nudged.add(key); return true; };
+    if (pulse.working && pulse.busySince && now - pulse.busySince > STUCK_WORKING_MS && pulse.mtime && now - pulse.mtime > STUCK_QUIET_MS && once(`${sessionId}:${pulse.busySince}`)) {
+      const msg = this.rooms.post(room.id, 'agent', ORCHESTRATOR, `${pretty(agent)} has been working for ${Math.round((now - pulse.busySince) / 60_000)} minutes and has gone quiet for the last ${Math.round((now - pulse.mtime) / 60_000)}. It may be on a long step — or stuck.`, undefined, now, { tag: 'nudge', actions: ['/stop'] });
+      this.notify(room, msg);
+      chatBus.emit('changed', this.os);
+    }
+    // In a room the person an agent is waiting on may not be looking: say so where they'll be tagged.
+    if (room.kind !== 'room' || !acting) return;
+    const rows = [
+      ...this.os.db.prepare("SELECT id, prompt AS text, created_at FROM questions WHERE status = 'pending' AND run_id = ?").all<{ id: string; text: string; created_at: number }>(sessionId).map((r) => ({ ...r, what: 'an answer' })),
+      ...this.os.db.prepare("SELECT id, reason AS text, created_at FROM approvals WHERE status = 'pending' AND run_id = ?").all<{ id: string; text: string; created_at: number }>(sessionId).map((r) => ({ ...r, what: 'your OK' })),
+    ];
+    for (const r of rows) {
+      if (now - r.created_at < STUCK_WAITING_MS || !once(`ask:${r.id}`)) continue;
+      const who = this.person(acting).name.split(/\s+/)[0];
+      const msg = this.rooms.post(room.id, 'agent', ORCHESTRATOR, `@${who.toLowerCase()} — ${pretty(agent)} is waiting on ${r.what}: ${clip(r.text.replace(/\s+/g, ' '), 200)}`, undefined, now, { tag: 'nudge', mentions: [acting] });
+      this.notify(room, msg);
+      chatBus.emit('changed', this.os);
+    }
+  }
+
+  // ── Rolling summary ──
+  /** Keep a room's summary current: every SUMMARY_EVERY new messages, fold all but the latest few into it. */
+  private async summarise(room: ChatRoom, force = false): Promise<void> {
+    if (room.kind !== 'room' || summarising.has(room.id)) return;
+    const pendingCount = this.rooms.countAfter(room.id, room.summarySeq);
+    if (pendingCount < (force ? SUMMARY_KEEP + 4 : SUMMARY_EVERY)) return;
+    const brain = this.brain(500);
+    if (!brain) return;
+    summarising.add(room.id);
+    try {
+      const fresh = this.rooms.messages(room.id, { after: room.summarySeq, limit: 120 }).filter((m) => m.authorKind !== 'system');
+      const fold = fresh.slice(0, Math.max(0, fresh.length - SUMMARY_KEEP)); // the latest stay verbatim
+      if (fold.length < 4) return;
+      const lines = fold.map((m) => `${m.authorKind === 'agent' ? `${pretty(m.authorId)} (agent)` : this.person(m.authorId).name}: ${clip(m.body.replace(/\s+/g, ' '), 400)}`).join('\n');
+      const out = await brain(SUMMARY_SYSTEM, `Summary so far:\n${room.summary || '(nothing yet)'}\n\nNew messages (oldest first):\n${lines}`);
+      const text = clip((out ?? '').trim(), 2000);
+      if (text) { this.rooms.setSummary(room.id, text, fold[fold.length - 1].seq); chatBus.emit('changed', this.os); }
+    } finally { summarising.delete(room.id); }
   }
 
   roomRename(me: Member, roomId: string, name: string): { ok: true } | Fail {
@@ -744,10 +862,14 @@ export class DirectMessages {
     const who = me.name || me.email;
     const label = room.name ? `#${room.name}` : 'group chat';
     // What the agent missed: everything said in the room since it was last shown, minus its own words.
+    // An agent that has been away longer than the room's summary reaches gets the summary for the old
+    // part and the messages themselves only for what came after it — context at a fraction of the size.
+    const summarised = room.summary && p.seenSeq < room.summarySeq ? room.summarySeq : 0;
     const missed = this.rooms.messages(room.id, { limit: 60 })
-      .filter((m) => m.seq > p.seenSeq && (upto == null || m.seq < upto) && m.authorKind !== 'system' && !(m.authorKind === 'agent' && m.authorId === agent))
+      .filter((m) => m.seq > Math.max(p.seenSeq, summarised) && (upto == null || m.seq < upto) && m.authorKind !== 'system' && !(m.authorKind === 'agent' && m.authorId === agent))
       .slice(-ROOM_CONTEXT_MESSAGES)
       .map((m) => `${m.authorKind === 'agent' ? pretty(m.authorId) : m.authorId === me.id ? who : this.person(m.authorId).name}: ${clip(m.body.replace(/\s+/g, ' '), RECAP_CHARS)}`);
+    if (summarised) missed.unshift(`(Summary of the conversation before that: ${clip(room.summary!.replace(/\s+/g, ' '), 1500)})`);
     const turn = `[${label}] ${missed.length ? `Said since your last turn — ${missed.join(' | ')} — ` : ''}${from} to you: ${body}`;
     const d = this.deliver(me, agent, room.id, p.sessionId, `${turn} ${tagFor(thread)}`, `${room.name ? `#${room.name}` : 'Group chat'} · ${pretty(agent)}`, () => `${this.roomPrompt(room, parts, agent, missed, from, body)}\n${tagFor(thread)}`);
     if (!d.ok) return d;
@@ -949,7 +1071,7 @@ export class DirectMessages {
     if (job.status !== 'running' && job.status !== 'scheduled') return { ok: true };
     if (job.kind === 'bg' && job.sessionId) { try { this.tm.stopSession(job.sessionId, me.email, 'cancelled from chat'); } catch { /* already gone */ } }
     this.rooms.finishJob(job.id, 'cancelled');
-    this.rooms.post(room.id, 'system', me.id, `${me.name || me.email} cancelled ${job.kind === 'bg' ? `${pretty(job.agent)}'s background run` : 'a reminder'}`);
+    this.rooms.post(room.id, 'system', me.id, `${me.name || me.email} cancelled ${job.kind === 'bg' ? `${pretty(job.agent)}'s background run` : job.kind === 'fanout' ? 'the combined answer' : 'a reminder'}`);
     chatBus.emit('changed', this.os);
     return { ok: true };
   }
@@ -1014,6 +1136,12 @@ export class DirectMessages {
       chatBus.emit('changed', this.os);
       return { ok: true, message, notes: [`Task filed — ${this.tm.consoleLink(`tasks/${task.id}`)}`] };
     }
+    if (name === 'summary') {
+      if (room.kind !== 'room') return note('Summaries are kept for rooms.');
+      const fresh = this.rooms.get(room.id) ?? room;
+      void this.summarise(fresh, true).catch(() => {});
+      return note(fresh.summary ? `Summary so far: ${fresh.summary}` : `Nothing summarised yet — the first summary is written once a room has ${SUMMARY_EVERY} messages${this.rooms.countAfter(room.id, 0) >= SUMMARY_KEEP + 4 ? '; writing one now, ask again in a moment' : ''}.`);
+    }
     if (name === 'remind') {
       const sp = rest.search(/\s/);
       const ms = parseDuration(sp < 0 ? rest : rest.slice(0, sp));
@@ -1049,6 +1177,9 @@ export class DirectMessages {
         else this.rooms.post(room.id, 'system', job.memberId, `${pretty(job.agent)}'s background run ended without reporting anything back`, undefined, now, { thread: back });
         this.rooms.finishJob(job.id, msg ? 'done' : 'failed');
         chatBus.emit('changed', this.os);
+      } else if (job.kind === 'fanout') {
+        // Someone never answered: merge what did come back, rather than leave the room waiting.
+        if (now - job.createdAt > FANOUT_WAIT_MS) void this.merge(job).catch(() => {});
       } else if (job.dueAt != null && job.dueAt <= now) {
         this.rooms.finishJob(job.id, 'done');
         const me = this.os.team.getMember(job.memberId);
@@ -1108,12 +1239,13 @@ export class DirectMessages {
   sweep(now: number = Date.now()): void {
     if (now - (lastSweep.get(this.os) ?? 0) < SWEEP_MS) return;
     lastSweep.set(this.os, now);
-    for (const room of this.rooms.activeDms()) { try { this.sync(room); } catch { /* one bad room must not stall the rest */ } }
+    for (const room of this.rooms.activeDms()) { try { this.watch(this.sync(room).room, room.agent, room.sessionId, null); } catch { /* one bad room must not stall the rest */ } }
     for (const room of this.rooms.allRooms()) {
       for (const p of this.rooms.participants(room.id)) {
         if (p.kind !== 'agent' || !p.sessionId || (p.syncedMark ?? '').endsWith(':0')) continue;
-        try { this.syncLane(this.lane(room, p)); } catch { /* as above */ }
+        try { this.syncLane(this.lane(room, p)); this.watch(room, p.id, p.sessionId, p.acting); } catch { /* as above */ }
       }
+      if (room.orchestrate !== 'off') void this.summarise(room).catch(() => {});
     }
     try { this.sweepJobs(); } catch { /* as above */ }
   }

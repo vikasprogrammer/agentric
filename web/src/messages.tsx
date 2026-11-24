@@ -13,7 +13,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, MessageSquareReply, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
+import { ChevronRight, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -124,7 +124,7 @@ function TypingDots() {
 
 /** One row of the conversation. Consecutive messages from the same author within a few minutes are
  *  GROUPED: only the first carries the avatar + name, the rest sit flush under it with a hover time. */
-function MessageRow({ m, grouped, name, avatar, onThread, onAction }: { m: DmMessage; grouped: boolean; name: string; avatar: ReactNode; /** open this message's thread (absent inside a thread) */ onThread?: () => void; /** send one of the agent's quick replies — given only for the newest message, so stale ones can't be tapped */ onAction?: (text: string) => void }) {
+function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: { m: DmMessage; grouped: boolean; name: string; avatar: ReactNode; /** open this message's thread (absent inside a thread) */ onThread?: () => void; /** send one of the agent's quick replies — given only for the newest message, so stale ones can't be tapped */ onAction?: (text: string) => void; /** agents answering in this message's thread right now */ replying?: string[] }) {
   const body = m.authorKind === 'agent'
     ? <div className="md max-w-none text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]}>{m.body}</ReactMarkdown></div>
     : <div className="whitespace-pre-wrap break-words text-sm">{m.body}</div>
@@ -145,6 +145,7 @@ function MessageRow({ m, grouped, name, avatar, onThread, onAction }: { m: DmMes
             <span className="text-[11px] text-muted-foreground">{clock(m.createdAt)}</span>
           </div>
         )}
+        {m.tag === 'summary' && <span className="mb-0.5 inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-px text-[10px] font-medium text-primary"><GitMerge className="h-2.5 w-2.5" />Combined answer</span>}
         {m.tag === 'bg' && <span className="mb-0.5 inline-flex items-center gap-1 rounded bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground"><Loader2 className="h-2.5 w-2.5" />{m.authorKind === 'agent' ? 'Background result' : 'Sent to the background'}</span>}
         {body}
         {m.files && <div className="mt-1 flex flex-wrap gap-1">{m.files.map((f, i) => <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"><Paperclip className="h-3 w-3" />{f}</span>)}</div>}
@@ -154,10 +155,12 @@ function MessageRow({ m, grouped, name, avatar, onThread, onAction }: { m: DmMes
             {m.actions.map((a, i) => <button key={i} onClick={() => onAction(a)} className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-foreground">{a}</button>)}
           </div>
         )}
-        {onThread && !!m.replies && (
+        {onThread && (!!m.replies || !!replying?.length) && (
           <button onClick={onThread} className="mt-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-xs font-medium text-primary hover:bg-primary/10">
-            <MessageSquareReply className="h-3.5 w-3.5" /> {m.replies} {m.replies === 1 ? 'reply' : 'replies'}
-            {m.lastReplyAt && <span className="font-normal text-muted-foreground">· last {shortWhen(m.lastReplyAt)}</span>}
+            <MessageSquareReply className="h-3.5 w-3.5" /> {m.replies ?? 0} {m.replies === 1 ? 'reply' : 'replies'}
+            {/* Work happening in a thread is shown ON the thread, not in the room's typing line. */}
+            {replying?.length ? <span className="flex items-center gap-1 font-normal text-muted-foreground">· <TypingDots /> {replying.map(prettyAgent).join(', ')} replying…</span>
+              : m.lastReplyAt ? <span className="font-normal text-muted-foreground">· last {shortWhen(m.lastReplyAt)}</span> : null}
           </button>
         )}
       </div>
@@ -244,6 +247,7 @@ const COMMANDS: { name: string; usage: string; help: string }[] = [
   { name: 'task', usage: '/task <title>', help: 'File a task on the board' },
   { name: 'remind', usage: '/remind <30m|2h|1d> <what>', help: 'Bring this up again later' },
   { name: 'status', usage: '/status', help: 'What is running here' },
+  { name: 'summary', usage: '/summary', help: 'The room so far, in a few lines' },
   { name: 'help', usage: '/help', help: 'List the commands' },
 ]
 
@@ -407,6 +411,12 @@ function RoomDetails({ me, room, people, agents, renderIcon, onChanged, onLeft, 
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name this room" maxLength={60} className="h-8 text-sm" />
         <Button type="submit" size="sm" variant="outline" className="h-8" disabled={name.trim() === (room.name ?? '')}><Pencil className="h-3.5 w-3.5" /></Button>
       </form>
+      {!adding && room.summary && (
+        <div className="shrink-0 rounded-lg border bg-muted/30 p-2.5">
+          <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"><Workflow className="h-3 w-3" /> So far</div>
+          <div className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs text-muted-foreground">{room.summary}</div>
+        </div>
+      )}
       {!adding && room.agents.length > 0 && (
         <label className="block shrink-0 text-xs text-muted-foreground">
           When nobody is @mentioned, agents
@@ -774,7 +784,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
       setFiles([])
     }
     // A command is not something you said — don't show it as a pending message.
-    const isCommand = /^\/(new|bg|stop|task|remind|status|help)\b/i.test(body)
+    const isCommand = /^\/(new|bg|stop|task|remind|status|summary|help)\b/i.test(body)
     const key = retryKey ?? ++seq.current
     if (!isCommand) setOutgoing((o) => [...o.filter((x) => x.key !== key), { key, text: body || '(see attached)', at: Date.now() }])
     stick.current = true
@@ -853,7 +863,9 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   const presence: DmPresence = isRoom ? 'away' : view ? (view.working ? 'working' : sessionIds.length && target.contact.presence !== 'away' ? 'online' : target.contact.presence) : target.contact.presence
   const iconOf = (agentId: string, hint?: string) => hint ?? (isRoom ? room!.agents.find((a) => a.id === agentId)?.icon : target.contact.icon)
   const nameOf = (m: DmMessage) => (m.authorKind === 'agent' ? m.authorName ?? prettyAgent(m.authorId) : m.authorId === me.id ? me.name || 'You' : m.authorName ?? 'Someone')
-  const avatarOf = (m: DmMessage) => m.authorKind === 'agent'
+  const avatarOf = (m: DmMessage) => m.authorKind === 'agent' && m.authorId === 'orchestrator'
+    ? <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Workflow className="h-5 w-5" /></span>
+    : m.authorKind === 'agent'
     ? <Avatar agent={m.authorId} icon={iconOf(m.authorId, m.authorIcon)} renderIcon={renderIcon} />
     : <PersonAvatar p={m.authorId === me.id ? { name: me.name || me.email, avatar: me.avatar } : { name: m.authorName ?? '?', avatar: m.authorAvatar }} />
   const description = isRoom ? '' : target.contact.description
@@ -948,7 +960,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
                     {m.actions && m.seq === newestSeq && m.actions.map((a, k) => <button key={k} onClick={() => send(a)} className="rounded-full border border-primary/40 bg-primary/5 px-2.5 py-0.5 font-medium text-primary hover:bg-primary hover:text-primary-foreground">{a.split(' ')[0]}</button>)}
                     <div className="h-px flex-1 border-t border-dashed" />
                   </div>
-                ) : <MessageRow m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} onThread={m.seq > 0 ? () => onThread(m.seq) : undefined} onAction={m.seq === newestSeq && !m.replies ? (t) => send(t) : undefined} />}
+                ) : <MessageRow m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} onThread={m.seq > 0 ? () => onThread(m.seq) : undefined} onAction={m.seq === newestSeq && !m.replies ? (t) => send(t) : undefined} replying={(view?.typing ?? []).filter((t) => t.thread === m.seq).map((t) => t.agent)} />}
                 {failed && (
                   <div className="flex items-center gap-2 pl-[4.25rem] text-xs text-destructive">
                     <CircleAlert className="h-3.5 w-3.5" /> {failed}
@@ -971,9 +983,9 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
         <div className="min-h-[1.5rem] shrink-0 px-5">
           {(view?.jobs ?? []).map((j) => (
             <div key={j.id} className="mb-1 flex items-center gap-2 rounded-md border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
-              {j.kind === 'bg' ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <Clock className="h-3.5 w-3.5 shrink-0" />}
+              {j.kind === 'remind' ? <Clock className="h-3.5 w-3.5 shrink-0" /> : <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
               <span className="min-w-0 flex-1 truncate">
-                {j.kind === 'bg' ? <><span className="font-medium text-foreground">{prettyAgent(j.agent)}</span> is working in the background · {ago(j.createdAt)} — {j.request}</> : <>Reminder {j.dueAt ? new Date(j.dueAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''} — {j.request}</>}
+                {j.kind === 'fanout' ? <>Waiting for <span className="font-medium text-foreground">{j.agent.split(',').map(prettyAgent).join(' and ')}</span> — their answers will be combined into one</> : j.kind === 'bg' ? <><span className="font-medium text-foreground">{prettyAgent(j.agent)}</span> is working in the background · {ago(j.createdAt)} — {j.request}</> : <>Reminder {j.dueAt ? new Date(j.dueAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''} — {j.request}</>}
               </span>
               <button className="shrink-0 hover:text-foreground hover:underline" onClick={async () => { const r = await api.chatJobCancel(j.id); if (r.error) setErr(r.error); load() }}>Cancel</button>
             </div>
@@ -984,9 +996,8 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
               <span><span className="font-medium text-foreground">{view!.peopleTyping.slice(0, 3).join(', ')}{view!.peopleTyping.length > 3 ? ` and ${view!.peopleTyping.length - 3} more` : ''}</span> {view!.peopleTyping.length === 1 ? 'is' : 'are'} typing…</span>
             </div>
           )}
-          {(view?.typing ?? []).map((t, i) => (
+          {(view?.typing ?? []).filter((t) => !t.thread).map((t, i) => (
             <div key={t.agent} className="pb-1">
-              {t.thread ? <button onClick={() => onThread(t.thread!)} className="mb-0.5 text-[10px] text-primary hover:underline">in a thread →</button> : null}
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <TypingDots />
                 <span><span className="font-medium text-foreground">{prettyAgent(t.agent)}</span> is {t.label === 'Writing' ? 'writing…' : t.label === 'Thinking' ? 'thinking…' : 'working on it…'}</span>

@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.480.0] - 2026-11-24
+### Added
+- **The room orchestrator does more.**
+  - *Fan-out and merge:* when it gives one message to two agents, their answers come back as ONE combined
+    reply (who agrees, who differs, which to go with) once both have answered — or after 10 minutes with
+    whatever arrived.
+  - *Stuck detection:* an agent working 10+ minutes that has gone quiet for 4 is flagged in the
+    conversation with a Stop pill; in a room, an agent waiting 3+ minutes on a question or approval tags
+    the person it is acting for, who is pinged if away.
+  - *Rolling summary:* every 30 messages a room's conversation is folded into a short summary — shown in
+    the room's details, behind `/summary`, and handed to any agent brought in late instead of the backlog.
+  **For users:** Rooms now combine multi-agent answers into one, flag an agent that's stuck or waiting on you, and keep a running summary (`/summary`). [Open Messages](#/chat)
+### Changed
+- An agent working inside a thread shows as "replying…" on that thread, not in the room's typing line.
+
 ## [0.479.0] - 2026-11-24
 ### Added
 - **Rooms have an orchestrator.** A message nobody was @mentioned in still finds its agent: if you were

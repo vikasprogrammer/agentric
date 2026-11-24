@@ -651,6 +651,104 @@ console.log('\n\x1b[1m14e) the room orchestrator: untagged messages find their a
   setRoomBrain(aos, null);
 }
 
+console.log('\n\x1b[1m14f) orchestrator: fan-out + merge, stuck detection, rolling summary\x1b[0m');
+{
+  const { setRoomBrain, setChatPinger } = require(path.join(ROOT, 'dist/edge/direct-messages.js'));
+  const A = aos.team.getMember(alice.id);
+  const C = aos.team.getMember(aos.team.getMemberByEmail('carol@example.com').id);
+  const pings = [];
+  setChatPinger(aos, (m, text) => pings.push({ to: m.id, text }));
+  const calls = { route: 0, merge: [], summary: [] };
+  setRoomBrain(aos, async (system, user) => {
+    if (/Write the ONE reply/.test(system)) { calls.merge.push(user); return 'Both agree: go with option B.'; }
+    if (/running summary/.test(system)) { calls.summary.push(user); return 'The team chose option B; Alice owns rollout.'; }
+    calls.route++; return JSON.stringify({ agents: ['agent-author', 'helper'], confidence: 0.9, reason: 'needs both views' });
+  });
+  const tick = () => new Promise((r) => setTimeout(r, 80));
+  const rid = dms.createRoom(A, { name: 'fan', members: [C.id], agents: [AGENT, 'helper'] }).id;
+  const lane = (a) => aos.chatRooms.participants(rid).find((p) => p.id === a);
+  const reply = (sid, text) => { setWorking(sid, true); write(sid, [user(row(sid).task), say(text)]); setWorking(sid, false); };
+
+  dms.roomSend(A, rid, 'compare option A and option B for the rollout');
+  await tick(); await settle();
+  const s1 = lane(AGENT).sessionId, s2 = lane('helper').sessionId;
+  let t = dms.roomThread(A, rid);
+  assert(s1 && s2 && t.jobs.length === 1 && t.jobs[0].kind === 'fanout' && t.jobs[0].agent === 'agent-author,helper', 'two agents on one message is tracked as a fan-out');
+  reply(s1, 'A is cheaper; I lean B for safety.');
+  t = dms.roomThread(A, rid); await tick();
+  assert(calls.merge.length === 0 && t.jobs.length === 1, 'one answer in: still waiting for the other');
+  reply(s2, 'B — fewer moving parts.');
+  dms.roomThread(A, rid); await tick();
+  t = dms.roomThread(A, rid);
+  const merged = t.messages[t.messages.length - 1];
+  assert(calls.merge.length === 1 && /Alice asked:\ncompare option A/.test(calls.merge[0]) && /--- Agent Author answered ---\nA is cheaper/.test(calls.merge[0]) && /--- Helper answered ---\nB — fewer/.test(calls.merge[0]), 'when both have answered, the answers go to the model together');
+  assert(merged.authorId === 'orchestrator' && merged.authorName === 'Orchestrator' && merged.tag === 'summary' && merged.body === 'Both agree: go with option B.' && t.jobs.length === 0, 'and ONE combined answer is posted; the fan-out closes');
+  reply(s1, 'late extra thought');
+  dms.roomThread(A, rid); await tick();
+  assert(calls.merge.length === 1, 'a later message does not merge again');
+
+  // a straggler: merge what came back after the wait
+  dms.roomSend(C, rid, 'thanks');                       // a person speaks, so the next line is not sticky
+  dms.roomSend(A, rid, 'and for the database?');
+  await tick(); await settle();
+  setWorking(s1, true); write(s1, [user('db?'), say('Postgres.')]); setWorking(s1, false);
+  dms.roomThread(A, rid); await tick();
+  const fj = aos.chatRooms.openJobs(rid).find((j) => j.kind === 'fanout');
+  assert(fj && calls.merge.length === 1, 'one of two answered: no merge yet');
+  aos.db.prepare('UPDATE chat_jobs SET created_at = created_at - 3600000 WHERE id = ?').run(fj.id);
+  dms.sweepJobs(); await tick();
+  assert(aos.chatRooms.job(fj.id).status === 'done' && calls.merge.length === 1, 'a fan-out that times out with ONE answer just closes — nothing to merge');
+
+  // stuck: working long + silent → the room is told, once, with a Stop pill
+  const live = lane('helper').sessionId;
+  livePanes.add('aos-' + live);
+  aos.db.prepare("UPDATE term_sessions SET status = 'running', busy_since = ?, last_activity = ? WHERE id = ?").run(Date.now() - 15 * 60_000, Date.now() - 16 * 60_000, live);
+  const f = path.join(projects, `${row(live).claude_session_id}.jsonl`); const old = new Date(Date.now() - 6 * 60_000); fs.utimesSync(f, old, old);
+  dms.sweep(Date.now() + 100_000); await tick();
+  t = dms.roomThread(A, rid);
+  const nudge = t.messages.filter((m) => m.tag === 'nudge');
+  assert(nudge.length === 1 && /Helper has been working for 15 minutes and has gone quiet for the last 6/.test(nudge[0].body) && nudge[0].actions.join() === '/stop', 'an agent working long and silent is flagged, with a Stop pill');
+  dms.sweep(Date.now() + 200_000); await tick();
+  assert(dms.roomThread(A, rid).messages.filter((m) => m.tag === 'nudge').length === 1, 'once per turn, not every sweep');
+  aos.db.prepare('UPDATE term_sessions SET busy_since = NULL WHERE id = ?').run(live);
+
+  // stuck: an agent waiting on a person → that person is tagged in the room
+  aos.db.prepare("INSERT INTO questions (id, run_id, tenant, agent, prompt, status, created_at) VALUES ('q_room_1', ?, 'testco', 'helper', 'Which region should I deploy to?', 'pending', ?)").run(live, Date.now() - 5 * 60_000);
+  pings.length = 0;
+  dms.sweep(Date.now() + 300_000); await tick();
+  t = dms.roomThread(C, rid);
+  const wait = t.messages.find((m) => m.tag === 'nudge' && /waiting on an answer/.test(m.body));
+  assert(wait && /^@alice — Helper is waiting on an answer: Which region/.test(wait.body) && wait.mentions.join() === alice.id, 'a question nobody answered tags the person the agent is acting for');
+  assert(pings.some((p) => p.to === alice.id && /Orchestrator mentioned you in #fan/.test(p.text)), 'who is pinged outside the app');
+  dms.sweep(Date.now() + 400_000); await tick();
+  assert(dms.roomThread(C, rid).messages.filter((m) => /waiting on an answer/.test(m.body)).length === 1, 'once per question');
+  aos.db.prepare("UPDATE questions SET status = 'answered' WHERE id = 'q_room_1'").run();
+
+  // rolling summary
+  const sr = dms.createRoom(A, { name: 'long', members: [C.id], agents: [AGENT] }).id;
+  dms.roomSetOrchestrate(A, sr, 'suggest');            // suggest: summaries still kept, nothing auto-routed
+  setRoomBrain(aos, async (system, user) => { if (/running summary/.test(system)) { calls.summary.push(user); return 'The team chose option B; Alice owns rollout.'; } return JSON.stringify({ agents: [], confidence: 0 }); });
+  for (let i = 1; i <= 29; i++) dms.roomSend(i % 2 ? A : C, sr, `point number ${i}`);
+  dms.sweep(Date.now() + 500_000); await tick();
+  assert(calls.summary.length === 0 && !dms.roomList(A).find((r) => r.id === sr).summary, 'no summary below the threshold');
+  assert(/Nothing summarised yet/.test(dms.roomSend(A, sr, '/summary').notes[0]), '/summary says so');
+  await tick();
+  const forced = calls.summary.length;
+  dms.roomSend(A, sr, 'point number 30'); dms.roomSend(C, sr, 'point number 31');
+  aos.db.prepare('UPDATE chat_rooms SET summary = NULL, summary_seq = 0 WHERE id = ?').run(sr);
+  dms.sweep(Date.now() + 600_000); await tick();
+  const room = aos.chatRooms.get(sr);
+  assert(calls.summary.length === forced + 1 && room.summary === 'The team chose option B; Alice owns rollout.' && room.summarySeq > 0, 'past the threshold the sweep writes a summary');
+  const lastPrompt = calls.summary[calls.summary.length - 1];
+  assert(/point number 1\b/.test(lastPrompt) && /point number 21/.test(lastPrompt) && !/point number 31/.test(lastPrompt), 'covering all but the latest messages, which stay verbatim');
+  assert(dms.roomList(C).find((r) => r.id === sr).summary === room.summary && /^Summary so far: The team chose/.test(dms.roomSend(C, sr, '/summary').notes[0]), 'the summary is in the room details and behind /summary');
+  const rs = dms.roomSend(A, sr, '@agent-author where did we land?');
+  await settle();
+  const task = row(aos.chatRooms.participants(sr).find((p) => p.id === AGENT).sessionId).task;
+  assert(rs.delivered.join() === AGENT && /Summary of the conversation before that: The team chose option B/.test(task) && /point number 31/.test(task) && !/point number 3\b/.test(task), 'an agent brought in late gets the summary + only the recent messages');
+  setRoomBrain(aos, null);
+}
+
 console.log('\n\x1b[1m15) the chat socket pushes threads and lists\x1b[0m');
 {
   const http = require('http');

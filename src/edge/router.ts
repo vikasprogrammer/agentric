@@ -293,9 +293,10 @@ export const ROUTER_CLI_MODEL = (): string => process.env.AOS_ROUTER_MODEL || 'h
  * subscription-only box routes with a model too, not by word overlap. `AOS_ROUTER_CLI=0` turns the CLI
  * lane off. Null → the rules path.
  */
-export function routerBrain(os: AgentOS, cliCredentials?: () => { vars: Record<string, string> } | null): Brain | null {
+export function routerBrain(os: AgentOS, cliCredentials?: () => { vars: Record<string, string> } | null, opts: { maxTokens?: number } = {}): Brain | null {
   const llm = resolveLlm(os);
-  if (llm) return (system, user) => chatComplete(llm, [{ role: 'system', content: system }, { role: 'user', content: user }], { maxTokens: 200, temperature: 0, timeoutMs: 12_000 });
+  // 200 tokens is ample for a routing verdict; a caller that wants PROSE back (a merged answer, a summary) asks for more.
+  if (llm) return (system, user) => chatComplete(llm, [{ role: 'system', content: system }, { role: 'user', content: user }], { maxTokens: opts.maxTokens ?? 200, temperature: 0, timeoutMs: opts.maxTokens ? 30_000 : 12_000 });
   if (!cliCredentials || process.env.AOS_ROUTER_CLI === '0') return null;
   return async (system, user) => {
     try {

@@ -118,8 +118,23 @@ It never widens access: only agents the SENDER may run are candidates, the run a
 hop 0. One decision in flight per room. The message is posted before the model is asked, so a slow or
 failed call costs nothing but the routing. Tests inject the brain with `setRoomBrain`.
 
-Not built: routing an agent's follow-up to another agent, fan-out-and-merge, stuck detection, a rolling
-room summary.
+**Fan-out and merge.** When the router hands one message to two agents it records a `fanout` job
+(`chat_jobs.data = { seq, replies }`). Each agent's reply is noted as it is folded in (`fanoutReply`);
+when all have answered — or 10 minutes pass with at least two — one model call writes the combined
+answer, posted by `orchestrator` (tag `summary`). The individual answers stay in the room.
+
+**Stuck detection** (`watch`, off the sweep). A lane working > 10 min whose transcript has been still
+for > 4 gets one orchestrator message per turn with a `/stop` pill (DMs and rooms). In a room, a
+question or approval pending > 3 min gets one message per ask that `@mentions` the person the lane is
+acting for — a real mention, so they are pinged. Both are skipped in a room set to `off`.
+
+**Rolling summary** (`summarise`, off the sweep). Every 30 new main-stream messages, all but the latest
+10 are folded into `chat_rooms.summary` (`summary_seq` = last message covered). It is shown in the
+room's details, returned by `/summary`, and given to an agent whose `seen_seq` predates it in place of
+the messages it covers.
+
+`orchestrator` is an author id, not an agent: it has no session, runs nothing, and is never a mention
+target. Not built: routing an agent's follow-up to another agent.
 
 ## Quick actions
 

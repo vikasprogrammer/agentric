@@ -1548,7 +1548,10 @@ function migrate(db: Db): void {
   // newer session, so every session a DM ever used stays out of the Sessions lists.
   addColumn(db, 'term_sessions', 'dm_room', 'TEXT');
   addColumn(db, 'chat_rooms', 'name', 'TEXT');
-  addColumn(db, 'chat_rooms', 'orchestrate', 'TEXT');            // room: auto | suggest | off — how untagged messages reach agents (NULL = auto)
+  addColumn(db, 'chat_rooms', 'orchestrate', 'TEXT');
+  addColumn(db, 'chat_rooms', 'summary', 'TEXT');                // room: the orchestrator's rolling summary of the conversation…
+  addColumn(db, 'chat_rooms', 'summary_seq', 'INTEGER NOT NULL DEFAULT 0'); // …and the last message it covers
+  addColumn(db, 'chat_jobs', 'data', 'TEXT');                    // JSON — a fan-out's { seq, replies }            // room: auto | suggest | off — how untagged messages reach agents (NULL = auto)
   addColumn(db, 'chat_messages', 'thread_id', 'INTEGER');        // a reply: the seq of the message it replies under (NULL = main stream)
   addColumn(db, 'chat_messages', 'mentions', 'TEXT');            // ',memberId,memberId,' — the PEOPLE this message @mentions
   db.exec('CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages (room_id, thread_id)');
