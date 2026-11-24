@@ -118,7 +118,8 @@ It never widens access: only agents the SENDER may run are candidates, the run a
 hop 0. One decision in flight per room. The message is posted before the model is asked, so a slow or
 failed call costs nothing but the routing. Tests inject the brain with `setRoomBrain`.
 
-**Fan-out and merge.** When the router hands one message to two agents it records a `fanout` job
+**Fan-out and merge.** When one message reaches two or more agents — the router fanned it out, or the
+person `@mentioned` several — it records a `fanout` job
 (`chat_jobs.data = { seq, replies }`). Each agent's reply is noted as it is folded in (`fanoutReply`);
 when all have answered — or 10 minutes pass with at least two — one model call writes the combined
 answer, posted by `orchestrator` (tag `summary`). The individual answers stay in the room.

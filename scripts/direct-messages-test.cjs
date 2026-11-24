@@ -14,6 +14,9 @@ const HOME = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aos-dm-test-
 process.env.AGENT_OS_HOME = HOME;
 process.env.AGENT_OS_TENANT = 'testco';
 process.env.AOS_NO_TTYD = '1';
+// No real model in tests: without this the room orchestrator would shell out to `claude -p` on whatever
+// login the machine has. The sections that test it inject a brain with setRoomBrain.
+process.env.AOS_ROUTER_CLI = '0';
 process.env.CLAUDE_CONFIG_DIR = path.join(HOME, 'claude');
 delete process.env.AGENT_OS_SECRET_KEY;
 
@@ -698,6 +701,23 @@ console.log('\n\x1b[1m14f) orchestrator: fan-out + merge, stuck detection, rolli
   aos.db.prepare('UPDATE chat_jobs SET created_at = created_at - 3600000 WHERE id = ?').run(fj.id);
   dms.sweepJobs(); await tick();
   assert(aos.chatRooms.job(fj.id).status === 'done' && calls.merge.length === 1, 'a fan-out that times out with ONE answer just closes — nothing to merge');
+
+  // tagging two agents yourself merges too
+  dms.roomSend(C, rid, 'ok');
+  const tagged = dms.roomSend(A, rid, '@agent-author @helper which cache should we use?');
+  await settle();
+  assert(tagged.delivered.length === 2 && dms.roomThread(A, rid).jobs.some((j) => j.kind === 'fanout'), 'tagging two agents yourself starts a fan-out as well');
+  const before = calls.merge.length;
+  setWorking(s1, true); write(s1, [user('cache?'), say('Redis.')]); setWorking(s1, false);
+  setWorking(s2, true); write(s2, [user('cache?'), say('Redis, with a TTL.')]); setWorking(s2, false);
+  dms.roomThread(A, rid); await tick();
+  const tm2 = dms.roomThread(A, rid).messages;
+  assert(calls.merge.length === before + 1 && /which cache should we use\?/.test(calls.merge[before]) && tm2[tm2.length - 1].tag === 'summary', 'and their two answers are combined into one');
+  dms.roomSetOrchestrate(A, rid, 'off');
+  dms.roomSend(A, rid, '@agent-author @helper and the queue?');
+  await settle();
+  assert(!dms.roomThread(A, rid).jobs.some((j) => j.kind === 'fanout'), 'not in a room whose orchestrator is off');
+  dms.roomSetOrchestrate(A, rid, 'auto');
 
   // stuck: working long + silent → the room is told, once, with a Stop pill
   const live = lane('helper').sessionId;

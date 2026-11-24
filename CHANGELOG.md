@@ -8,6 +8,11 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.480.1] - 2026-11-24
+### Changed
+- **Tagging two agents yourself now gets one combined answer too** — the same merge the orchestrator
+  does when it fans a message out. Not in a room whose orchestrator is set to off.
+
 ## [0.480.0] - 2026-11-24
 ### Added
 - **The room orchestrator does more.**
