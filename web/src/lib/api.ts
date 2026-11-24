@@ -198,6 +198,15 @@ export interface RuntimePresence { id: string; label: string; bin: string; insta
 
 export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; logins?: RuntimeLogin[]; refreshing?: string[]; boxDefault?: { dir: string; loginExpiresAt?: number; loginDead?: boolean }; error?: string }
 
+// ── Messages (direct messages with agents) — see src/edge/direct-messages.ts ──
+export type DmPresence = 'working' | 'online' | 'away'
+/** One thing an agent did (`do`) or noted (`say`) on the way to a reply — hidden until expanded. */
+export interface DmStep { t: 'say' | 'do'; text: string; detail?: string; status?: 'running' | 'ok' | 'error' }
+export interface DmMessage { seq: number; authorKind: 'member' | 'agent'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** client-only: sent, not yet stored */ pending?: boolean }
+export interface DmContact { agent: string; roomId: string; description: string; icon?: string; presence: DmPresence; lastText?: string; lastFromMe?: boolean; lastAt: number; unread: number; sessionId: string | null }
+export interface DmDirectoryAgent { id: string; description: string; icon?: string; category?: string }
+export interface DmThread { agent: string; roomId: string; sessionId: string | null; presence: DmPresence; messages: DmMessage[]; typing: { label: string; steps: DmStep[]; since?: number } | null; stalled?: boolean; error?: string }
+
 export interface AgentInfo {
   id: string
   description: string
@@ -451,6 +460,8 @@ export interface Session {
   /** True for a `category:'System'` machinery agent (the Cockpit concierge/operator, consolidator, …).
    *  Hidden from the Chat + Sessions lists to reduce clutter; still openable by id + in Audit. */
   system?: boolean
+  /** The session behind a Messages conversation — hidden from the lists; the person talks to the agent, not to it. */
+  dm?: boolean
   /** CONVERSATION key — the claude transcript this run belongs to (its own id when there is none). A
    *  poke-back RESUMES a transcript, so several rows share one `threadId`; the list groups by it so a
    *  resumed conversation reads as ONE entry with N runs instead of N unrelated ones. */
@@ -2150,6 +2161,17 @@ export const api = {
   sessionActivity: (id: string) => call<SessionActivityResp>('GET', `/api/sessions/${id}/activity`),
   /** Non-technical chat surface: the friendly conversation timeline for a session (poll it). */
   conversation: (id: string) => call<ConversationResp>('GET', `/api/sessions/${id}/conversation`),
+  // Messages — DM an agent like a teammate. The session behind a conversation is the server's business.
+  dmList: () => call<{ contacts: DmContact[]; directory: DmDirectoryAgent[]; error?: string }>('GET', '/api/dm'),
+  dmAddContact: (agent: string) => call<{ ok?: boolean; error?: string }>('POST', '/api/dm/contacts', { agent }),
+  dmRemoveContact: (agent: string) => call<{ ok?: boolean; error?: string }>('DELETE', `/api/dm/${encodeURIComponent(agent)}`),
+  dmThread: (agent: string, o: { before?: number; read?: boolean } = {}) =>
+    call<DmThread>('GET', `/api/dm/${encodeURIComponent(agent)}?${o.before != null ? `before=${o.before}&` : ''}${o.read ? 'read=1' : ''}`),
+  dmSend: (agent: string, message: string) =>
+    call<{ ok?: boolean; message?: DmMessage; held?: boolean; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/send`, { message }),
+  /** Re-deliver my last message (it got no reply and nothing is running) without posting it twice. */
+  dmRetry: (agent: string) => call<{ ok?: boolean; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/send`, { retry: true }),
+  dmReset: (agent: string) => call<{ ok?: boolean; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/reset`),
   /** Start a chat with an agent — spawns a warm resident session. Returns its id. */
   startChat: (agent: string, message: string) =>
     call<{ id?: string; tmux?: string; error?: string }>('POST', '/api/chat/start', { agent, message }),

@@ -29,6 +29,7 @@ import { ComposioIdentityStore } from './connectors/composio-identity';
 import { ComposioClaimStore } from './connectors/composio-claims';
 import { HostStore } from './hosts/hosts';
 import { AutoApprovalStore } from './state/auto-approvals';
+import { ChatRoomStore } from './state/chat-rooms';
 import { Gateway } from './gateway/gateway';
 import { InMemoryAuditSink, JsonlAuditSink, SqliteAuditSink, TeeAuditSink } from './governance/audit';
 import { InMemoryBudgetLedger } from './governance/budget';
@@ -143,6 +144,8 @@ export class AgentOS {
   readonly hosts: HostStore;
   /** "Always approve THIS action" list, keyed on the decision-brief signature (auto-approvals.ts). */
   readonly autoApprovals: AutoApprovalStore;
+  /** Console chat rooms (Messages): durable member↔agent conversations. */
+  readonly chatRooms: ChatRoomStore;
   /**
    * Persistent agent memory (recall across sessions). SQLite by default; libsql/automem optional.
    * Mutable so Settings → Memory can hot-swap the backend live (new requests use the new provider).
@@ -169,6 +172,7 @@ export class AgentOS {
     this.composioClaims = new ComposioClaimStore(this.db);
     this.hosts = new HostStore(this.db);
     this.autoApprovals = new AutoApprovalStore(this.db);
+    this.chatRooms = new ChatRoomStore(this.db);
     this.approvals = new SqliteApprovals(this.db);
     this.team = new TeamStore(this.db);
     this.settings = new SettingsStore(this.db);

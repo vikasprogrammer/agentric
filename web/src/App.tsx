@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer } from 'lucide-react'
+import { Inbox as InboxIcon, MessagesSquare, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
 import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, CircleDashed, Ban, Pause, Copy as CopyIcon } from 'lucide-react'
 import { GitPullRequest, GitPullRequestClosed, GitMerge, Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
@@ -24,17 +24,18 @@ import { SetupPage, SetupBanner } from '@/setup'
 import { TwoFactorChallenge, TwoFactorNag, TwoFactorSection, TwoFactorPolicyCard } from '@/two-factor'
 import { docPages } from '@/docs'
 import { Xterm } from './Xterm'
+import { MessagesPage } from './messages'
 
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'setup' | 'overview' | 'feed' | 'inbox' | 'cockpit' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'apps' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
+type Route = 'setup' | 'overview' | 'feed' | 'inbox' | 'dm' | 'cockpit' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'apps' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['setup', 'overview', 'feed', 'inbox', 'cockpit', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'apps', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
+const ROUTES: Route[] = ['setup', 'overview', 'feed', 'inbox', 'dm', 'cockpit', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'apps', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
 // The single source of truth for a page's human name — used for the header <h1> AND the browser-tab
 // title, so both always agree. The `agent` detail page appends the agent id at the call site.
 const ROUTE_TITLES: Record<Route, string> = {
-  setup: 'Set up', overview: 'Overview', feed: 'Feed', inbox: 'Inbox', cockpit: 'Cockpit', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
+  setup: 'Set up', overview: 'Overview', feed: 'Feed', inbox: 'Inbox', dm: 'Messages', cockpit: 'Cockpit', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
   'new-agent': 'New agent', agent: 'Agent', connectors: 'Connections', team: 'Team',
   automations: 'Automations', goals: 'Goals', tasks: 'Tasks', memory: 'Memory', insights: 'Insights',
   kb: 'Knowledge Base', skills: 'Skills', apps: 'Apps', files: 'Files', artifacts: 'Library', audit: 'Audit log',
@@ -1500,6 +1501,9 @@ const DEFAULT_PINNED_NAV: NavKey[] = ['feed', 'cockpit', 'goals', 'tasks', 'arti
 
 function Console({ me }: { me: Member }) {
   const [state, setState] = useState<StateResp | null>(null)
+  // Unread direct messages, for the sidebar badge. The Messages page reports it while open; off the page
+  // a slow poll keeps it honest (a reply to something you asked and walked away from is the whole point).
+  const [dmUnread, setDmUnread] = useState(0)
   const [sessions, setSessions] = useState<Session[]>([])
   // What the poll below currently holds. The poll effect is keyed on `route` alone (re-running it per
   // sessions-state change would restart the interval on every tick), so it reads the held rows through
@@ -1546,6 +1550,14 @@ function Console({ me }: { me: Member }) {
   const seenNotifyIds = useRef<Set<string> | null>(null)
   const dismissToast = (key: string) => setToasts((t) => t.filter((x) => x.key !== key))
   const { route, detail, query: urlQuery, nav, setQuery: setUrlQuery, backTo } = useHashRoute()
+  useEffect(() => {
+    if (route === 'dm') return // the page itself reports unread while it's open
+    let alive = true
+    const tick = async () => { const r = await api.dmList(); if (alive && !r.error) setDmUnread(r.contacts.reduce((n, c) => n + c.unread, 0)) }
+    tick()
+    const t = setInterval(tick, 20_000)
+    return () => { alive = false; clearInterval(t) }
+  }, [route])
   // The open terminal is a URL detail (`#/sessions/<tmux>`), not local state, so a refresh /
   // back-forward reopens the same session. Title is best-effort from the loaded list (falls back to
   // the tmux for a link opened before the sessions have loaded).
@@ -1933,7 +1945,7 @@ function Console({ me }: { me: Member }) {
   // Closing a tab (hiddenTabs) drops it here too — mirroring the terminal strip's `visible()` — so a
   // "closed" session leaves both viewports; the still-open one always stays. Reopen it from All sessions.
   const mySessions = sessions
-    .filter((s) => (s.spawnedBy === me.id || s.runAs === me.id) && (!hiddenTabs.has(s.tmux) || s.tmux === selected?.tmux))
+    .filter((s) => !s.dm && (s.spawnedBy === me.id || s.runAs === me.id) && (!hiddenTabs.has(s.tmux) || s.tmux === selected?.tmux))
     .sort((a, b) => {
       const rank = (s: Session) => (isLive(s) ? 0 : 1) // live first; all terminal (dead) states tie
       return rank(a) - rank(b) || b.createdAt - a.createdAt
@@ -2007,7 +2019,7 @@ function Console({ me }: { me: Member }) {
     )
   }
   // A live terminal takes the whole content area (no padding/scroll wrapper).
-  const fullBleed = route === 'sessions' && !!selected
+  const fullBleed = (route === 'sessions' && !!selected) || route === 'dm'
 
   return (
     <WaitingCtx.Provider value={waiting}>
@@ -2064,6 +2076,7 @@ function Console({ me }: { me: Member }) {
           <nav className="space-y-1">
             {me.role === 'owner' && <NavItem icon={<LayoutGrid className="h-4 w-4" />} label="Overview" active={route === 'overview'} href={navHref('overview')} onClick={() => nav('overview')} />}
             <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} href={navHref('inbox')} onClick={() => nav('inbox')} />
+            <NavItem icon={<MessagesSquare className="h-4 w-4" />} label="Messages" active={route === 'dm'} badge={dmUnread || undefined} href={navHref('dm')} onClick={() => nav('dm')} />
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} href={navHref('agents')} onClick={() => nav('agents')} />
             {pinnedNav.map((n) => (
               <NavItem key={n.key} icon={n.icon} label={n.label} beta={n.beta} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned onTogglePin={() => togglePin(n.key)} />
@@ -2165,6 +2178,7 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onPause={pauseSession} onUnpause={unpauseSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} doneToday={doneToday} members={members} agents={state?.agents ?? []} maturity={maturity} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} agents={state?.agents ?? []} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
+          {route === 'dm' && <MessagesPage me={me} selected={detail} onSelect={(a) => nav('dm', a)} messages={messages} renderIcon={(icon, cls) => <AgentIcon icon={icon} className={cls} />} renderPending={(m) => <PendingCard m={m} />} onUnread={setDmUnread} onOpenSession={me.role === 'member' ? undefined : (id) => nav('sessions', 'aos-' + id)} />}
           {route === 'cockpit' && <CockpitPage agents={state?.agents ?? []} sessions={sessions} onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
@@ -4846,6 +4860,7 @@ function SessionsPage({
     const needle = query.trim().toLowerCase()
     return sessions.filter((s) =>
       !s.system && // OS machinery (Cockpit concierge/operator, …) stays out of the sessions list
+      !s.dm && // the session behind a Messages conversation — the person talks to the agent, not to it
       matchesStatus(s, statusFilter) &&
       (statusFilter !== 'chains' || chainThreads.has(threadOf(s))) &&
       (agentFilter === 'all' || s.agent === agentFilter) &&
@@ -6004,7 +6019,7 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
   // surface (or the chat router) spawned, newest first.
   const chatAgents = useMemo(() => agents.filter((a) => a.runtime === 'claude-code'), [agents])
   const chats = useMemo(
-    () => sessions.filter((s) => s.sourceKind === 'chat' && !s.system).sort((a, b) => b.updatedAt - a.updatedAt),
+    () => sessions.filter((s) => s.sourceKind === 'chat' && !s.system && !s.dm).sort((a, b) => b.updatedAt - a.updatedAt),
     [sessions],
   )
   const active = selected ? sessions.find((s) => s.id === selected) : undefined
@@ -6266,28 +6281,7 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
             </div>
 
             {/* Inline approvals / questions — the trust surface, in plain language */}
-            {pending.map((m) => (
-              <div key={m.id} className={`mb-2 rounded-lg border p-3 ${m.type === 'approval' ? 'border-amber-400/60 bg-amber-50/60 dark:bg-amber-950/20' : 'border-primary/40 bg-primary/5'}`}>
-                {m.type === 'approval' ? (
-                  <>
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-                      <div className="min-w-0 text-sm">
-                        <div className="font-medium">Needs your OK</div>
-                        <div className="text-muted-foreground">{m.policyReason || m.title}</div>
-                        {m.body && <div className="mt-1 whitespace-pre-wrap text-[13px]">{m.body}</div>}
-                      </div>
-                    </div>
-                    <div className="mt-2 flex gap-2">
-                      <Button size="sm" onClick={() => m.approvalId && api.resolve(m.approvalId, true)}><Check className="mr-1 h-3.5 w-3.5" /> Approve</Button>
-                      <Button size="sm" variant="outline" onClick={() => m.approvalId && api.resolve(m.approvalId, false)}><X className="mr-1 h-3.5 w-3.5" /> Decline</Button>
-                    </div>
-                  </>
-                ) : (
-                  <QuestionReply m={m} />
-                )}
-              </div>
-            ))}
+            {pending.map((m) => <div key={m.id} className="mb-2"><PendingCard m={m} /></div>)}
 
             {/* Reply composer */}
             <div className="flex items-end gap-2 border-t pt-2">
@@ -6305,6 +6299,33 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+/** An approval or question waiting on the reader, as an inline card — the one piece of machinery a
+ *  conversation must surface, since it IS the trust boundary. Shared by Chat and Messages. */
+function PendingCard({ m }: { m: Msg }) {
+  return (
+    <div className={`rounded-lg border p-3 ${m.type === 'approval' ? 'border-amber-400/60 bg-amber-50/60 dark:bg-amber-950/20' : 'border-primary/40 bg-primary/5'}`}>
+      {m.type === 'approval' ? (
+        <>
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+            <div className="min-w-0 text-sm">
+              <div className="font-medium">Needs your OK</div>
+              <div className="text-muted-foreground">{m.policyReason || m.title}</div>
+              {m.body && <div className="mt-1 whitespace-pre-wrap text-[13px]">{m.body}</div>}
+            </div>
+          </div>
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" onClick={() => m.approvalId && api.resolve(m.approvalId, true)}><Check className="mr-1 h-3.5 w-3.5" /> Approve</Button>
+            <Button size="sm" variant="outline" onClick={() => m.approvalId && api.resolve(m.approvalId, false)}><X className="mr-1 h-3.5 w-3.5" /> Decline</Button>
+          </div>
+        </>
+      ) : (
+        <QuestionReply m={m} />
+      )}
     </div>
   )
 }

@@ -533,6 +533,14 @@ Key modules:
   + humans co-author. Markdown on disk (`<home>/kb/<section>/<slug>.md`) + SQLite/FTS mirror, full
   **revision chain + revert**, auto-apply + audit (no gate). Agent tools `kb_search`/`kb_read`/`kb_write`/
   `kb_history`/`kb_revert`; console **Knowledge** page. See `docs/knowledge-base-plan.md`.
+- `src/edge/direct-messages.ts` + `src/state/chat-rooms.ts` — **Messages** (`#/dm`, `web/src/messages.tsx`):
+  DM an agent like a teammate. A ROOM owns its messages (`chat_rooms`/`chat_messages`/`chat_reads`); the
+  governed session behind it is plumbing — warm-delivered, cold-resumed, or silently replaced with a recap
+  (`term_sessions.dm_room` → `Session.dm` hides it from the lists). `sync` folds a whole turn into ONE
+  agent message with its tool calls as `steps`, and reads ONLY agent prose from the transcript — human
+  messages are stored at send time, which is what keeps harness-injected "user" text out. ⚠ `working`
+  can read false mid-turn, so folding also waits for the transcript to go quiet (`SETTLE_MS`). Rooms for
+  several people/agents are the next `kind`. See `docs/messages.md`; pinned by `scripts/direct-messages-test.cjs`.
 - `src/state/tasks.ts` — the **Tasks plane** (`os.tasks`): the shared, tenant-wide **work queue** humans +
   agents drain together — the durable *unit of work* between "a trigger fired" (Automation) and "a session
   ran" (Session). `TaskStore` is **db-only** (no on-disk mirror — a task is structured state: status machine
