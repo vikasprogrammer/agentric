@@ -99,6 +99,14 @@ through a proxy the page keeps polling. Cookie-authenticated, same-origin only.
 The same socket carries "I'm typing" from a person in a room to the others there (`peopleTyping`; expires after
 5 s, cleared on send). It has no REST fallback — without the socket nobody sees it, and nothing breaks.
 
+## Quick actions
+
+An agent ends a message with one line — `[[actions: Go ahead | Show me the plan | Not now]]` — and
+`postAgent` peels it off into `meta.actions` (≤4, ≤80 chars each; only a TRAILING line on a message that
+has other text). The page shows them as pills on the newest message only; tapping one sends that text as
+the reader's next message (in the thread, if that is where it was offered). Agents learn the syntax from
+their opening prompt (`ACTIONS_HINT`) and the `message_send` tool description.
+
 ## Threads
 
 Any main-stream message can carry a thread: replies are `chat_messages` rows with `thread_id` = that
@@ -126,4 +134,6 @@ the message (`chat_messages.mentions`).
 ## Not built yet
 
 - Browsable/joinable public rooms.
-- Reactions, search, inline image previews for attachments, attachments and commands inside a thread.
+- Reactions, search, inline image previews for attachments.
+- An agent choosing WHERE to reply: a reply always goes where the message it answers was said (thread →
+  that thread, main → main). An agent cannot open a thread or move an answer out of one.

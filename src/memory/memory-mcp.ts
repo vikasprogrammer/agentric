@@ -1128,7 +1128,8 @@ const TOOLS = [
       'else; `room` (a room name or id you are a member of) posts there instead. They are pinged on ' +
       'Slack/Discord if they are away. Do NOT use it to answer inside a chat conversation you are already ' +
       'in — there your reply is posted automatically when your turn ends. Posting starts no work and ' +
-      'grants nothing; keep it short and lead with the point.',
+      'grants nothing; keep it short and lead with the point. To offer one-tap replies, end `text` with a ' +
+      'line like `[[actions: Approve | Show details | Later]]` (up to 4, worded as things they would say).',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
