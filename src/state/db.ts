@@ -468,6 +468,39 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_session_dms_lookup ON session_dms (provider, external_id, created_at);
 
+    -- Console chat ("Messages"): a ROOM is a durable conversation; kind 'dm' = one member + one agent
+    -- (the member's "contact"). Messages live HERE, not in a session transcript, so the session behind a
+    -- room can be reaped, resumed or replaced without the conversation changing. See src/edge/direct-messages.ts.
+    CREATE TABLE IF NOT EXISTS chat_rooms (
+      id              TEXT PRIMARY KEY,
+      kind            TEXT NOT NULL DEFAULT 'dm',
+      member_id       TEXT NOT NULL,          -- dm: the human side (owner of the contact)
+      agent           TEXT NOT NULL,          -- dm: the agent side
+      session_id      TEXT,                   -- the session currently carrying this room (hidden from the user)
+      synced_turns    INTEGER NOT NULL DEFAULT 0,  -- transcript turns of session_id already folded into chat_messages
+      synced_mark     TEXT,                   -- cheap "did anything change" signature of the last sync
+      hidden          INTEGER NOT NULL DEFAULT 0,  -- contact removed (history kept)
+      created_at      INTEGER NOT NULL,
+      last_message_at INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_rooms_dm ON chat_rooms (member_id, agent) WHERE kind = 'dm';
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+      room_id     TEXT NOT NULL,
+      author_kind TEXT NOT NULL,              -- 'member' | 'agent'
+      author_id   TEXT NOT NULL,
+      body        TEXT NOT NULL,
+      meta        TEXT,                       -- JSON: { steps: [...] } — the work behind an agent message
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_room ON chat_messages (room_id, seq);
+    CREATE TABLE IF NOT EXISTS chat_reads (
+      room_id       TEXT NOT NULL,
+      member_id     TEXT NOT NULL,
+      last_read_seq INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (room_id, member_id)
+    );
+
     -- The deliverables gallery: artifacts agents explicitly publish (a PDF/Markdown/image now;
     -- a multi-file site/app later). Each row is a snapshot copied into <home>/artifacts/<id>/.
     -- Carries full provenance (session + agent + source) — the SAME shape as the messages table, so
@@ -1481,6 +1514,9 @@ function migrate(db: Db): void {
   // composer, inject box). A shared session can be driven by several people; this is who the agent is
   // acting for right now — `gh`/`git` use their GitHub identity (TerminalManager.githubMemberFor).
   addColumn(db, 'term_sessions', 'speaker', 'TEXT');
+  // The console chat room (chat_rooms.id) this session carries, if any — survives the room moving on to a
+  // newer session, so every session a DM ever used stays out of the Sessions lists.
+  addColumn(db, 'term_sessions', 'dm_room', 'TEXT');
 
   // SUGGESTED_ASSIGNEE: who an agent thinks should work the task it PROPOSED ('agent:<id>' | member id).
   // Kept apart from `assignee` on purpose: a proposal is not work yet, so the agent's pick is advice the

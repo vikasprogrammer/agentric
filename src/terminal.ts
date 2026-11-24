@@ -399,6 +399,9 @@ export interface Session {
    *  Sessions lists to keep them uncluttered; the row still exists for by-id opens (Cockpit's "Open full
    *  session") + Audit. */
   system?: boolean;
+  /** True for the session behind a console direct-message room (Messages). The person talks to the
+   *  agent there and never sees a session, so the lists hide it; still openable by id + in Audit. */
+  dm?: boolean;
   /** CONVERSATION key — the claude transcript this run belongs to, falling back to the session id when
    *  there is none. A poke-back / thread continuation RESUMES a transcript, so several session rows share
    *  one `threadId`: it is the identity the console groups the list by, so a resumed conversation reads as
@@ -659,6 +662,7 @@ interface AutomationLookup {
 }
 
 interface SessionRow {
+  dm_room?: string | null;
   id: string;
   agent: string;
   title: string;
@@ -1519,6 +1523,7 @@ export class TerminalManager {
       resumable: resumable.has(r.id),
       forkable: !!r.claude_session_id && runtimeSupports(this.os.agents.get(r.agent)?.runtime, 'fork'),
       system: this.os.agents.get(r.agent)?.category === 'System',
+      dm: !!r.dm_room,
       spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as),
       sourceKind: this.sourceKind(r.spawned_by),
       runAsLabel: this.runAsLabel(r.run_as),
@@ -3025,6 +3030,31 @@ export class TerminalManager {
     return {
       sessionId: r.id, agent: r.agent, alive: this.reachable(r.id),
       working: this.isWorking(r, this.backend.aliveNames()), createdAt: r.created_at,
+    };
+  }
+
+  /** Stamp a session as the one carrying a console DM room — see {@link Session.dm}. */
+  markDmSession(sessionId: string, roomId: string): void {
+    this.db.prepare('UPDATE term_sessions SET dm_room = ? WHERE id = ?').run(roomId, sessionId);
+  }
+
+  /**
+   * The cheap liveness read behind a console DM room (src/edge/direct-messages.ts): is the session there,
+   * is its pane up, is a turn in flight — plus the transcript's size/mtime so the caller can skip parsing
+   * a file that hasn't moved. One row read, the cached liveness poll and one stat; no transcript parse.
+   */
+  sessionPulse(sessionId: string): { agent: string; status: string; alive: boolean; working: boolean; archived: boolean; resumable: boolean; size: number; mtime: number } | undefined {
+    const r = this.db
+      .prepare('SELECT id, agent, tmux, status, busy_since, last_activity, created_at, archived_at, claude_session_id FROM term_sessions WHERE id = ?')
+      .get<{ id: string; agent: string; tmux: string; status: string; busy_since: number | null; last_activity: number | null; created_at: number; archived_at: number | null; claude_session_id: string | null }>(sessionId);
+    if (!r) return undefined;
+    const names = this.backend.aliveNames();
+    const mark = r.claude_session_id ? this.transcriptMark(r.claude_session_id) : null;
+    return {
+      agent: r.agent, status: r.status,
+      alive: this.launching.has(sessionId) || (names ? names.has(r.tmux) : r.status === 'running'),
+      working: this.isWorking(r, names), archived: r.archived_at != null, resumable: !!r.claude_session_id,
+      size: mark?.size ?? 0, mtime: mark?.mtime ?? 0,
     };
   }
 

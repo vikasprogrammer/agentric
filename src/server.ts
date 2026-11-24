@@ -77,6 +77,7 @@ import { planTaskReconcile, applyTaskReconcile } from './edge/task-reconcile';
 import { planLibraryTidy, applyLibraryTidy } from './edge/library-tidy';
 import { planSessionTidy, applySessionTidy } from './edge/session-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
+import { DirectMessages } from './edge/direct-messages';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { UpdateWatch } from './edge/update-watch';
@@ -3806,6 +3807,43 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   //     mediate every effect; this only reads the transcript and drives replies via the same
   //     resident deliver/revive path Slack thread-continuity uses.
   //
+  // ── Messages: direct-message an agent like a teammate (src/edge/direct-messages.ts). One durable room
+  //    per (member, agent); the session behind it is created/resumed/replaced server-side and never
+  //    shown. Same governance as any chat run: provenance chat:<me>, run-as me, gate hook + approvals. ──
+  if (p === '/api/dm' && method === 'GET') return sendJson(res, 200, new DirectMessages(os, tm).list(me));
+  if (p === '/api/dm/contacts' && method === 'POST') {
+    const b = await readBody(req);
+    const agent = String(b.agent || '').trim();
+    const dms = new DirectMessages(os, tm);
+    const denied = dms.canChat(me, agent);
+    if (denied) return sendJson(res, 403, { error: denied });
+    os.chatRooms.ensureDm(me.id, agent);
+    return sendJson(res, 200, { ok: true });
+  }
+  const dmMatch = p.match(/^\/api\/dm\/([\w.-]+)(?:\/(send|reset))?$/);
+  if (dmMatch && dmMatch[1] !== 'contacts') {
+    const agent = dmMatch[1];
+    const dms = new DirectMessages(os, tm);
+    const denied = dms.canChat(me, agent);
+    if (denied) return sendJson(res, 403, { error: denied });
+    if (!dmMatch[2] && method === 'GET') {
+      const num = (k: string) => { const v = Number(url.searchParams.get(k)); return url.searchParams.has(k) && Number.isFinite(v) ? v : undefined; };
+      return sendJson(res, 200, dms.thread(me, agent, { after: num('after'), before: num('before'), read: url.searchParams.get('read') === '1' }));
+    }
+    if (!dmMatch[2] && method === 'DELETE') {
+      const room = os.chatRooms.dm(me.id, agent);
+      if (room) os.chatRooms.hide(room.id);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (dmMatch[2] === 'send' && method === 'POST') {
+      const b = await readBody(req);
+      const r = dms.send(me, agent, String(b.message || ''), { retry: b.retry === true });
+      if (!r.ok) return sendJson(res, r.status, { error: r.error, held: r.held });
+      return sendJson(res, 200, { ok: true, message: r.message });
+    }
+    if (dmMatch[2] === 'reset' && method === 'POST') { dms.reset(me, agent); return sendJson(res, 200, { ok: true }); }
+  }
+
   // Start a chat: spawn a RESIDENT interactive session (kept warm for fast follow-ups, like Slack chat).
   if (method === 'POST' && p === '/api/chat/start') {
     const b = await readBody(req);
