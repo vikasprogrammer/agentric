@@ -8,6 +8,10 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.480.3] - 2026-11-24
+### Changed
+- Messages: the opening line of a conversation no longer repeats the agent's full description (it is in the header).
+
 ## [0.480.2] - 2026-11-24
 ### Fixed
 - **Naming an agent in a room reaches it without an `@`.** "Hey infraops, are you there?" got no answer:
