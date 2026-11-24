@@ -298,6 +298,202 @@ console.log('\n\x1b[1m9) rooms: membership, @-addressing, a session per agent, c
   assert(dms.list(A).contacts.every((c) => c.agent !== ''), 'rooms never leak into the DM contact list');
 }
 
+console.log('\n\x1b[1m10) slash commands: /help /status /task /remind /stop — and a path is still a message\x1b[0m');
+{
+  const A = aos.team.getMember(alice.id);
+  dms.reset(A, AGENT);
+  const h = dms.send(A, AGENT, '/help');
+  assert(h.ok && h.message === null && h.notes.length >= 6, '/help answers privately, posts nothing');
+  const n0 = dms.thread(A, AGENT).messages.length;
+  const st = dms.send(A, AGENT, '/status');
+  assert(st.ok && /Agent Author: /.test(st.notes[0]) && dms.thread(A, AGENT).messages.length === n0, '/status reports presence without posting');
+  const tk = dms.send(A, AGENT, '/task Write the launch checklist');
+  const task = aos.db.prepare('SELECT title, assignee, owner FROM tasks WHERE title = ?').get('Write the launch checklist');
+  assert(tk.ok && task && task.assignee === `agent:${AGENT}` && task.owner === alice.id && tk.message.authorKind === 'system', '/task files a task for the agent, owned by me');
+  const rm = dms.send(A, AGENT, '/remind 2h check the deploy');
+  const job = aos.chatRooms.openJobs().find((j) => j.kind === 'remind');
+  assert(rm.ok && job && job.status === 'scheduled' && job.dueAt > Date.now() + 7_000_000, '/remind schedules a reminder');
+  assert(dms.send(A, AGENT, '/remind soon do it').ok === false, 'a bad duration is refused, not guessed');
+  aos.db.prepare('UPDATE chat_jobs SET due_at = ? WHERE id = ?').run(Date.now() - 1000, job.id);
+  const sp = spawned.length;
+  dms.sweepJobs();
+  await settle();
+  const after = dms.thread(A, AGENT).messages;
+  assert(after.some((m) => m.authorKind === 'system' && /Reminder: check the deploy/.test(m.body)) && aos.chatRooms.job(job.id).status === 'done', 'a due reminder posts in the conversation');
+  const rs = aos.chatRooms.dm(alice.id, AGENT).sessionId;
+  assert(rs && spawned.length === sp + 1 && /reminder Alice set earlier: check the deploy/.test(row(rs).task), 'and is handed to the agent as me, so it follows up');
+  const keys = [];
+  tm.backend.sendKey = (_s, tmux, key) => { keys.push(tmux + ':' + key); return true; };
+  setWorking(rs, true);
+  const stop = dms.send(A, AGENT, '/stop');
+  assert(stop.ok && keys.join() === `aos-${rs}:Escape` && row(rs).busy_since === null, '/stop presses Escape in the pane and clears the working state');
+  assert(/Nothing is running/.test(dms.send(A, AGENT, '/stop').notes[0]), '/stop with nothing running says so');
+  const pathMsg = dms.send(A, AGENT, '/etc/hosts looks wrong');
+  assert(pathMsg.ok && pathMsg.message.authorKind === 'member' && pathMsg.message.body === '/etc/hosts looks wrong', 'an unknown /word is an ordinary message');
+}
+
+console.log('\n\x1b[1m11) /bg: a background run whose result is posted back\x1b[0m');
+{
+  const A = aos.team.getMember(alice.id);
+  const live = aos.chatRooms.dm(alice.id, AGENT).sessionId;
+  const r = dms.send(A, AGENT, '/bg audit the nightly backups');
+  await settle();
+  const job = aos.chatRooms.openJobs().find((j) => j.kind === 'bg');
+  assert(r.ok && r.message.tag === 'bg' && job && job.sessionId !== live, 'starts a separate run; my request shows in the conversation');
+  const jr = row(job.sessionId);
+  assert(jr.headless === 1 && jr.dm_room === job.roomId && jr.run_as === alice.id && /audit the nightly backups/.test(jr.task), 'unattended, hidden, run as me');
+  assert(aos.chatRooms.dm(alice.id, AGENT).sessionId === live, 'the conversation itself keeps its own session');
+  assert(dms.thread(A, AGENT).jobs.length === 1, 'the thread reports the running job');
+  write(job.sessionId, [user(jr.task), tool('b1', 'Bash', { command: 'ls /backups' }), result('b1'), say('All 7 nightly backups are present and restorable.')]);
+  dms.sweepJobs();
+  assert(aos.chatRooms.job(job.id).status === 'running', 'not finished while the run is alive');
+  livePanes.delete('aos-' + job.sessionId);
+  aos.db.prepare("UPDATE term_sessions SET status = 'done', busy_since = NULL WHERE id = ?").run(job.sessionId);
+  aos.db.prepare('UPDATE chat_jobs SET created_at = created_at - 60000 WHERE id = ?').run(job.id);
+  setWorking(job.sessionId, false);
+  dms.sweepJobs();
+  const t = dms.thread(A, AGENT);
+  const res = t.messages.find((m) => m.tag === 'bg' && m.authorKind === 'agent');
+  assert(res && /All 7 nightly backups/.test(res.body) && res.steps.length === 1 && t.jobs.length === 0 && aos.chatRooms.job(job.id).status === 'done', 'when it ends the result is posted, tagged, and the job closes');
+  assert(t.cardSessionIds.includes(job.sessionId) && t.cardSessionIds.includes(live), 'the thread lists every session whose cards belong to it');
+  const c = dms.send(A, AGENT, '/bg another one');
+  await settle();
+  const j2 = aos.chatRooms.openJobs().find((j) => j.kind === 'bg');
+  assert(dms.cancelJob(aos.team.getMember(bob.id), j2.id).ok === false && dms.cancelJob(A, j2.id).ok && aos.chatRooms.job(j2.id).status === 'cancelled', 'only someone in the conversation can cancel a job');
+}
+
+console.log('\n\x1b[1m12) agents write first (message_send) + away-pings\x1b[0m');
+{
+  const { setChatPinger } = require(path.join(ROOT, 'dist/edge/direct-messages.js'));
+  const A = aos.team.getMember(alice.id);
+  const pings = [];
+  setChatPinger(aos, (m, text) => pings.push({ to: m.id, text }));
+  // a cron-style run of `helper`, acting for alice — NOT the session behind her DM with helper
+  const id = 'ses_cron_1';
+  aos.db.prepare(`INSERT INTO term_sessions (id,agent,title,task,tmux,status,headless,resident,claude_session_id,secret,spawned_by,run_as,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, 'helper', 'cron', 't', 'aos-' + id, 'running', 1, 0, 'cs-cron', 'sec', 'automation:x', alice.id, Date.now(), Date.now());
+  const p1 = dms.agentPost(id, 'helper', { text: 'Nightly report: all green.' });
+  assert(p1.ok && p1.where === 'Alice', 'no `to` → the person the run acts for');
+  const c = dms.list(A).contacts.find((x) => x.agent === 'helper');
+  assert(c && c.unread === 1 && /Nightly report/.test(c.lastText), 'it lands in her DM with that agent, unread');
+  assert(pings.length === 1 && pings[0].to === alice.id && /Helper messaged you/.test(pings[0].text) && /#\/chat\/helper/.test(pings[0].text), 'and she is pinged, with a link');
+  dms.agentPost(id, 'helper', { text: 'One more thing.' });
+  assert(pings.length === 1, 'no second ping until she has read the first');
+  dms.thread(A, 'helper', { read: true });
+  dms.agentPost(id, 'helper', { text: 'Still there?' });
+  assert(pings.length === 1, 'nor while she has the conversation open');
+  assert(dms.thread(A, 'helper').messages.filter((m) => m.tag === 'proactive').length === 3, 'all three are in the conversation');
+  assert(dms.agentPost(id, 'helper', { to: 'nobody@example.com', text: 'x' }).ok === false, 'an unknown person is refused');
+  assert(dms.agentPost(id, 'helper', { to: 'carol@example.com', text: 'FYI from the nightly run' }).ok, '`to` reaches another teammate');
+  assert(dms.agentPost(id, 'helper', { room: 'launch-week', text: 'Report is in.' }).ok, '`room` posts into a room the agent is in');
+  assert(dms.agentPost(id, 'helper', { room: 'no-such-room', text: 'x' }).ok === false, 'but not one it is not in');
+  const own = aos.chatRooms.dm(alice.id, AGENT).sessionId;
+  assert(dms.agentPost(own, AGENT, { text: 'hi' }).ok === false, 'a session cannot message the conversation it is already answering');
+}
+
+console.log('\n\x1b[1m13) agent → agent in a room, with a hop limit\x1b[0m');
+{
+  const A = aos.team.getMember(alice.id);
+  const made = dms.createRoom(A, { name: 'relay', members: [], agents: [AGENT, 'helper'] });
+  const rid = made.id;
+  const lane = (a) => aos.chatRooms.participants(rid).find((p) => p.id === a);
+  dms.roomSend(A, rid, '@agent-author kick this off');
+  await settle();
+  const s0 = lane(AGENT).sessionId;
+  assert(lane(AGENT).hop === 0 && lane(AGENT).acting === alice.id, 'a person-addressed turn is hop 0, acting for that person');
+  const reply = (sid, text) => { setWorking(sid, true); write(sid, [user(row(sid).task), say(text)]); setWorking(sid, false); };
+  reply(s0, '@helper please gather the numbers.');
+  dms.roomThread(A, rid);
+  await settle();
+  const s1 = lane('helper').sessionId;
+  assert(s1 && lane('helper').hop === 1 && lane('helper').acting === alice.id, "the first agent's mention wakes the second — hop 1, still acting for Alice");
+  assert(/Agent Author \(agent\) to you: @helper please gather/.test(row(s1).task) && row(s1).run_as === alice.id, 'which is told who asked, and runs as Alice');
+  reply(s1, 'Numbers gathered. @agent-author over to you.');
+  dms.roomThread(A, rid);
+  await settle();
+  assert(lane(AGENT).hop === 2, 'a second hand-off is allowed (hop 2)');
+  const inj = injected.length;
+  setWorking(s0, true); write(s0, [user('relay'), say('Thanks @helper, one more round?')]); setWorking(s0, false);
+  const t = dms.roomThread(A, rid);
+  assert(t.messages.some((m) => m.authorKind === 'system' && /not passed on/.test(m.body)) && injected.length === inj && lane('helper').hop === 1, 'a third is not: the room says so and nobody is woken');
+}
+
+console.log('\n\x1b[1m14) attachments + the background sweep\x1b[0m');
+{
+  const A = aos.team.getMember(alice.id);
+  dms.reset(A, AGENT);
+  const r = dms.send(A, AGENT, 'what is in this?', { files: [{ name: '../../evil name.png', data: Buffer.from('PNG!') }] });
+  await settle();
+  const task = row(r.sessionId).task;
+  const m = /\(attached: (\.inbox\/[^\s,)]+)\)/.exec(task);
+  assert(r.ok && m && !m[1].includes('..') && fs.readFileSync(path.join(aos.agents.get(AGENT).dir, m[1]), 'utf8') === 'PNG!', 'the file is staged in the agent inbox (name sanitised) and its path sent along');
+  assert(r.message.files.join() === '../../evil name.png' && r.message.body === 'what is in this?', 'the conversation shows the message with its file name, not the path');
+  setWorking(r.sessionId, true);
+  write(r.sessionId, [user(task), say('It is a PNG.')]);
+  setWorking(r.sessionId, false);
+  const before = aos.chatRooms.last(aos.chatRooms.dm(alice.id, AGENT).id).body;
+  dms.sweep(Date.now() + 60_000);
+  assert(before !== 'It is a PNG.' && aos.chatRooms.last(aos.chatRooms.dm(alice.id, AGENT).id).body === 'It is a PNG.', 'the sweep folds a reply in with nobody looking');
+}
+
+console.log('\n\x1b[1m15) the chat socket pushes threads and lists\x1b[0m');
+{
+  const http = require('http');
+  const { chatUpgrade, chatSocketCount } = require(path.join(ROOT, 'dist/edge/chat-socket.js'));
+  const A = aos.team.getMember(alice.id);
+  let who = A;
+  const srv = http.createServer();
+  srv.on('upgrade', (req, sock) => chatUpgrade(aos, tm, who, req, sock));
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const url = `ws://127.0.0.1:${srv.address().port}/api/chat/ws`;
+  const got = [];
+  const ws = new WebSocket(url);
+  ws.onmessage = (e) => got.push(JSON.parse(e.data));
+  await new Promise((r) => (ws.onopen = r));
+  const until = async (fn) => { for (let i = 0; i < 60 && !fn(); i++) await new Promise((r) => setTimeout(r, 50)); return fn(); };
+  assert(await until(() => got.some((m) => m.t === 'hello') && got.some((m) => m.t === 'list' && m.data.contacts.length > 0 && Array.isArray(m.data.rooms))), 'on connect: hello + the sidebar');
+  ws.send(JSON.stringify({ watch: AGENT, visible: true }));
+  assert(await until(() => got.some((m) => m.t === 'thread' && m.key === AGENT && m.data.messages.length > 0)), 'watching a conversation pushes its thread');
+  const n = got.filter((m) => m.t === 'thread').length;
+  await new Promise((r) => setTimeout(r, 1200));
+  assert(got.filter((m) => m.t === 'thread').length === n, 'nothing is re-sent while nothing changes');
+  dms.agentPost('ses_cron_1', AGENT, { text: 'pushed over the socket' });
+  assert(await until(() => got.some((m) => m.t === 'thread' && m.data && m.data.messages.some((x) => x.body === 'pushed over the socket'))), 'a new message is pushed at once');
+  ws.send(JSON.stringify({ watch: 'room_ffffffffffffffff' }));
+  assert(await until(() => got.some((m) => m.t === 'thread' && m.key === 'room_ffffffffffffffff' && m.error)), "a room you're not in pushes an error, not data");
+  // people typing: Carol types in a room, Alice (watching it) is told — Carol herself is not
+  const C = aos.team.getMember(aos.team.getMemberByEmail('carol@example.com').id);
+  const troom = dms.createRoom(A, { name: 'typing', members: [C.id], agents: [] }).id;
+  ws.send(JSON.stringify({ watch: troom }));
+  await until(() => got.some((m) => m.t === 'thread' && m.key === troom));
+  who = C;
+  const ws2 = new WebSocket(url);
+  const got2 = [];
+  ws2.onmessage = (e) => got2.push(JSON.parse(e.data));
+  await new Promise((r) => (ws2.onopen = r));
+  ws2.send(JSON.stringify({ watch: troom }));
+  await until(() => got2.some((m) => m.t === 'thread' && m.key === troom));
+  ws2.send(JSON.stringify({ typing: true }));
+  assert(await until(() => got.some((m) => m.t === 'thread' && m.key === troom && m.data.peopleTyping.join() === 'Carol')), "someone typing in a room is pushed to the others there");
+  assert(!got2.some((m) => m.t === 'thread' && m.key === troom && m.data.peopleTyping.length), 'but not shown to the person typing');
+  dms.roomSend(C, troom, 'done typing');
+  assert(await until(() => { const t = got.filter((m) => m.t === 'thread' && m.key === troom).pop(); return t && t.data.peopleTyping.length === 0 && t.data.messages.some((x) => x.body === 'done typing'); }), 'sending the message clears it');
+  ws2.close();
+  ws.close();
+  assert(await until(() => chatSocketCount() === 0), 'closing cleans the connection up');
+  who = undefined;
+  const bad = new WebSocket(url);
+  const failed = await new Promise((r) => { bad.onerror = () => r(true); bad.onopen = () => r(false); });
+  assert(failed, 'no session → the upgrade is refused');
+  const cross = await new Promise((r) => {
+    who = A;
+    const q = http.request({ host: '127.0.0.1', port: srv.address().port, path: '/api/chat/ws', headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13', Origin: 'https://evil.example' } });
+    q.on('response', (res) => r(res.statusCode)); q.on('upgrade', () => r(101)); q.on('error', () => r(0)); q.end();
+  });
+  assert(cross === 403, 'another site cannot open it with the visitor\'s cookie', String(cross));
+  srv.close();
+}
+
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch { /* scratch */ }
 console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
 process.exit(fail ? 1 : 0);

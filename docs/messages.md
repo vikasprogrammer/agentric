@@ -70,12 +70,36 @@ With a `name` it is a **room**, without one a **group message** — the same thi
 Routes: `POST /api/rooms`, `GET|PATCH /api/rooms/:id`, `POST /api/rooms/:id/send`,
 `POST|DELETE /api/rooms/:id/participants`. `GET /api/dm` also returns `rooms` and `people`.
 
+## Comms primitives
+
+Everything below works the same in a DM and in a room.
+
+| Primitive | What it is | Where |
+|---|---|---|
+| **Cards in the stream** | The inbox messages raised by ANY session the conversation has used (`term_sessions.dm_room` → `cardSessionIds`) are interleaved by time: an open approval/question/proposal with its controls, a settled one as a single line, a deliverable as a tile. | `chatCard` in `web/src/App.tsx` |
+| **Stop** | Interrupts the turn in flight — Escape in the pane; the session stays. No hook fires for an interrupt, so `interruptTurn` clears the working stamp itself. | `TerminalManager.interruptTurn` |
+| **Background runs** | `/bg <request>` starts a separate UNATTENDED session (hidden, run-as the sender) tracked in `chat_jobs`; when it ends its last prose is posted back tagged `bg`. The conversation's own session is untouched. | `command`, `sweepJobs` |
+| **Reminders** | `/remind <30m\|2h\|1d> <what>` — at the due time a marker is posted AND the text is handed to the agent as the person who set it. | `sweepJobs` |
+| **Agents write first** | The `message_send` agent tool posts into the agent's DM with a person (default: whoever the run acts for) or a room it is in. Posting runs nothing; refused from the session that is already answering that conversation (its reply posts itself). ≤30 per session. Audited `chat.message.sent`. | `agentPost`, `POST /api/agent/message` |
+| **Away-pings** | An agent message in a DM pings the person on Slack/Discord — skipped while they have the conversation open, and not repeated until they've read it (`chat_rooms.pinged_at`). DMs only. Audited `chat.pinged`. | `ping`, `setChatPinger` |
+| **Hand-off cards** | Work the conversation's agent delegated (tasks, `ask_agent`) shows as a status card — read from the existing session chain, nothing new stored. | `handoffs` |
+| **Agent → agent** | In a room, an agent's reply that `@mentions` another agent is passed on — as the same person, at most `MAX_AGENT_HOPS` (2) times before a human has to step in (`chat_participants.hop`/`acting`). | `relay` |
+| **Commands** | `/new` `/bg` `/stop` `/task` `/remind` `/status` `/help`. An unknown `/word` is an ordinary message (a path must stay sayable). `/status` and `/help` answer privately. | `command` |
+| **Attachments** | Files sent with a message are staged into each addressed agent's `.inbox/`; the agent gets the paths, the conversation shows the names. | `stageFilesForAgent` |
+
+**The sweep.** Replies are folded into a room when someone looks at it — which is exactly when nobody
+needs a ping. So the scheduler tick calls `DirectMessages.sweep()` (self-throttled to 8 s): it folds
+finished replies, relays mentions, finishes background runs and fires reminders with nobody watching.
+
+**The socket.** `GET /api/chat/ws` (`src/edge/chat-socket.ts`, zero-dependency WebSocket). A connection
+says which conversation it is watching; the server pushes the thread and the sidebar when they change —
+at once on a new message (`chatBus`), and off a 0.9 s timer for what only a look reveals (a transcript
+growing). Payloads are identical to the REST routes, which remain the fallback: if the upgrade can't get
+through a proxy the page keeps polling. Cookie-authenticated, same-origin only.
+The same socket carries "I'm typing" from a person in a room to the others there (`peopleTyping`; expires after
+5 s, cleared on send). It has no REST fallback — without the socket nobody sees it, and nothing breaks.
+
 ## Not built yet
 
-- **Out-of-band pings** — a message from a person in a room raises the unread badge only; nothing DMs
-  you on Slack/Discord yet. Browsable/joinable public rooms.
-- Threads, reactions, mentions, search, file attachments
-  (`stageInboundFiles` is the path — `attachFile` needs a live pane).
-- **Agent-initiated messages** — an agent posting into its DM with a member unprompted (a cron report,
-  a finished delegated task). Today a message only arrives as a reply.
-- **Push** — the page polls (0.9 s while a reply is in flight, 3 s idle).
+- **Pings for rooms** — a message in a room raises the unread badge only. Browsable/joinable public rooms.
+- Threads, reactions, search, inline image previews for attachments.

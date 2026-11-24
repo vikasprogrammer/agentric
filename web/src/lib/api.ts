@@ -202,15 +202,20 @@ export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: Run
 export type DmPresence = 'working' | 'online' | 'away'
 /** One thing an agent did (`do`) or noted (`say`) on the way to a reply — hidden until expanded. */
 export interface DmStep { t: 'say' | 'do'; text: string; detail?: string; status?: 'running' | 'ok' | 'error' }
-export interface DmMessage { seq: number; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** room messages carry who said it */ authorName?: string; authorIcon?: string; authorAvatar?: string; /** client-only: sent, not yet stored */ pending?: boolean }
+export interface DmMessage { seq: number; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** room messages carry who said it */ authorName?: string; authorIcon?: string; authorAvatar?: string; /** 'bg' = background request/result · 'proactive' = the agent wrote first */ tag?: string; /** names of files sent with it */ files?: string[]; /** client-only: sent, not yet stored */ pending?: boolean }
 export interface DmContact { agent: string; roomId: string; description: string; icon?: string; presence: DmPresence; lastText?: string; lastFromMe?: boolean; lastAt: number; unread: number; sessionId: string | null }
 // Rooms & group DMs: several members and agents in one conversation. `name` null = an unnamed group.
 export interface RoomPerson { id: string; name: string; avatar?: string }
 export interface RoomAgent { id: string; description: string; icon?: string; presence: DmPresence }
 export interface RoomSummary { id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; lastText?: string; lastAuthor?: string; lastAt: number; unread: number }
-export interface RoomThread { room: RoomSummary; messages: DmMessage[]; typing: { agent: string; label: string; steps: DmStep[] }[]; sessionIds: string[]; error?: string }
+export interface RoomThread { room: RoomSummary; messages: DmMessage[]; typing: { agent: string; label: string; steps: DmStep[] }[]; sessionIds: string[]; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; peopleTyping?: string[]; error?: string }
+/** A background run or reminder still in flight in a conversation. */
+export interface DmJob { id: string; kind: 'bg' | 'remind'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null }
+/** Work the conversation's agent handed to another agent. */
+export interface DmHandoff { sessionId: string; agent: string; title: string; status: string; working: boolean; blocked: boolean; summary?: string; createdAt: number; kind: string }
+export interface ChatFile { name: string; dataB64: string }
 export interface DmDirectoryAgent { id: string; description: string; icon?: string; category?: string }
-export interface DmThread { agent: string; roomId: string; sessionId: string | null; presence: DmPresence; messages: DmMessage[]; typing: { label: string; steps: DmStep[]; since?: number } | null; stalled?: boolean; error?: string }
+export interface DmThread { agent: string; roomId: string; sessionId: string | null; presence: DmPresence; messages: DmMessage[]; typing: { label: string; steps: DmStep[]; since?: number } | null; stalled?: boolean; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; error?: string }
 
 export interface AgentInfo {
   id: string
@@ -2171,7 +2176,7 @@ export const api = {
   roomCreate: (input: { name?: string; members: string[]; agents: string[] }) => call<{ ok?: boolean; id?: string; error?: string }>('POST', '/api/rooms', input),
   roomThread: (id: string, o: { before?: number; read?: boolean } = {}) =>
     call<RoomThread>('GET', `/api/rooms/${id}?${o.before != null ? `before=${o.before}&` : ''}${o.read ? 'read=1' : ''}`),
-  roomSend: (id: string, message: string) => call<{ ok?: boolean; delivered?: string[]; notes?: string[]; held?: boolean; error?: string }>('POST', `/api/rooms/${id}/send`, { message }),
+  roomSend: (id: string, message: string, files?: ChatFile[]) => call<{ ok?: boolean; delivered?: string[]; notes?: string[]; held?: boolean; error?: string }>('POST', `/api/rooms/${id}/send`, { message, files }),
   roomAdd: (id: string, input: { members?: string[]; agents?: string[] }) => call<{ ok?: boolean; error?: string }>('POST', `/api/rooms/${id}/participants`, input),
   roomRemove: (id: string, kind: 'member' | 'agent', who: string) => call<{ ok?: boolean; deleted?: boolean; error?: string }>('DELETE', `/api/rooms/${id}/participants?kind=${kind}&id=${encodeURIComponent(who)}`),
   roomRename: (id: string, name: string) => call<{ ok?: boolean; error?: string }>('PATCH', `/api/rooms/${id}`, { name }),
@@ -2179,8 +2184,12 @@ export const api = {
   dmRemoveContact: (agent: string) => call<{ ok?: boolean; error?: string }>('DELETE', `/api/dm/${encodeURIComponent(agent)}`),
   dmThread: (agent: string, o: { before?: number; read?: boolean } = {}) =>
     call<DmThread>('GET', `/api/dm/${encodeURIComponent(agent)}?${o.before != null ? `before=${o.before}&` : ''}${o.read ? 'read=1' : ''}`),
-  dmSend: (agent: string, message: string) =>
-    call<{ ok?: boolean; message?: DmMessage; held?: boolean; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/send`, { message }),
+  dmSend: (agent: string, message: string, files?: ChatFile[]) =>
+    call<{ ok?: boolean; message?: DmMessage | null; notes?: string[]; held?: boolean; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/send`, { message, files }),
+  /** Stop the turn in flight (the session stays). */
+  dmStop: (agent: string) => call<{ ok?: boolean; stopped?: string[]; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/stop`),
+  roomStop: (id: string) => call<{ ok?: boolean; stopped?: string[]; error?: string }>('POST', `/api/rooms/${id}/stop`),
+  chatJobCancel: (id: string) => call<{ ok?: boolean; error?: string }>('POST', `/api/chat/jobs/${id}/cancel`),
   /** Re-deliver my last message (it got no reply and nothing is running) without posting it twice. */
   dmRetry: (agent: string) => call<{ ok?: boolean; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/send`, { retry: true }),
   dmReset: (agent: string) => call<{ ok?: boolean; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/reset`),

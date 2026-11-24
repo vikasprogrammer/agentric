@@ -3033,6 +3033,52 @@ export class TerminalManager {
     };
   }
 
+  /** Every session a console chat room has ever used — its approvals/questions/deliverables are the room's. */
+  dmSessionIds(roomId: string): string[] {
+    return this.db.prepare('SELECT id FROM term_sessions WHERE dm_room = ? ORDER BY created_at').all<{ id: string }>(roomId).map((r) => r.id);
+  }
+
+  /**
+   * Interrupt the turn in flight WITHOUT ending the session — the chat's Stop button. Presses Escape in
+   * the pane, which is how a person stops Claude Code mid-turn. No hook fires for an interrupt, so the
+   * working stamp is cleared here; otherwise the conversation would read "working" until the 2h ceiling.
+   */
+  interruptTurn(sessionId: string, by: string): boolean {
+    const r = this.db.prepare('SELECT tmux, agent, run_as, spawned_by FROM term_sessions WHERE id = ?')
+      .get<{ tmux: string; agent: string; run_as: string | null; spawned_by: string | null }>(sessionId);
+    if (!r) return false;
+    const ok = this.backend.sendKey?.(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux, 'Escape') ?? false;
+    if (ok) {
+      this.db.prepare('UPDATE term_sessions SET busy_since = NULL, last_activity = ?, updated_at = ? WHERE id = ?').run(Date.now(), Date.now(), sessionId);
+      this.audit(sessionId, by, 'chat.turn.interrupted', { agent: r.agent });
+    }
+    return ok;
+  }
+
+  /** Save files into an agent's `.inbox/` (the folder the console's paste-a-file path uses) and return
+   *  their paths relative to the agent's folder — for a chat message with attachments, before any
+   *  session exists to stage them through. */
+  stageFilesForAgent(agent: string, files: { name: string; data: Buffer }[], by: string): string[] {
+    const dir = this.os.agents.get(agent)?.dir;
+    if (!dir || !files.length) return [];
+    const written: string[] = [];
+    for (const f of files) {
+      const clean = `${Date.now().toString(36)}-${inboxFileName(f.name)}`;
+      try {
+        fs.mkdirSync(path.join(dir, '.inbox'), { recursive: true });
+        fs.writeFileSync(path.join(dir, '.inbox', clean), f.data);
+        written.push(path.join('.inbox', clean));
+      } catch { /* one unwritable file must not lose the rest */ }
+    }
+    if (written.length) this.audit('-', by, 'session.attachment', { paths: written, source: 'messages', agent });
+    return written;
+  }
+
+  /** An absolute console link, e.g. `consoleLink('chat/engineer')`. */
+  consoleLink(route: string): string {
+    return `${(this.publicOrigin || this.baseUrl).replace(/\/+$/, '')}/#/${route}`;
+  }
+
   /** Stamp a session as the one carrying a console DM room — see {@link Session.dm}. */
   markDmSession(sessionId: string, roomId: string): void {
     this.db.prepare('UPDATE term_sessions SET dm_room = ? WHERE id = ?').run(roomId, sessionId);

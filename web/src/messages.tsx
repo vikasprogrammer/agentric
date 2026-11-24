@@ -13,12 +13,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
+import { ChevronRight, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { api, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
+import { api, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
 
 /** Search people/agents by NAME first; a description match only ranks after every name match — otherwise
  *  typing "engin" lists half the fleet (anything whose blurb says "engineer") above the Engineer. */
@@ -128,7 +128,9 @@ function MessageRow({ m, grouped, name, avatar }: { m: DmMessage; grouped: boole
             <span className="text-[11px] text-muted-foreground">{clock(m.createdAt)}</span>
           </div>
         )}
+        {m.tag === 'bg' && <span className="mb-0.5 inline-flex items-center gap-1 rounded bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground"><Loader2 className="h-2.5 w-2.5" />{m.authorKind === 'agent' ? 'Background result' : 'Sent to the background'}</span>}
         {body}
+        {m.files && <div className="mt-1 flex flex-wrap gap-1">{m.files.map((f, i) => <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"><Paperclip className="h-3 w-3" />{f}</span>)}</div>}
         {m.steps && <Steps steps={m.steps} />}
       </div>
     </div>
@@ -188,6 +190,62 @@ interface View {
   stalled: boolean
   working: boolean
   room?: RoomSummary
+  /** Every session the conversation has used — the inbox cards of these belong in the stream. */
+  cardSessionIds: string[]
+  jobs: DmJob[]
+  handoffs: DmHandoff[]
+  /** Other people typing in the room right now. */
+  peopleTyping: string[]
+}
+
+const roomView = (r: RoomThread): View => ({ messages: r.messages, typing: r.typing, sessionIds: r.sessionIds, stalled: false, working: r.typing.length > 0, room: r.room, cardSessionIds: r.cardSessionIds ?? r.sessionIds, jobs: r.jobs ?? [], handoffs: r.handoffs ?? [], peopleTyping: r.peopleTyping ?? [] })
+const dmView = (id: string, r: DmThread): View => ({
+  messages: r.messages, typing: r.typing ? [{ agent: id, ...r.typing }] : [], sessionIds: r.sessionId ? [r.sessionId] : [], stalled: !!r.stalled, working: r.presence === 'working',
+  cardSessionIds: r.cardSessionIds ?? (r.sessionId ? [r.sessionId] : []), jobs: r.jobs ?? [], handoffs: r.handoffs ?? [], peopleTyping: [],
+})
+
+/** A pushed thread from the chat socket — `data` is exactly what the REST thread route returns. */
+export interface PushedThread { key: string; data?: DmThread | RoomThread; error?: string }
+
+const COMMANDS: { name: string; usage: string; help: string }[] = [
+  { name: 'new', usage: '/new', help: 'Start a new session — a clean slate' },
+  { name: 'bg', usage: '/bg <request>', help: 'Run it in the background; the result is posted here' },
+  { name: 'stop', usage: '/stop', help: 'Stop what the agent is doing right now' },
+  { name: 'task', usage: '/task <title>', help: 'File a task on the board' },
+  { name: 'remind', usage: '/remind <30m|2h|1d> <what>', help: 'Bring this up again later' },
+  { name: 'status', usage: '/status', help: 'What is running here' },
+  { name: 'help', usage: '/help', help: 'List the commands' },
+]
+
+const ago = (ts: number): string => { const m = Math.max(1, Math.round((Date.now() - ts) / 60_000)); return m < 60 ? `${m} min` : `${Math.round(m / 60)} h` }
+
+function readFile(f: File): Promise<ChatFile> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve({ name: f.name || 'pasted-file', dataB64: String(r.result).split(',')[1] ?? '' })
+    r.onerror = () => reject(r.error)
+    r.readAsDataURL(f)
+  })
+}
+
+/** Work the agent handed to another agent — a quiet status card in the stream. */
+function HandoffCard({ h, renderIcon, onOpenSession }: { h: DmHandoff; renderIcon: IconRenderer; onOpenSession?: (id: string) => void }) {
+  const state = h.blocked ? 'needs someone' : h.working ? 'working' : h.status === 'done' ? 'done' : h.status === 'crashed' ? 'failed' : h.status === 'stopped' ? 'stopped' : h.status === 'running' ? 'waiting' : h.status
+  const dot = h.blocked ? 'bg-amber-500' : h.working ? 'bg-amber-400 animate-pulse' : h.status === 'done' ? 'bg-emerald-500' : h.status === 'crashed' ? 'bg-destructive' : 'bg-muted-foreground/50'
+  return (
+    <div className="max-w-xl rounded-lg border bg-muted/30 px-3 py-2">
+      <div className="flex items-center gap-2 text-xs">
+        <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-muted-foreground">{h.kind === 'answer' ? 'Asked' : 'Handed to'}</span>
+        <Avatar agent={h.agent} renderIcon={renderIcon} size="sm" />
+        <span className="font-medium">{prettyAgent(h.agent)}</span>
+        <span className={`ml-auto h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} /><span className="shrink-0 text-muted-foreground">{state}</span>
+      </div>
+      {h.title && <div className="mt-1 truncate text-sm" title={h.title}>{h.title}</div>}
+      {h.summary && <div className="mt-0.5 line-clamp-3 text-xs text-muted-foreground">{h.summary}</div>}
+      {onOpenSession && <button onClick={() => onOpenSession(h.sessionId)} className="mt-1 text-[11px] text-primary hover:underline">Open the run</button>}
+    </div>
+  )
 }
 
 const isRoomId = (s: string): boolean => s.startsWith('room_')
@@ -337,17 +395,22 @@ function RoomDetails({ me, room, people, agents, renderIcon, onChanged, onLeft, 
   )
 }
 
-function Conversation({ me, target, messages, people, agents, renderIcon, renderPending, onChanged, onRemoved, onOpenSession }: {
+function Conversation({ me, target, messages, people, agents, renderIcon, renderCard, onChanged, onRemoved, onOpenSession, pushed, connected, onTyping }: {
   me: Member
   target: Target
   messages: Msg[]
   people: RoomPerson[]
   agents: DmDirectoryAgent[]
   renderIcon: IconRenderer
-  renderPending: (m: Msg) => ReactNode
+  renderCard: (m: Msg) => ReactNode
   onChanged: () => void
   onRemoved: () => void
   onOpenSession?: (sessionId: string) => void
+  /** The latest thread the chat socket pushed, and whether the socket is up (then polling backs off). */
+  pushed: PushedThread | null
+  connected: boolean
+  /** Tell the others in the room that I'm typing (sent over the socket). */
+  onTyping: () => void
 }) {
   const isRoom = target.kind === 'room'
   const id = isRoom ? target.room.id : target.contact.agent
@@ -357,6 +420,9 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   const [draft, setDraft] = useState(() => localStorage.getItem(`dmDraft:${id}`) || '')
   const [outgoing, setOutgoing] = useState<Outgoing[]>([])
   const [err, setErr] = useState('')
+  const [info, setInfo] = useState<string[]>([])
+  const [files, setFiles] = useState<File[]>([])
+  const fileRef = useRef<HTMLInputElement>(null)
   const [details, setDetails] = useState(false)
   const [mention, setMention] = useState<{ q: string; at: number; pick: number } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -384,21 +450,28 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
     if (isRoom) {
       const r = await api.roomThread(id, { read })
       if (r.error) { if (/not in this room|not found/.test(r.error)) onRemoved(); return }
-      setView({ messages: r.messages, typing: r.typing, sessionIds: r.sessionIds, stalled: false, working: r.typing.length > 0, room: r.room })
+      setView(roomView(r))
     } else {
       const r = await api.dmThread(id, { read })
       if (r.error) return
-      setView({ messages: r.messages, typing: r.typing ? [{ agent: id, ...r.typing }] : [], sessionIds: r.sessionId ? [r.sessionId] : [], stalled: !!r.stalled, working: r.presence === 'working' })
+      setView(dmView(id, r))
     }
   }
+  // The socket pushes this conversation's thread whenever it changes — same payload as the fetch above.
+  useEffect(() => {
+    if (!pushed || pushed.key !== id) return
+    if (pushed.error) { if (isRoom && /not in this room|not found/.test(pushed.error)) onRemoved(); return }
+    if (pushed.data) setView(isRoom ? roomView(pushed.data as RoomThread) : dmView(id, pushed.data as DmThread))
+  }, [pushed])
   // Poll: quick while a reply is on its way (that gap IS the perceived latency), calm otherwise.
   useEffect(() => {
     let stop = false
     const tick = async () => { if (!stop) await load() }
     tick()
-    const t = setInterval(tick, live ? 900 : 3000)
+    // With the socket up, this is only a safety net.
+    const t = setInterval(tick, connected ? 20_000 : live ? 900 : 3000)
     return () => { stop = true; clearInterval(t) }
-  }, [id, live])
+  }, [id, live, connected])
 
   const all = useMemo(() => {
     const server = [...older, ...(view?.messages ?? [])]
@@ -431,30 +504,49 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
 
   const send = async (text: string, retryKey?: number) => {
     const body = text.trim()
-    if (!body) return
-    setErr('')
+    const sending = retryKey == null ? files : []
+    if (!body && sending.length === 0) return
+    setErr(''); setInfo([])
+    let payload: ChatFile[] | undefined
+    if (sending.length) {
+      if (sending.reduce((n, f) => n + f.size, 0) > 15 * 1024 * 1024) { setErr('Attachments are too large — 15 MB per message at most.'); return }
+      try { payload = await Promise.all(sending.map(readFile)) } catch { setErr('Could not read an attachment.'); return }
+      setFiles([])
+    }
+    // A command is not something you said — don't show it as a pending message.
+    const isCommand = /^\/(new|bg|stop|task|remind|status|help)\b/i.test(body)
     const key = retryKey ?? ++seq.current
-    setOutgoing((o) => [...o.filter((x) => x.key !== key), { key, text: body, at: Date.now() }])
+    if (!isCommand) setOutgoing((o) => [...o.filter((x) => x.key !== key), { key, text: body || '(see attached)', at: Date.now() }])
     stick.current = true
-    const r: { error?: string; held?: boolean; notes?: string[] } = isRoom ? await api.roomSend(id, body) : await api.dmSend(id, body)
+    const r: { error?: string; held?: boolean; notes?: string[] } = isRoom ? await api.roomSend(id, body, payload) : await api.dmSend(id, body, payload)
     if (r.error) {
       // Held = it carried a credential: hand the text back to edit rather than leave a failed bubble.
-      if (r.held) { setOutgoing((o) => o.filter((x) => x.key !== key)); setDraft(body); setErr(r.error); return }
+      if (r.held || isCommand) { setOutgoing((o) => o.filter((x) => x.key !== key)); setDraft(body); setErr(r.error); return }
       setOutgoing((o) => o.map((x) => (x.key === key ? { ...x, error: r.error } : x)))
       return
     }
-    if (r.notes?.length) setErr(r.notes.join(' '))
+    if (r.notes?.length) setInfo(r.notes)
     await load()
     setOutgoing((o) => o.filter((x) => x.key !== key))
     onChanged()
   }
   const submit = () => { const t = draft; setDraft(''); setMention(null); send(t) }
+  const addFiles = (list: FileList | File[] | null) => { if (list) setFiles((f) => [...f, ...Array.from(list)].slice(0, 6)) }
+  const stopNow = async () => { const r = isRoom ? await api.roomStop(id) : await api.dmStop(id); if (r.error) setErr(r.error); load() }
+  // "/" at the very start, still on its first word → the command menu.
+  const slash = /^\/([a-z]*)$/i.exec(draft)
+  const commands = slash ? COMMANDS.filter((c) => c.name.startsWith(slash[1].toLowerCase())) : []
+  const [cmdPick, setCmdPick] = useState(0)
+  const applyCommand = (name: string) => { setDraft(`/${name} `); setCmdPick(0); inputRef.current?.focus() }
 
   // @mention autocomplete (rooms): the word being typed at the caret, matched against the room's agents.
   const mentionable = useMemo(() => (room?.agents ?? []).filter((a) => !mention || a.id.toLowerCase().includes(mention.q) || prettyAgent(a.id).toLowerCase().includes(mention.q)), [room, mention?.q])
+  const typedAt = useRef(0)
   const onDraft = (value: string, caret: number) => {
     setDraft(value)
     if (!isRoom) return
+    // At most one "typing" signal every 2.5 s, and none for an emptied box or a command.
+    if (value.trim() && !value.startsWith('/') && Date.now() - typedAt.current > 2500) { typedAt.current = Date.now(); onTyping() }
     const m = /(^|\s)@([\w.-]*)$/.exec(value.slice(0, caret))
     setMention(m ? { q: m[2].toLowerCase(), at: caret - m[2].length - 1, pick: 0 } : null)
   }
@@ -467,6 +559,13 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
     setDraft(next); setMention(null)
   }
   const onKey = (e: ReactKeyboardEvent) => {
+    if (commands.length > 0) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setCmdPick((p) => (p + (e.key === 'ArrowDown' ? 1 : -1) + commands.length) % commands.length); return }
+      const c = commands[Math.min(cmdPick, commands.length - 1)]
+      // Enter on a command that needs nothing more runs it; otherwise it is completed for typing.
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && c.usage.includes('<'))) { e.preventDefault(); applyCommand(c.name); return }
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); setDraft(''); send(`/${c.name}`); return }
+    }
     if (mention && mentionable.length > 0) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const d = e.key === 'ArrowDown' ? 1 : -1; setMention({ ...mention, pick: (mention.pick + d + mentionable.length) % mentionable.length }); return }
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); applyMention(mentionable[Math.min(mention.pick, mentionable.length - 1)].id); return }
@@ -476,7 +575,18 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   }
 
   const sessionIds = view?.sessionIds ?? []
-  const pending = messages.filter((m) => sessionIds.includes(m.sessionId) && (m.type === 'approval' || m.type === 'question') && (m.status ?? 'pending') === 'pending')
+  // Everything in the stream, in the order it happened: what was said, the cards the conversation's
+  // sessions raised (approvals, questions, deliverables, proposals) and the hand-offs its agent made.
+  type Item = { at: number; key: string; msg?: DmMessage; card?: Msg; handoff?: DmHandoff }
+  const stream = useMemo(() => {
+    const ids = new Set(view?.cardSessionIds ?? [])
+    const first = all.find((m) => m.seq > 0)?.createdAt ?? 0
+    const items: Item[] = all.map((m) => ({ at: m.pending ? Number.MAX_SAFE_INTEGER - 1000 + -m.seq : m.createdAt, key: `m${m.seq}`, msg: m }))
+    // Cards older than the loaded page would all pile up at the top — leave them to "Load earlier".
+    for (const c of messages) if (ids.has(c.sessionId) && c.createdAt >= first) items.push({ at: c.createdAt, key: `c${c.id}`, card: c })
+    for (const h of view?.handoffs ?? []) items.push({ at: h.createdAt, key: `h${h.sessionId}`, handoff: h })
+    return items.sort((a, b) => a.at - b.at)
+  }, [all, messages, view?.cardSessionIds, view?.handoffs])
   const presence: DmPresence = isRoom ? 'away' : view ? (view.working ? 'working' : sessionIds.length && target.contact.presence !== 'away' ? 'online' : target.contact.presence) : target.contact.presence
   const iconOf = (agentId: string, hint?: string) => hint ?? (isRoom ? room!.agents.find((a) => a.id === agentId)?.icon : target.contact.icon)
   const nameOf = (m: DmMessage) => (m.authorKind === 'agent' ? m.authorName ?? prettyAgent(m.authorId) : m.authorId === me.id ? me.name || 'You' : m.authorName ?? 'Someone')
@@ -541,13 +651,21 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
               </p>
             </div>
           )}
-          {all.map((m, i) => {
-            const prev = all[i - 1]
-            const newDay = !prev || !sameDay(prev.createdAt, m.createdAt)
+          {stream.map((it, i) => {
+            if (it.card) { const node = renderCard(it.card); return node ? <div key={it.key} className="px-5 py-1.5 pl-[4.25rem]">{node}</div> : null }
+            if (it.handoff) return <div key={it.key} className="px-5 py-1.5 pl-[4.25rem]"><HandoffCard h={it.handoff} renderIcon={renderIcon} onOpenSession={onOpenSession} /></div>
+            const m = it.msg!
+            // Group with the previous MESSAGE only when nothing (a card, a hand-off) came between them.
+            const before = stream[i - 1]
+            const prev = before?.msg
+            let j = i - 1
+            while (j >= 0 && !stream[j].msg) j--
+            const lastMsg = j >= 0 ? stream[j].msg : undefined
+            const newDay = !lastMsg || !sameDay(lastMsg.createdAt, m.createdAt)
             const grouped = !newDay && !!prev && prev.authorKind === m.authorKind && prev.authorId === m.authorId && m.createdAt - prev.createdAt < 5 * 60_000
             const failed = m.pending ? outgoing.find((o) => -o.key === m.seq)?.error : undefined
             return (
-              <div key={m.seq}>
+              <div key={it.key}>
                 {newDay && (
                   <div className="relative my-3 flex items-center px-5">
                     <div className="h-px flex-1 bg-border" />
@@ -570,7 +688,6 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
               </div>
             )
           })}
-          {pending.map((m) => <div key={m.id} className="px-5 pl-[4.25rem] pt-2">{renderPending(m)}</div>)}
           {view?.stalled && outgoing.length === 0 && (
             <div className="flex items-center gap-2 pl-[4.25rem] pt-1 text-xs text-muted-foreground">
               <CircleAlert className="h-3.5 w-3.5 text-amber-500" /> {title} didn’t pick that up.
@@ -579,13 +696,29 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
           )}
         </div>
 
-        {/* Typing indicator — the only trace of a turn in flight */}
+        {/* What is in flight: background runs and reminders, then who is typing (with a way to stop them) */}
         <div className="min-h-[1.5rem] shrink-0 px-5">
-          {(view?.typing ?? []).map((t) => (
+          {(view?.jobs ?? []).map((j) => (
+            <div key={j.id} className="mb-1 flex items-center gap-2 rounded-md border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+              {j.kind === 'bg' ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <Clock className="h-3.5 w-3.5 shrink-0" />}
+              <span className="min-w-0 flex-1 truncate">
+                {j.kind === 'bg' ? <><span className="font-medium text-foreground">{prettyAgent(j.agent)}</span> is working in the background · {ago(j.createdAt)} — {j.request}</> : <>Reminder {j.dueAt ? new Date(j.dueAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''} — {j.request}</>}
+              </span>
+              <button className="shrink-0 hover:text-foreground hover:underline" onClick={async () => { const r = await api.chatJobCancel(j.id); if (r.error) setErr(r.error); load() }}>Cancel</button>
+            </div>
+          ))}
+          {(view?.peopleTyping.length ?? 0) > 0 && (
+            <div className="flex items-center gap-2 pb-1 text-xs text-muted-foreground">
+              <TypingDots />
+              <span><span className="font-medium text-foreground">{view!.peopleTyping.slice(0, 3).join(', ')}{view!.peopleTyping.length > 3 ? ` and ${view!.peopleTyping.length - 3} more` : ''}</span> {view!.peopleTyping.length === 1 ? 'is' : 'are'} typing…</span>
+            </div>
+          )}
+          {(view?.typing ?? []).map((t, i) => (
             <div key={t.agent} className="pb-1">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <TypingDots />
                 <span><span className="font-medium text-foreground">{prettyAgent(t.agent)}</span> is {t.label === 'Writing' ? 'writing…' : t.label === 'Thinking' ? 'thinking…' : 'working on it…'}</span>
+                {i === 0 && <button onClick={stopNow} className="ml-1 inline-flex items-center gap-1 rounded border px-1.5 py-px text-[11px] hover:bg-muted hover:text-foreground" title="Stop what the agent is doing (the conversation stays)"><Square className="h-2.5 w-2.5 fill-current" /> Stop</button>}
               </div>
               <Steps steps={t.steps} live />
             </div>
@@ -593,7 +726,16 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
         </div>
 
         {/* Composer */}
-        <div className="relative shrink-0 px-5 pb-4">
+        <div className="relative shrink-0 px-5 pb-4" onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }} onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); addFiles(e.dataTransfer.files) } }}>
+          {commands.length > 0 && (
+            <div className="absolute bottom-full left-5 z-10 mb-1 w-96 overflow-hidden rounded-lg border bg-popover shadow-md">
+              {commands.map((c, i) => (
+                <button key={c.name} onMouseDown={(e) => { e.preventDefault(); applyCommand(c.name) }} className={`flex w-full items-baseline gap-2 px-2.5 py-1.5 text-left text-sm ${i === Math.min(cmdPick, commands.length - 1) ? 'bg-muted' : ''}`}>
+                  <span className="shrink-0 font-mono text-[12px] font-medium">{c.usage}</span><span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{c.help}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {mention && mentionable.length > 0 && (
             <div className="absolute bottom-full left-5 z-10 mb-1 w-72 overflow-hidden rounded-lg border bg-popover shadow-md">
               {mentionable.map((a, i) => (
@@ -604,7 +746,19 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
             </div>
           )}
           <div className="rounded-xl border bg-background focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/20">
+            {files.length > 0 && (
+              <div className="flex flex-wrap gap-1 px-2.5 pt-2">
+                {files.map((f, i) => (
+                  <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px]">
+                    <Paperclip className="h-3 w-3 text-muted-foreground" />{f.name || 'pasted file'}
+                    <button onClick={() => setFiles((x) => x.filter((_, k) => k !== i))} aria-label="Remove attachment" className="text-muted-foreground hover:text-foreground"><X className="h-3 w-3" /></button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = '' }} />
             <Textarea
+              onPaste={(e) => { const fs = Array.from(e.clipboardData.files); if (fs.length) { e.preventDefault(); addFiles(fs) } }}
               ref={inputRef}
               value={draft}
               onChange={(e) => onDraft(e.target.value, e.target.selectionStart ?? e.target.value.length)}
@@ -615,11 +769,21 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
               className="max-h-48 min-h-[44px] resize-none border-0 bg-transparent text-sm shadow-none focus-visible:ring-0"
             />
             <div className="flex items-center justify-between px-2 pb-1.5">
-              <span className="pl-1 text-[10px] text-muted-foreground"><kbd className="font-sans">Enter</kbd> to send · <kbd className="font-sans">Shift+Enter</kbd> for a new line{isRoom && room!.agents.length > 0 ? <> · <kbd className="font-sans">@</kbd> an agent to bring them in</> : null} · <kbd className="font-sans">/new</kbd> starts a new session</span>
-              <Button size="icon" className="h-7 w-7" disabled={!draft.trim()} onClick={submit} aria-label="Send"><Send className="h-3.5 w-3.5" /></Button>
+              <span className="pl-1 text-[10px] text-muted-foreground"><kbd className="font-sans">Enter</kbd> to send · <kbd className="font-sans">Shift+Enter</kbd> for a new line{isRoom && room!.agents.length > 0 ? <> · <kbd className="font-sans">@</kbd> an agent to bring them in</> : null} · <kbd className="font-sans">/</kbd> for commands</span>
+              <span className="flex shrink-0 items-center gap-1">
+                <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" onClick={() => fileRef.current?.click()} title="Attach files (or paste / drop them)" aria-label="Attach files"><Paperclip className="h-3.5 w-3.5" /></Button>
+                <Button size="icon" className="h-7 w-7" disabled={!draft.trim() && files.length === 0} onClick={submit} aria-label="Send"><Send className="h-3.5 w-3.5" /></Button>
+              </span>
             </div>
           </div>
           {err && <p className="pt-1 text-xs text-destructive">{err}</p>}
+          {info.length > 0 && (
+            <div className="mt-1 flex items-start gap-1.5 rounded-md bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
+              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <div className="min-w-0 flex-1 space-y-0.5">{info.map((n, i) => <div key={i} className="break-words">{n}</div>)}</div>
+              <button onClick={() => setInfo([])} aria-label="Dismiss" className="shrink-0 hover:text-foreground"><X className="h-3.5 w-3.5" /></button>
+            </div>
+          )}
         </div>
       </div>
       {isRoom && details && <RoomDetails me={me} room={room!} people={people} agents={agents} renderIcon={renderIcon} onChanged={() => { load(); onChanged() }} onLeft={onRemoved} onClose={() => setDetails(false)} />}
@@ -627,7 +791,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   )
 }
 
-export function MessagesPage({ me, selected, onSelect, messages, renderIcon, renderPending, onUnread, onOpenSession }: {
+export function MessagesPage({ me, selected, onSelect, messages, renderIcon, renderCard, onUnread, onOpenSession }: {
   me: Member
   /** The open conversation: an agent id (DM), a `room_…` id, or '' / 'add' / 'new-room'. */
   selected: string
@@ -635,7 +799,8 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
   /** The console's inbox feed — pending approvals/questions of the open conversation are shown inline. */
   messages: Msg[]
   renderIcon: IconRenderer
-  renderPending: (m: Msg) => ReactNode
+  /** Render an inbox message as a card inside the conversation — null when it doesn't belong there. */
+  renderCard: (m: Msg) => ReactNode
   onUnread?: (n: number) => void
   /** Owner/admin escape hatch: open the governed session behind a conversation. */
   onOpenSession?: (sessionId: string) => void
@@ -646,17 +811,54 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
   const [people, setPeople] = useState<RoomPerson[]>([])
   const [filter, setFilter] = useState('')
 
-  const refresh = async () => {
-    const r = await api.dmList()
-    if (r.error) return
+  type ListData = { contacts: DmContact[]; directory: DmDirectoryAgent[]; rooms?: RoomSummary[]; people?: RoomPerson[] }
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const applyList = (r: ListData) => {
     setContacts(r.contacts); setDirectory(r.directory); setRooms(r.rooms ?? []); setPeople(r.people ?? [])
-    onUnread?.(r.contacts.reduce((n, c) => n + (c.agent === selected ? 0 : c.unread), 0) + (r.rooms ?? []).reduce((n, c) => n + (c.id === selected ? 0 : c.unread), 0))
+    const open = selectedRef.current
+    onUnread?.(r.contacts.reduce((n, c) => n + (c.agent === open ? 0 : c.unread), 0) + (r.rooms ?? []).reduce((n, c) => n + (c.id === open ? 0 : c.unread), 0))
   }
+  const refresh = async () => { const r = await api.dmList(); if (!r.error) applyList(r) }
+
+  // The chat socket: the server pushes the sidebar and the open conversation when they change. If it
+  // can't connect (a proxy that drops upgrades) the page simply keeps polling, as it always did.
+  const [connected, setConnected] = useState(false)
+  const [pushed, setPushed] = useState<PushedThread | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const watchKey = selected && selected !== 'add' && selected !== 'new-room' ? selected : ''
+  const tell = () => { const ws = wsRef.current; const k = selectedRef.current; if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ watch: k && k !== 'add' && k !== 'new-room' ? k : '', visible: document.visibilityState === 'visible' })) }
+  useEffect(() => {
+    let dead = false, retry = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const open = () => {
+      if (dead) return
+      let ws: WebSocket
+      try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/chat/ws`) } catch { return }
+      wsRef.current = ws
+      ws.onopen = () => { retry = 0; setConnected(true); tell() }
+      ws.onmessage = (e) => {
+        let m: { t?: string; key?: string; data?: unknown; error?: string }
+        try { m = JSON.parse(String(e.data)) } catch { return }
+        if (m.t === 'list' && m.data) applyList(m.data as ListData)
+        else if (m.t === 'thread' && m.key) setPushed({ key: m.key, data: m.data as PushedThread['data'], error: m.error })
+      }
+      ws.onclose = () => { if (wsRef.current === ws) wsRef.current = null; setConnected(false); if (!dead) timer = setTimeout(open, Math.min(30_000, 1500 * 2 ** retry++)) }
+      ws.onerror = () => { try { ws.close() } catch { /* already closing */ } }
+    }
+    open()
+    const vis = () => tell()
+    document.addEventListener('visibilitychange', vis)
+    return () => { dead = true; if (timer) clearTimeout(timer); document.removeEventListener('visibilitychange', vis); try { wsRef.current?.close() } catch { /* gone */ } }
+  }, [])
+  useEffect(() => { tell() }, [watchKey])
+  const sayTyping = () => { const ws = wsRef.current; if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ typing: true })) }
+
   useEffect(() => {
     refresh()
-    const t = setInterval(refresh, 4000)
+    const t = setInterval(refresh, connected ? 30_000 : 4000)
     return () => clearInterval(t)
-  }, [selected])
+  }, [selected, connected])
 
   const adding = selected === 'add'
   const creating = selected === 'new-room'
@@ -752,9 +954,9 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
         {creating ? (
           <NewRoom me={me} people={people} agents={allAgents} renderIcon={renderIcon} onCreated={async (id) => { await refresh(); onSelect(id) }} onClose={() => onSelect('')} />
         ) : activeRoom ? (
-          <Conversation key={activeRoom.id} me={me} target={{ kind: 'room', room: activeRoom }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderPending={renderPending} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
+          <Conversation key={activeRoom.id} me={me} target={{ kind: 'room', room: activeRoom }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
         ) : activeContact && !adding ? (
-          <Conversation key={activeContact.agent} me={me} target={{ kind: 'dm', contact: activeContact }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderPending={renderPending} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
+          <Conversation key={activeContact.agent} me={me} target={{ kind: 'dm', contact: activeContact }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
         ) : contacts === null ? (
           <p className="pt-16 text-center text-sm text-muted-foreground">Loading…</p>
         ) : selected && isRoomId(selected) ? (

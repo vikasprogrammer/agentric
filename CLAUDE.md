@@ -539,8 +539,13 @@ Key modules:
   (`term_sessions.dm_room` → `Session.dm` hides it from the lists). `sync` folds a whole turn into ONE
   agent message with its tool calls as `steps`, and reads ONLY agent prose from the transcript — human
   messages are stored at send time, which is what keeps harness-injected "user" text out. ⚠ `working`
-  can read false mid-turn, so folding also waits for the transcript to go quiet (`SETTLE_MS`). Rooms for
-  several people/agents are the next `kind`. See `docs/messages.md`; pinned by `scripts/direct-messages-test.cjs`.
+  can read false mid-turn, so folding also waits for the transcript to go quiet (`SETTLE_MS`). Rooms
+  (`kind:'room'`, `chat_participants`) hold several people + agents; an agent runs only when `@mentioned`,
+  as the sender. The same engine carries the comms primitives — inline cards, Stop (`interruptTurn`),
+  `/bg` runs + reminders (`chat_jobs`), the `message_send` agent tool, away-pings, agent→agent relay
+  capped at `MAX_AGENT_HOPS`. ⚠ Two things keep it alive with nobody looking: the scheduler tick calls
+  `DirectMessages.sweep()`, and the page is PUSHED over `/api/chat/ws` (`src/edge/chat-socket.ts`,
+  zero-dep; REST stays the fallback). See `docs/messages.md`; pinned by `scripts/direct-messages-test.cjs`.
 - `src/state/tasks.ts` — the **Tasks plane** (`os.tasks`): the shared, tenant-wide **work queue** humans +
   agents drain together — the durable *unit of work* between "a trigger fired" (Automation) and "a session
   ran" (Session). `TaskStore` is **db-only** (no on-disk mirror — a task is structured state: status machine

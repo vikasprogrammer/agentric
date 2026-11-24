@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.476.0] - 2026-11-24
+### Added
+- **Messages: the working parts of a conversation, inline.** Approvals, questions, proposals and
+  deliverables raised by a conversation's agent now appear in the stream where they happened — decidable
+  in place, and kept as a one-line record once settled. A **Stop** button interrupts the turn in flight.
+  `/bg <request>` runs work in the background and posts the result back; `/remind`, `/task`, `/status`
+  and `/help` join `/new`. Files can be attached (paperclip, paste or drop). Work an agent hands to
+  another agent shows as a live status card, and in a room an agent can now `@mention` another agent
+  (at most 2 hand-offs before a person steps in).
+  **For users:** Conversations now show questions, approvals and results right where they happen — and you can type `/` for commands like `/bg` to run something in the background. [Open Messages](#/chat)
+- **Agents can message you first.** The new `message_send` agent tool posts into an agent's DM with a
+  person or a room it belongs to — a scheduled report, a finished long job. If you're away, a DM from an
+  agent pings you on Slack/Discord (once, until you've read it).
+- **Messages is pushed, not polled.** A WebSocket (`/api/chat/ws`) delivers the open conversation and the
+  sidebar the moment they change; polling remains only as the fallback when an upgrade can't get through.
+  In a room you also see when another person is typing.
+
 ## [0.475.1] - 2026-11-24
 ### Fixed
 - **A deploy no longer serves the new console ahead of the new server.** `make-live.sh` built the console

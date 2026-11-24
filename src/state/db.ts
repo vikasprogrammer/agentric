@@ -508,6 +508,22 @@ function migrate(db: Db): void {
       PRIMARY KEY (room_id, kind, id)
     );
     CREATE INDEX IF NOT EXISTS idx_chat_participants_who ON chat_participants (kind, id);
+    -- Work a conversation started that outlives the turn: a background run ('bg') whose result is posted
+    -- back when it ends, or a reminder ('remind') delivered at due_at.
+    CREATE TABLE IF NOT EXISTS chat_jobs (
+      id          TEXT PRIMARY KEY,
+      room_id     TEXT NOT NULL,
+      kind        TEXT NOT NULL,              -- 'bg' | 'remind'
+      agent       TEXT NOT NULL DEFAULT '',
+      member_id   TEXT NOT NULL,              -- who asked — the run-as of whatever it starts
+      request     TEXT NOT NULL,
+      session_id  TEXT,
+      status      TEXT NOT NULL,              -- running | scheduled | done | failed | cancelled
+      due_at      INTEGER,
+      created_at  INTEGER NOT NULL,
+      finished_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_jobs_open ON chat_jobs (status, room_id);
     CREATE TABLE IF NOT EXISTS chat_reads (
       room_id       TEXT NOT NULL,
       member_id     TEXT NOT NULL,
@@ -1531,7 +1547,10 @@ function migrate(db: Db): void {
   // The console chat room (chat_rooms.id) this session carries, if any — survives the room moving on to a
   // newer session, so every session a DM ever used stays out of the Sessions lists.
   addColumn(db, 'term_sessions', 'dm_room', 'TEXT');
-  addColumn(db, 'chat_rooms', 'name', 'TEXT'); // kind 'room': its name; NULL = an unnamed group
+  addColumn(db, 'chat_rooms', 'name', 'TEXT');
+  addColumn(db, 'chat_rooms', 'pinged_at', 'INTEGER');           // dm: an away-ping went out and hasn't been read yet
+  addColumn(db, 'chat_participants', 'hop', 'INTEGER NOT NULL DEFAULT 0'); // agent lane: hops from a human in the turn it is answering
+  addColumn(db, 'chat_participants', 'acting', 'TEXT');          // agent lane: the member that turn acts for // kind 'room': its name; NULL = an unnamed group
 
   // SUGGESTED_ASSIGNEE: who an agent thinks should work the task it PROPOSED ('agent:<id>' | member id).
   // Kept apart from `assignee` on purpose: a proposal is not work yet, so the agent's pick is advice the

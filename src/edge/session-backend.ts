@@ -54,6 +54,9 @@ export interface SessionBackend {
    *  claude's login that is "Press Enter to retry", so the stray press silently re-armed the flow with a
    *  fresh PKCE challenge while the console still showed the old link. Pass 1 for prompts like that. */
   injectText(space: string, tmuxName: string, text: string, submit: boolean, verify?: boolean, enterPresses?: number): boolean;
+  /** Press one named key (tmux key name, e.g. `Escape`) in a live pane. Optional: a backend that can't
+   *  reach the pane simply doesn't implement it. */
+  sendKey?(space: string, tmuxName: string, key: string): boolean;
   /** Live tmux session names, or null when liveness can't be polled (→ rely on end signals). */
   aliveNames(): Set<string> | null;
   /** Per-session resident memory: tmux session name → summed RSS **in KiB** of that session's pane
@@ -200,6 +203,10 @@ export class LocalSessionBackend implements SessionBackend {
    * actually carry it — see `docs/tasks-plan.md` §3.6 for the transcript-based check that should replace
    * this comment.
    */
+  sendKey(_space: string, tmuxName: string, key: string): boolean {
+    return spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, key], { ...TMUX_SYNC, stdio: 'ignore' }).status === 0;
+  }
+
   injectText(_space: string, tmuxName: string, text: string, submit: boolean, _verify = true, enterPresses = SUBMIT_ATTEMPTS): boolean {
     // `-l` = literal: send the bytes as typed, not as tmux key names (a path could contain `;`, `-`,
     // etc.). Submit is a SEPARATE send-keys with the `Enter` key name so it's interpreted as a return.
