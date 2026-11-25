@@ -828,6 +828,22 @@ console.log('\n\x1b[1m15) the chat socket pushes threads and lists\x1b[0m');
   ws2.close();
   ws.close();
   assert(await until(() => chatSocketCount() === 0), 'closing cleans the connection up');
+  // A bare FIN with no close frame (nginx timing out an idle socket, a killed tab) must not leak:
+  // instawp held 359 of these on 2026-11-25, each pumping every 900ms, until HTTP starved.
+  const net = require('net');
+  const rawOpen = () => new Promise((r) => {
+    const s = net.connect(srv.address().port, '127.0.0.1', () => s.write(`GET /api/chat/ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+    s.once('data', () => r(s)); s.on('error', () => {});
+  });
+  const fin = await rawOpen();
+  assert(await until(() => chatSocketCount() === 1), 'a raw client connects');
+  fin.end();
+  assert(await until(() => chatSocketCount() === 0), 'a peer that closes with a bare FIN is cleaned up');
+  const many = [];
+  for (let i = 0; i < 15; i++) many.push(await rawOpen());
+  assert(chatSocketCount() === 12, 'one person never holds more than 12 sockets', String(chatSocketCount()));
+  many.forEach((s) => s.destroy());
+  assert(await until(() => chatSocketCount() === 0), 'and they all clean up');
   who = undefined;
   const bad = new WebSocket(url);
   const failed = await new Promise((r) => { bad.onerror = () => r(true); bad.onopen = () => r(false); });
