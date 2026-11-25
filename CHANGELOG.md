@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.481.0] - 2026-11-25
+### Added
+- **Automations can report into Messages, and agents can post into a thread.** An automation gains a
+  **Post results to** destination — a room, or a person's DM with the agent, optionally kept in one
+  standing thread. The run is told where its results go, a bare `message_send` lands there, and if the
+  agent posts nothing its `report` summary is posted for it (failures and crashes are labelled and
+  linked). `message_send` also takes `thread` to reply under a message, and returns the number of what
+  it posted. Destination is stored on `automations.post_to`, bound per run on `term_sessions.chat_dest`.
+  **For admins:** an automation can now post each run's results straight into a room or DM — pick
+  **Post results to** when you create or edit it. [Open Automations](#/automations)
+
 ## [0.480.4] - 2026-11-25
 ### Fixed
 - Messages push socket leaked a connection every time a peer closed without a WebSocket close frame (a proxy's idle timeout, a killed tab): Node's upgraded sockets are half-open, so `'end'` fired and `'close'` never did, and each leaked connection kept pumping every 900ms. On instawp 359 of them saturated the event loop until `/health` and the console stopped answering. The socket now closes on `'end'`, pings every ~27s (so nginx's 60s `proxy_read_timeout` no longer cuts quiet sockets, and a silent peer is dropped after 90s), and one member holds at most 12 sockets. Pinned in `scripts/direct-messages-test.cjs`.

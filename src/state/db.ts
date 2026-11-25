@@ -1547,6 +1547,8 @@ function migrate(db: Db): void {
   // The console chat room (chat_rooms.id) this session carries, if any — survives the room moving on to a
   // newer session, so every session a DM ever used stays out of the Sessions lists.
   addColumn(db, 'term_sessions', 'dm_room', 'TEXT');
+  addColumn(db, 'term_sessions', 'chat_dest', 'TEXT');   // JSON {room, thread?, sent}: where this run's results post in Messages
+  addColumn(db, 'automations', 'post_to', 'TEXT');         // JSON PostTo: the Messages conversation an automation's runs report into
   addColumn(db, 'chat_rooms', 'name', 'TEXT');
   addColumn(db, 'chat_rooms', 'orchestrate', 'TEXT');
   addColumn(db, 'chat_rooms', 'summary', 'TEXT');                // room: the orchestrator's rolling summary of the conversation…

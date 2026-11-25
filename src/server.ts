@@ -77,7 +77,7 @@ import { planTaskReconcile, applyTaskReconcile } from './edge/task-reconcile';
 import { planLibraryTidy, applyLibraryTidy } from './edge/library-tidy';
 import { planSessionTidy, applySessionTidy } from './edge/session-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
-import { DirectMessages, type InboundFile } from './edge/direct-messages';
+import { DirectMessages, type InboundFile, type PostTo } from './edge/direct-messages';
 import { chatUpgrade } from './edge/chat-socket';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -1613,7 +1613,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const agent = tm.sessionAgent(session);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
-    const r = new DirectMessages(os, tm).agentPost(session, agent, { to: b.to ? String(b.to) : undefined, room: b.room ? String(b.room) : undefined, text: String(b.text || '') });
+    const r = new DirectMessages(os, tm).agentPost(session, agent, { to: b.to ? String(b.to) : undefined, room: b.room ? String(b.room) : undefined, thread: Number(b.thread) > 0 ? Math.floor(Number(b.thread)) : undefined, text: String(b.text || '') });
     return r.ok ? sendJson(res, 200, r) : sendJson(res, r.status, { error: r.error });
   }
   if (method === 'POST' && p === '/api/agent/stop') {
@@ -3374,7 +3374,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
   // ── automations (cron / webhook → spawn agent sessions) ──────────────────────
   if (method === 'GET' && p === '/api/automations') {
-    return sendJson(res, 200, { automations: autos.list().map((a) => automationView(a, req, isAdmin(me), canManageAuto(me, a))) });
+    // `postToLabel` names the destination for the list — the caller may not be IN that room, so the
+    // console can't always resolve it from its own conversations.
+    const dms = new DirectMessages(os, tm);
+    return sendJson(res, 200, { automations: autos.list().map((a) => ({ ...automationView(a, req, isAdmin(me), canManageAuto(me, a)), postToLabel: a.postTo ? dms.destLabel(a.postTo) : undefined })) });
   }
   if (method === 'POST' && p === '/api/automations') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -3385,7 +3388,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // personal ClickUp) are injected. Validate it's a real member; '' clears it (company identity).
       const runAs = b.runAs ? String(b.runAs) : '';
       if (runAs && !os.team.getMember(runAs)) return sendJson(res, 400, { error: 'unknown run-as member' });
+      const dest = new DirectMessages(os, tm).checkDest(String(b.agentId || ''), b.postTo, me);
+      if (!dest.ok) return sendJson(res, dest.status, { error: dest.error });
       const created = autos.add({
+        postTo: dest.postTo ?? undefined,
         agentId: String(b.agentId || ''),
         name: String(b.name || ''),
         type,
@@ -3697,7 +3703,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       runAs = id || null;
     }
     try {
+      let postTo: PostTo | null | undefined;
+      if (b.postTo !== undefined) {
+        const cur = autos.get(autoMatch[1]);
+        if (!cur) return sendJson(res, 404, { error: 'not found' });
+        const dest = new DirectMessages(os, tm).checkDest(cur.agentId, b.postTo, me);
+        if (!dest.ok) return sendJson(res, dest.status, { error: dest.error });
+        postTo = dest.postTo;
+      }
       const updated = autos.update(autoMatch[1], {
+        postTo,
         name: b.name !== undefined ? String(b.name) : undefined,
         mode: b.mode === 'headless' ? 'headless' : b.mode === 'interactive' ? 'interactive' : undefined,
         schedule: b.schedule !== undefined ? String(b.schedule) : undefined,

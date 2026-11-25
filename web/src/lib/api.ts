@@ -1194,7 +1194,13 @@ export interface Automation {
   /** Member id the fired session acts as — binds THAT member's connectors/Composio (e.g. personal
    *  ClickUp) instead of the company fallback. Empty/absent = company identity. */
   runAs?: string
+  /** Where each run's results post in Messages, and that destination named for display. */
+  postTo?: PostTo
+  postToLabel?: string
 }
+/** A Messages destination for an automation: a person's DM with the agent, or a room — `thread: 'own'`
+ *  keeps every run in one standing thread instead of the main conversation. */
+export interface PostTo { kind: 'dm' | 'room'; member?: string; room?: string; thread?: 'own' | number }
 /** An agent-proposed automation awaiting owner/admin approval — the spec lives in the review card until
  *  approved (then it's created via Automations.add). Mirrors PolicyProposal. */
 export interface ProposedAutomationSpec { agentId: string; name: string; type: Automation['type']; schedule?: string; filter?: string; task: string; mode?: ExecMode; runAs?: string }
@@ -1256,6 +1262,7 @@ export interface AddAutomationReq {
   signingSecret?: string | null
   task: string
   runAs?: string
+  postTo?: PostTo | null
 }
 
 export type Transport = 'stdio' | 'http' | 'sse'
@@ -2287,7 +2294,7 @@ export const api = {
   addAutomation: (a: AddAutomationReq) => call<Automation & { error?: string }>('POST', '/api/automations', a),
   // `signingSecret` is write-only and therefore not part of `Automation`: null removes it, a string sets
   // it, omitted leaves the stored one alone.
-  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'filter' | 'task' | 'enabled' | 'runAs' | 'threadPath'>> & { signingSecret?: string | null }) =>
+  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'filter' | 'task' | 'enabled' | 'runAs' | 'threadPath'>> & { signingSecret?: string | null; postTo?: PostTo | null }) =>
     call<Automation & { error?: string }>('PATCH', '/api/automations/' + id, patch),
   deleteAutomation: (id: string) => call<{ ok: boolean }>('DELETE', '/api/automations/' + id),
   /** Fire an automation once now. `mode` overrides its saved default for this run only (headless =

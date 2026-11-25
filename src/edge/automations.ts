@@ -21,7 +21,7 @@ import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDis
 import { chooseAgent, dispatch, routerBrain, RouterCandidate } from './router';
 import { reviewGoals } from './goal-review';
 import { reviewBets } from './bet-review';
-import { DirectMessages } from './direct-messages';
+import { DirectMessages, type PostTo } from './direct-messages';
 import { reviewLoginExpiry } from './login-expiry';
 import { recordCapabilityGap } from './capability-gap';
 import { SOCIAL_REPLY } from './intent';
@@ -218,6 +218,9 @@ export interface Automation {
   threadPath?: string;
   /** Task template for the spawned session. Webhook payloads are appended at fire time. */
   task: string;
+  /** Where each run's results post in Messages (a DM, a room, or a thread in one) — the run is told, a
+   *  bare `message_send` lands there, and the `report` summary is posted for it if it says nothing. */
+  postTo?: PostTo;
   enabled: boolean;
   createdBy?: string;
   createdAt: number;
@@ -245,6 +248,7 @@ interface AutomationRow {
   resume_claude_id: string | null;
   signing_secret: string | null;
   thread_path: string | null;
+  post_to: string | null;
 }
 
 function toAutomation(r: AutomationRow): Automation {
@@ -268,7 +272,13 @@ function toAutomation(r: AutomationRow): Automation {
     resumeClaudeId: r.resume_claude_id ?? undefined,
     signingSecret: r.signing_secret ?? undefined,
     threadPath: r.thread_path ?? undefined,
+    postTo: parsePostTo(r.post_to),
   };
+}
+
+function parsePostTo(raw: string | null): PostTo | undefined {
+  if (!raw) return undefined;
+  try { const p = JSON.parse(raw) as PostTo; return p && (p.kind === 'dm' || p.kind === 'room') ? p : undefined; } catch { return undefined; }
 }
 
 export interface AddAutomationInput {
@@ -284,6 +294,8 @@ export interface AddAutomationInput {
   signingSecret?: string;
   /** webhook: dot path to the conversation id in the payload ('' = no continuity). */
   threadPath?: string;
+  /** Already checked by `DirectMessages.checkDest`. */
+  postTo?: PostTo;
   task: string;
   createdBy?: string;
   /** Member id the fired session should act as — so a cron/webhook/etc. spawn binds THAT member's
@@ -618,10 +630,11 @@ export class Automations {
       runAs: input.runAs?.trim() || undefined,
       signingSecret: input.type === 'webhook' ? (input.signingSecret?.trim() || undefined) : undefined,
       threadPath: input.type === 'webhook' ? (input.threadPath?.trim() || undefined) : undefined,
+      postTo: input.postTo,
     };
     this.db
-      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_as, signing_secret, thread_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(a.id, a.agentId, a.name, a.type, a.mode, a.schedule ?? null, a.secret ?? null, a.filter ?? null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAs ?? null, a.signingSecret ?? null, a.threadPath ?? null);
+      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_as, signing_secret, thread_path, post_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(a.id, a.agentId, a.name, a.type, a.mode, a.schedule ?? null, a.secret ?? null, a.filter ?? null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAs ?? null, a.signingSecret ?? null, a.threadPath ?? null, a.postTo ? JSON.stringify(a.postTo) : null);
     return a;
   }
 
@@ -704,7 +717,7 @@ export class Automations {
     return { ok: false, reason: r.queued ? `queued: ${r.reason}` : r.reason };
   }
 
-  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean; runAs?: string | null; signingSecret?: string | null; threadPath?: string | null }): Automation | undefined {
+  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean; runAs?: string | null; signingSecret?: string | null; threadPath?: string | null; postTo?: PostTo | null }): Automation | undefined {
     const a = this.get(id);
     if (!a) return undefined;
     if (patch.schedule !== undefined && a.type === 'cron') parseCron(patch.schedule);
@@ -736,8 +749,14 @@ export class Automations {
       a.type !== 'webhook' || next === undefined ? (cur ?? null) : (next || '').trim() || null;
     const nextSigning = webhookOnly(patch.signingSecret, a.signingSecret);
     const nextThreadPath = webhookOnly(patch.threadPath, a.threadPath);
+    // `postTo`: undefined = leave, null = stop posting. Re-saving the SAME destination keeps the standing
+    // thread it already opened, so an unrelated edit doesn't start a second one.
+    let nextPostTo = patch.postTo === undefined ? a.postTo : patch.postTo ?? undefined;
+    if (nextPostTo && a.postTo && patch.postTo && nextPostTo.thread === 'own' && a.postTo.thread === 'own' && nextPostTo.kind === a.postTo.kind && nextPostTo.member === a.postTo.member && nextPostTo.room === a.postTo.room) {
+      nextPostTo = { ...nextPostTo, threadSeq: a.postTo.threadSeq };
+    }
     this.db
-      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, filter = ?, task = ?, enabled = ?, run_as = ?, signing_secret = ?, thread_path = ? WHERE id = ?')
+      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, filter = ?, task = ?, enabled = ?, run_as = ?, signing_secret = ?, thread_path = ?, post_to = ? WHERE id = ?')
       .run(
         patch.name?.trim() || a.name,
         patch.mode ?? a.mode,
@@ -748,6 +767,7 @@ export class Automations {
         nextRunAs,
         nextSigning,
         nextThreadPath,
+        nextPostTo ? JSON.stringify(nextPostTo) : null,
         id,
       );
     return this.get(id);
@@ -792,7 +812,18 @@ export class Automations {
       const dry = this.runtimePoolExhausted(a.agentId);
       if (dry) return { ok: false, reason: `all ${dry.runtime} accounts limited${dry.until ? ` until ${new Date(dry.until).toISOString()}` : ''}` };
     }
-    const task = opts.extra ? `${a.task}\n\n${opts.extra}` : a.task;
+    let task = opts.extra ? `${a.task}\n\n${opts.extra}` : a.task;
+    // "Post results to": resolve the conversation now (opening the automation's standing thread on its
+    // first run) and TELL the run, so the prompt doesn't have to carry a destination by hand.
+    let dest: ReturnType<DirectMessages['openDest']> = null;
+    if (a.postTo) {
+      try { dest = new DirectMessages(this.os, this.tm).openDest(a.agentId, a.postTo, a.name); } catch { dest = null; }
+      if (!dest) this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: `automation:${a.id}`, type: 'automation.post.unresolved', data: { automation: a.id, name: a.name, postTo: a.postTo } });
+      else {
+        if (dest.threadSeq !== a.postTo.threadSeq) this.db.prepare('UPDATE automations SET post_to = ? WHERE id = ?').run(JSON.stringify({ ...a.postTo, threadSeq: dest.threadSeq }), a.id);
+        task += `\n\n[Where the results go] This run reports to ${dest.where} in Messages. Call \`message_send\` with only \`text\` to post there yourself — do that for the full write-up, once, when you have it. If you post nothing, the summary you give \`report\` is posted there for you.`;
+      }
+    }
     // Provenance is ALWAYS the automation (`spawned_by`); the run-as member (when a trigger resolved
     // one, e.g. the Slack user who @-mentioned the bot) is passed separately so the session binds their
     // connectors/Composio + lands in their inbox, while the audit/label still show what fired it.
@@ -805,6 +836,7 @@ export class Automations {
     // transcript — the launcher's UNATTENDED lane restores it and injects `task` as the next turn.
     const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, mode === 'headless', opts.slack, opts.discord, opts.runAs, opts.resumeClaudeId, false, undefined, opts.clickup, opts.telegram);
     this.db.prepare('UPDATE automations SET last_fired_at = ?, last_session_id = ? WHERE id = ?').run(Date.now(), s.id, a.id);
+    if (dest) this.tm.setChatDest(s.id, { room: dest.room, thread: dest.thread });
     this.os.audit.append({
       ts: Date.now(),
       runId: s.id,

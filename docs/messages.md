@@ -80,7 +80,7 @@ Everything below works the same in a DM and in a room.
 | **Stop** | Interrupts the turn in flight — Escape in the pane; the session stays. No hook fires for an interrupt, so `interruptTurn` clears the working stamp itself. | `TerminalManager.interruptTurn` |
 | **Background runs** | `/bg <request>` starts a separate UNATTENDED session (hidden, run-as the sender) tracked in `chat_jobs`; when it ends its last prose is posted back tagged `bg`. The conversation's own session is untouched. | `command`, `sweepJobs` |
 | **Reminders** | `/remind <30m\|2h\|1d> <what>` — at the due time a marker is posted AND the text is handed to the agent as the person who set it. | `sweepJobs` |
-| **Agents write first** | The `message_send` agent tool posts into the agent's DM with a person (default: whoever the run acts for) or a room it is in. Posting runs nothing; refused from the session that is already answering that conversation (its reply posts itself). ≤30 per session. Audited `chat.message.sent`. | `agentPost`, `POST /api/agent/message` |
+| **Agents write first** | The `message_send` agent tool posts into the agent's DM with a person (default: whoever the run acts for) or a room it is in. `thread` (a message number — a reply's number resolves to its thread) posts under that message, and the result names the number just posted so a later update can go under it. Posting runs nothing; refused from the session that is already answering that conversation (its reply posts itself). ≤30 per session. Audited `chat.message.sent`. | `agentPost`, `POST /api/agent/message` |
 | **Away-pings** | An agent message in a DM pings the person on Slack/Discord — skipped while they have the conversation open, and not repeated until they've read it (`chat_rooms.pinged_at`). DMs only. Audited `chat.pinged`. | `ping`, `setChatPinger` |
 | **Hand-off cards** | Work the conversation's agent delegated (tasks, `ask_agent`) shows as a status card — read from the existing session chain, nothing new stored. | `handoffs` |
 | **Agent → agent** | In a room, an agent's reply that `@mentions` another agent is passed on — as the same person, at most `MAX_AGENT_HOPS` (2) times before a human has to step in (`chat_participants.hop`/`acting`). | `relay` |
@@ -158,6 +158,30 @@ thread opens in a panel beside the conversation. Works the same in DMs and rooms
 it reads the tag of the user turn the reply answers (an untagged turn, e.g. a harness wake-up, inherits
 the last one). No queue, no per-lane "current thread" state to desync when a turn is interrupted.
 In a room, a reply in a thread with no `@mention` goes to the one agent already talking there.
+
+## Automations that report into a conversation
+
+An automation can carry a destination — **Post results to** on its form, `postTo` on the API
+(`{ kind: 'dm', member } | { kind: 'room', room }`, plus `thread: 'own' | <message number>`). It is
+checked at save time by `checkDest`, which also puts the agent in a room it is pointed at.
+
+When the automation fires, `openDest` resolves the conversation and three things follow:
+
+- the run's task gains a `[Where the results go]` line, so the prompt never has to name a destination;
+- the session is bound to it (`term_sessions.chat_dest`), which makes a bare `message_send({ text })`
+  land there. This is NOT `dm_room`: the run stays an ordinary, visible run;
+- when the run ends, `runResult` posts its `report` summary there (tag `automation`) — unless the agent
+  already posted there itself, in which case its own write-up stands alone. A failure is labelled and
+  linked to the run; a crash or a run that ends with no report always says so.
+
+`thread: 'own'` gives the automation ONE standing thread: the first run posts a root naming the
+automation, its number is kept on the automation (`threadSeq`), and every later run replies under it.
+A root that has gone is reopened; re-saving the same destination keeps the thread. A destination that
+no longer resolves (room deleted, member removed) is audited `automation.post.unresolved` and the run
+goes ahead without one.
+
+⚠ A reply to one of these posts goes to the agent's ordinary session for that conversation, not back
+to the automation run — that run has usually ended. It sees the post only as conversation history.
 
 ## Notifications
 
