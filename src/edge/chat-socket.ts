@@ -29,12 +29,19 @@ const IDLE_EVERY = 3;
 const LIST_EVERY = 5;
 const MAX_FRAME = 64 * 1024;
 const MAX_LIFE_MS = 12 * 3_600_000;
+/** Ping every ~27s: it keeps a proxy's idle timeout (nginx `proxy_read_timeout`, 60s by default) from
+ *  cutting a quiet socket, and a peer that stops answering — a slept laptop, a dropped network — is
+ *  closed after SILENT_MS instead of being pumped for the rest of MAX_LIFE_MS. */
+const PING_EVERY = 30;
+const SILENT_MS = 90_000;
+/** Backstop: one person's tabs never hold more than this many sockets; the oldest goes first. */
+const MAX_PER_MEMBER = 12;
 
 interface Conn {
   socket: Duplex; os: AgentOS; tm: TerminalManager; memberId: string;
   watch: string; thread: number; visible: boolean; busy: boolean; dirty: boolean;
   lastThread: string; lastList: string; tick: number; openedAt: number;
-  timer: ReturnType<typeof setInterval>; buf: Buffer; closed: boolean;
+  timer: ReturnType<typeof setInterval>; buf: Buffer; closed: boolean; lastSeen: number;
 }
 const conns = new Set<Conn>();
 
@@ -72,6 +79,8 @@ function pump(c: Conn, force = false): void {
   c.tick++;
   const me: Member | undefined = c.os.team.getMember(c.memberId);
   if (!me || me.status !== 'active' || Date.now() - c.openedAt > MAX_LIFE_MS) return close(c);
+  if (Date.now() - c.lastSeen > SILENT_MS) return close(c);
+  if (c.tick % PING_EVERY === 0) { try { c.socket.write(Buffer.from([0x89, 0])); } catch { return close(c); } }
   try {
     const dms = new DirectMessages(c.os, c.tm);
     if (c.watch && (force || c.busy || c.tick % IDLE_EVERY === 0)) {
@@ -96,6 +105,7 @@ function pump(c: Conn, force = false): void {
 
 /** Client → server frames: `{watch, visible}`. Everything else (pings, close) is protocol housekeeping. */
 function onData(c: Conn, chunk: Buffer): void {
+  c.lastSeen = Date.now(); // any frame counts, a pong included
   c.buf = c.buf.length ? Buffer.concat([c.buf, chunk]) : chunk;
   for (;;) {
     if (c.buf.length < 2) return;
@@ -146,11 +156,18 @@ export function chatUpgrade(os: AgentOS, tm: TerminalManager, me: Member | undef
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
   const c: Conn = {
     socket, os, tm, memberId: me.id, watch: '', thread: 0, visible: true, busy: false, dirty: false, lastThread: '', lastList: '', tick: 0,
-    openedAt: Date.now(), buf: Buffer.alloc(0), closed: false, timer: setInterval(() => pump(c), TICK_MS),
+    openedAt: Date.now(), buf: Buffer.alloc(0), closed: false, timer: setInterval(() => pump(c), TICK_MS), lastSeen: Date.now(),
   };
   c.timer.unref?.();
+  const mine = [...conns].filter((x) => x.os === os && x.memberId === me.id);
+  for (const old of mine.slice(0, Math.max(0, mine.length - MAX_PER_MEMBER + 1))) close(old);
   conns.add(c);
   socket.on('data', (d: Buffer) => onData(c, d));
+  // ⚠ `http.Server` sockets are allowHalfOpen, and an upgraded one has lost the parser's 'end'
+  // handler — so a peer that closes with a bare FIN (a proxy timing out, a killed tab: no close
+  // frame) fires 'end' and NEVER 'close'. Without this, every such disconnect leaked a connection
+  // that kept pumping every TICK_MS; 359 of them saturated instawp's event loop on 2026-11-25.
+  socket.on('end', () => close(c));
   socket.on('close', () => close(c));
   socket.on('error', () => close(c));
   send(c, { t: 'hello' });

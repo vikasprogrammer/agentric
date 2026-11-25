@@ -8,6 +8,10 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.480.4] - 2026-11-25
+### Fixed
+- Messages push socket leaked a connection every time a peer closed without a WebSocket close frame (a proxy's idle timeout, a killed tab): Node's upgraded sockets are half-open, so `'end'` fired and `'close'` never did, and each leaked connection kept pumping every 900ms. On instawp 359 of them saturated the event loop until `/health` and the console stopped answering. The socket now closes on `'end'`, pings every ~27s (so nginx's 60s `proxy_read_timeout` no longer cuts quiet sockets, and a silent peer is dropped after 90s), and one member holds at most 12 sockets. Pinned in `scripts/direct-messages-test.cjs`.
+
 ## [0.480.3] - 2026-11-24
 ### Changed
 - Messages: the opening line of a conversation no longer repeats the agent's full description (it is in the header).
