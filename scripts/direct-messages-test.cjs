@@ -397,6 +397,82 @@ console.log('\n\x1b[1m12) agents write first (message_send) + away-pings\x1b[0m'
   assert(dms.agentPost(own, AGENT, { text: 'hi' }).ok === false, 'a session cannot message the conversation it is already answering');
 }
 
+console.log('\n\x1b[1m12b) message_send into a thread + an automation that posts its results\x1b[0m');
+{
+  const { Automations } = require(path.join(ROOT, 'dist/edge/automations.js'));
+  const autos = new Automations(aos, tm);
+  const A = aos.team.getMember(alice.id);
+  const id = 'ses_cron_1';
+  const dm = aos.chatRooms.dm(alice.id, 'helper');
+  // thread target
+  const first = dms.agentPost(id, 'helper', { text: 'Deploy started.' });
+  assert(first.ok && first.seq > 0 && !first.thread, 'a post reports its message number');
+  const under = dms.agentPost(id, 'helper', { text: 'Deploy finished.', thread: first.seq });
+  assert(under.ok && under.thread === first.seq, '`thread` replies under that message');
+  assert(dms.thread(A, 'helper', { thread: first.seq }).threadView.replies.some((m) => m.body === 'Deploy finished.'), 'and it shows in the thread, not the main stream');
+  assert(!dms.thread(A, 'helper').messages.some((m) => m.body === 'Deploy finished.'), 'the main stream does not repeat it');
+  const again = dms.agentPost(id, 'helper', { text: 'And verified.', thread: under.seq });
+  assert(again.ok && again.thread === first.seq, 'naming a REPLY resolves to the thread it is in');
+  assert(dms.agentPost(id, 'helper', { text: 'x', thread: 999999 }).ok === false, 'a message that is not there is refused');
+
+  // automation → a person's DM, main stream
+  const bad = dms.checkDest('helper', { kind: 'room', room: 'room_nope' }, A);
+  assert(bad.ok === false, 'an unknown room is refused at save time');
+  const d1 = dms.checkDest('helper', { kind: 'dm', member: alice.id }, A);
+  const a1 = autos.add({ agentId: 'helper', name: 'Nightly check', type: 'cron', schedule: '0 2 * * *', mode: 'headless', task: 'Check the fleet.', postTo: d1.postTo, createdBy: alice.id });
+  assert(autos.get(a1.id).postTo.kind === 'dm' && dms.destLabel(a1.postTo) === 'DM · Alice', 'the destination is saved and named');
+  const f1 = autos.fire(autos.get(a1.id), { guard: false });
+  await settle();
+  assert(f1.ok && /\[Where the results go\].*direct messages with Alice/.test(row(f1.sessionId).task), 'the run is TOLD where its results go');
+  assert(tm.chatDest(f1.sessionId).room === dm.id && !row(f1.sessionId).dm_room, 'the run is bound to the conversation without becoming its hidden session');
+  const before = dms.thread(A, 'helper').messages.length;
+  tm.setRunResultSink((s, ag, kind, outcome, summary) => dms.runResult(s, ag, kind, outcome, summary));
+  tm.report(f1.sessionId, 'helper', 'success', 'Fleet is healthy: 4 of 4 boxes answered.');
+  const after = dms.thread(A, 'helper').messages;
+  assert(after.length === before + 1 && after[after.length - 1].body === 'Fleet is healthy: 4 of 4 boxes answered.' && after[after.length - 1].tag === 'automation', 'a run that posts nothing gets its report summary posted for it');
+
+  // …and when the agent writes its own, the summary is not posted twice
+  const f2 = autos.fire(autos.get(a1.id), { guard: false });
+  await settle();
+  const own = dms.agentPost(f2.sessionId, 'helper', { text: 'Full write-up: box 3 is slow.' });
+  assert(own.ok && own.where === 'Alice' && tm.chatDest(f2.sessionId).sent === 1, 'a bare message_send lands in the destination');
+  const n2 = dms.thread(A, 'helper').messages.length;
+  tm.report(f2.sessionId, 'helper', 'success', 'Posted the write-up.');
+  assert(dms.thread(A, 'helper').messages.length === n2, 'so its summary is not posted on top');
+
+  // a failure says so, with a way in
+  const f3 = autos.fire(autos.get(a1.id), { guard: false });
+  await settle();
+  tm.report(f3.sessionId, 'helper', 'failure', 'Could not reach box 2.');
+  const last = dms.thread(A, 'helper').messages.slice(-1)[0];
+  assert(/^\*\*Failure\*\* — Could not reach box 2\./.test(last.body) && /\[Open the run\]\(/.test(last.body), 'a failed run is labelled and linked');
+
+  // automation → a room, in its own standing thread
+  const room = dms.createRoom(A, { name: 'ops-reports', members: [bob.id], agents: [AGENT] });
+  const rid = room.id;
+  const d2 = dms.checkDest('helper', { kind: 'room', room: rid, thread: 'own' }, A);
+  assert(d2.ok && aos.chatRooms.participants(rid).some((p) => p.kind === 'agent' && p.id === 'helper'), 'pointing an automation at a room adds its agent to the room');
+  const a2 = autos.add({ agentId: 'helper', name: 'Hourly sweep', type: 'cron', schedule: '0 * * * *', mode: 'headless', task: 'Sweep.', postTo: d2.postTo, createdBy: alice.id });
+  const g1 = autos.fire(autos.get(a2.id), { guard: false });
+  await settle();
+  const rootSeq = autos.get(a2.id).postTo.threadSeq;
+  assert(rootSeq > 0 && tm.chatDest(g1.sessionId).thread === rootSeq && /a thread in #ops-reports/.test(row(g1.sessionId).task), 'the first run opens the automation\'s thread');
+  tm.report(g1.sessionId, 'helper', 'success', 'Sweep 1: nothing to do.');
+  const g2 = autos.fire(autos.get(a2.id), { guard: false });
+  await settle();
+  tm.report(g2.sessionId, 'helper', 'success', 'Sweep 2: one stale lock cleared.');
+  assert(autos.get(a2.id).postTo.threadSeq === rootSeq, 'the second run reuses it');
+  const tv = dms.roomThread(A, rid, { thread: rootSeq }).threadView;
+  assert(/Hourly sweep/.test(tv.root.body) && tv.replies.map((m) => m.body).join('|') === 'Sweep 1: nothing to do.|Sweep 2: one stale lock cleared.', 'and both runs sit under one root');
+  const kept = autos.update(a2.id, { name: 'Hourly sweep v2', postTo: dms.checkDest('helper', { kind: 'room', room: rid, thread: 'own' }, A).postTo });
+  assert(kept.postTo.threadSeq === rootSeq, 're-saving the same destination keeps its thread');
+  assert(autos.update(a2.id, { postTo: null }).postTo === undefined, 'and it can be switched off');
+  const g3 = autos.fire(autos.get(a2.id), { guard: false });
+  await settle();
+  assert(!tm.chatDest(g3.sessionId) && !/Where the results go/.test(row(g3.sessionId).task), 'after which a run is an ordinary run again');
+  tm.setRunResultSink(() => {});
+}
+
 console.log('\n\x1b[1m13) agent → agent in a room, with a hop limit\x1b[0m');
 {
   const A = aos.team.getMember(alice.id);

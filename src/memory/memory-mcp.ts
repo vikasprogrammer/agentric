@@ -1125,7 +1125,10 @@ const TOOLS = [
       'YOU have something to tell someone and they did not just ask: a scheduled report, the result of a long ' +
       'job, a follow-up you promised. With no arguments beyond `text` it goes to the person you are working ' +
       'for, in their direct-message conversation with you. `to` (a teammate\'s email or name) messages someone ' +
-      'else; `room` (a room name or id you are a member of) posts there instead. They are pinged on ' +
+      'else; `room` (a room name or id you are a member of) posts there instead. `thread` (a message ' +
+      'number in that conversation) replies under that message instead of in the main stream — the reply ' +
+      'tells you the number of what you just posted, so a later update can go under your own message. ' +
+      'When this run was given a results destination, `text` alone posts THERE. They are pinged on ' +
       'Slack/Discord if they are away. Do NOT use it to answer inside a chat conversation you are already ' +
       'in — there your reply is posted automatically when your turn ends. Posting starts no work and ' +
       'grants nothing; keep it short and lead with the point. To offer one-tap replies, end `text` with a ' +
@@ -1137,6 +1140,7 @@ const TOOLS = [
         text: { type: 'string', description: 'The message (markdown). Lead with the point.' },
         to: { type: 'string', description: 'A teammate\'s email or name. Omit to message the person this run acts for.' },
         room: { type: 'string', description: 'A room name or id you belong to — posts there instead of a direct message.' },
+        thread: { type: 'number', description: 'Message number to reply under (a thread). Omit to post in the main conversation.' },
       },
       required: ['text'],
     },
@@ -2935,10 +2939,11 @@ async function messageSend(args: Record<string, unknown>): Promise<string> {
   const res = await fetch(AOS_URL + '/api/agent/message', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, text: String(args.text ?? ''), to: args.to ? String(args.to) : undefined, room: args.room ? String(args.room) : undefined }),
+    body: JSON.stringify({ session: SESSION, text: String(args.text ?? ''), to: args.to ? String(args.to) : undefined, room: args.room ? String(args.room) : undefined, thread: Number(args.thread) > 0 ? Math.floor(Number(args.thread)) : undefined }),
   });
-  const d = (await res.json()) as { ok?: boolean; where?: string; error?: string };
-  return d.ok ? `Sent to ${d.where}.` : `Could not send: ${d.error ?? 'unknown error'}`;
+  const d = (await res.json()) as { ok?: boolean; where?: string; seq?: number; thread?: number; error?: string };
+  if (!d.ok) return `Could not send: ${d.error ?? 'unknown error'}`;
+  return d.thread ? `Sent to ${d.where}, in the thread under message ${d.thread}.` : `Sent to ${d.where} as message ${d.seq} (pass thread: ${d.seq} to add a follow-up under it).`;
 }
 
 async function stop(args: Record<string, unknown>): Promise<string> {

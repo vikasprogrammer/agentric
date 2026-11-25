@@ -542,7 +542,8 @@ Key modules:
   can read false mid-turn, so folding also waits for the transcript to go quiet (`SETTLE_MS`). Rooms
   (`kind:'room'`, `chat_participants`) hold several people + agents; an agent runs only when `@mentioned`,
   as the sender. The same engine carries the comms primitives — inline cards, Stop (`interruptTurn`),
-  `/bg` runs + reminders (`chat_jobs`), the `message_send` agent tool, away-pings, agent→agent relay
+  `/bg` runs + reminders (`chat_jobs`), the `message_send` agent tool (DM, room or a thread in one; an automation's **Post results to** binds a
+  run to a conversation via `term_sessions.chat_dest` and posts its `report` summary there), away-pings, agent→agent relay
   capped at `MAX_AGENT_HOPS`. ⚠ Two things keep it alive with nobody looking: the scheduler tick calls
   `DirectMessages.sweep()`, and the page is PUSHED over `/api/chat/ws` (`src/edge/chat-socket.ts`,
   zero-dep; REST stays the fallback). See `docs/messages.md`; pinned by `scripts/direct-messages-test.cjs`.

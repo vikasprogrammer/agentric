@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetric, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode, type StandingSuggestion, type WaitingOn } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type PostTo, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskPrSummary, type TaskWorkers, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalMetric, type GoalMetricStatus, type GoalReading, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type PolicyDrift, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type OutputStylesResp, type OutputStyleAdoption, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimePresence, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type UpdateWatchConfig, type UpdateWatchMode, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending, type SessionProgress, type WhatsNewEntry, type DriftMode, type StandingSuggestion, type WaitingOn } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState, type Bet, type BetAsset, type BetState, type BetVerdict } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -14480,12 +14480,22 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
   const [editSigned, setEditSigned] = useState(false)
   const [task, setTask] = useState('')
   const [runAs, setRunAs] = useState('') // member id the fired session acts as ('' = company identity)
+  // Where results post in Messages: '' = nowhere, `dm:<member id>`, or `room:<room id>`.
+  const [postTo, setPostTo] = useState('')
+  const [postThread, setPostThread] = useState(false)
+  const [postRooms, setPostRooms] = useState<{ id: string; label: string }[]>([])
   const [members, setMembers] = useState<Member[]>([])
 
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const load = () => api.automations().then((r) => setItems(r.automations ?? []))
   useEffect(() => { load() }, [])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
+  useEffect(() => { api.dmList().then((r) => setPostRooms((r.rooms ?? []).map((x) => ({ id: x.id, label: x.name ? `#${x.name}` : `Group · ${x.members.map((p) => p.name).join(', ')}` })))).catch(() => {}) }, [])
+  const postToReq = (): PostTo | null => {
+    const [kind, id] = [postTo.slice(0, postTo.indexOf(':')), postTo.slice(postTo.indexOf(':') + 1)]
+    if (kind !== 'dm' && kind !== 'room') return null
+    return kind === 'dm' ? { kind, member: id, thread: postThread ? 'own' : undefined } : { kind, room: id, thread: postThread ? 'own' : undefined }
+  }
   useEffect(() => { if (!agentId && agents[0]) setAgentId(agents[0].id) }, [agents, agentId])
   // Arriving pre-filtered to one agent → default a new automation to that agent (while not editing).
   useEffect(() => { if (agentFilter && agents.some((a) => a.id === agentFilter) && !editId) setAgentId(agentFilter) }, [agentFilter]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -14493,7 +14503,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
   // form into view when it opens (or when switching which automation is being edited) so it isn't missed.
   useEffect(() => { if (showForm) formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, [showForm, editId])
 
-  const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setRunAs(''); setThreadPath(''); setSigningSecret(''); setEditSigned(false); setEditId(null) }
+  const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setRunAs(''); setPostTo(''); setPostThread(false); setThreadPath(''); setSigningSecret(''); setEditSigned(false); setEditId(null) }
   const startCreate = () => { resetForm(); setShowForm(true); setHint('') }
   const startEdit = (a: Automation) => {
     if (a.type === 'once') return // one-shot deferred runs aren't editable from the console
@@ -14504,6 +14514,10 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
     setMode(a.mode)
     setFilter(a.filter ?? '')
     setRunAs(a.runAs ?? '')
+    setPostTo(a.postTo ? (a.postTo.kind === 'dm' ? `dm:${a.postTo.member}` : `room:${a.postTo.room}`) : '')
+    setPostThread(!!a.postTo?.thread)
+    // A room the editor isn't in still has to be selectable, or saving would silently drop it.
+    if (a.postTo?.kind === 'room' && a.postTo.room) { const id = a.postTo.room; setPostRooms((rs) => (rs.some((r) => r.id === id) ? rs : [...rs, { id, label: (a.postToLabel ?? 'Room').replace(/ · thread$/, '') }])) }
     setThreadPath(a.threadPath ?? '')
     // The signing secret is write-only — the server never sends it back, only whether one is set. So the
     // field starts empty and blank means "leave it alone"; replacing or clearing it is deliberate.
@@ -14531,10 +14545,10 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
     setHint('')
     if (editId) {
       // agentId + type are immutable on edit; everything else is patchable. filter only for event triggers.
-      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs, ...webhookPatch() })
+      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs, postTo: postToReq(), ...webhookPatch() })
       if (r.error) return setHint('⚠ ' + r.error)
     } else {
-      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs: runAs || undefined, ...webhookPatch() })
+      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs: runAs || undefined, postTo: postToReq(), ...webhookPatch() })
       if (r.error) return setHint('⚠ ' + r.error)
     }
     closeForm()
@@ -14759,7 +14773,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                   </Field>
                 )}
                 <Field label="Run as" help="The fired session acts as this member, so THEIR personal connectors (e.g. their own Composio Gmail / ClickUp) are injected. This is the only way a scheduled/unattended run reaches a person's personal apps. Company identity (the default) = the shared company Composio only — a personal Gmail won't be available.">
-                  <Select value={runAs || '__company'} onValueChange={(v) => setRunAs(v && v !== '__company' ? v : '')}>
+                  <Select items={{ __company: 'Company identity (no member)', ...Object.fromEntries(members.map((m) => [m.id, m.name || m.email])) }} value={runAs || '__company'} onValueChange={(v) => setRunAs(v && v !== '__company' ? v : '')}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__company">Company identity (no member)</SelectItem>
@@ -14768,6 +14782,22 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                       ))}
                     </SelectContent>
                   </Select>
+                </Field>
+                <Field label="Post results to" help="Each run reports into this Messages conversation: the agent is told where, and if it posts nothing itself its final summary is posted for it. Picking a room adds the agent to that room. The Inbox card is unaffected.">
+                  <Select items={{ __none: 'Inbox only', ...Object.fromEntries(postRooms.map((r) => [`room:${r.id}`, r.label])), ...Object.fromEntries(members.map((m) => [`dm:${m.id}`, `DM · ${m.name || m.email}`])) }} value={postTo || '__none'} onValueChange={(v) => setPostTo(v && v !== '__none' ? v : '')}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none">Inbox only</SelectItem>
+                      {postRooms.map((r) => <SelectItem key={r.id} value={`room:${r.id}`}>{r.label}</SelectItem>)}
+                      {members.filter((m) => m.status === 'active').map((m) => <SelectItem key={m.id} value={`dm:${m.id}`}>DM · {m.name || m.email}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  {postTo && (
+                    <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                      <input type="checkbox" checked={postThread} onChange={(e) => setPostThread(e.target.checked)} />
+                      Keep every run in one thread
+                    </label>
+                  )}
                 </Field>
               </div>
               <Field label="Task">
@@ -14820,6 +14850,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                     <span>{a.mode}</span>
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+                    {a.postToLabel && <><span className="inline-flex items-center gap-1" title="Each run's results post to this Messages conversation"><MessagesSquare className="h-3 w-3" />{a.postToLabel}</span><span className="text-muted-foreground/40">·</span></>}
                     {a.nextRunAt ? (
                       <span className="inline-flex items-center gap-1 text-emerald-600" title={serverTz ? `${fmtInServerTz(a.nextRunAt, serverTz)} (${serverTz})` : new Date(a.nextRunAt).toLocaleString()}>
                         <Clock className="h-3 w-3" />next in {timeUntil(a.nextRunAt)}

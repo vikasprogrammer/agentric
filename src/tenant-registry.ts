@@ -9,7 +9,7 @@
  * (config `tenant`) keeps the legacy un-nested home, so existing installs need no migration; every
  * other tenant nests under `<home>/tenants/<slug>/`.
  */
-import { setChatPinger } from './edge/direct-messages';
+import { DirectMessages, setChatPinger } from './edge/direct-messages';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
@@ -301,6 +301,8 @@ export class TenantRegistry {
     tm.setQuestionNotifier((notice) => { void notifyQuestionAsked(os, tm, slack, discord, consoleOrigin, notice); });
     // Messages away-ping: an agent's DM to someone who isn't looking reaches them on Slack/Discord.
     setChatPinger(os, (member, text) => { void deliverDM(slack, discord, os, [member], text).catch(() => 0); });
+    // A run with a Messages destination (an automation's "Post results to") reports how it ended there.
+    tm.setRunResultSink((sessionId, agent, kind, outcome, summary) => { new DirectMessages(os, tm).runResult(sessionId, agent, kind, outcome, summary); });
     // Chat loop: mirror completions/questions/approvals back to the Slack/Discord thread a chat-triggered
     // run is bound to. `text` is a per-platform builder so an embedded deep-link uses each platform's
     // masked-link syntax. Both replies no-op when the session has no bound thread (non-chat runs).

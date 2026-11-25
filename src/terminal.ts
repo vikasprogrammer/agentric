@@ -1830,6 +1830,7 @@ export class TerminalManager {
       // run that DIED would otherwise leave its Slack/Discord thread hanging forever. No-op for non-chat runs.
       const inboxLink = consolePage(this.publicOrigin, 'inbox');
       try { this.chatMirror?.(r.id, (p) => `💥 ${r.agent} crashed — the session ended unexpectedly.\n${chatLink(p, inboxLink, 'Open in Agentric')}`); } catch { /* advisory */ }
+      try { this.runResultSink?.(r.id, r.agent, 'crashed', 'crashed', ''); } catch { /* advisory */ }
     }
   }
 
@@ -3083,6 +3084,27 @@ export class TerminalManager {
   markDmSession(sessionId: string, roomId: string): void {
     this.db.prepare('UPDATE term_sessions SET dm_room = ? WHERE id = ?').run(roomId, sessionId);
   }
+
+  /**
+   * Where a run's results post in Messages (an automation's "Post results to"). Unlike {@link markDmSession}
+   * this does NOT hide the session or make it the conversation's own — the run stays an ordinary run that
+   * happens to report into a room. `sent` counts what the agent posted there itself.
+   */
+  setChatDest(sessionId: string, dest: { room: string; thread?: number }): void {
+    this.db.prepare('UPDATE term_sessions SET chat_dest = ? WHERE id = ?').run(JSON.stringify({ room: dest.room, thread: dest.thread, sent: 0 }), sessionId);
+  }
+  chatDest(sessionId: string): { room: string; thread?: number; sent: number } | undefined {
+    const r = this.db.prepare('SELECT chat_dest FROM term_sessions WHERE id = ?').get<{ chat_dest: string | null }>(sessionId);
+    if (!r?.chat_dest) return undefined;
+    try { const d = JSON.parse(r.chat_dest); return d && typeof d.room === 'string' ? { room: d.room, thread: typeof d.thread === 'number' ? d.thread : undefined, sent: Number(d.sent) || 0 } : undefined; } catch { return undefined; }
+  }
+  noteChatDestSent(sessionId: string): void {
+    const d = this.chatDest(sessionId);
+    if (d) this.db.prepare('UPDATE term_sessions SET chat_dest = ? WHERE id = ?').run(JSON.stringify({ ...d, sent: d.sent + 1 }), sessionId);
+  }
+  /** How a run ended, for whoever posts it into Messages (wired in tenant-registry; no-op when unset). */
+  private runResultSink?: (sessionId: string, agent: string, kind: 'report' | 'crashed' | 'ended', outcome: string, summary: string) => void;
+  setRunResultSink(fn: (sessionId: string, agent: string, kind: 'report' | 'crashed' | 'ended', outcome: string, summary: string) => void): void { this.runResultSink = fn; }
 
   /**
    * The cheap liveness read behind a console DM room (src/edge/direct-messages.ts): is the session there,
@@ -8595,6 +8617,7 @@ export class TerminalManager {
     const mark = outcome === 'success' ? '✅' : outcome === 'failure' ? '❌' : '☑️';
     const inboxLink = consolePage(this.publicOrigin, 'inbox');
     try { this.chatMirror?.(sessionId, (p) => `${mark} ${agent} finished (${outcome}).\n${summary || '(no summary)'}\n${chatLink(p, inboxLink, 'Open in Agentric')}`); } catch { /* advisory */ }
+    try { this.runResultSink?.(sessionId, agent, 'report', outcome, summary); } catch { /* advisory */ }
     // Rename the session from the agent's own summary — an AI-written label that reflects what the run
     // actually did, replacing the provisional title (the task text / automation name set at spawn).
     // Claude Code's internal /resume summaries aren't available for governed sessions (headless `-p`
@@ -10233,6 +10256,7 @@ export class TerminalManager {
       // forever. No-op for non-chat runs (no bound thread).
       const inboxLink = consolePage(this.publicOrigin, 'inbox');
       try { this.chatMirror?.(sessionId, (p) => `☑️ ${s.agent} finished — the session ended.\n${chatLink(p, inboxLink, 'Open in Agentric')}`); } catch { /* advisory */ }
+      try { this.runResultSink?.(sessionId, s.agent, 'ended', 'ended', ''); } catch { /* advisory */ }
     }
     this.audit(sessionId, s.agent, 'session.ended', {});
     this.reliability.forget(sessionId); // drop the loop-detector streak state for this run

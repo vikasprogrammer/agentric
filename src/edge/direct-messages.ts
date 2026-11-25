@@ -233,6 +233,10 @@ const handoffCache = new Map<string, { at: number; v: DmHandoff[] }>();
 const proactiveSent = new Map<string, number>();
 const MAX_PROACTIVE_PER_SESSION = 30;
 /** An agent may pass work to another agent this many times before a person has to step in. */
+/** Where an automation's runs report in Messages: a person's DM with the agent, or a room — in the main
+ *  stream, under one given message, or (`own`) in a standing thread the automation keeps to itself. */
+export interface PostTo { kind: 'dm' | 'room'; member?: string; room?: string; thread?: 'own' | number; threadSeq?: number }
+
 export const MAX_AGENT_HOPS = 2;
 const MAX_FILES = 6;
 
@@ -1232,18 +1236,25 @@ export class DirectMessages {
    * is working for — or into a room it belongs to. This is how a cron report, a finished long job or a
    * scheduled follow-up reaches someone in Messages. Posting runs nothing and grants nothing.
    */
-  agentPost(sessionId: string, agent: string, input: { to?: string; room?: string; text?: string }): { ok: true; where: string } | Fail {
+  agentPost(sessionId: string, agent: string, input: { to?: string; room?: string; thread?: number; text?: string }): { ok: true; where: string; seq: number; thread?: number } | Fail {
     const text = String(input.text ?? '').trim();
     if (!text) return { ok: false, status: 400, error: 'text is required' };
     if (text.length > 8000) return { ok: false, status: 400, error: 'message too long (max 8000 characters)' };
     const sent = proactiveSent.get(sessionId) ?? 0;
     if (sent >= MAX_PROACTIVE_PER_SESSION) return { ok: false, status: 429, error: `this session has already sent ${MAX_PROACTIVE_PER_SESSION} messages — finish up instead` };
-    let room: ChatRoom | undefined, where: string;
-    if (input.room) {
+    // A run that was GIVEN a destination (an automation's "Post results to") posts there by default.
+    const dest = !input.room && !input.to ? this.tm.chatDest(sessionId) : undefined;
+    const home = dest ? this.rooms.get(dest.room) : undefined;
+    let room: ChatRoom | undefined, where: string, thread = input.thread;
+    if (home) {
+      room = home;
+      where = this.destName(home);
+      thread = input.thread ?? dest!.thread;
+    } else if (input.room) {
       const want = input.room.trim().replace(/^#/, '').toLowerCase();
       room = this.rooms.allRooms().find((r) => (r.id === input.room || (r.name ?? '').toLowerCase() === want) && this.rooms.participants(r.id).some((p) => p.kind === 'agent' && p.id === agent));
       if (!room) return { ok: false, status: 404, error: `no room "${input.room}" that you are in` };
-      where = room.name ? `#${room.name}` : 'the group';
+      where = this.destName(room);
       if (this.rooms.participants(room.id).some((p) => p.kind === 'agent' && p.id === agent && p.sessionId === sessionId)) {
         return { ok: false, status: 409, error: 'you are already answering in that room — your reply is posted there when your turn ends' };
       }
@@ -1255,10 +1266,107 @@ export class DirectMessages {
       where = m.name || m.email;
       if (room.sessionId === sessionId) return { ok: false, status: 409, error: 'you are already in that conversation — your reply is posted there when your turn ends' };
     }
+    // `thread` names any message in the thread: a reply's number resolves to the message it hangs off.
+    let root: number | undefined;
+    if (thread) {
+      const at = this.rooms.message(room.id, thread);
+      root = at?.threadId ?? thread;
+      if (!this.threadRoot(room.id, root)) return { ok: false, status: 404, error: `no message ${thread} to reply under in ${where}` };
+    }
     proactiveSent.set(sessionId, sent + 1);
-    this.postAgent(room, agent, text, undefined, Date.now(), { tag: 'proactive' });
-    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: `agent:${agent}`, type: 'chat.message.sent', data: { room: room.id, kind: room.kind, chars: text.length } });
-    return { ok: true, where };
+    const msg = this.postAgent(room, agent, text, undefined, Date.now(), { tag: 'proactive', thread: root });
+    if (home) this.tm.noteChatDestSent(sessionId);
+    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: `agent:${agent}`, type: 'chat.message.sent', data: { room: room.id, kind: room.kind, chars: text.length, thread: root ?? null } });
+    return { ok: true, where, seq: msg.seq, thread: root };
+  }
+
+  /** A destination named for a human reading the automations list ("#ops · own thread"). */
+  destLabel(postTo: PostTo): string {
+    const room = postTo.kind === 'room' && postTo.room ? this.rooms.get(postTo.room) : undefined;
+    const base = postTo.kind === 'dm' ? (postTo.member && this.os.team.getMember(postTo.member) ? `DM · ${this.person(postTo.member).name}` : 'DM · removed member')
+      : room ? (room.name ? `#${room.name}` : 'Group message') : 'Removed room';
+    return postTo.thread ? `${base} · thread` : base;
+  }
+
+  private destName(room: ChatRoom): string {
+    return room.kind === 'dm' ? this.person(room.memberId).name : room.name ? `#${room.name}` : 'the group';
+  }
+
+  /**
+   * Check an automation's "Post results to" at SAVE time and return it normalised (null = none).
+   * A room destination puts the agent IN the room — it could not post there otherwise, and people in the
+   * room should be able to see who is going to be talking.
+   */
+  checkDest(agent: string, raw: unknown, by?: Member): { ok: true; postTo: PostTo | null } | Fail {
+    if (raw == null || raw === '') return { ok: true, postTo: null };
+    const r = raw as Record<string, unknown>;
+    const thread: PostTo['thread'] = r.thread === 'own' ? 'own' : Number(r.thread) > 0 ? Math.floor(Number(r.thread)) : undefined;
+    let room: ChatRoom | undefined, postTo: PostTo;
+    if (r.kind === 'dm') {
+      const m = this.os.team.getMember(String(r.member ?? ''));
+      if (!m || m.status !== 'active') return { ok: false, status: 400, error: 'post results to: unknown person' };
+      room = this.rooms.dm(m.id, agent);
+      postTo = { kind: 'dm', member: m.id, thread };
+    } else if (r.kind === 'room') {
+      room = this.rooms.get(String(r.room ?? ''));
+      if (!room || room.kind !== 'room') return { ok: false, status: 400, error: 'post results to: unknown room' };
+      const parts = this.rooms.participants(room.id);
+      if (!parts.some((p) => p.kind === 'agent' && p.id === agent)) {
+        if (parts.filter((p) => p.kind === 'agent').length >= MAX_ROOM_AGENTS) return { ok: false, status: 400, error: `post results to: that room already holds ${MAX_ROOM_AGENTS} agents` };
+        if (this.rooms.addParticipant(room.id, 'agent', agent)) { this.rooms.post(room.id, 'system', by?.id ?? agent, `${by ? by.name || by.email : 'An automation'} added ${pretty(agent)} to post automation results`); chatBus.emit('changed', this.os); }
+      }
+      postTo = { kind: 'room', room: room.id, thread };
+    } else return { ok: false, status: 400, error: 'post results to: pick a person or a room' };
+    if (typeof thread === 'number' && (!room || !this.threadRoot(room.id, thread))) return { ok: false, status: 400, error: `post results to: no message ${thread} to thread under` };
+    return { ok: true, postTo };
+  }
+
+  /**
+   * Resolve a destination when the automation FIRES: the room, the thread to post in, and how to name it
+   * to the agent. `thread: 'own'` is one standing thread per automation — opened on the first run (or
+   * again if its root has gone), and every later run replies under it. Null = the destination is gone.
+   */
+  openDest(agent: string, postTo: PostTo, label: string): { room: string; thread?: number; where: string; threadSeq?: number } | null {
+    let room: ChatRoom | undefined;
+    if (postTo.kind === 'dm') {
+      const m = postTo.member ? this.os.team.getMember(postTo.member) : undefined;
+      if (!m || m.status !== 'active') return null;
+      room = this.rooms.ensureDm(m.id, agent);
+    } else {
+      room = postTo.room ? this.rooms.get(postTo.room) : undefined;
+      if (!room || room.kind !== 'room') return null;
+      this.rooms.addParticipant(room.id, 'agent', agent);
+    }
+    let thread: number | undefined, threadSeq = postTo.threadSeq;
+    if (typeof postTo.thread === 'number') thread = this.threadRoot(room.id, postTo.thread) ? postTo.thread : undefined;
+    else if (postTo.thread === 'own') {
+      if (!threadSeq || !this.threadRoot(room.id, threadSeq)) {
+        threadSeq = this.rooms.post(room.id, 'agent', agent, `**${label}** — each run of this automation reports in this thread.`, undefined, Date.now(), { tag: 'automation' }).seq;
+        chatBus.emit('changed', this.os);
+      }
+      thread = threadSeq;
+    }
+    const base = room.kind === 'dm' ? `your direct messages with ${this.person(room.memberId).name}` : this.destName(room);
+    return { room: room.id, thread, where: thread ? `a thread in ${base}` : base, threadSeq };
+  }
+
+  /**
+   * A run with a destination has ended: post how it went, unless the agent already posted there itself
+   * (its own write-up beats a second copy of the summary). A crash is always posted — nobody else will.
+   */
+  runResult(sessionId: string, agent: string, kind: 'report' | 'crashed' | 'ended', outcome: string, summary: string): void {
+    const dest = this.tm.chatDest(sessionId);
+    if (!dest || (kind !== 'crashed' && dest.sent > 0)) return;
+    const room = this.rooms.get(dest.room);
+    if (!room) return;
+    const open = `[Open the run](${this.tm.sessionUrl(sessionId)})`;
+    const body = kind === 'crashed' ? `💥 This run crashed before it finished. ${open}`
+      : kind === 'ended' ? `This run ended without a summary. ${open}`
+      : outcome === 'success' ? (summary.trim() || 'Done.')
+      : `**${outcome.charAt(0).toUpperCase()}${outcome.slice(1)}** — ${summary.trim() || 'no summary'}\n\n${open}`;
+    this.postAgent(room, agent, body, undefined, Date.now(), { tag: 'automation', thread: dest.thread });
+    this.tm.noteChatDestSent(sessionId);
+    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: `agent:${agent}`, type: 'chat.message.sent', data: { room: room.id, kind: room.kind, chars: body.length, thread: dest.thread ?? null, via: kind } });
   }
 
   /**
