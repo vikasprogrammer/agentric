@@ -245,6 +245,31 @@ Two mechanisms put the rest of the product inside the chat:
   emits `chatBus` `changed` so every viewer's card redraws. The assignee menu offers the people and
   agents the member can already message. Other kinds stay read-only links.
 
+## What a read costs
+
+A conversation is read constantly — on open, on every socket tick while a reply is in flight, and the
+sidebar every few seconds per open tab — so the read path is kept small on purpose:
+
+- **Newest page only.** `thread`/`roomThread` return `THREAD_PAGE` (40) main-stream messages; the page
+  asks for the page before (`?before=<seq>`) when the reader scrolls to the top. When a new message
+  pushes an old one out of the pushed page, the client keeps the old one.
+- **Steps on demand.** A message carries `stepSum` (`{ n, failed }`), not its steps; opening the
+  collapsed line fetches them from `GET /api/chat/steps?key=&seq=` (membership-checked via `roomOf`).
+  A turn in flight still streams its steps in `typing`.
+- **Avatars once.** An avatar is an inline image. Messages and room member lists carry ids and names
+  only; the page resolves avatars from the team list, which the socket sends when it changes rather than
+  with every sidebar push (same for the agent directory).
+- **Transcript lookups.** `sessionPulse` needs each conversation's transcript size/mtime, and finding the
+  file probes every project dir under every account root. `TerminalManager.transcriptMark` remembers a
+  FOUND path for 5 s (never a miss — a session about to write its first line must be seen at once), and
+  `findTranscript` stats with `throwIfNoEntry: false` so a miss does not build an exception.
+- **`term_sessions(dm_room)` is indexed** (partial) — "which sessions has this conversation used" ran as
+  a table scan on every read.
+
+Measure before changing any of this: time the endpoint AND record its payload size on a busy tenant.
+A local copy of a tenant DB misleads on the transcript lookups (the account roots are paths that do not
+exist on the copy's machine), so time those on the box itself.
+
 ## Notifications
 
 | Where | What you get |

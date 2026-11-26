@@ -1019,6 +1019,9 @@ export function inboxFileName(name: string): string {
   return clean || 'file';
 }
 
+/** How long a found transcript path is trusted — see `transcriptMark`. */
+const TRANSCRIPT_PATH_TTL_MS = 5000;
+
 export class TerminalManager {
   /** Scripted demo runner — for `runtime: mock` agents. */
   private readonly runner = path.resolve(__dirname, '../terminal/agent-runner.sh');
@@ -4185,13 +4188,27 @@ export class TerminalManager {
 
   /** Size + mtime of a transcript, or null when it doesn't exist yet. The cheap "did anything happen"
    *  probe behind {@link confirmWarmTurn} — parsing the file would cost more and answer the same. */
+  /** Where each transcript was last found. The Messages page asks for a mark per conversation on every
+   *  socket tick, and finding the file means probing every project dir of every account root — so the
+   *  path is remembered briefly. Short on purpose: an account switch moves a conversation to a newer
+   *  copy in another root. */
+  private readonly transcriptPaths = new Map<string, { file: string; at: number }>();
   private transcriptMark(claudeSessionId: string): { size: number; mtime: number } | null {
-    const file = findTranscript(claudeSessionId);
+    const hit = this.transcriptPaths.get(claudeSessionId);
+    const fresh = hit && Date.now() - hit.at < TRANSCRIPT_PATH_TTL_MS;
+    const file = fresh ? hit.file : findTranscript(claudeSessionId);
+    // Only a FOUND path is remembered: a miss is a session about to write its first line, and the reply
+    // it is about to give must be seen at once.
+    if (!fresh && file) {
+      if (this.transcriptPaths.size > 2000) this.transcriptPaths.clear();
+      this.transcriptPaths.set(claudeSessionId, { file, at: Date.now() });
+    }
     if (!file) return null;
     try {
       const st = fs.statSync(file);
       return { size: st.size, mtime: st.mtimeMs };
     } catch {
+      this.transcriptPaths.delete(claudeSessionId); // moved or removed — look again next time
       return null;
     }
   }

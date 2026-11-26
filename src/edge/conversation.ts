@@ -184,8 +184,12 @@ export function findTranscript(claudeSessionId: string, opts: { preferRoot?: str
     const preferred = prefer !== undefined && real(root) === prefer;
     for (const d of dirs) {
       const candidate = path.join(projects, d, wanted);
-      let st: fs.Stats;
-      try { st = fs.statSync(candidate); } catch { continue; }
+      // `throwIfNoEntry: false` matters: nearly every probe here misses, and a miss that THROWS builds an
+      // Error with a stack — ~60 of them per root per lookup. That made each lookup ~10 ms on a tenant
+      // with several account roots, and the Messages sidebar does one per conversation, per socket tick.
+      let st: fs.Stats | undefined;
+      try { st = fs.statSync(candidate, { throwIfNoEntry: false }); } catch { continue; }
+      if (!st) continue;
       hits.push({ file: candidate, mtimeMs: st.mtimeMs, preferred });
       break; // one copy per root — the id is unique within it
     }

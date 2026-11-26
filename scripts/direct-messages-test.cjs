@@ -99,7 +99,10 @@ console.log('\n\x1b[1m2) first message starts a hidden session; the turn folds i
   t = dms.thread(alice, AGENT);
   const reply = t.messages[t.messages.length - 1];
   assert(t.messages.length === 2 && reply.authorKind === 'agent' && reply.body === 'Three tasks are open: A, B and C.', 'turn end → one agent message = its last prose', JSON.stringify(t.messages.map((m) => m.body)));
-  assert(reply.steps && reply.steps.length === 3 && reply.steps[0].t === 'say' && reply.steps[1].t === 'do', 'narration + tool calls kept as steps');
+  const replySteps = dms.steps(alice, AGENT, reply.seq);
+  assert(replySteps.length === 3 && replySteps[0].t === 'say' && replySteps[1].t === 'do', 'narration + tool calls kept as steps');
+  assert(!reply.steps && reply.stepSum && reply.stepSum.n === replySteps.filter((x) => x.t === 'do').length && reply.stepSum.failed === 0, 'the thread carries a step COUNT, not the steps — they are fetched when opened', JSON.stringify(reply.stepSum));
+  assert(dms.steps(bob, 'room_0000000000000000', reply.seq) === undefined, 'steps of a conversation you are not in are not served');
   assert(reply.took >= 1000 && reply.took < 600000, 'the reply records how long the turn took', String(reply.took));
   assert(!t.typing && t.presence === 'online', 'typing cleared; warm pane = online');
   assert(!t.messages.some((m) => /direct-message conversation/.test(m.body)), 'the opening prompt never appears as a message');
@@ -179,7 +182,7 @@ console.log('\n\x1b[1m6b) `working` reading false mid-turn does not cut a reply 
   setWorking(id, false);
   t = dms.thread(alice, AGENT);
   const last = t.messages.slice(-1)[0];
-  assert(last.body === 'Logs are clean.' && last.steps && last.steps.length === 2, 'once quiet: ONE message, interim note + tool call as its steps', JSON.stringify(last));
+  assert(last.body === 'Logs are clean.' && dms.steps(alice, AGENT, last.seq).length === 2, 'once quiet: ONE message, interim note + tool call as its steps', JSON.stringify(last));
 }
 
 console.log('\n\x1b[1m7) a session that died before answering: stalled → retry replaces it, no duplicate\x1b[0m');
@@ -266,7 +269,7 @@ console.log('\n\x1b[1m9) rooms: membership, @-addressing, a session per agent, c
   setWorking(hs, false);
   t = dms.roomThread(C, id, { read: true });
   const last = t.messages.slice(-1)[0];
-  assert(last.authorKind === 'agent' && last.authorId === 'helper' && last.authorName === 'Helper' && /Draft is ready/.test(last.body) && last.steps.length === 1, 'the reply lands in the room for everyone, steps tucked');
+  assert(last.authorKind === 'agent' && last.authorId === 'helper' && last.authorName === 'Helper' && /Draft is ready/.test(last.body) && dms.steps(C, id, last.seq).length === 1 && last.authorAvatar === undefined, 'the reply lands in the room for everyone, steps tucked');
   assert(t.messages.find((m) => m.seq === m1.message.seq).authorName === 'Alice', 'member messages carry their author name');
 
   const inj = injected.length;
@@ -370,7 +373,7 @@ console.log('\n\x1b[1m11) /bg: a background run whose result is posted back\x1b[
   dms.sweepJobs();
   const t = dms.thread(A, AGENT);
   const res = t.messages.find((m) => m.tag === 'bg' && m.authorKind === 'agent');
-  assert(res && /All 7 nightly backups/.test(res.body) && res.steps.length === 1 && t.jobs.length === 0 && aos.chatRooms.job(job.id).status === 'done', 'when it ends the result is posted, tagged, and the job closes');
+  assert(res && /All 7 nightly backups/.test(res.body) && res.stepSum.n === 1 && t.jobs.length === 0 && aos.chatRooms.job(job.id).status === 'done', 'when it ends the result is posted, tagged, and the job closes');
   assert(t.cardSessionIds.includes(job.sessionId) && t.cardSessionIds.includes(live), 'the thread lists every session whose cards belong to it');
   const c = dms.send(A, AGENT, '/bg another one');
   await settle();
@@ -627,6 +630,20 @@ console.log('\n\x1b[1m12d) tasks, goals and KB pages a message is about are draw
   setWorking(sid, false);
   const reply = dms.thread(C, 'helper').messages.slice(-1)[0];
   assert(reply.body === 'Filed it.' && reply.refs && reply.refs.length === 1 && reply.refs[0].id === filed.id, 'a task the turn created is carded; one it only listed, or failed to change, is not', JSON.stringify(reply.refs));
+}
+
+console.log('\n\x1b[1m12e) a conversation opens on its newest page, not its whole history\x1b[0m');
+{
+  const A = aos.team.getMember(alice.id);
+  const made = dms.createRoom(A, { name: 'long', members: [bob.id], agents: [] });
+  dms.roomSetOrchestrate(A, made.id, 'off'); // keep this room out of the summary sections below
+  for (let i = 1; i <= 95; i++) dms.roomSend(A, made.id, `line ${i}`);
+  const first = dms.roomThread(A, made.id);
+  assert(first.messages.length === 40 && first.messages[39].body === 'line 95' && first.messages[0].body === 'line 56', 'the first read is the newest 40 messages', `${first.messages.length} ${first.messages[0].body}`);
+  const older = dms.roomThread(A, made.id, { before: first.messages[0].seq });
+  assert(older.messages.length === 40 && older.messages[39].body === 'line 55', 'scrolling up pages backwards from there', older.messages.slice(-1)[0].body);
+  const rest = dms.roomThread(A, made.id, { before: older.messages[0].seq });
+  assert(rest.messages.length < 40 && rest.messages.some((m) => m.body === 'line 1') && dms.roomThread(A, made.id, { before: rest.messages[0].seq }).messages.length === 0, 'and ends at the start of the conversation', String(rest.messages.length));
 }
 
 console.log('\n\x1b[1m13) agent → agent in a room, with a hop limit\x1b[0m');

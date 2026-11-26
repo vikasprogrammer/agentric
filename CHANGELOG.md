@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.485.1] - 2026-11-26
+### Fixed
+- **Messages opens and updates much faster.** Measured on the busiest tenant: the sidebar read took
+  ~0.4 s and 132 KB, and a 52-message room was 265 KB, re-sent over the socket on every change. Causes
+  and fixes: (1) every read looked up each conversation's transcript file by probing every project dir
+  under every account root, a throwing `stat` per miss — `transcriptMark` now remembers a found path
+  for 5 s and `findTranscript` no longer builds an exception per miss; (2) a member's avatar image was
+  repeated on every message and every room member (over half the payload) — sent once with the team
+  list now, which the socket pushes only when it changes; (3) a thread read returned up to 100 messages
+  with every step of every agent turn — it returns the newest 40 (`THREAD_PAGE`), older pages load as
+  you scroll up, and steps are fetched when their line is opened (`GET /api/chat/steps`); (4) "which
+  sessions has this conversation used" scanned `term_sessions` on every read — now indexed. On the
+  page, a message row redraws only when it changed (each push used to re-parse every message's
+  markdown), and reopening a conversation shows its last view at once.
+  **For users:** Conversations in Messages open faster and show the newest messages first; scroll up to load earlier ones. [Open Messages](#/chat)
+
 ## [0.485.0] - 2026-11-26
 ### Added
 - **A task card in Messages changes the task.** The card's status pill and assignee are menus: pick a
