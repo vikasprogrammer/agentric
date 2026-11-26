@@ -70,6 +70,15 @@ With a `name` it is a **room**, without one a **group message** — the same thi
 Routes: `POST /api/rooms`, `GET|PATCH /api/rooms/:id`, `POST /api/rooms/:id/send`,
 `POST|DELETE /api/rooms/:id/participants`. `GET /api/dm` also returns `rooms` and `people`.
 
+### Direct messages between people
+
+A person-to-person DM is not a third kind of conversation: it is an unnamed room holding exactly two
+members and no agent. `createRoom` returns the existing one for that pair (`ChatRoomStore.directBetween`)
+so "Message" from the directory always reopens the same conversation, from either side. No session ever
+runs behind it. Every message pings the other person when they are away (`notify` treats two people and
+no agent as one-to-one). Adding a third person or an agent turns it into an ordinary group, after which
+messaging that teammate starts a fresh pair.
+
 ## Comms primitives
 
 Everything below works the same in a DM and in a room.

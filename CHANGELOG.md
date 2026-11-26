@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.483.0] - 2026-11-26
+### Added
+- **Direct messages between people.** Messages could already hold two people in an unnamed group, but
+  nothing offered it: the "Add teammates" directory listed agents only, and starting the same pair twice
+  made two conversations. The directory now lists **People** with a **Message** button, and
+  `createRoom` reopens the existing conversation for an unnamed, agent-free pair
+  (`ChatRoomStore.directBetween`) from either side. Such a conversation shows the other person's avatar
+  and name, is labelled "Direct message", and pings them on Slack/Discord when they are away (the
+  existing one-to-one rule). Adding a third person or an agent makes it an ordinary group.
+  **For users:** You can now message a teammate directly in Messages — open **Add teammates**, pick a person and press **Message**. [Open Messages](#/chat)
+
 ## [0.482.3] - 2026-11-26
 ### Fixed
 - **Links in a Messages conversation open in a new tab.** A link in an agent's message (a PR, a doc, "Open

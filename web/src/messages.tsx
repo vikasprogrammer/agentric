@@ -13,7 +13,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
+import { ChevronRight, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, MessageSquare, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -190,15 +190,16 @@ function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: 
 }
 
 /** Browse the agents you can talk to and add them as contacts. */
-function Directory({ agents, renderIcon, onAdd, onClose, hasContacts }: { agents: DmDirectoryAgent[]; renderIcon: IconRenderer; onAdd: (id: string) => void; onClose?: () => void; hasContacts: boolean }) {
+function Directory({ agents, people, renderIcon, onAdd, onPerson, onClose, hasContacts }: { agents: DmDirectoryAgent[]; /** teammates you can message directly (not you) */ people: RoomPerson[]; renderIcon: IconRenderer; onAdd: (id: string) => void; onPerson: (id: string) => void; onClose?: () => void; hasContacts: boolean }) {
   const [q, setQ] = useState('')
   const shown = useMemo(() => rankAgents(agents, q), [agents, q])
+  const folks = useMemo(() => { const t = q.trim().toLowerCase(); return t ? people.filter((p) => p.name.toLowerCase().includes(t)) : people }, [people, q])
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col gap-3 px-6 py-8">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">{hasContacts ? 'Add a teammate' : 'Who do you want to work with?'}</h2>
-          <p className="text-sm text-muted-foreground">Add an agent to your contacts and message them like anyone else on the team. They remember the conversation and work under the same approvals as everyone.</p>
+          <p className="text-sm text-muted-foreground">Message a person directly, or add an agent to your contacts and message them like anyone else on the team. Agents remember the conversation and work under the same approvals as everyone.</p>
         </div>
         {onClose && <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={onClose} aria-label="Close"><X className="h-4 w-4" /></Button>}
       </div>
@@ -207,6 +208,15 @@ function Directory({ agents, renderIcon, onAdd, onClose, hasContacts }: { agents
         <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name or what they do…" className="h-9 pl-8 text-sm" />
       </div>
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
+        {folks.length > 0 && <div className="px-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">People</div>}
+        {folks.map((p) => (
+          <div key={p.id} className="flex items-center gap-3 rounded-lg border p-2.5">
+            <PersonAvatar p={p} />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{p.name}</span>
+            <Button size="sm" variant="outline" className="h-7 shrink-0 gap-1 text-xs" onClick={() => onPerson(p.id)}><MessageSquare className="h-3.5 w-3.5" /> Message</Button>
+          </div>
+        ))}
+        {folks.length > 0 && shown.length > 0 && <div className="px-1 pt-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Agents</div>}
         {shown.map((a) => (
           <div key={a.id} className="flex items-center gap-3 rounded-lg border p-2.5">
             <Avatar agent={a.id} icon={a.icon} renderIcon={renderIcon} />
@@ -220,7 +230,7 @@ function Directory({ agents, renderIcon, onAdd, onClose, hasContacts }: { agents
             <Button size="sm" variant="outline" className="h-7 shrink-0 gap-1 text-xs" onClick={() => onAdd(a.id)}><Plus className="h-3.5 w-3.5" /> Add</Button>
           </div>
         ))}
-        {shown.length === 0 && (
+        {shown.length === 0 && folks.length === 0 && (
           <p className="px-1 py-6 text-center text-sm text-muted-foreground">
             {agents.length === 0 ? (hasContacts ? 'Everyone you can work with is already in your contacts.' : 'No agents are assigned to you yet — ask an admin to add you to one.') : `Nobody matches “${q}”.`}
           </p>
@@ -337,8 +347,15 @@ function PersonAvatar({ p, className = 'h-9 w-9 rounded-lg text-sm' }: { p: { na
     : <span className={`flex shrink-0 items-center justify-center bg-muted font-semibold text-muted-foreground ${className}`}>{(p.name || '?').slice(0, 1).toUpperCase()}</span>
 }
 
-function RoomGlyph({ room, size = 'md' }: { room: RoomSummary; size?: 'sm' | 'md' | 'lg' }) {
+/** The other person, when a conversation is just you and one teammate — a direct message between people. */
+function otherPerson(room: RoomSummary, meId: string): RoomPerson | undefined {
+  return !room.name && room.agents.length === 0 && room.members.length === 2 ? room.members.find((m) => m.id !== meId) : undefined
+}
+
+function RoomGlyph({ room, size = 'md', meId }: { room: RoomSummary; size?: 'sm' | 'md' | 'lg'; meId?: string }) {
   const box = size === 'lg' ? 'h-14 w-14 rounded-2xl' : size === 'sm' ? 'h-6 w-6 rounded-md' : 'h-9 w-9 rounded-lg'
+  const one = meId ? otherPerson(room, meId) : undefined
+  if (one) return <PersonAvatar p={one} className={`${box} ${size === 'lg' ? 'text-xl' : size === 'sm' ? 'text-[10px]' : 'text-sm'}`} />
   const glyph = size === 'lg' ? 'h-7 w-7' : size === 'sm' ? 'h-3.5 w-3.5' : 'h-5 w-5'
   return <span className={`flex shrink-0 items-center justify-center ${box} ${tileOf(room.id)}`}>{room.name ? <Hash className={glyph} /> : <Users className={glyph} />}</span>
 }
@@ -898,14 +915,14 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         {/* Header */}
         <div className="flex shrink-0 items-center gap-3 border-b px-5 py-2.5">
-          {isRoom ? <RoomGlyph room={room!} size="sm" /> : <Avatar agent={id} icon={target.contact.icon} renderIcon={renderIcon} size="sm" />}
+          {isRoom ? <RoomGlyph room={room!} size="sm" meId={me.id} /> : <Avatar agent={id} icon={target.contact.icon} renderIcon={renderIcon} size="sm" />}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="truncate text-sm font-semibold">{title}</span>
               {!isRoom && <><PresenceDot presence={presence} /><span className="text-[11px] text-muted-foreground">{presence === 'working' ? 'Working' : presence === 'online' ? 'Active' : 'Away'}</span></>}
             </div>
             {isRoom
-              ? <button onClick={() => setDetails((d) => !d)} className="truncate text-[11px] text-muted-foreground hover:text-foreground hover:underline">{room!.members.length} {room!.members.length === 1 ? 'person' : 'people'}{room!.agents.length ? ` · ${room!.agents.length} agent${room!.agents.length === 1 ? '' : 's'}` : ''}</button>
+              ? <button onClick={() => setDetails((d) => !d)} className="truncate text-[11px] text-muted-foreground hover:text-foreground hover:underline">{otherPerson(room!, me.id) ? 'Direct message' : `${room!.members.length} ${room!.members.length === 1 ? 'person' : 'people'}`}{room!.agents.length ? ` · ${room!.agents.length} agent${room!.agents.length === 1 ? '' : 's'}` : ''}</button>
               : <div className="truncate text-[11px] text-muted-foreground">{description}</div>}
           </div>
           {isRoom && <Button size="sm" variant="ghost" className="h-7 shrink-0 gap-1.5 text-xs text-muted-foreground" onClick={() => setDetails((d) => !d)}><Users className="h-3.5 w-3.5" /> {room!.members.length + room!.agents.length}</Button>}
@@ -946,11 +963,11 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
           )}
           {view && (noMore || all.length < 100) && (
             <div className="px-5 pb-2 pt-8">
-              {isRoom ? <RoomGlyph room={room!} size="lg" /> : <Avatar agent={id} icon={target.contact.icon} renderIcon={renderIcon} size="lg" />}
+              {isRoom ? <RoomGlyph room={room!} size="lg" meId={me.id} /> : <Avatar agent={id} icon={target.contact.icon} renderIcon={renderIcon} size="lg" />}
               <h3 className="mt-3 text-lg font-semibold">{title}</h3>
               <p className="max-w-xl text-sm text-muted-foreground">
                 {isRoom
-                  ? <>This is the start of {room!.name ? <>the <span className="font-medium text-foreground">{room!.name}</span> room</> : 'this group conversation'}. {room!.agents.length > 0 ? <>Type <kbd className="rounded border px-1 font-sans text-xs">@</kbd> to bring an agent in — they answer only when addressed.</> : 'Add an agent from the people list to bring one in.'}</>
+                  ? otherPerson(room!, me.id) ? <>This is the start of your direct messages with <span className="font-medium text-foreground">{otherPerson(room!, me.id)!.name}</span>. Only the two of you can read them.</> : <>This is the start of {room!.name ? <>the <span className="font-medium text-foreground">{room!.name}</span> room</> : 'this group conversation'}. {room!.agents.length > 0 ? <>Type <kbd className="rounded border px-1 font-sans text-xs">@</kbd> to bring an agent in — they answer only when addressed.</> : 'Add an agent from the people list to bring one in.'}</>
                   : <>This is the start of your conversation with <span className="font-medium text-foreground">{title}</span>.</>}
               </p>
             </div>
@@ -1194,6 +1211,13 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
     onSelect(agent)
   }
 
+  const messagePerson = async (id: string) => {
+    const r = await api.roomCreate({ members: [id], agents: [] })
+    if (r.error || !r.id) return
+    await refresh()
+    onSelect(r.id)
+  }
+
   const f = filter.trim().toLowerCase()
   const named = rooms.filter((r) => r.name && (!f || r.name.toLowerCase().includes(f)))
   // Direct messages = agent contacts + unnamed groups, most recent first.
@@ -1225,7 +1249,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
       </button>
     )
   }
-  const roomItem = (r: RoomSummary) => item(r.id, <RoomGlyph room={r} />, roomTitle(r, me.id),
+  const roomItem = (r: RoomSummary) => item(r.id, <RoomGlyph room={r} meId={me.id} />, roomTitle(r, me.id),
     r.agents.some((a) => a.presence === 'working') ? <span className="italic">working…</span> : r.lastText ? `${r.lastAuthor ? r.lastAuthor + ': ' : ''}${r.lastText}` : `${r.members.length + r.agents.length} in here`,
     r.lastAt, r.unread, !!r.lastText, r.notify ?? 'all', r.mentions ?? 0)
   const sectionHead = (label: string, onPlus: () => void, plusTitle: string) => (
@@ -1246,7 +1270,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
             {named.map(roomItem)}
             {named.length === 0 && <button onClick={() => onSelect('new-room')} className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground">Create a room for people and agents to work in together.</button>}
           </div>
-          {sectionHead('Direct messages', () => onSelect('add'), 'Add a teammate')}
+          {sectionHead('Direct messages', () => onSelect('add'), 'Message a person or add an agent')}
           <div className="space-y-0.5 px-2">
             {direct.map((d) => d.contact
               ? item(d.contact.agent, <Avatar agent={d.contact.agent} icon={d.contact.icon} renderIcon={renderIcon} presence={d.contact.presence} />, prettyAgent(d.contact.agent),
@@ -1288,7 +1312,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
               : <Button size="sm" variant="outline" onClick={() => onSelect('add')}>Browse teammates</Button>}
           </div>
         ) : (
-          <Directory agents={directory} renderIcon={renderIcon} onAdd={add} hasContacts={contacts.length > 0} onClose={total > 0 ? () => onSelect('') : undefined} />
+          <Directory agents={directory} people={people.filter((p) => p.id !== me.id)} renderIcon={renderIcon} onAdd={add} onPerson={messagePerson} hasContacts={contacts.length > 0} onClose={total > 0 ? () => onSelect('') : undefined} />
         )}
       </section>
     </div>
