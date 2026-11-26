@@ -77,6 +77,8 @@ export type DmPresence = 'working' | 'online' | 'away';
 export interface DmContact {
   agent: string; roomId: string; description: string; icon?: string;
   presence: DmPresence; lastText?: string; lastFromMe?: boolean; lastAt: number; unread: number; notify: NotifyLevel;
+  /** Decisions this conversation is waiting on the viewer for (a question to answer, an approval to clear). */
+  waiting: number;
   /** The session currently behind the room — used only to attach pending approvals/questions. */
   sessionId: string | null;
 }
@@ -89,7 +91,10 @@ export interface DmThread {
   threadView?: ThreadView | null;
   /** The member's last message got no reply and nothing is running that could produce one. */
   stalled: boolean;
+  answering?: Answering;
 }
+/** The agent's open question the viewer's next message will be taken as the answer to. */
+export interface Answering { id: string; agent: string; prompt: string }
 
 // ── Rooms & group DMs (kind 'room') ──
 export interface RoomPerson { id: string; name: string; avatar?: string }
@@ -101,6 +106,8 @@ export interface RoomSummary {
   lastText?: string; lastAuthor?: string; lastAt: number; unread: number;
   /** Unread messages that @mention the viewer, and the viewer's notification level here. */
   mentions: number; notify: NotifyLevel;
+  /** Decisions this room is waiting on the viewer for. */
+  waiting: number;
 }
 /** How many main-stream messages a thread read returns. A conversation opens on its newest page and the
  *  page asks for older ones as the reader scrolls up — the whole history is never sent up front. */
@@ -117,6 +124,7 @@ export interface RoomThread {
   cardSessionIds: string[]; jobs: DmJob[]; handoffs: DmHandoff[];
   /** Other people typing in the room right now (first names). */
   peopleTyping: string[];
+  answering?: Answering;
 }
 export type RoomSendResult =
   | { ok: true; message: ChatMessage | null; delivered: string[]; notes: string[] }
@@ -313,6 +321,7 @@ export class DirectMessages {
     const reachable = this.reachableAgents(me);
     const byId = new Map(reachable.map((a) => [a.id, a]));
     const contacts: DmContact[] = [];
+    const waiting = this.tm.chatWaiting(me);
     for (const room0 of this.rooms.listDms(me.id)) {
       const a = byId.get(room0.agent);
       if (!a) continue; // agent deleted, or the member was unassigned — the room stays, just not listed
@@ -321,7 +330,7 @@ export class DirectMessages {
       contacts.push({
         agent: room.agent, roomId: room.id, description: a.description, icon: a.icon, presence,
         lastText: last ? clip(last.body.replace(/\s+/g, ' '), 90) : undefined, lastFromMe: last ? last.authorKind === 'member' : undefined,
-        lastAt: room.lastMessageAt ?? room.createdAt, unread: this.rooms.unread(room.id, me.id), sessionId: room.sessionId, notify: this.rooms.level(room.id, me.id),
+        lastAt: room.lastMessageAt ?? room.createdAt, unread: this.rooms.unread(room.id, me.id), sessionId: room.sessionId, notify: this.rooms.level(room.id, me.id), waiting: waiting.get(room.id) ?? 0,
       });
     }
     const added = new Set(contacts.map((c) => c.agent));
@@ -342,6 +351,7 @@ export class DirectMessages {
       // Silence is the one thing a chat can't show: a session that died on launch leaves a sent message
       // with nobody to answer it. Say so, so the page can offer a retry instead of an endless wait.
       stalled: !!last && last.authorKind === 'member' && presence === 'away' && Date.now() - last.createdAt > STALL_MS,
+      answering: room.sessionId ? this.tm.chatAsk(room.sessionId, me) : undefined,
     };
   }
 
@@ -434,7 +444,7 @@ export class DirectMessages {
   }
 
   /** Send the member's message: deliver, resume, or transparently start a fresh session. */
-  send(me: Member, agent: string, text: string, opts: { retry?: boolean; files?: InboundFile[]; thread?: number } = {}): DmSendResult {
+  send(me: Member, agent: string, text: string, opts: { retry?: boolean; files?: InboundFile[]; thread?: number; /** deliver as an ordinary message even while the agent's question is open */ plain?: boolean } = {}): DmSendResult {
     // A retry re-delivers the member's last message rather than posting it a second time.
     const again = opts.retry ? this.lastFromMember(me, agent) : undefined;
     let body = (again?.body ?? text).trim();
@@ -464,6 +474,14 @@ export class DirectMessages {
     if (root === false) return { ok: false, status: 404, error: 'that thread no longer exists' };
     const staged = files.length ? this.tm.stageFilesForAgent(agent, files, me.email) : [];
     const said = `${body}${staged.length ? ` (attached: ${staged.join(', ')})` : ''}`;
+    // The agent is blocked on a question it asked this person: what they type next IS the answer. It goes
+    // to the question (which resumes the turn), not into the pane, where it would queue behind the wait.
+    if (!again && !opts.plain && room.sessionId && this.tm.answerFromMessages(room.sessionId, me, said)) {
+      const message = this.rooms.post(room.id, 'member', me.id, body, undefined, Date.now(), { files: files.map((f) => f.name), thread: root?.seq });
+      this.rooms.markRead(room.id, me.id);
+      chatBus.emit('changed', this.os);
+      return { ok: true, message, sessionId: room.sessionId };
+    }
     // A reply to what an automation run posted goes back to THAT run, not to the everyday conversation.
     const run = this.runBehind(room, root || undefined);
     const back = run && run.agent === agent ? this.runDeliver(me, room, run, said, root || undefined) : undefined;
@@ -540,7 +558,7 @@ export class DirectMessages {
   }
 
   /** Sync every agent lane of the room, and describe it for `me`. */
-  private describe(room: ChatRoom, me: Member): { summary: RoomSummary; typing: RoomThread['typing']; sessionIds: string[] } {
+  private describe(room: ChatRoom, me: Member, waiting: Map<string, number> = this.tm.chatWaiting(me)): { summary: RoomSummary; typing: RoomThread['typing']; sessionIds: string[] } {
     const parts = this.rooms.participants(room.id);
     const agents: RoomAgent[] = [];
     const typing: RoomThread['typing'] = [];
@@ -564,13 +582,19 @@ export class DirectMessages {
         lastText: last ? clip(last.body.replace(/\s+/g, ' '), 90) : undefined,
         lastAuthor: !last || last.authorKind === 'system' ? undefined : last.authorKind === 'agent' ? pretty(last.authorId) : last.authorId === me.id ? 'You' : this.person(last.authorId).name.split(' ')[0],
         lastAt: fresh.lastMessageAt ?? fresh.createdAt, unread: this.rooms.unread(room.id, me.id),
-        mentions: this.rooms.unreadMentions(room.id, me.id), notify: this.rooms.level(room.id, me.id),
+        mentions: this.rooms.unreadMentions(room.id, me.id), notify: this.rooms.level(room.id, me.id), waiting: waiting.get(room.id) ?? 0,
       },
       typing, sessionIds,
     };
   }
 
-  roomList(me: Member): RoomSummary[] { return this.rooms.roomsFor(me.id).map((r) => this.describe(r, me).summary); }
+  roomList(me: Member): RoomSummary[] { const waiting = this.tm.chatWaiting(me); return this.rooms.roomsFor(me.id).map((r) => this.describe(r, me, waiting).summary); }
+
+  /** The one open question a reply in this room would answer — an agent of the room blocked on this person. */
+  private roomAsk(parts: ChatParticipant[], me: Member): (Answering & { sessionId: string }) | undefined {
+    const open = parts.flatMap((p) => { const q = p.kind === 'agent' && p.sessionId ? this.tm.chatAsk(p.sessionId, me) : undefined; return q ? [{ ...q, agent: p.id, sessionId: p.sessionId! }] : []; });
+    return open.length === 1 ? open[0] : undefined;
+  }
 
   private roomFor(me: Member, roomId: string): ChatRoom | Fail {
     const room = this.rooms.get(roomId);
@@ -826,6 +850,7 @@ export class DirectMessages {
       room: d.summary, messages, typing: d.typing, sessionIds: d.sessionIds, ...this.extras(roomId, d.sessionIds, me),
       threadView: opts.thread ? this.threadView(roomId, opts.thread) : undefined,
       peopleTyping: typingIn(roomId, me.id).map((id) => this.person(id).name.split(' ')[0]),
+      answering: ((a) => a && { id: a.id, agent: a.agent, prompt: a.prompt })(this.roomAsk(this.rooms.participants(roomId), me)),
     };
   }
 
@@ -851,7 +876,7 @@ export class DirectMessages {
     return agents.length === 1 && parts.filter((p) => p.kind === 'member').length === 1 ? agents : [];
   }
 
-  roomSend(me: Member, roomId: string, text: string, opts: { files?: InboundFile[]; thread?: number } = {}): RoomSendResult {
+  roomSend(me: Member, roomId: string, text: string, opts: { files?: InboundFile[]; thread?: number; plain?: boolean } = {}): RoomSendResult {
     const room = this.roomFor(me, roomId);
     if ('ok' in room) return room;
     let body = text.trim();
@@ -899,6 +924,14 @@ export class DirectMessages {
       const present = [...there].filter((a) => parts.some((p) => p.kind === 'agent' && p.id === a));
       if (present.length === 1) to = present;
     }
+    // An agent here is blocked on a question it asked this person, and the message is for nobody else:
+    // it is the answer. Naming another agent or a person keeps it an ordinary message.
+    const ask = !opts.plain && !viaRun ? this.roomAsk(parts, me) : undefined;
+    let answered: string | undefined;
+    if (ask && to.every((a) => a === ask.agent) && !this.peopleMentioned(body, parts, me.id).length) {
+      const staged = files.length ? this.tm.stageFilesForAgent(ask.agent, files, me.email) : [];
+      if (this.tm.answerFromMessages(ask.sessionId, me, `${body}${staged.length ? ` (attached: ${staged.join(', ')})` : ''}`)) { answered = ask.agent; to = []; delivered.push(ask.agent); }
+    }
     for (const agent of to) {
       const staged = files.length ? this.tm.stageFilesForAgent(agent, files, me.email) : [];
       const d = this.roomDeliver(me, room, parts, agent, `${body}${staged.length ? ` (attached: ${staged.join(', ')})` : ''}${this.threadHint(root)}`, me.name || me.email, 0, undefined, root?.seq);
@@ -910,7 +943,7 @@ export class DirectMessages {
     if (viaRun) delivered.push(run!.agent);
     // Nobody was addressed: the room's orchestrator decides whether an agent should pick this up.
     // (Not when it was addressed to a PERSON — `@priya` is for Priya.)
-    if (!to.length && !viaRun && !message.mentions?.length) for (const a of this.orchestrate(me, room, parts, message)) delivered.push(a);
+    if (!to.length && !viaRun && !answered && !message.mentions?.length) for (const a of this.orchestrate(me, room, parts, message)) delivered.push(a);
     // Several agents were asked the same thing (the person tagged or named them): their answers come back as ONE
     // combined reply too, exactly as when the orchestrator fans a message out itself.
     if (delivered.length > 1 && room.orchestrate !== 'off') {

@@ -6320,7 +6320,7 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
 function chatCard(m: Msg, me: Member, members: Member[], agents: AgentInfo[], onOpen: (tmux: string, title: string) => void): ReactNode {
   const open = (m.status ?? 'pending') === 'pending'
   if (m.type === 'approval' || m.type === 'question') {
-    if (open) return <PendingCard m={m} />
+    if (open) return <PendingCard m={m} me={me} />
     const ok = m.status === 'approved' || m.status === 'answered'
     return (
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
@@ -6355,23 +6355,41 @@ function chatCard(m: Msg, me: Member, members: Member[], agents: AgentInfo[], on
 
 /** An approval or question waiting on the reader, as an inline card — the one piece of machinery a
  *  conversation must surface, since it IS the trust boundary. Shared by Chat and Messages. */
-function PendingCard({ m }: { m: Msg }) {
+function PendingCard({ m, me }: { m: Msg; /** the reader — decides which controls they get (absent = the plain Approve/Decline pair) */ me?: Member }) {
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState('')
+  const level = (m.level ?? 'head') as 'head' | 'owner'
+  const mayApprove = !me || canApprove(me.role, level)
+  const brief = (m.args as { brief?: Brief } | undefined)?.brief
+  const trustHost = brief?.suggestedAction === 'trust-host' ? brief.target.host : undefined
+  // A failed click leaves the card as it was and says why; a settled one is redrawn by the feed.
+  const act = async (go: () => Promise<{ error?: string; note?: string; ruleAdded?: boolean; trusted?: boolean }>) => {
+    setBusy(true); setNote('')
+    const r = await go()
+    if (r.error) { setBusy(false); setNote(r.error) } else if ((r.ruleAdded === false || r.trusted === false) && r.note) setNote(`Approved once — ${r.note}`)
+  }
   return (
     <div className={`rounded-lg border p-3 ${m.type === 'approval' ? 'border-amber-400/60 bg-amber-50/60 dark:bg-amber-950/20' : 'border-primary/40 bg-primary/5'}`}>
       {m.type === 'approval' ? (
         <>
           <div className="flex items-start gap-2">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-            <div className="min-w-0 text-sm">
-              <div className="font-medium">Needs your OK</div>
-              <div className="text-muted-foreground">{m.policyReason || m.title}</div>
+            <div className="min-w-0 flex-1 text-sm">
+              <div className="font-medium">{mayApprove ? 'Needs your OK' : `Waiting on ${level === 'owner' ? 'an owner' : 'an admin'} to approve`}</div>
+              {me ? <ApprovalBrief m={m} /> : <div className="text-muted-foreground">{m.policyReason || m.title}</div>}
               {m.body && <div className="mt-1 whitespace-pre-wrap text-[13px]">{m.body}</div>}
             </div>
           </div>
-          <div className="mt-2 flex gap-2">
-            <Button size="sm" onClick={() => m.approvalId && api.resolve(m.approvalId, true)}><Check className="mr-1 h-3.5 w-3.5" /> Approve</Button>
-            <Button size="sm" variant="outline" onClick={() => m.approvalId && api.resolve(m.approvalId, false)}><X className="mr-1 h-3.5 w-3.5" /> Decline</Button>
-          </div>
+          {mayApprove ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button size="sm" disabled={busy} onClick={() => m.approvalId && act(() => api.resolve(m.approvalId!, true))}><Check className="mr-1 h-3.5 w-3.5" /> Approve</Button>
+              {me?.role === 'owner' && (trustHost
+                ? <Button size="sm" variant="outline" disabled={busy} onClick={() => m.approvalId && act(() => api.trustHost(m.approvalId!))} title={`Approve, and stop asking for ${trustHost} (this host only)`}><Shield className="mr-1 h-3.5 w-3.5" /> Trust host</Button>
+                : <Button size="sm" variant="outline" disabled={busy} onClick={() => m.approvalId && act(() => api.alwaysApprove(m.approvalId!))} title={`Approve, and stop asking for this same action${brief?.headline ? ` (“${brief.headline}”)` : ''} — revocable in Settings → Auto-approvals`}><Shield className="mr-1 h-3.5 w-3.5" /> Always</Button>)}
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => m.approvalId && act(() => api.resolve(m.approvalId!, false))}><X className="mr-1 h-3.5 w-3.5" /> Decline</Button>
+            </div>
+          ) : <div className="mt-1.5 pl-6 text-xs text-muted-foreground">They have been notified. The agent carries on as soon as it is cleared.</div>}
+          {note && <div className="mt-1.5 text-xs text-destructive">{note}</div>}
         </>
       ) : (
         <QuestionReply m={m} />

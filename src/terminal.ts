@@ -8055,6 +8055,53 @@ export class TerminalManager {
     return this.db.prepare("SELECT id FROM questions WHERE run_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1").get<{ id: string }>(sessionId)?.id;
   }
 
+  /**
+   * The ONE question a reply typed into Messages would answer on this session: pending, answerable by
+   * `viewer`, and the only such one (two open questions make a typed reply ambiguous — the cards decide).
+   * A question that outlived its run (it carries a deadline or a default) counts only while the asker is
+   * still mid-turn: days later, a new message in that conversation is a new message, not its answer.
+   */
+  chatAsk(sessionId: string, viewer: Member): { id: string; agent: string; prompt: string } | undefined {
+    const open = this.db
+      .prepare("SELECT id, agent, prompt, expires_at, default_answer FROM questions WHERE run_id = ? AND status = 'pending'")
+      .all<{ id: string; agent: string; prompt: string; expires_at: number | null; default_answer: string | null }>(sessionId)
+      .filter((q) => this.canViewQuestion(q.id, viewer));
+    if (open.length !== 1) return undefined;
+    const q = open[0];
+    if (q.expires_at !== null || q.default_answer !== null) {
+      // `busySince`, not `working`: an agent blocked on a person reads as not working, mid-turn or not.
+      const pulse = this.sessionPulse(sessionId);
+      if (!pulse?.alive || pulse.busySince == null) return undefined;
+    }
+    return { id: q.id, agent: q.agent, prompt: q.prompt };
+  }
+
+  /** Answer {@link chatAsk}'s question with what the member typed in the conversation. A reply that just
+   *  names one of the offered choices is expanded to it, as on the Slack/Discord path. */
+  answerFromMessages(sessionId: string, viewer: Member, text: string): { id: string; agent: string } | undefined {
+    const q = this.chatAsk(sessionId, viewer);
+    const body = text.trim();
+    if (!q || !body) return undefined;
+    if (!this.answerQuestion(q.id, resolveOptionReply(body, this.questionOptions(q.id)) ?? body, viewer.email)) return undefined;
+    this.audit(sessionId, viewer.email, 'question.answered.viaMessages', { questionId: q.id });
+    return { id: q.id, agent: q.agent };
+  }
+
+  /** How many decisions each Messages conversation is waiting on `viewer` for — questions they may answer
+   *  and approvals they may clear, on any session the conversation has used. Two queries for the whole
+   *  sidebar, whatever its length. */
+  chatWaiting(viewer: Member): Map<string, number> {
+    const out = new Map<string, number>();
+    const bump = (room: string): void => { out.set(room, (out.get(room) ?? 0) + 1); };
+    for (const q of this.db.prepare("SELECT q.id AS id, ts.dm_room AS room FROM questions q JOIN term_sessions ts ON ts.id = q.run_id WHERE q.status = 'pending' AND ts.dm_room IS NOT NULL").all<{ id: string; room: string }>()) {
+      if (this.canViewQuestion(q.id, viewer)) bump(q.room);
+    }
+    for (const a of this.db.prepare("SELECT a.level AS level, ts.dm_room AS room FROM approvals a JOIN term_sessions ts ON ts.id = a.run_id WHERE a.status = 'pending' AND ts.dm_room IS NOT NULL").all<{ level: ApprovalLevel; room: string }>()) {
+      if (canApprove(viewer.role, a.level)) bump(a.room);
+    }
+    return out;
+  }
+
   /** Mark a task's Discussion read for a member (per-member upsert over its `task.chat` rows). */
   markDiscussionRead(taskId: string, viewer: Member): void {
     for (const r of this.db

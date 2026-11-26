@@ -207,19 +207,21 @@ export interface ChatRef { kind: 'task' | 'goal' | 'bet' | 'automation' | 'kb'; 
 export interface DmMessage { seq: number; refs?: ChatRef[]; /** what the steps amount to — the steps themselves are fetched when opened (`chatSteps`) */ stepSum?: { n: number; failed: number }; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** room messages carry who said it */ authorName?: string; authorIcon?: string; authorAvatar?: string; /** 'bg' = background request/result · 'proactive' = the agent wrote first */ tag?: string; /** a reply: the seq of the message it sits under */ threadId?: number; /** on a main message: its reply count + last reply time */ replies?: number; lastReplyAt?: number; mentions?: string[]; /** agent reply: how long the turn took, ms */ took?: number; /** one-tap replies the agent offered */ actions?: string[]; /** names of files sent with it */ files?: string[]; /** Library artifacts the agent showed with it */ artifacts?: ChatArtifactRef[]; /** client-only: sent, not yet stored */ pending?: boolean }
 export type NotifyLevel = 'all' | 'mentions' | 'mute'
 export interface ThreadView { root: DmMessage; replies: DmMessage[] }
-export interface DmContact { agent: string; roomId: string; description: string; icon?: string; presence: DmPresence; lastText?: string; lastFromMe?: boolean; lastAt: number; unread: number; notify?: NotifyLevel; sessionId: string | null }
+export interface DmContact { agent: string; roomId: string; description: string; icon?: string; presence: DmPresence; lastText?: string; lastFromMe?: boolean; lastAt: number; unread: number; notify?: NotifyLevel; /** decisions waiting on me here */ waiting?: number; sessionId: string | null }
 // Rooms & group DMs: several members and agents in one conversation. `name` null = an unnamed group.
 export interface RoomPerson { id: string; name: string; avatar?: string }
 export interface RoomAgent { id: string; description: string; icon?: string; presence: DmPresence }
-export interface RoomSummary { id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; lastText?: string; lastAuthor?: string; lastAt: number; unread: number; mentions?: number; notify?: NotifyLevel; /** how untagged messages reach agents */ orchestrate?: 'auto' | 'suggest' | 'off'; /** the orchestrator's rolling summary */ summary?: string }
-export interface RoomThread { room: RoomSummary; messages: DmMessage[]; typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null; since?: number }[]; threadView?: ThreadView | null; sessionIds: string[]; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; peopleTyping?: string[]; error?: string }
+export interface RoomSummary { id: string; name: string | null; members: RoomPerson[]; agents: RoomAgent[]; createdBy: string; lastText?: string; lastAuthor?: string; lastAt: number; unread: number; mentions?: number; notify?: NotifyLevel; /** decisions waiting on me here */ waiting?: number; /** how untagged messages reach agents */ orchestrate?: 'auto' | 'suggest' | 'off'; /** the orchestrator's rolling summary */ summary?: string }
+export interface RoomThread { room: RoomSummary; messages: DmMessage[]; typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null; since?: number }[]; threadView?: ThreadView | null; sessionIds: string[]; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; peopleTyping?: string[]; answering?: Answering; error?: string }
 /** A background run or reminder still in flight in a conversation. */
 export interface DmJob { id: string; kind: 'bg' | 'remind' | 'fanout'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null }
 /** Work the conversation's agent handed to another agent. */
 export interface DmHandoff { sessionId: string; agent: string; title: string; status: string; working: boolean; blocked: boolean; summary?: string; createdAt: number; kind: string }
 export interface ChatFile { name: string; dataB64: string }
 export interface DmDirectoryAgent { id: string; description: string; icon?: string; category?: string }
-export interface DmThread { agent: string; roomId: string; sessionId: string | null; presence: DmPresence; messages: DmMessage[]; typing: { label: string; steps: DmStep[]; since?: number; thread?: number | null } | null; threadView?: ThreadView | null; stalled?: boolean; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; error?: string }
+export interface DmThread { agent: string; roomId: string; sessionId: string | null; presence: DmPresence; messages: DmMessage[]; typing: { label: string; steps: DmStep[]; since?: number; thread?: number | null } | null; threadView?: ThreadView | null; stalled?: boolean; cardSessionIds?: string[]; jobs?: DmJob[]; handoffs?: DmHandoff[]; answering?: Answering; error?: string }
+/** The agent's open question my next message will be taken as the answer to. */
+export interface Answering { id: string; agent: string; prompt: string }
 
 export interface AgentInfo {
   id: string
@@ -2187,7 +2189,7 @@ export const api = {
   roomCreate: (input: { name?: string; members: string[]; agents: string[] }) => call<{ ok?: boolean; id?: string; error?: string }>('POST', '/api/rooms', input),
   roomThread: (id: string, o: { before?: number; read?: boolean; thread?: number } = {}) =>
     call<RoomThread>('GET', `/api/rooms/${id}?${o.before != null ? `before=${o.before}&` : ''}${o.thread ? `thread=${o.thread}&` : ''}${o.read ? 'read=1' : ''}`),
-  roomSend: (id: string, message: string, files?: ChatFile[], thread?: number) => call<{ ok?: boolean; delivered?: string[]; notes?: string[]; held?: boolean; error?: string }>('POST', `/api/rooms/${id}/send`, { message, files, thread }),
+  roomSend: (id: string, message: string, files?: ChatFile[], thread?: number, plain?: boolean) => call<{ ok?: boolean; delivered?: string[]; notes?: string[]; held?: boolean; error?: string }>('POST', `/api/rooms/${id}/send`, { message, files, thread, plain }),
   roomAdd: (id: string, input: { members?: string[]; agents?: string[] }) => call<{ ok?: boolean; error?: string }>('POST', `/api/rooms/${id}/participants`, input),
   roomRemove: (id: string, kind: 'member' | 'agent', who: string) => call<{ ok?: boolean; deleted?: boolean; error?: string }>('DELETE', `/api/rooms/${id}/participants?kind=${kind}&id=${encodeURIComponent(who)}`),
   roomOrchestrate: (id: string, orchestrate: 'auto' | 'suggest' | 'off') => call<{ ok?: boolean; error?: string }>('PATCH', `/api/rooms/${id}`, { orchestrate }),
@@ -2200,8 +2202,8 @@ export const api = {
   chatSteps: (key: string, seq: number) => call<{ steps?: DmStep[]; error?: string }>('GET', `/api/chat/steps?key=${encodeURIComponent(key)}&seq=${seq}`),
   /** My notification level for one conversation (an agent id or a room id). */
   chatNotify: (key: string, level: NotifyLevel) => call<{ ok?: boolean; error?: string }>('PUT', '/api/chat/notify', { key, level }),
-  dmSend: (agent: string, message: string, files?: ChatFile[], thread?: number) =>
-    call<{ ok?: boolean; message?: DmMessage | null; notes?: string[]; held?: boolean; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/send`, { message, files, thread }),
+  dmSend: (agent: string, message: string, files?: ChatFile[], thread?: number, plain?: boolean) =>
+    call<{ ok?: boolean; message?: DmMessage | null; notes?: string[]; held?: boolean; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/send`, { message, files, thread, plain }),
   /** Stop the turn in flight (the session stays). */
   dmStop: (agent: string) => call<{ ok?: boolean; stopped?: string[]; error?: string }>('POST', `/api/dm/${encodeURIComponent(agent)}/stop`),
   roomStop: (id: string) => call<{ ok?: boolean; stopped?: string[]; error?: string }>('POST', `/api/rooms/${id}/stop`),
