@@ -65,6 +65,9 @@ export type ChatTurn =
        *  parsed from the tool result. The /conversation route resolves these to rich {@link
        *  ChatArtifactRef} cards the chat UI renders inline; unresolvable ids are dropped there. */
       artifactIds?: string[];
+      /** Tasks / goals / bets this activity created or changed (`task_create`, `bet_propose`, …) — ids
+       *  from its INPUT and its result. Messages draws them as cards under the reply. */
+      entityIds?: string[];
       /** KB page(s) this activity wrote (`kb_write`), captured from the tool INPUT (section/slug). */
       kbRefs?: { section: string; slug: string }[];
       /** Hosted app id(s) this activity built or changed (`app_create` / `app_update`), from the INPUT. */
@@ -278,6 +281,12 @@ function friendlyTool(name: string, input: Record<string, unknown>): { label: st
 
 /** Bare (mcp-stripped) names of tools whose result yields Library artifact id(s) we render inline. */
 const ARTIFACT_TOOLS = new Set(['publish', 'image_generate', 'image_edit', 'video_generate']);
+/** Tools that CREATE or CHANGE a task, goal or bet — the ones whose subject deserves a card in the chat.
+ *  Deliberately not the list/get tools: reading twenty tasks is not twenty cards. */
+const ENTITY_TOOLS = new Set(['task_create', 'task_update', 'task_claim', 'task_dispatch', 'task_attach', 'bet_propose', 'bet_update', 'goal_measure']);
+/** A task, goal, bet, automation or KB-page id as the id registry mints them (`src/id.ts`). */
+export const ENTITY_ID_RE = /\b(?:tsk|goal|bet|au|kbp)_[0-9a-f]{8,}\b/g;
+export function extractEntityIds(text: string): string[] { return [...new Set(text.match(ENTITY_ID_RE) ?? [])]; }
 
 /** From a tool_use's bare name + INPUT, derive the KB / app reference(s) that call SUCCEEDS produces — the
  *  keys (section/slug, app id) live in the input, so unlike artifact ids we needn't parse the result text.
@@ -400,7 +409,8 @@ export function parseConversationText(raw: string): Conversation {
         // KB / app refs come from the INPUT (the section/slug or app id) — attach them optimistically now;
         // a failed tool_result clears them below so a broken write never shows a card.
         const { kbRefs, appIds } = refsFromInput(bareName(rawName), input);
-        turns.push({ kind: 'activity', tool: rawName, label, detail, status: 'running', kbRefs, appIds, ts });
+        const entityIds = ENTITY_TOOLS.has(bareName(rawName)) ? extractEntityIds(JSON.stringify(input ?? {})) : [];
+        turns.push({ kind: 'activity', tool: rawName, label, detail, status: 'running', kbRefs, appIds, ts, ...(entityIds.length ? { entityIds } : {}) });
       } else if (b.type === 'tool_result') {
         const idx = activityById.get(String(b.tool_use_id));
         if (idx != null) {
@@ -411,6 +421,11 @@ export function parseConversationText(raw: string): Conversation {
               // The write failed — drop the optimistic KB/app refs so no card is shown.
               delete card.kbRefs;
               delete card.appIds;
+              delete card.entityIds;
+            } else if (ENTITY_TOOLS.has(bareName(card.tool))) {
+              // A new task's id only exists in the RESULT; an updated one's is already in from the input.
+              const ids = [...new Set([...(card.entityIds ?? []), ...extractEntityIds(resultText(b.content))])];
+              if (ids.length) card.entityIds = ids;
             } else if (ARTIFACT_TOOLS.has(bareName(card.tool))) {
               // Artifact-producing tool that succeeded → capture the Library id(s) it returned, so the
               // route can resolve them into inline preview cards.
