@@ -243,7 +243,7 @@ const MAX_FILES = 6;
 
 /** A hand-off the conversation's agent made to another agent — shown inline as a status card. */
 /** A task, goal, bet, automation or KB page a message is about — drawn as a live card under it. */
-export interface ChatRef { kind: 'task' | 'goal' | 'bet' | 'automation' | 'kb'; id: string; title: string; status?: string; meta?: string; /** console route, e.g. `tasks/tsk_…` */ route: string }
+export interface ChatRef { kind: 'task' | 'goal' | 'bet' | 'automation' | 'kb'; id: string; title: string; status?: string; meta?: string; /** console route, e.g. `tasks/tsk_…` */ route: string; /** tasks only: who holds it (`agent:<id>` or a member id; null = nobody) — what the card's controls edit */ assignee?: string | null }
 /** Cards under one message — a status report naming twenty tasks is a list, not twenty cards. */
 const MAX_REFS = 4;
 export interface DmHandoff { sessionId: string; agent: string; title: string; status: string; working: boolean; blocked: boolean; summary?: string; createdAt: number; kind: string }
@@ -1099,7 +1099,7 @@ export class DirectMessages {
         const t = this.os.tasks.get(key);
         if (!t) return undefined;
         const meta = [this.who(t.assignee) ?? 'Unassigned', t.priority === 0 ? 'Urgent' : t.priority === 1 ? 'High' : ''].filter(Boolean).join(' · ');
-        return { kind: 'task', id: t.id, title: t.title, status: t.status, meta, route: `tasks/${t.id}` };
+        return { kind: 'task', id: t.id, title: t.title, status: t.status, meta, route: `tasks/${t.id}`, assignee: t.assignee ?? null };
       }
       if (key.startsWith('goal_')) {
         const g = this.os.goals.get(key);

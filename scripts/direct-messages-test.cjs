@@ -601,9 +601,12 @@ console.log('\n\x1b[1m12d) tasks, goals and KB pages a message is about are draw
   let refs = view().refs;
   assert(refs && refs.map((r) => r.kind).join() === 'task,goal,kb', 'ids and KB links in a message resolve to cards; an unknown id draws nothing', JSON.stringify(refs));
   assert(refs[0].title === 'Rotate the deploy key' && refs[0].status === 'todo' && /Helper · Urgent/.test(refs[0].meta) && refs[0].route === `tasks/${task.id}`, 'a task card carries title, status, assignee and where it opens', JSON.stringify(refs[0]));
+  assert(refs[0].assignee === 'agent:helper' && refs[1].assignee === undefined, 'a task card carries who holds it, for the card to change; other cards do not');
   assert(refs[2].title === 'Deploy runbook' && refs[2].route === 'kb/runbooks/deploys', 'a KB card opens the page');
   aos.tasks.update(task.id, { status: 'done', by: alice.id });
   assert(view().refs[0].status === 'done', 'the card shows the status NOW, not when the message was sent');
+  aos.tasks.update(task.id, { assignee: null, by: alice.id });
+  assert(view().refs[0].assignee === null && /^Unassigned/.test(view().refs[0].meta), 'unassigning shows on the card');
   const five = [1, 2, 3, 4, 5].map((i) => aos.tasks.create({ tenant: aos.tenant, title: `T${i}`, body: '', createdBy: alice.id }).id);
   dms.roomSend(A, made.id, `Open: ${five.join(', ')}`);
   assert(view().refs.length === 4, 'a message naming many tasks draws at most four cards');
