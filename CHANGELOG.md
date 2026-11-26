@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.485.2] - 2026-11-26
+### Fixed
+- **Signing a Claude account in from the console failed on every attempt with newer Claude Code.** claude
+  2.1.33x prints a short sign-in link (`…/oauth/authorize?<opaque handle>`, no `state=`), which the guided
+  login read as a clipped URL and refused — "the sign-in link came back incomplete". A tenant whose only
+  account had hit its refresh-token expiry therefore could not sign back in without ssh. The short form is
+  now recognised (and still held back until the CLI has printed the prompt under it, so a mid-render
+  capture is never shown). Pinned in `scripts/runtime-login-test.cjs` against the real 2.1.332 screen.
+  **For admins:** Adding or re-signing a Claude account from Settings → Runtime works again on boxes running the latest Claude Code.
+
 ## [0.485.1] - 2026-11-26
 ### Fixed
 - **Messages opens and updates much faster.** Measured on the busiest tenant: the sidebar read took

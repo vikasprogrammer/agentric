@@ -88,7 +88,13 @@ const URL_FRAG_RE = /^[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+$/;
 const BOX_TRIM_RE = /^[\s│┃|>]+|[\s│┃|]+$/g;
 /** An OAuth authorize URL that lost its tail is worse than none: the human would authorize into a
  *  broken request and blame the product. Every provider's URL carries `state` last-ish, so require it. */
-const looksWhole = (u: string): boolean => /[?&]state=[^&\s]+/.test(u);
+/** claude 2.1.33x stopped printing the long form: the link is now `…/oauth/authorize?<opaque token>` — one
+ *  ~43-char base64url handle, no `state=`, no parameters at all. Requiring `state=` then read EVERY link as
+ *  clipped and failed every guided login (a tenant whose only account had expired could not sign back in).
+ *  So a query that is a single opaque token of handle length is whole too. The long form can't be mistaken
+ *  for it: it opens with `code=true&`, so any clip of it either carries an `=` or is far too short. */
+const OPAQUE_QUERY_RE = /\?[A-Za-z0-9_-]{32,}$/;
+const looksWhole = (u: string): boolean => /[?&]state=[^&\s]+/.test(u) || OPAQUE_QUERY_RE.test(u);
 
 /** Pull the authorize URL from a captured pane, reassembling it when the CLI wrapped it across rows (a
  *  bordered box, or a hard wrap `capture-pane -J` left as real newlines). Take the URL-legal run after the
@@ -298,7 +304,10 @@ export class RuntimeLoginManager {
     const url = extractAuthorizeUrl(pane);
     // A rejected attempt's URL can linger on screen for a beat after the retry Enter — never re-offer it.
     if (url && l.phase === 'starting' && l.url === undefined && !l.deadUrls.has(url)) {
-      if (looksWhole(url)) {
+      // The opaque short form has no terminator of its own, so a mid-render capture of it is only ruled out
+      // by the CLI having printed something AFTER it (the "Paste code" prompt lands in the next write).
+      const settled = /[?&]state=/.test(url) || pane.slice(pane.lastIndexOf(url) + url.length).trim().length > 0;
+      if (looksWhole(url) && settled) {
         l.phase = 'awaiting-code';
         l.url = url;
       } else {
