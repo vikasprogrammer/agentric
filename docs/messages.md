@@ -230,6 +230,24 @@ Each person sets a level per conversation — every message / only @mentions / m
 (`chat_reads.notify`, `PUT /api/chat/notify`) — which narrows all three. People mentioned are stored on
 the message (`chat_messages.mentions`).
 
+### One notice per event
+
+A session whose news already reaches people through Messages (`TerminalManager.chatHome`: `dm` = a
+conversation's own session, `dest` = a run with a **Post results to** destination) raises no second,
+session-side notice for the same thing:
+
+| Session-side notice | For a Messages-homed session |
+|---|---|
+| Inbox "Completed" card | hidden from the feed (the row is still written — `hasCompleted` reads it) |
+| "Completed — agent" Slack/Discord DM | not sent (audited `session.event.suppressed`) |
+| "Waiting for your input" card + DM after a turn | not raised |
+| Permission prompt card + DM | **kept** — nothing else would surface it |
+| Crash card + DM | kept for `dm`; suppressed for `dest`, where `runResult` posts the crash into the conversation |
+| Approval / question cards and their DMs | unchanged |
+
+The trade: a result posted into a room pings nobody outside the app unless it @mentions them (a room is
+not a pager), so the owner of a run that reports into a room is no longer DM'd when it finishes.
+
 ## Not built yet
 
 - Browsable/joinable public rooms.

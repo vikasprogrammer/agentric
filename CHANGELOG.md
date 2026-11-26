@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.482.2] - 2026-11-26
+### Fixed
+- **One notice per event for a run that lives in Messages.** A run that reports into a conversation (an
+  automation's **Post results to**, or a conversation's own session) was announced three times: the
+  message itself (plus its away-ping), an Inbox "Completed" card, and a "Completed — agent" Slack/Discord
+  DM from the session side. `TerminalManager.chatHome` now marks such a session, and the session-side
+  copies stand down: no completed card in the feed (the row stays — `hasCompleted` reads it), no
+  session-event DM (audited `session.event.suppressed`), and no "Waiting for your input" bell after a
+  turn. Kept on purpose: a permission prompt, and the crash card of a conversation's own session —
+  nothing else would surface those. Approvals and questions are unchanged.
+  **For users:** When an agent's run reports into Messages, you now hear about it once — the message — instead of also getting an Inbox card and a second Slack/Discord DM for the same result.
+
 ## [0.482.1] - 2026-11-26
 ### Fixed
 - **A reply under a message an agent posted to Slack is answered in Slack.** A run that posts with
