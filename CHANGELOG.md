@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.482.1] - 2026-11-26
+### Fixed
+- **A reply under a message an agent posted to Slack is answered in Slack.** A run that posts with
+  `slack_send` (a cron report, an alert) has no `slack_reply`, and `slack_send` could not post into a
+  thread — so when someone replied under the post while the run was still alive, the text was typed into
+  it bare, the run answered in its own terminal about whatever it was doing by then, and the thread got
+  nothing. The reply now arrives framed with who sent it, which thread, and the `slack_send({ channel,
+  thread_ts })` call that answers there; `slack_send` takes `thread_ts` and returns the ts of what it
+  posted; and the OS acks in the thread naming the agent. Threads a run was triggered from are unchanged.
+  **For users:** Reply under an alert or report an agent posted in Slack and it now answers you in that thread.
+
 ## [0.482.0] - 2026-11-26
 ### Added
 - **A reply to an automation's post reaches that run.** Messages an automation run posts now remember the

@@ -3193,6 +3193,15 @@ export class TerminalManager {
     } catch { /* best-effort */ }
   }
 
+  /** Is this thread the run's OWN reply target (`slack_threads`) — i.e. was the session launched with
+   *  `slack_reply` pointed at it? False for a thread the agent opened mid-run with `slack_send`: that
+   *  run has no `slack_reply` tool at all, so a reply typed into it has to say where it came from and
+   *  how to answer, or the agent answers in its terminal and the human in Slack hears nothing. */
+  isSlackReplyTarget(sessionId: string, channel: string, threadTs: string): boolean {
+    if (!sessionId || !channel || !threadTs) return false;
+    return !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ? AND channel = ? AND thread_ts = ?').get(sessionId, channel, threadTs);
+  }
+
   /** Has the bot spoken in this Slack thread? The deterministic "is this addressed to us" test the
    *  socket uses before dropping an untagged channel message: a reply under something we posted is a
    *  reply to us, whether or not the run behind it is still alive. */

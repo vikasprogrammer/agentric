@@ -172,8 +172,16 @@ only place a typo is caught. Pinned by `scripts/slack-content-filter-test.cjs`.
 | Tool | Exposed when | Does |
 |---|---|---|
 | `slack_reply` | `SLACK_REPLY=1` (Slack-triggered session) | replies on the bound thread — no channel id passed |
-| `slack_send` | `SLACK_EGRESS=1` (Slack configured) | posts to **any** channel by id or name, auto-joining public channels |
+| `slack_send` | `SLACK_EGRESS=1` (Slack configured) | posts to **any** channel by id or name, auto-joining public channels; `thread_ts` replies inside a thread |
 | `slack_dm` | `SLACK_EGRESS=1` | DMs **any** person by Slack user id or email |
+
+**A reply under a post the agent made itself (v0.482.1).** A run that opened a thread with `slack_send`
+was never launched with `slack_reply`. When a human replied there and the run was still alive, the text
+was typed into it bare — indistinguishable from an operator at the keyboard — so the run answered in its
+terminal, about whatever it was doing by then, and Slack saw silence. `continueSlackThread` now frames
+such a reply (`slackBotThreadReply`: who, which thread, and the exact `slack_send({ channel, thread_ts })`
+call that answers there) and the socket posts the ack itself. A thread the run was TRIGGERED from is
+unchanged: bare text, no ack, `slack_reply` is the feedback.
 
 `slack_send`/`slack_dm` are proactive: off-thread, unattended, no policy gate — audit only
 (`slack.send` / `slack.dm` with `{ channel|to, ts, chars }`), the same posture as `slack_reply`.

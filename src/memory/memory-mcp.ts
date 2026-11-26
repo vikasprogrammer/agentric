@@ -222,12 +222,15 @@ const SLACK_SEND_TOOL = {
   description:
     'Post a message to a Slack channel (any channel, not just the one that triggered you). Use this to ' +
     'proactively message a channel — announcements, summaries, alerts. For replying to the thread that ' +
-    'triggered you, prefer slack_reply.',
+    'triggered you, prefer slack_reply. The result names the thread_ts of what you posted: pass it back ' +
+    'as thread_ts to post INSIDE that thread — which is how you answer someone who replied under a ' +
+    'message you sent.',
   inputSchema: {
     type: 'object',
     properties: {
       channel: { type: 'string', description: 'Channel id (e.g. C0123ABCD) or name (e.g. "general" / "#general"). Names are resolved to ids; the bot auto-joins public channels it is not in.' },
       text: { type: 'string', description: 'The message to post (Slack mrkdwn supported).' },
+      thread_ts: { type: 'string', description: 'Optional. Post as a reply inside this thread (the ts of its root message, e.g. "1795665112.303709") instead of as a new channel message.' },
     },
     required: ['channel', 'text'],
   },
@@ -2284,13 +2287,16 @@ async function slackSend(args: Record<string, unknown>): Promise<string> {
   const text = String(args.text ?? '').trim();
   if (!channel) return 'A channel (id or name) is required.';
   if (!text) return 'Nothing to post (text is required).';
+  const threadTs = String(args.thread_ts ?? '').trim();
   const res = await fetch(AOS_URL + '/api/agent/slack/send', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, channel, text }),
+    body: JSON.stringify({ session: SESSION, channel, text, ...(threadTs ? { thread_ts: threadTs } : {}) }),
   });
-  const d = (await res.json()) as { ok?: boolean; error?: string };
-  return d.ok ? `Posted to Slack channel ${channel}.` : `Could not post to Slack: ${d.error ?? 'unknown error'}`;
+  const d = (await res.json()) as { ok?: boolean; error?: string; thread_ts?: string };
+  if (!d.ok) return `Could not post to Slack: ${d.error ?? 'unknown error'}`;
+  const where = d.thread_ts ? ` (thread_ts ${d.thread_ts} — pass it as thread_ts to post in this thread again)` : '';
+  return threadTs ? `Replied in the Slack thread in ${channel}${where}.` : `Posted to Slack channel ${channel}${where}.`;
 }
 
 async function slackDm(args: Record<string, unknown>): Promise<string> {

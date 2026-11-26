@@ -242,6 +242,12 @@ export class SlackSocket {
         type: 'trigger.slack',
         data: { eventType: ev.eventType, channel: ev.channel, thread: true, continued: cont.status, runAs: runAsMember ?? null },
       });
+      // …except in a thread the run opened itself: that run has no `slack_reply`, and it may be deep in
+      // a long turn with the message queued behind it. Silence there reads as the bot ignoring a reply
+      // to its own post, so the OS says who has it.
+      if (cont.botThread && cont.agent) {
+        await postMessage(this.os.settings.slackBotToken(), ev.channel, `🤖 *${cont.agent}* has your reply — it will answer here.`, ev.threadTs);
+      }
       return;
     }
 
@@ -594,7 +600,7 @@ export class SlackSocket {
    * (e.g. a cron automation posting a daily summary). Public channels the bot isn't in are auto-joined
    * on `not_in_channel` and the post retried once. Audited as `slack.send`. Returns ok / a reason.
    */
-  async sendToChannel(sessionId: string, channelRef: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  async sendToChannel(sessionId: string, channelRef: string, text: string, threadTs?: string): Promise<{ ok: true; ts: string } | { ok: false; error: string }> {
     const token = this.os.settings.slackBotToken();
     if (!token) return { ok: false, error: 'slack not configured' };
     const body = (text || '').trim();
@@ -608,17 +614,21 @@ export class SlackSocket {
       if ('error' in found) return this.sendFailed(sessionId, ref, `channel "${ref}" not found: ${found.error}`);
       channel = found.channel;
     }
-    let res = await postMessage(token, channel, body);
+    // `thread_ts` posts INSIDE an existing thread — the only way a run that opened a thread with an
+    // earlier `slack_send` (and so has no `slack_reply`) can answer the human who replied under it.
+    const thread = /^\d+\.\d+$/.test((threadTs || '').trim()) ? (threadTs as string).trim() : undefined;
+    if (threadTs && !thread) return { ok: false, error: `thread_ts "${threadTs}" is not a Slack message ts (expected e.g. 1795665112.303709)` };
+    let res = await postMessage(token, channel, body, thread);
     if ('error' in res && res.error === 'not_in_channel') {
       await joinChannel(token, channel); // best-effort; retry once whether or not the join reported ok
-      res = await postMessage(token, channel, body);
+      res = await postMessage(token, channel, body, thread);
     }
     if ('error' in res) return this.sendFailed(sessionId, channel, res.error);
     // A proactive post opens a NEW thread. Bind it so a human replying under the daily report is talking
     // to the agent that wrote it, instead of being dropped as unaddressed channel chatter.
-    this.autos.noteSlackThread(sessionId, channel, res.ts);
-    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.send', data: { channel, ts: res.ts, chars: body.length } });
-    return { ok: true };
+    this.autos.noteSlackThread(sessionId, channel, thread ?? res.ts);
+    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.send', data: { channel, ts: res.ts, chars: body.length, ...(thread ? { thread } : {}) } });
+    return { ok: true, ts: thread ?? res.ts };
   }
 
   private sendFailed(sessionId: string, channel: string, error: string): { ok: false; error: string } {

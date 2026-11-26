@@ -1880,8 +1880,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     if (!slack) return sendJson(res, 503, { error: 'slack not available' });
-    const out = await slack.sendToChannel(session, String(b.channel || ''), String(b.text || ''));
-    return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
+    const out = await slack.sendToChannel(session, String(b.channel || ''), String(b.text || ''), b.thread_ts ? String(b.thread_ts) : undefined);
+    return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true, thread_ts: out.ts } : { ok: false, error: out.error });
   }
   // OS-owned image generation (`image_generate` MCP tool): govern → vendor call → snapshot each image
   // into the Artifacts gallery. Pre-auth loopback, session-secret gated like the other agent tools;
