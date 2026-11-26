@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Inbox as InboxIcon, MessagesSquare, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
 import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, CircleDashed, Ban, Pause, Copy as CopyIcon } from 'lucide-react'
-import { GitPullRequest, GitPullRequestClosed, GitMerge, Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
+import { ArchiveRestore, GitPullRequest, GitPullRequestClosed, GitMerge, Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -12249,6 +12249,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
   })
   useEffect(() => { localStorage.setItem('aos_tasks_group', listGroup) }, [listGroup])
   const [mine, setMine] = useState(false)
+  // The cleanup archive (src/edge/task-hygiene.ts): tasks board cleanup moved off the board. A separate
+  // LOAD, not a filter — the board's default fetch leaves them out entirely.
+  const [showArchived, setShowArchived] = useState(false)
+  const [archivedCount, setArchivedCount] = useState(0)
   const [fAssignee, setFAssignee] = useState('') // '' = all
   const [fLabel, setFLabel] = useState('')
   const [fPriority, setFPriority] = useState('') // '' = all
@@ -12374,8 +12378,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
   }
 
   const load = async () => {
-    const r = await api.tasks(q)
+    const r = await api.tasks(q, '', showArchived)
     setTasks(r.tasks ?? [])
+    setArchivedCount(r.archivedCount ?? 0)
     setDiscussions(r.discussions ?? {})
     setPrCounts(r.prCounts ?? {})
     setWorkers(r.workers ?? {})
@@ -12387,14 +12392,14 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
     const ids = [...new Set((r.tasks ?? []).map((t) => t.lastSessionId).filter(Boolean) as string[])]
     setSessions(await api.sessionsByIds(ids).catch(() => [] as Session[]))
   }
-  useEffect(() => { load() }, [q])
+  useEffect(() => { load() }, [q, showArchived])
   // Live refresh so an agent closing its own loop moves the card without a manual reload. Pause while a
   // form/inline-edit is open so it can't clobber unsaved text.
   useEffect(() => {
     const paused = () => showNew || editing
     const t = setInterval(() => { if (!paused()) load() }, 5000)
     return () => clearInterval(t)
-  }, [q, showNew, editing])
+  }, [q, showNew, editing, showArchived])
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
@@ -12496,6 +12501,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
     if (r.error) alert(r.error)
     await load(); setBusy(false)
   }
+  const restore = async (id: string) => { setBusy(true); const r = await api.restoreTask(id); if (r.error) alert(r.error); await load(); setBusy(false) }
   const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); const r = await api.patchTask(id, b); if (r.error) alert(r.error); await load(); if (b.goalId !== undefined || b.status || b.assignee) await loadGoals(); setBusy(false) }
   // Dispatch a task. A HEADLESS run is background work — it drives itself to completion and exits — so
   // opening the terminal on it yanks you out of the board you were working to watch a pane you can't
@@ -12680,6 +12686,16 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
         {/* "This task is part of a goal" banner — the goal's title, status and derived progress, as one
             click-through into the goal's detail page. The Goal field below still RE-LINKS the task; this
             is the read/navigate affordance a bare <Select> can't give. */}
+        {detail.task.archivedAt && (
+          <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+            <ArchiveRestore className="h-4 w-4 shrink-0 text-amber-600" />
+            <span className="min-w-0 flex-1">
+              <span className="font-medium">Archived by board cleanup</span>
+              <span className="text-muted-foreground"> {timeAgo(detail.task.archivedAt)} ago{detail.task.archivedReason ? ` — ${detail.task.archivedReason}` : ''}. Nobody decided against it; restore it if it still matters.</span>
+            </span>
+            <Button size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" disabled={busy} onClick={() => restore(detail.task.id)}>Restore</Button>
+          </div>
+        )}
         {detail.task.goalId && (() => {
           const g = goalOf(detail.task.goalId)
           const gid = detail.task.goalId
@@ -13072,6 +13088,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tasks…" className="h-8 w-48 pl-7" />
         </div>
+        {(archivedCount > 0 || showArchived) && (
+          <button
+            onClick={() => { const on = !showArchived; setShowArchived(on); if (on && view === 'board') setView('list') }}
+            className={`flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs ${showArchived ? 'bg-muted font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+            title="Tasks board cleanup archived: agent-filed work nobody touched in 30+ days, children of closed tasks, and proposals nobody accepted. Each is one click to restore."
+          ><ArchiveRestore className="h-3.5 w-3.5" />Archived · {archivedCount}</button>
+        )}
         <Button size="sm" onClick={() => setShowNew((v) => !v)}><Plus className="mr-1 h-3.5 w-3.5" />New task</Button>
       </div>
 

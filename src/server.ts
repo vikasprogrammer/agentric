@@ -74,6 +74,7 @@ import { planMemoryCleanup, applyMemoryCleanup, cleanupOpts } from './edge/memor
 import { SkillScout, SCOUT_ID } from './edge/skill-scout';
 import { planKbTidy, applyKbTidy } from './edge/kb-tidy';
 import { planTaskReconcile, applyTaskReconcile } from './edge/task-reconcile';
+import { planTaskHygiene, applyTaskHygiene } from './edge/task-hygiene';
 import { planLibraryTidy, applyLibraryTidy } from './edge/library-tidy';
 import { planSessionTidy, applySessionTidy } from './edge/session-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
@@ -2173,10 +2174,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // with the valid roster instead of accepting an inert hand-off.
     // `suggestedAssignee` is the proposal-lane pick (the `suggest` tool arg): who the agent thinks should work
     // a task a human will review — validated exactly like an assignee, since accepting turns it into one.
-    const resolvePick = (v: unknown): string | undefined => v === 'me' ? `agent:${agent}` : (typeof v === 'string' && v ? v : undefined);
+    // "null" / "none" / "" from an agent mean no pick, not a person called null.
+    const resolvePick = (v: unknown): string | undefined => v === 'me' ? `agent:${agent}` : (typeof v === 'string' && v && os.tasks.canonicalAssignee(v) !== null ? v : undefined);
     const assignee = resolvePick(b.assignee);
     const suggestion = resolvePick(b.suggestedAssignee);
     for (const pick of [assignee, suggestion]) {
+      // A PERSON must be someone on the team. A free-text name or email that resolves to nobody used to be
+      // stored verbatim and the task was then invisible to everyone — nobody's "Mine", nobody's card.
+      if (pick && !pick.startsWith('agent:') && !os.tasks.resolvesToMember(pick)) {
+        return sendJson(res, 200, { ok: false, error: `"${pick}" is not a member of this workspace — assign a person by their member id or email (directory_lookup finds them), an agent as "agent:<id>", or "me".` });
+      }
       if (!pick || !pick.startsWith('agent:')) continue;
       const targetId = pick.slice('agent:'.length);
       if (!os.agents.get(targetId)) {
@@ -2255,6 +2262,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // gets the id back and carries on. Deliberately untouched: an auto-dispatch hand-off (a caller may be
     // waiting on it in task_wait — gating it would hang the caller on a click) and a goal-room/plan run
     // (`goal:` provenance — a human asked for that plan and reviews it under the goal).
+    // ── Already on the board ───────────────────────────────────────────────────────────────
+    // Re-filing work that is already open adds a copy, not a task (one live tenant had the same test-fix
+    // task open eight times). Board items and proposals only: an auto-dispatch hand-off carries a caller
+    // waiting on THIS task's poke-back, and quietly handing it someone else's task would break that loop.
+    if (!wantsAutoDispatch) {
+      const dup = os.tasks.findOpenDuplicate(os.tenant, title);
+      if (dup) {
+        os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'task.duplicate.refused', data: { title, existing: dup.id } });
+        return sendJson(res, 200, {
+          ok: true, id: dup.id, duplicate: true, status: dup.status,
+          message: `Not filed — ${dup.id} "${dup.title}" is already open (${dup.status}${dup.assignee ? `, ${dup.assignee}` : ', unassigned'}). ` +
+            'Add what you know to it with task_update({ id, note }) instead of filing it again.',
+        });
+      }
+    }
     const proposed = !wantsAutoDispatch
       && !(tm.sessionProvenance(session) ?? '').startsWith('goal:')
       && os.settings.taskProposalsEnabled();
@@ -2417,7 +2439,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
     // On a proposal the agent's assignee is still only a suggestion — re-pointing it revises the pick, it
     // doesn't assign anyone (that, and the accept it implies, is the reviewer's).
-    const nextAssignee = b.assignee === null ? null : (b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' && b.assignee ? b.assignee : undefined));
+    const nextAssignee = b.assignee === null || (typeof b.assignee === 'string' && b.assignee && os.tasks.canonicalAssignee(b.assignee) === null) ? null : (b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' && b.assignee ? b.assignee : undefined));
+    if (typeof nextAssignee === 'string' && !nextAssignee.startsWith('agent:') && !os.tasks.resolvesToMember(nextAssignee)) {
+      return sendJson(res, 200, { ok: false, error: `"${nextAssignee}" is not a member of this workspace — assign a person by their member id or email (directory_lookup finds them), an agent as "agent:<id>", or "me".` });
+    }
     const suggesting = cur?.status === 'proposed' && nextAssignee !== undefined;
     const task = requestMetrics.phase('task:update.store', () => os.tasks.update(id, {
       status: typeof b.status === 'string' ? (b.status as TaskStatus) : undefined,
@@ -4825,7 +4850,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const taskAttachmentRaw = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)\/raw$/);
   const taskAttachment = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)$/);
   if (method === 'GET' && p === '/api/tasks') {
-    const tasks = os.tasks.list({ tenant: os.tenant, status: (url.searchParams.get('status') as TaskStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
+    // Three loads: `?archived=1` → the cleanup archive; a search or a status filter → the ranked/filtered
+    // list as before; otherwise the BOARD — every open task plus what closed in the last 14 days. The old
+    // default (first 500 rows in status order) silently cut open work off on any tenant past 500 tasks.
+    const q = url.searchParams.get('q') || undefined;
+    const st = (url.searchParams.get('status') as TaskStatus) || undefined;
+    const tasks = url.searchParams.get('archived') === '1'
+      ? os.tasks.archived(os.tenant)
+      : q || st
+        ? os.tasks.list({ tenant: os.tenant, status: st, query: q, limit: 500 })
+        : os.tasks.board(os.tenant, { closedSince: Date.now() - 14 * 86_400_000 });
     // PAYLOAD: `body` is CLIPPED here for the same reason as the sessions list above — measured on the
     // globex tenant (471 tasks) it was 887 KB of a 1.27 MB response, and NO list-level view renders it
     // (the board shows title/labels; the description tab reads `detail.task.body` from GET /api/tasks/:id,
@@ -4837,7 +4871,31 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // page load would burn the rate limit to render a number. `prCounts` is parsed BEFORE the body clip
     // above would matter — `tasks`, not `slim`, so a link past the clip point still counts.
     const prCounts = new PrCache(os.db, os.tenant).summaries(taskPrRefsBulk(os.db, tasks));
-    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), prCounts, agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me, slim.map((t) => t.id), LIST_CLIP), workers: tm.taskWorkers() });
+    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), archivedCount: os.tasks.archivedCount(os.tenant), prCounts, agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me, slim.map((t) => t.id), LIST_CLIP), workers: tm.taskWorkers() });
+  }
+  // Board cleanup (src/edge/task-hygiene.ts): what the next pass would do (`GET`, a dry run) and run it
+  // now (`POST`). Owner/admin — it rewrites many rows at once, even if every one is restorable.
+  if (p === '/api/tasks/hygiene' && (method === 'GET' || method === 'POST')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (method === 'GET') {
+      const plan = planTaskHygiene(os);
+      const by = (r: string) => plan.archive.filter((i) => i.rule === r).length;
+      return sendJson(res, 200, {
+        normalize: plan.normalize,
+        archive: { proposal: by('proposal'), stale: by('stale'), orphan: by('orphan'), sample: plan.archive.slice(0, 25) },
+        settle: { todo: plan.settle.filter((i) => i.to === 'todo').length, blocked: plan.settle.filter((i) => i.to === 'blocked').length, sample: plan.settle.slice(0, 25) },
+      });
+    }
+    const r = applyTaskHygiene(os, { syncProposalCard: (id) => tm.syncTaskProposalCards(id) }, Date.now(), me.email);
+    return sendJson(res, 200, { ok: true, ...r });
+  }
+  const taskRestore = p.match(/^\/api\/tasks\/([\w-]+)\/restore$/);
+  if (taskRestore && method === 'POST') {
+    const t = os.tasks.restore(taskRestore[1], me.id);
+    if (!t) return sendJson(res, 404, { error: 'not an archived task' });
+    if (t.status === 'proposed') tm.syncTaskProposalCards(t.id);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.restored', data: { id: t.id, status: t.status } });
+    return sendJson(res, 200, { ok: true, task: t });
   }
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);

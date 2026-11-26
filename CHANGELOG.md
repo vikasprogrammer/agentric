@@ -8,6 +8,38 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.487.0] - 2026-11-26
+### Added
+- **Board cleanup: the task board stops lying.** On the busiest tenant the board held 1,776 open tasks, 97%
+  filed by agents, idle ~90 days on average: 188 `doing` with no run behind any of them, 744 unassigned
+  `todo` nothing would ever pick up, 616 children of already-finished parents, 182 proposals nobody had
+  decided in ~48 days. A new hourly pass (`src/edge/task-hygiene.ts`, off the scheduler tick) fixes the rows
+  themselves. It **archives** agent-filed work that has been idle 30+ days with nobody on it, children
+  left open 7+ days after their parent closed, and proposals nobody accepted in 14 days. It moves a `doing`
+  that has had no run for 3+ days back to `todo` (or `blocked` when it would auto-dispatch, so old work
+  never respawns silently). It never touches a task a person holds, never archives one a person filed, and
+  skips anything with a live run or a future due date. Archived = `cancelled` + `archived_at`/`archived_reason`
+  (new columns, no new status, so no dispatch or goal-progress path needed changing). It is silent (no cards,
+  DMs or caller wake-ups), is restored with one click, is left out of the board load and the column counts,
+  and the pass is audited `tasks.hygiene`. A large drain leaves ONE admin card saying what moved and where it went. It drains in
+  ≤300-row passes on consecutive ticks; a dry run on a copy of that tenant's DB took it to 167 open tasks
+  in 6 passes of ≤190 ms. Owner/admin: `GET /api/tasks/hygiene` (dry run) / `POST` (run now). Pinned by
+  `scripts/task-hygiene-test.cjs`.
+  **For admins:** Tasks now cleans itself up: agent work nobody touched in a month, leftovers of finished tasks, and undecided proposals move to an Archived view you can restore from, so the board shows real work. [Open Tasks](#/tasks)
+### Fixed
+- **"Mine" on the task board missed most of a person's tasks.** An assignee was stored however it arrived
+  (`vikas@…`, `member:vikas@…`, `janak`, the string `"null"`, a member named "Owner"), but the filter
+  compares against the member id. Every write now stores the canonical id (`TaskStore.canonicalAssignee`):
+  emails, `member:` refs and unambiguous names resolve, and blank-ish spellings mean unassigned. The cleanup
+  pass rewrites existing rows (68 on the busiest tenant, none left unresolved). An agent assigning a person
+  who isn't on the team is now refused with a hint, where before the task was stored invisible to everyone.
+- **The task board showed an arbitrary 500 rows.** The default load was "first 500 by status order" across
+  all ~6,700 tasks, so open work past that point was silently missing. The board now loads every open task
+  plus what closed in the last 14 days. Search and status filters behave as before.
+- **Agents re-filed tasks that were already open** (one live tenant had the same test-fix task open eight
+  times). A board item or proposal whose title matches an open task (case/whitespace-insensitive) is pointed
+  at that task instead (`task.duplicate.refused`). Auto-dispatch hand-offs are exempt because a caller is waiting on that exact task.
+
 ## [0.486.0] - 2026-11-26
 ### Added
 - **In Messages, your reply answers the agent's question.** An agent blocked on `ask` used to need its card

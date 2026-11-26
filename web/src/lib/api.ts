@@ -817,6 +817,9 @@ export interface Task {
   createdAt: number
   updatedAt: number
   updatedBy: string
+  /** Set when board cleanup archived it (status is then `cancelled`); restorable via `restoreTask`. */
+  archivedAt?: number
+  archivedReason?: string
 }
 /** A task SPAWNED by another (the `parentId` hand-off edge), as the detail route returns it — the
  *  server resolves these so a wide fan-out isn't under-counted by the board's bounded page. */
@@ -2346,7 +2349,8 @@ export const api = {
   kbRevert: (id: string, rev: number) => call<{ ok: boolean; page?: KbPage; error?: string }>('POST', `/api/kb/page/${id}/revert`, { rev }),
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
 
-  tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; prCounts?: Record<string, TaskPrSummary>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary>; workers?: Record<string, TaskWorkers> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
+  tasks: (q = '', status = '', archived = false) => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; archivedCount?: number; prCounts?: Record<string, TaskPrSummary>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary>; workers?: Record<string, TaskWorkers> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}${archived ? '&archived=1' : ''}`),
+  restoreTask: (id: string) => call<{ ok?: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/restore`),
   task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; children?: TaskChild[]; runs?: TaskRun[]; prs?: TaskPr[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
   /** The task's PRs with their status refreshed from GitHub (stale-only unless `refresh`). Separate from
    *  the detail payload because it makes network calls — the detail's `prs` render instantly from cache. */

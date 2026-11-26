@@ -28,6 +28,7 @@ import { SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
 import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './concierge';
 import { sweepStrandedTasks } from './task-reconcile';
+import { applyTaskHygiene, archivedTotal } from './task-hygiene';
 import { refreshStaleUsage, BACKGROUND_USAGE_STALE_MS } from './runtime-account-usage';
 import { WakeupQueue } from './wakeups';
 import { AgentricCommand, AgentricSurface, agentricBody, agentricHelp, parseAgentricCommand } from './agentric-commands';
@@ -2437,6 +2438,7 @@ export class Automations {
     running += this.wakeups.sweep(cap > 0 ? Math.max(0, cap - running) : Infinity);
     this.sweepOverdue(now);
     this.sweepStranded(now, cap > 0 ? Math.max(0, cap - running) : Infinity);
+    this.sweepTaskHygiene(now);
     this.sweepStuckGoals(now);
     this.sweepCompletedGoals();
     this.sweepGoalMetrics(now);
@@ -2615,6 +2617,48 @@ export class Automations {
       }
     } catch {
       // never let the stranded-task sweep take down the automation scheduler
+    }
+  }
+
+  private hygieneAt = 0;
+  /** Archive counts summed across a drain — consecutive capped passes — so the admin card is posted ONCE. */
+  private hygieneDrain = { stale: 0, orphan: 0, proposal: 0, settled: 0, normalized: 0 };
+  /**
+   * Board cleanup (src/edge/task-hygiene.ts), hourly — and on the first tick after boot, so a deploy
+   * cleans a neglected board straight away instead of an hour later. Runs AFTER the stranded sweep so a
+   * run that just ended gets its success-close / caller wake-up before cleanup judges the task. A pass
+   * that archives a lot (the first one, on a tenant that has never had this) leaves one admin card, so a
+   * board that suddenly shrank says why and where the tasks went.
+   */
+  private sweepTaskHygiene(now: Date): void {
+    if (now.getTime() - this.hygieneAt < 60 * 60_000) return;
+    this.hygieneAt = now.getTime();
+    try {
+      const r = applyTaskHygiene(this.os, { syncProposalCard: (id) => this.tm.syncTaskProposalCards(id) }, now.getTime(), 'scheduler');
+      const d = this.hygieneDrain;
+      d.stale += r.archived.stale; d.orphan += r.archived.orphan; d.proposal += r.archived.proposal;
+      d.settled += r.settled.todo + r.settled.blocked; d.normalized += r.normalized;
+      // A big backlog drains in small passes on consecutive ticks (each ~0.1 s), not one long stall.
+      if (r.more) { this.hygieneAt = 0; return; }
+      const n = d.stale + d.orphan + d.proposal;
+      if (n >= 20) {
+        this.tm.postSystemCard({
+          topic: 'task-hygiene', type: 'notification', audience: { kind: 'admins' }, notify: false,
+          title: `Board cleanup archived ${n} stale task${n === 1 ? '' : 's'}`,
+          body: [
+            d.stale ? `${d.stale} filed by agents, with no activity in 30+ days and nobody on them` : '',
+            d.orphan ? `${d.orphan} left open after their parent task closed` : '',
+            d.proposal ? `${d.proposal} proposals nobody accepted in 14+ days` : '',
+            d.settled ? `${d.settled} marked "doing" with no run behind them were moved back` : '',
+            d.normalized ? `${d.normalized} assignees rewritten to the member they meant` : '',
+            'Nothing a person holds was touched, and nothing a person filed was archived. Archived tasks are one click to restore from Tasks → Archived.',
+          ].filter(Boolean).join('\n'),
+          link: { page: 'tasks', label: 'Tasks' },
+        });
+      }
+      this.hygieneDrain = { stale: 0, orphan: 0, proposal: 0, settled: 0, normalized: 0 };
+    } catch {
+      // never let board cleanup take down the automation scheduler
     }
   }
 

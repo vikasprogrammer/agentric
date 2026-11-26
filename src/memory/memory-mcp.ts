@@ -3031,8 +3031,10 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       dueAt: parseDue(args.due),
     }),
   });
-  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string; proposed?: boolean; suggestedAssignee?: string };
+  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string; proposed?: boolean; suggestedAssignee?: string; duplicate?: boolean; message?: string };
   if (!d.ok) return `Could not create the task: ${d.error ?? 'unknown error'}`;
+  // Already open on the board — the server composes the sentence (this process can outlive a server upgrade).
+  if (d.duplicate) return d.message ?? `Not filed — ${d.id} is already open with that title. Add to it with task_update instead.`;
   // Not on the board yet: an agent-filed task that doesn't dispatch waits for a human to accept it. Say so
   // plainly, or the agent reads its own proposal as committed work and waits on it (or files it again).
   if (d.proposed) {
