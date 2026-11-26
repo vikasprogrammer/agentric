@@ -156,6 +156,43 @@ console.log('\ndownload');
   assert(posts.length > p && posts[posts.length - 1].thread === REPORT_TS, 'and is answered in that same thread');
   assert(/support-ops/.test(posts[posts.length - 1].text), 'by an ack naming the agent that took it');
 
+  // ── 6b. the same reply, when the run that wrote the report is STILL ALIVE ──────
+  // Reported 2026-11-26: a human answered "assign someone" under a SEV1 a cron run had posted. The run
+  // was live, so the text was typed straight into it — bare. The run had no `slack_reply` (it was not
+  // chat-triggered) and `slack_send` could not post into a thread, so it answered in its own terminal,
+  // about the unrelated thing it was doing by then, and Slack saw nothing at all.
+  console.log('\na reply under our own post reaches a LIVE run with its origin attached');
+  tm.db.prepare('UPDATE term_sessions SET claude_session_id = ? WHERE id = ?').run('c-live', routed[0].id);
+  const typed = [];
+  const realDeliver = tm.deliverToResident;
+  tm.deliverToResident = (id, msg) => { typed.push({ id, msg }); return true; };
+  before = routed.length;
+  const p6 = posts.length;
+  await sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'channel', user: 'U1', ts: '500.3', thread_ts: REPORT_TS, text: 'assign someone' }));
+  assert(routed.length === before && typed.length === 1 && typed[0].id === routed[0].id, 'it is delivered into the live run, not spawned fresh');
+  const framed = typed[0] ? typed[0].msg : '';
+  assert(/assign someone$/.test(framed), 'carrying what the human said', framed);
+  assert(framed.includes(`thread_ts: "${REPORT_TS}"`) && framed.includes(`channel: "${CH}"`) && /slack_send\(/.test(framed), 'and the exact slack_send call that answers in that thread — the run has no slack_reply', framed);
+  assert(/cannot see this session/.test(framed), 'and that the sender is in Slack, not at the keyboard');
+  assert(!/\n/.test(framed), 'on one line (it is typed into a live TUI)');
+  assert(posts.length === p6 + 1 && posts[posts.length - 1].thread === REPORT_TS && /support-ops/.test(posts[posts.length - 1].text), 'the OS acks in the thread naming the agent — silence reads as being ignored');
+
+  await sock.sendToChannel(routed[0].id, CH, 'infra-ops has it.', REPORT_TS);
+  assert(posts[posts.length - 1].thread === REPORT_TS && posts[posts.length - 1].text === 'infra-ops has it.', 'slack_send with thread_ts posts INSIDE the thread');
+  assert(tm.sessionForSlackThread(CH, REPORT_TS).sessionId === routed[0].id, 'and keeps the thread bound to its root, not to the reply');
+  const badTs = await sock.sendToChannel(routed[0].id, CH, 'x', 'not-a-ts');
+  assert(badTs.ok === false && /thread_ts/.test(badTs.error), 'a malformed thread_ts is refused rather than silently posted to the channel');
+
+  // A thread the run was TRIGGERED from has slack_reply bound to it — that path stays exactly as it was.
+  tm.db.prepare('INSERT OR REPLACE INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?)').run(routed[0].id, CH, REPORT_TS, Date.now());
+  const p7 = posts.length;
+  await sock.dispatch(env({ type: 'app_mention', channel: CH, channel_type: 'channel', user: 'U1', ts: '500.4', thread_ts: REPORT_TS, text: 'and the second one?' }));
+  assert(typed.length === 2 && typed[1].msg === 'and the second one?', 'a reply in the thread the run was triggered from is still typed in bare');
+  assert(posts.length === p7, 'with no OS ack — slack_reply is the feedback there');
+  tm.deliverToResident = realDeliver;
+  tm.db.prepare('UPDATE term_sessions SET claude_session_id = NULL WHERE id = ?').run(routed[0].id);
+  tm.db.prepare('INSERT OR REPLACE INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?)').run(routed[0].id, CH, '', Date.now());
+
   before = routed.length;
   const p2 = posts.length;
   await sock.dispatch(env({ type: 'message', channel: CH, channel_type: 'channel', user: 'U1', ts: '600.1', thread_ts: '600.0', text: 'unrelated chatter' }));

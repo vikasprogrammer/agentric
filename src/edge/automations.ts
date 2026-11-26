@@ -363,6 +363,19 @@ export function attachmentNote(files?: { name: string }[]): string {
  * a channel where several agents are reachable and the auto-router, not the sender, chose one.
  * `bold`/`italic` differ per platform (Slack `*x*` vs Discord `**x**`), so the caller supplies the wrap.
  */
+/**
+ * A human's reply under something the agent POSTED with `slack_send`, as it is typed into that run.
+ * The run has no `slack_reply` (it was not chat-triggered), so the text has to carry what the tool
+ * binding normally would: who is speaking, that they are in Slack and cannot see this session, which
+ * post they are answering (the `thread_ts` is the ts `slack_send` returned for it), and the one call
+ * that reaches them. Single-line — it goes through tmux send-keys into a live TUI.
+ */
+export function slackBotThreadReply(actor: string, channel: string, threadTs: string, text: string): string {
+  return `[Slack — ${actor || 'someone'} replied in the thread under the message you posted to ${channel} (thread_ts ${threadTs}). ` +
+    `They are reading Slack and cannot see this session: answer them with slack_send({ channel: "${channel}", thread_ts: "${threadTs}", text: "…" }). ` +
+    `Their reply is about THAT post, not necessarily what you are doing right now.] ${text}`;
+}
+
 export function chatAck(agents: string[], bold = '*'): string {
   const named = [...new Set(agents.filter(Boolean))];
   if (!named.length) return '🤖 On it — working on this now.';
@@ -1709,11 +1722,18 @@ export class Automations {
    *   - **none**:      nothing resumable is bound (the first message in a thread) → the caller falls through
    *     to the normal fireSlack path (fresh spawn / router).
    * The socket posts no ack — the agent's own `slack_reply` is the feedback.
+   *
+   * `botThread` marks the one case where that does not hold: the thread is one the run OPENED with
+   * `slack_send` (a cron report), so it was never launched with `slack_reply`. Typed in bare, such a
+   * reply is indistinguishable from an operator at the keyboard — a live run answered "assign someone"
+   * in its terminal, about whatever it happened to be doing, and Slack saw silence. So the message is
+   * framed with who sent it, which thread, and the exact `slack_send` call that answers there, and the
+   * socket posts the ack itself.
    */
   continueSlackThread(
     event: { channel: string; threadTs: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
-  ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
+  ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string; agent?: string; botThread?: boolean } {
     if (!event.threadTs) return { status: 'none' };
     const bound = this.tm.sessionForSlackThread(event.channel, event.threadTs);
     if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
@@ -1727,17 +1747,20 @@ export class Automations {
     // Files land in the agent's folder BEFORE the message is typed in, so the path the message names is
     // already readable by the time the agent acts on it.
     const staged = this.tm.stageInboundFiles(bound.sessionId, event.files ?? []);
-    const msg = this.stripChatPrefix(event.text) + (staged.length ? `\n(attached: ${staged.join(', ')})` : '');
-    if (!msg.trim()) return { status: 'none' };
+    const said = this.stripChatPrefix(event.text) + (staged.length ? `\n(attached: ${staged.join(', ')})` : '');
+    if (!said.trim()) return { status: 'none' };
+    const botThread = !this.tm.isSlackReplyTarget(bound.sessionId, event.channel, event.threadTs);
+    const msg = botThread ? slackBotThreadReply(event.actorLabel, event.channel, event.threadTs, said) : said;
     const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
       ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
       principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
-      data: { mode, agent: bound.agent, session: bound.sessionId, channel: event.channel, thread: event.threadTs, runAs: runAs ?? null, files: staged.length || null },
+      data: { mode, agent: bound.agent, session: bound.sessionId, channel: event.channel, thread: event.threadTs, runAs: runAs ?? null, files: staged.length || null, ...(botThread ? { botThread: true } : {}) },
     });
+    const out = { sessionId: bound.sessionId, agent: bound.agent, botThread };
     // Warm path: live resident session → deliver by typing into it.
-    if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
+    if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', ...out }; }
     // Cold path: reaped/ended → revive the SAME row (resume transcript, seeded with the message).
-    if (this.tm.reviveResident(bound.sessionId, msg, runAs)) { emit('revived'); return { status: 'revived', sessionId: bound.sessionId }; }
+    if (this.tm.reviveResident(bound.sessionId, msg, runAs)) { emit('revived'); return { status: 'revived', ...out }; }
     return { status: 'none' };
   }
 

@@ -128,7 +128,7 @@ scope/parity properties, but not the cost.
 | `discord_reply` | `POST /api/agent/discord/reply` | DiscordSocket | W | only when `DISCORD_REPLY=1` (chat-triggered) |
 | `telegram_reply` | `POST /api/agent/telegram/reply` | TelegramSocket | W | only when `TELEGRAM_REPLY=1` (chat-triggered); posts back into the bound Telegram chat as a reply, plain text |
 | `clickup_reply` | `POST /api/agent/clickup/reply` | ClickupIngress | W | only when `CLICKUP_REPLY=1` (ClickUp-triggered) |
-| `slack_send` | `POST /api/agent/slack/send` | `SlackSocket.sendToChannel` | W | proactive post to any channel by id/name; auto-joins public channels; audited `slack.send`; only when `SLACK_EGRESS=1` (Slack configured) |
+| `slack_send` | `POST /api/agent/slack/send` | `SlackSocket.sendToChannel` | W | proactive post to any channel by id/name; auto-joins public channels; optional `thread_ts` posts INSIDE a thread (the result names the ts of what was posted — the only way a run that opened a thread with `slack_send` can answer a reply under it); audited `slack.send`; only when `SLACK_EGRESS=1` (Slack configured) |
 | `slack_dm` | `POST /api/agent/slack/dm` | `SlackSocket.dmMember` | W | proactive DM by Slack user id or email; audited `slack.dm`; only when `SLACK_EGRESS=1` |
 | `discord_send` | `POST /api/agent/discord/send` | `DiscordSocket.sendToChannel` | W | proactive post to any channel by id; audited `discord.send`; only when `DISCORD_EGRESS=1` (Discord configured) |
 | `discord_dm` | `POST /api/agent/discord/dm` | `DiscordSocket.dmMember` | W | proactive DM by Discord user id; audited `discord.dm`; only when `DISCORD_EGRESS=1` |
