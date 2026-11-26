@@ -239,8 +239,11 @@ Two mechanisms put the rest of the product inside the chat:
   folded into the message meta as `ent`), and what the text names — an id (`tsk_…`, `goal_…`, `bet_…`,
   `au_…`, `kbp_…`) or a `#/kb/<section>/<slug>` link. Hydrated on every read by `DirectMessages.refs`,
   so status is always current. Capped at `MAX_REFS` (4); only create/change tools contribute, never
-  list/get; an id that does not resolve draws nothing. A card links to the primitive's own page —
-  it does not edit it.
+  list/get; an id that does not resolve draws nothing. A card links to the primitive's own page.
+- **Task cards are editable.** Status and assignee are menus on the card; they write through
+  `PATCH /api/tasks/:id` (the Tasks board's own route — same audit, same proposal gate), and that route
+  emits `chatBus` `changed` so every viewer's card redraws. The assignee menu offers the people and
+  agents the member can already message. Other kinds stay read-only links.
 
 ## Notifications
 

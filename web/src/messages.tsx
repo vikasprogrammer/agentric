@@ -10,16 +10,16 @@
 // boundary — so they appear inline as cards, rendered by the same component the rest of the console
 // uses (passed in as `renderPending`, so this file imports nothing from App.tsx).
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, MessageSquare, ListChecks, Goal, FlaskConical, CalendarClock, BookOpen, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
+import { ChevronRight, ChevronDown, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, MessageSquare, ListChecks, Goal, FlaskConical, CalendarClock, BookOpen, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { chatSocket } from '@/lib/chat-socket'
-import { api, type NotificationPrefs, type NotifyLevel, type ThreadView, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type ChatArtifactRef, type ChatRef, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
+import { api, type NotificationPrefs, type NotifyLevel, type ThreadView, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type ChatArtifactRef, type ChatRef, type TaskStatus, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
 
 /** Search people/agents by NAME first; a description match only ranks after every name match — otherwise
  *  typing "engin" lists half the fleet (anything whose blurb says "engineer") above the Engineer. */
@@ -136,18 +136,78 @@ const BAD = new Set(['blocked', 'cancelled', 'killed', 'abandoned', 'paused'])
 const LIVE = new Set(['doing', 'running', 'proposed'])
 
 /** A primitive a message is about — a task, goal, bet, automation or KB page — with its status as of now. */
+/** Who a task can be handed to from its card — the people and agents this member can already message. */
+const RefCtx = createContext<{ people: RoomPerson[]; agents: DmDirectoryAgent[] }>({ people: [], agents: [] })
+const TASK_MOVES = ['todo', 'doing', 'blocked', 'done', 'cancelled'] as const
+const refTone = (status?: string) => !status ? '' : GOOD.has(status) ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : BAD.has(status) ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300' : LIVE.has(status) ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300' : 'bg-muted text-muted-foreground'
+
 function RefCard({ r }: { r: ChatRef }) {
   const Icon = REF_ICON[r.kind]
-  const tone = !r.status ? '' : GOOD.has(r.status) ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : BAD.has(r.status) ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300' : LIVE.has(r.status) ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300' : 'bg-muted text-muted-foreground'
+  const { people, agents } = useContext(RefCtx)
+  // A change shows at once and is confirmed by the next read of the thread (the server pushes it to
+  // everyone watching). `over` is dropped as soon as the card's own data moves.
+  const [over, setOver] = useState<{ status?: string; assignee?: string | null }>({})
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  useEffect(() => { setOver({}) }, [r.status, r.assignee])
+  const task = r.kind === 'task'
+  const status = over.status ?? r.status
+  const assignee = over.assignee !== undefined ? over.assignee : r.assignee ?? null
+  const whoName = (id: string | null) => !id ? 'Unassigned' : id.startsWith('agent:') ? prettyAgent(id.slice(6)) : people.find((p) => p.id === id)?.name ?? 'Someone'
+  // The server's meta line leads with the assignee; on a task that part is the control instead.
+  const rest = task ? (r.meta ?? '').split(' · ').slice(1).join(' · ') : r.meta
+  const change = async (b: { status?: TaskStatus; assignee?: string | null }) => {
+    setBusy(true); setErr(''); setOver((o) => ({ ...o, ...b }))
+    const res = await api.patchTask(r.id, b)
+    setBusy(false)
+    if (res.error) { setOver({}); setErr(res.error) }
+  }
+  const pill = `shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium capitalize ${refTone(status)}`
   return (
-    <a href={`#/${r.route}`} title={`Open this ${REF_NOUN[r.kind].toLowerCase()}`} className="flex w-full max-w-[26rem] items-center gap-2.5 rounded-lg border bg-card px-3 py-2 no-underline transition hover:border-primary">
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"><Icon className="h-4 w-4" /></span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium text-foreground">{r.title}</span>
-        <span className="block truncate text-[11px] text-muted-foreground">{REF_NOUN[r.kind]}{r.meta ? ` · ${r.meta}` : ''}</span>
-      </span>
-      {r.status && <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium capitalize ${tone}`}>{r.status.replace(/_/g, ' ')}</span>}
-    </a>
+    <div className="w-full max-w-[26rem]">
+      <div className="flex items-center gap-2.5 rounded-lg border bg-card px-3 py-2 transition hover:border-primary">
+        <a href={`#/${r.route}`} title={`Open this ${REF_NOUN[r.kind].toLowerCase()}`} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground no-underline"><Icon className="h-4 w-4" /></a>
+        <span className="min-w-0 flex-1">
+          <a href={`#/${r.route}`} className="block truncate text-sm font-medium text-foreground no-underline hover:underline">{r.title}</a>
+          <span className="flex items-center gap-1 truncate text-[11px] text-muted-foreground">
+            {REF_NOUN[r.kind]}
+            {task && (
+              <>
+                <span>·</span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger render={<button type="button" disabled={busy} aria-label="Change assignee" title="Change who has this task" className="flex min-w-0 items-center gap-0.5 rounded px-1 py-0.5 hover:bg-muted hover:text-foreground disabled:opacity-60" />}>
+                    <span className="truncate">{whoName(assignee)}</span><ChevronDown className="h-3 w-3 shrink-0" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
+                    {[null, ...people.map((p) => p.id), ...agents.map((a) => `agent:${a.id}`)].map((id) => (
+                      <DropdownMenuItem key={id ?? 'none'} onClick={() => { if (id !== assignee) change({ assignee: id }) }}>
+                        <span className="flex-1">{whoName(id)}</span>{id === assignee && <Check className="ml-2 h-3.5 w-3.5" />}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </>
+            )}
+            {rest ? <span className="truncate">· {rest}</span> : null}
+          </span>
+        </span>
+        {status && (task ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<button type="button" disabled={busy} aria-label="Change status" title="Change this task's status" className={`${pill} flex items-center gap-0.5 hover:ring-1 hover:ring-current disabled:opacity-60`} />}>
+              {status.replace(/_/g, ' ')}<ChevronDown className="h-3 w-3" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {TASK_MOVES.map((st) => (
+                <DropdownMenuItem key={st} onClick={() => { if (st !== status) change({ status: st }) }}>
+                  <span className="flex-1 capitalize">{st}</span>{st === status && <Check className="ml-2 h-3.5 w-3.5" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : <span className={pill}>{status.replace(/_/g, ' ')}</span>)}
+      </div>
+      {err && <p className="mt-0.5 px-1 text-[11px] text-amber-700 dark:text-amber-300">Couldn’t change it: {err}</p>}
+    </div>
   )
 }
 
@@ -1220,6 +1280,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
     () => [...(contacts ?? []).map((c) => ({ id: c.agent, description: c.description, icon: c.icon })), ...directory].sort((a, b) => a.id.localeCompare(b.id)),
     [contacts, directory],
   )
+  const refCtx = useMemo(() => ({ people, agents: allAgents }), [people, allAgents])
   // First visit lands on the most recent conversation, the way a chat app reopens where you left off.
   useEffect(() => {
     if (selected || !contacts) return
@@ -1319,9 +1380,9 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
         {creating ? (
           <NewRoom me={me} people={people} agents={allAgents} renderIcon={renderIcon} onCreated={async (id) => { await refresh(); onSelect(id) }} onClose={() => onSelect('')} />
         ) : activeRoom ? (
-          <Conversation key={activeRoom.id} notify={activeRoom.notify ?? 'all'} me={me} target={{ kind: 'room', room: activeRoom }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} openThread={openThread} onThread={setOpenThread} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
+          <RefCtx.Provider value={refCtx}><Conversation key={activeRoom.id} notify={activeRoom.notify ?? 'all'} me={me} target={{ kind: 'room', room: activeRoom }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} openThread={openThread} onThread={setOpenThread} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} /></RefCtx.Provider>
         ) : activeContact && !adding ? (
-          <Conversation key={activeContact.agent} notify={activeContact.notify ?? 'all'} me={me} target={{ kind: 'dm', contact: activeContact }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} openThread={openThread} onThread={setOpenThread} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} />
+          <RefCtx.Provider value={refCtx}><Conversation key={activeContact.agent} notify={activeContact.notify ?? 'all'} me={me} target={{ kind: 'dm', contact: activeContact }} messages={messages} people={people} agents={allAgents} renderIcon={renderIcon} renderCard={renderCard} pushed={pushed} connected={connected} onTyping={sayTyping} openThread={openThread} onThread={setOpenThread} onOpenSession={onOpenSession} onChanged={refresh} onRemoved={async () => { await refresh(); onSelect('') }} /></RefCtx.Provider>
         ) : contacts === null ? (
           <p className="pt-16 text-center text-sm text-muted-foreground">Loading…</p>
         ) : selected && isRoomId(selected) ? (

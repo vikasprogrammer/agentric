@@ -203,7 +203,7 @@ export type DmPresence = 'working' | 'online' | 'away'
 /** One thing an agent did (`do`) or noted (`say`) on the way to a reply — hidden until expanded. */
 export interface DmStep { t: 'say' | 'do'; text: string; detail?: string; status?: 'running' | 'ok' | 'error' }
 /** A task, goal, bet, automation or KB page a message is about — drawn as a live card under it. */
-export interface ChatRef { kind: 'task' | 'goal' | 'bet' | 'automation' | 'kb'; id: string; title: string; status?: string; meta?: string; route: string }
+export interface ChatRef { kind: 'task' | 'goal' | 'bet' | 'automation' | 'kb'; id: string; title: string; status?: string; meta?: string; route: string; /** tasks only: `agent:<id>`, a member id, or null */ assignee?: string | null }
 export interface DmMessage { seq: number; refs?: ChatRef[]; authorKind: 'member' | 'agent' | 'system'; authorId: string; body: string; steps?: DmStep[]; createdAt: number; /** room messages carry who said it */ authorName?: string; authorIcon?: string; authorAvatar?: string; /** 'bg' = background request/result · 'proactive' = the agent wrote first */ tag?: string; /** a reply: the seq of the message it sits under */ threadId?: number; /** on a main message: its reply count + last reply time */ replies?: number; lastReplyAt?: number; mentions?: string[]; /** agent reply: how long the turn took, ms */ took?: number; /** one-tap replies the agent offered */ actions?: string[]; /** names of files sent with it */ files?: string[]; /** Library artifacts the agent showed with it */ artifacts?: ChatArtifactRef[]; /** client-only: sent, not yet stored */ pending?: boolean }
 export type NotifyLevel = 'all' | 'mentions' | 'mute'
 export interface ThreadView { root: DmMessage; replies: DmMessage[] }

@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.485.0] - 2026-11-26
+### Added
+- **A task card in Messages changes the task.** The card's status pill and assignee are menus: pick a
+  status (`todo`/`doing`/`blocked`/`done`/`cancelled`) or hand the task to a person or an agent without
+  leaving the conversation. The card writes through the existing `PATCH /api/tasks/:id` — same rules,
+  same audit events, same proposal gate as the Tasks board — and `ChatRef` gained the raw `assignee` the
+  menu edits. The route now emits `chatBus` `changed`, so the card redraws for everyone watching the
+  conversation, not just the person who clicked. Goal, bet, automation and Knowledge cards stay links.
+  **For users:** Change a task's status or who it's assigned to straight from its card in a conversation. [Open Messages](#/chat)
+
 ## [0.484.0] - 2026-11-26
 ### Added
 - **Tasks, goals, bets, automations and Knowledge pages are drawn as live cards in Messages.** A message

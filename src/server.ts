@@ -77,7 +77,7 @@ import { planTaskReconcile, applyTaskReconcile } from './edge/task-reconcile';
 import { planLibraryTidy, applyLibraryTidy } from './edge/library-tidy';
 import { planSessionTidy, applySessionTidy } from './edge/session-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
-import { DirectMessages, type InboundFile, type PostTo } from './edge/direct-messages';
+import { DirectMessages, chatBus, type InboundFile, type PostTo } from './edge/direct-messages';
 import { chatUpgrade } from './edge/chat-socket';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -5082,6 +5082,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: task.status === 'cancelled' ? 'task.proposal.dismissed' : 'task.proposal.accepted', data: { id: task.id, title: task.title, by: cur.createdBy, ...(acceptByAssign ? { via: 'assign', assignee: task.assignee } : {}) } });
     }
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: task.status === 'done' ? 'task.completed' : 'task.updated', data: { id: task.id, status: task.status } });
+    chatBus.emit('changed', os); // a task's card in a conversation is live — redraw it for everyone watching
     return sendJson(res, 200, { ok: true, task });
   }
   if (taskComment && method === 'POST') {
