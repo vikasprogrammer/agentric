@@ -3843,6 +3843,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const chatFiles = (b: Record<string, unknown>): InboundFile[] => (Array.isArray(b.files) ? b.files : []).slice(0, 6)
     .map((f: { name?: unknown; dataB64?: unknown }) => ({ name: String(f?.name || 'file'), data: Buffer.from(String(f?.dataB64 || ''), 'base64') })).filter((f: InboundFile) => f.data.length > 0);
   const tooBig = () => Number(req.headers['content-length'] || 0) > 24 * 1024 * 1024;
+  // The steps behind one message, fetched when its collapsed "N steps" line is opened.
+  if (p === '/api/chat/steps' && method === 'GET') {
+    const steps = new DirectMessages(os, tm).steps(me, String(url.searchParams.get('key') || ''), Number(url.searchParams.get('seq')) || 0);
+    return steps ? sendJson(res, 200, { steps }) : sendJson(res, 404, { error: 'conversation not found' });
+  }
   if (p === '/api/dm' && method === 'GET') {
     const dms = new DirectMessages(os, tm);
     return sendJson(res, 200, { ...dms.list(me), rooms: dms.roomList(me), people: dms.people() });

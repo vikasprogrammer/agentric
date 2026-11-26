@@ -1548,6 +1548,9 @@ function migrate(db: Db): void {
   // newer session, so every session a DM ever used stays out of the Sessions lists.
   addColumn(db, 'term_sessions', 'dm_room', 'TEXT');
   addColumn(db, 'term_sessions', 'chat_dest', 'TEXT');   // JSON {room, thread?, sent}: where this run's results post in Messages
+  // Every thread read asks "which sessions has this conversation used" — without this it scanned the whole
+  // sessions table (12k rows on a busy tenant) on each read and each socket tick. Partial: almost no row has one.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_dm_room ON term_sessions(dm_room) WHERE dm_room IS NOT NULL');
   addColumn(db, 'automations', 'post_to', 'TEXT');         // JSON PostTo: the Messages conversation an automation's runs report into
   addColumn(db, 'chat_rooms', 'name', 'TEXT');
   addColumn(db, 'chat_rooms', 'orchestrate', 'TEXT');

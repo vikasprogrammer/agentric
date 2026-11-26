@@ -102,7 +102,12 @@ export interface RoomSummary {
   /** Unread messages that @mention the viewer, and the viewer's notification level here. */
   mentions: number; notify: NotifyLevel;
 }
-export type RoomMessage = ChatMessage & { authorName: string; authorIcon?: string; authorAvatar?: string; artifacts?: ChatArtifactRef[]; refs?: ChatRef[] };
+/** How many main-stream messages a thread read returns. A conversation opens on its newest page and the
+ *  page asks for older ones as the reader scrolls up — the whole history is never sent up front. */
+export const THREAD_PAGE = 40;
+/** What a message's steps amount to, sent in place of the steps themselves (fetched when expanded). */
+export interface StepSum { /** tool calls, or every step when there were none */ n: number; failed: number }
+export type RoomMessage = ChatMessage & { authorName: string; authorIcon?: string; artifacts?: ChatArtifactRef[]; refs?: ChatRef[]; stepSum?: StepSum };
 export interface RoomThread {
   room: RoomSummary; messages: RoomMessage[];
   typing: { agent: string; label: string; steps: ChatStep[]; thread?: number | null; since?: number }[];
@@ -323,7 +328,7 @@ export class DirectMessages {
     return { contacts, directory: reachable.filter((a) => !added.has(a.id)) };
   }
 
-  thread(me: Member, agent: string, opts: { after?: number; before?: number; read?: boolean; thread?: number } = {}): DmThread {
+  thread(me: Member, agent: string, opts: { after?: number; before?: number; read?: boolean; thread?: number; limit?: number } = {}): DmThread {
     const { room, presence, typing: own } = this.sync(this.rooms.ensureDm(me.id, agent));
     this.sweepJobs(room.id);
     const typing = own ?? this.runTyping(room.id)[0] ?? null;
@@ -333,7 +338,7 @@ export class DirectMessages {
       agent, roomId: room.id, sessionId: room.sessionId, presence, typing,
       ...this.extras(room.id, room.sessionId ? [room.sessionId] : [], me),
       threadView: opts.thread ? this.threadView(room.id, opts.thread) : undefined,
-      messages: this.rooms.messages(room.id, { after: opts.after, before: opts.before }).map((m) => this.media(m)),
+      messages: this.rooms.messages(room.id, { after: opts.after, before: opts.before, limit: opts.limit ?? THREAD_PAGE }).map((m) => this.media(m)),
       // Silence is the one thing a chat can't show: a session that died on launch leaves a sent message
       // with nobody to answer it. Say so, so the page can offer a retry instead of an endless wait.
       stalled: !!last && last.authorKind === 'member' && presence === 'away' && Date.now() - last.createdAt > STALL_MS,
@@ -507,9 +512,17 @@ export class DirectMessages {
   // The sender must be allowed to run the agent they address (run-as = the sender, as in a DM).
   // ════════════════════════════════════════════════════════════════════════════════════════════
 
+  /** One read per person per request — a thread names the same few people on every message, and a
+   *  member row carries their avatar image. (A `DirectMessages` lives for one request / one socket tick.) */
+  private readonly personCache = new Map<string, RoomPerson>();
   private person(id: string): RoomPerson {
-    const m = this.os.team.getMember(id);
-    return { id, name: m?.name || m?.email || 'Former member', avatar: m?.avatar };
+    let p = this.personCache.get(id);
+    if (!p) {
+      const m = this.os.team.getMember(id);
+      p = { id, name: m?.name || m?.email || 'Former member', avatar: m?.avatar };
+      this.personCache.set(id, p);
+    }
+    return p;
   }
 
   /** Everyone a room could include — names and avatars only. */
@@ -546,7 +559,8 @@ export class DirectMessages {
     return {
       summary: {
         id: room.id, name: room.name, createdBy: room.memberId, agents, orchestrate: room.orchestrate, summary: fresh.summary ?? undefined,
-        members: parts.filter((p) => p.kind === 'member').map((p) => this.person(p.id)),
+        // Names only — avatars are inline images and the page already has each one once (`people`).
+        members: parts.filter((p) => p.kind === 'member').map((p) => ({ id: p.id, name: this.person(p.id).name })),
         lastText: last ? clip(last.body.replace(/\s+/g, ' '), 90) : undefined,
         lastAuthor: !last || last.authorKind === 'system' ? undefined : last.authorKind === 'agent' ? pretty(last.authorId) : last.authorId === me.id ? 'You' : this.person(last.authorId).name.split(' ')[0],
         lastAt: fresh.lastMessageAt ?? fresh.createdAt, unread: this.rooms.unread(room.id, me.id),
@@ -801,13 +815,13 @@ export class DirectMessages {
     return { ok: true };
   }
 
-  roomThread(me: Member, roomId: string, opts: { before?: number; read?: boolean; thread?: number } = {}): RoomThread | Fail {
+  roomThread(me: Member, roomId: string, opts: { before?: number; read?: boolean; thread?: number; limit?: number } = {}): RoomThread | Fail {
     const room = this.roomFor(me, roomId);
     if ('ok' in room) return room;
     const d = this.describe(room, me);
     this.sweepJobs(roomId);
     if (opts.read) { this.rooms.markRead(roomId, me.id); watching.set(`${roomId}:${me.id}`, Date.now()); }
-    const messages: RoomMessage[] = this.rooms.messages(roomId, { before: opts.before }).map((m) => this.named(m));
+    const messages: RoomMessage[] = this.rooms.messages(roomId, { before: opts.before, limit: opts.limit ?? THREAD_PAGE }).map((m) => this.named(m));
     return {
       room: d.summary, messages, typing: d.typing, sessionIds: d.sessionIds, ...this.extras(roomId, d.sessionIds, me),
       threadView: opts.thread ? this.threadView(roomId, opts.thread) : undefined,
@@ -1062,7 +1076,9 @@ export class DirectMessages {
   private named(m: ChatMessage): RoomMessage {
     if (m.authorKind === 'agent') return { ...this.media(m), authorName: pretty(m.authorId), authorIcon: this.os.agents.get(m.authorId)?.icon };
     const p = this.person(m.authorId);
-    return { ...this.media(m), authorName: p.name, authorAvatar: p.avatar };
+    // No avatar here: an avatar is an inline image, and repeating it on every message was over half of
+    // a busy room's payload. The page already holds each person's avatar once (`people`).
+    return { ...this.media(m), authorName: p.name };
   }
 
   /**
@@ -1123,7 +1139,14 @@ export class DirectMessages {
   }
 
   /** Resolve a message's shown artifacts into what the page needs to draw them (gone ones drop out). */
-  private media<T extends ChatMessage>(m0: T): T & { artifacts?: ChatArtifactRef[]; refs?: ChatRef[] } {
+  private media<T extends ChatMessage>(m00: T): T & { artifacts?: ChatArtifactRef[]; refs?: ChatRef[]; stepSum?: StepSum } {
+    // Steps stay on the server until someone opens them: they are collapsed by default and were the
+    // largest part of an agent message. The page gets the count it shows on the collapsed line.
+    let m0: T & { stepSum?: StepSum } = m00;
+    if (m00.steps?.length) {
+      const done = m00.steps.filter((x) => x.t === 'do');
+      m0 = { ...m00, steps: undefined, stepSum: { n: done.length || m00.steps.length, failed: done.filter((x) => x.status === 'error').length } };
+    }
     const refs = m0.authorKind === 'system' ? [] : this.refs(m0);
     const m = refs.length ? { ...m0, refs } : m0;
     if (!m.art?.length) return m;
@@ -1144,6 +1167,12 @@ export class DirectMessages {
 
   private threadHint(root: ChatMessage | undefined | false): string {
     return root ? ` (said in the thread under: "${clip(root.body.replace(/\s+/g, ' '), 140)}")` : '';
+  }
+
+  /** The steps behind one message — what the page fetches when its "N steps" line is opened. */
+  steps(me: Member, key: string, seq: number): ChatStep[] | undefined {
+    const room = this.roomOf(me, key);
+    return room ? this.rooms.message(room.id, seq)?.steps ?? [] : undefined;
   }
 
   private threadView(roomId: string, seq: number): ThreadView | null {

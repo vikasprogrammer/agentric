@@ -10,7 +10,7 @@
 // boundary — so they appear inline as cards, rendered by the same component the rest of the console
 // uses (passed in as `renderPending`, so this file imports nothing from App.tsx).
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, ChevronDown, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, MessageSquare, ListChecks, Goal, FlaskConical, CalendarClock, BookOpen, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
@@ -72,9 +72,23 @@ function shortWhen(ts: number): string {
 }
 
 /** The work behind a reply — collapsed to a single quiet line until someone wants to look. */
-function Steps({ steps, live = false, took }: { steps: DmStep[]; live?: boolean; took?: number }) {
+function Steps({ steps: given, live = false, took, sum, load }: { steps: DmStep[]; live?: boolean; took?: number; /** a stored message sends only this summary … */ sum?: { n: number; failed: number }; /** … and fetches its steps when opened */ load?: () => Promise<DmStep[]> }) {
   const [open, setOpen] = useState(false)
+  const [fetched, setFetched] = useState<DmStep[] | null>(null)
+  const steps = fetched ?? given
   const done = steps.filter((s) => s.t === 'do')
+  if (sum && !fetched) {
+    return (
+      <div className="mt-1">
+        <button onClick={async () => { setOpen(true); if (load) setFetched(await load()) }} className="flex items-center gap-1 rounded text-[11px] text-muted-foreground hover:text-foreground">
+          <ChevronRight className={`h-3 w-3 transition-transform ${open ? 'rotate-90' : ''}`} />
+          {`${sum.n} step${sum.n === 1 ? '' : 's'}`}{took ? <span> · {span(took)}</span> : null}
+          {sum.failed > 0 && <span className="text-amber-600"> · {sum.failed} retried</span>}
+          {open && <Loader2 className="ml-1 h-3 w-3 animate-spin" />}
+        </button>
+      </div>
+    )
+  }
   // A reply with no steps still says how long it took, once that is long enough to be worth saying.
   if (steps.length === 0) return took && took >= 5000 ? <div className="mt-1 text-[11px] text-muted-foreground">took {span(took)}</div> : null
   const failed = done.filter((s) => s.status === 'error').length
@@ -137,7 +151,7 @@ const LIVE = new Set(['doing', 'running', 'proposed'])
 
 /** A primitive a message is about — a task, goal, bet, automation or KB page — with its status as of now. */
 /** Who a task can be handed to from its card — the people and agents this member can already message. */
-const RefCtx = createContext<{ people: RoomPerson[]; agents: DmDirectoryAgent[] }>({ people: [], agents: [] })
+const RefCtx = createContext<{ people: RoomPerson[]; agents: DmDirectoryAgent[]; /** the open conversation (an agent id or a room id) */ chatKey: string }>({ people: [], agents: [], chatKey: '' })
 const TASK_MOVES = ['todo', 'doing', 'blocked', 'done', 'cancelled'] as const
 const refTone = (status?: string) => !status ? '' : GOOD.has(status) ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : BAD.has(status) ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300' : LIVE.has(status) ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300' : 'bg-muted text-muted-foreground'
 
@@ -225,7 +239,8 @@ function Media({ a }: { a: ChatArtifactRef }) {
 
 /** One row of the conversation. Consecutive messages from the same author within a few minutes are
  *  GROUPED: only the first carries the avatar + name, the rest sit flush under it with a hover time. */
-function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: { m: DmMessage; grouped: boolean; name: string; avatar: ReactNode; /** open this message's thread (absent inside a thread) */ onThread?: () => void; /** send one of the agent's quick replies — given only for the newest message, so stale ones can't be tapped */ onAction?: (text: string) => void; /** agents answering in this message's thread right now */ replying?: string[] }) {
+const MessageRow = memo(function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: { /** changes when the avatar would draw differently — `avatar` itself is a fresh node every render */ avatarSig?: string; m: DmMessage; grouped: boolean; name: string; avatar: ReactNode; /** open this message's thread (absent inside a thread) */ onThread?: () => void; /** send one of the agent's quick replies — given only for the newest message, so stale ones can't be tapped */ onAction?: (text: string) => void; /** agents answering in this message's thread right now */ replying?: string[] }) {
+  const { chatKey } = useContext(RefCtx)
   const body = m.authorKind === 'agent'
     ? <div className="md max-w-none text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMd}>{m.body}</ReactMarkdown></div>
     : <div className="whitespace-pre-wrap break-words text-sm">{m.body}</div>
@@ -253,7 +268,7 @@ function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: 
         {m.artifacts && <div className="mt-1.5 flex flex-wrap items-start gap-2">{m.artifacts.map((a) => <Media key={a.id} a={a} />)}</div>}
         {m.refs && <div className="mt-1.5 flex flex-col gap-1.5">{m.refs.map((r) => <RefCard key={`${r.kind}:${r.id}`} r={r} />)}</div>}
         {m.files && <div className="mt-1 flex flex-wrap gap-1">{m.files.map((f, i) => <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"><Paperclip className="h-3 w-3" />{f}</span>)}</div>}
-        {(m.steps || m.took) && <Steps steps={m.steps ?? []} took={m.took} />}
+        {(m.steps || m.stepSum || m.took) && <Steps steps={m.steps ?? []} took={m.took} sum={m.stepSum} load={m.stepSum ? async () => (await api.chatSteps(chatKey, m.seq)).steps ?? [] : undefined} />}
         {onAction && m.actions && (
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {m.actions.map((a, i) => <button key={i} onClick={() => onAction(a)} className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-foreground">{a}</button>)}
@@ -270,7 +285,13 @@ function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: 
       </div>
     </div>
   )
-}
+}, (a, b) =>
+  // A push replaces every message object, and re-rendering each one re-parses its markdown — which made
+  // a long conversation stutter on every tick of a reply in flight. A row redraws only when what it
+  // shows changed. The newest row keeps `onAction` (it closes over the composer), so it always redraws.
+  !a.onAction && !b.onAction && a.grouped === b.grouped && a.name === b.name && a.avatarSig === b.avatarSig && !a.onThread === !b.onThread
+  && (a.replying ?? []).join() === (b.replying ?? []).join() && (a.m === b.m || JSON.stringify(a.m) === JSON.stringify(b.m)))
+
 
 /** Browse the agents you can talk to and add them as contacts. */
 function Directory({ agents, people, renderIcon, onAdd, onPerson, onClose, hasContacts }: { agents: DmDirectoryAgent[]; /** teammates you can message directly (not you) */ people: RoomPerson[]; renderIcon: IconRenderer; onAdd: (id: string) => void; onPerson: (id: string) => void; onClose?: () => void; hasContacts: boolean }) {
@@ -328,6 +349,11 @@ interface Outgoing { key: number; text: string; at: number; error?: string }
 /** What a conversation is with: one agent (a DM), or a room / group of people and agents. */
 type Target = { kind: 'dm'; contact: DmContact } | { kind: 'room'; room: RoomSummary }
 /** Both kinds of thread, in the one shape the conversation renders. */
+/** The last thread each conversation showed, so switching back to one is instant. */
+const viewCache = new Map<string, View>()
+/** Messages per page — the server's `THREAD_PAGE`. */
+const PAGE = 40
+
 interface View {
   messages: DmMessage[]
   typing: { agent: string; label: string; steps: DmStep[]; thread?: number | null; since?: number }[]
@@ -424,9 +450,14 @@ function MentionGlyph({ t, renderIcon }: { t: MentionTarget; renderIcon: IconRen
   return <Avatar agent={t.id} icon={t.icon} renderIcon={renderIcon} size="sm" />
 }
 
-function PersonAvatar({ p, className = 'h-9 w-9 rounded-lg text-sm' }: { p: { name: string; avatar?: string }; className?: string }) {
-  return p.avatar
-    ? <img src={p.avatar} alt="" className={`shrink-0 object-cover ${className}`} />
+/** Everyone's avatar, by member id. Avatars are inline images, so the server sends each ONCE (with the
+ *  team list) instead of on every message and every room member — rows look theirs up here. */
+const avatars = new Map<string, string>()
+
+function PersonAvatar({ p, className = 'h-9 w-9 rounded-lg text-sm' }: { p: { id?: string; name: string; avatar?: string }; className?: string }) {
+  const src = p.avatar ?? (p.id ? avatars.get(p.id) : undefined)
+  return src
+    ? <img src={src} alt="" className={`shrink-0 object-cover ${className}`} />
     : <span className={`flex shrink-0 items-center justify-center bg-muted font-semibold text-muted-foreground ${className}`}>{(p.name || '?').slice(0, 1).toUpperCase()}</span>
 }
 
@@ -802,8 +833,21 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
 }) {
   const isRoom = target.kind === 'room'
   const id = isRoom ? target.room.id : target.contact.agent
-  const [view, setView] = useState<View | null>(null)
+  // Reopening a conversation shows what it last held at once; the fresh read replaces it a moment later.
+  const [view, setViewRaw] = useState<View | null>(() => viewCache.get(id) ?? null)
   const [older, setOlder] = useState<DmMessage[]>([])
+  const shown = useRef<View | null>(view)
+  const setView = (next: View) => {
+    // The server sends the newest page. When a new message pushes an old one out of that page, keep the
+    // old one — otherwise it would vanish from a conversation the reader has open.
+    const first = next.messages[0]?.seq
+    const fell = first == null ? [] : (shown.current?.messages ?? []).filter((m) => m.seq < first)
+    if (fell.length) setOlder((o) => { const have = new Set(o.map((m) => m.seq)); const add = fell.filter((m) => !have.has(m.seq)); return add.length ? [...o, ...add] : o })
+    shown.current = next
+    viewCache.set(id, next)
+    if (viewCache.size > 30) viewCache.delete(viewCache.keys().next().value as string)
+    setViewRaw(next)
+  }
   const [noMore, setNoMore] = useState(false)
   const [draft, setDraft] = useState(() => localStorage.getItem(`dmDraft:${id}`) || '')
   const [outgoing, setOutgoing] = useState<Outgoing[]>([])
@@ -879,14 +923,21 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   const onScroll = () => {
     const el = scrollRef.current
     if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    // Scrolling to the top pulls in the page before it — no button to find.
+    if (el && el.scrollTop < 120 && !noMore && all.length >= PAGE) void loadOlder()
   }
 
+  const loadingOlder = useRef(false)
   const loadOlder = async () => {
     const first = all[0]
-    if (!first || first.seq <= 0) return
+    if (!first || first.seq <= 0 || loadingOlder.current) return
+    loadingOlder.current = true
+    try { await loadOlderPage(first.seq) } finally { loadingOlder.current = false }
+  }
+  const loadOlderPage = async (before: number) => {
     const el = scrollRef.current
     const prevHeight = el?.scrollHeight ?? 0
-    const r = isRoom ? await api.roomThread(id, { before: first.seq }) : await api.dmThread(id, { before: first.seq })
+    const r = isRoom ? await api.roomThread(id, { before }) : await api.dmThread(id, { before })
     if (r.error) return
     if (r.messages.length === 0) { setNoMore(true); return }
     setOlder((o) => [...r.messages, ...o])
@@ -990,7 +1041,8 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
     ? <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Workflow className="h-5 w-5" /></span>
     : m.authorKind === 'agent'
     ? <Avatar agent={m.authorId} icon={iconOf(m.authorId, m.authorIcon)} renderIcon={renderIcon} />
-    : <PersonAvatar p={m.authorId === me.id ? { name: me.name || me.email, avatar: me.avatar } : { name: m.authorName ?? '?', avatar: m.authorAvatar }} />
+    : <PersonAvatar p={m.authorId === me.id ? { name: me.name || me.email, avatar: me.avatar } : { id: m.authorId, name: m.authorName ?? '?' }} />
+  const avatarSig = (m: DmMessage) => m.authorKind === 'agent' ? iconOf(m.authorId, m.authorIcon) ?? '' : String((m.authorId === me.id ? me.avatar : avatars.get(m.authorId))?.length ?? 0)
   const description = isRoom ? '' : target.contact.description
 
   return (
@@ -1041,10 +1093,10 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
 
         {/* Messages */}
         <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto pb-3">
-          {view && all.length >= 100 && !noMore && (
+          {view && all.length >= PAGE && !noMore && (
             <div className="py-2 text-center"><button onClick={loadOlder} className="text-xs text-primary hover:underline">Load earlier messages</button></div>
           )}
-          {view && (noMore || all.length < 100) && (
+          {view && (noMore || all.length < PAGE) && (
             <div className="px-5 pb-2 pt-8">
               {isRoom ? <RoomGlyph room={room!} size="lg" meId={me.id} /> : <Avatar agent={id} icon={target.contact.icon} renderIcon={renderIcon} size="lg" />}
               <h3 className="mt-3 text-lg font-semibold">{title}</h3>
@@ -1083,7 +1135,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
                     {m.actions && m.seq === newestSeq && m.actions.map((a, k) => <button key={k} onClick={() => send(a)} className="rounded-full border border-primary/40 bg-primary/5 px-2.5 py-0.5 font-medium text-primary hover:bg-primary hover:text-primary-foreground">{a.split(' ')[0]}</button>)}
                     <div className="h-px flex-1 border-t border-dashed" />
                   </div>
-                ) : <MessageRow m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} onThread={m.seq > 0 ? () => onThread(m.seq) : undefined} onAction={m.seq === newestSeq && !m.replies ? (t) => send(t) : undefined} replying={(view?.typing ?? []).filter((t) => t.thread === m.seq).map((t) => t.agent)} />}
+                ) : <MessageRow m={m} grouped={grouped} name={nameOf(m)} avatar={avatarOf(m)} avatarSig={avatarSig(m)} onThread={m.seq > 0 ? () => onThread(m.seq) : undefined} onAction={m.seq === newestSeq && !m.replies ? (t) => send(t) : undefined} replying={(view?.typing ?? []).filter((t) => t.thread === m.seq).map((t) => t.agent)} />}
                 {failed && (
                   <div className="flex items-center gap-2 pl-[4.25rem] text-xs text-destructive">
                     <CircleAlert className="h-3.5 w-3.5" /> {failed}
@@ -1235,11 +1287,14 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
   const [people, setPeople] = useState<RoomPerson[]>([])
   const [filter, setFilter] = useState('')
 
-  type ListData = { contacts: DmContact[]; directory: DmDirectoryAgent[]; rooms?: RoomSummary[]; people?: RoomPerson[] }
+  type ListData = { contacts: DmContact[]; directory?: DmDirectoryAgent[]; rooms?: RoomSummary[]; people?: RoomPerson[] }
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   const applyList = (r: ListData) => {
-    setContacts(r.contacts); setDirectory(r.directory); setRooms(r.rooms ?? []); setPeople(r.people ?? [])
+    // A pushed sidebar carries the team and the directory only when they changed.
+    if (r.people) { for (const p of r.people) { if (p.avatar) avatars.set(p.id, p.avatar); else avatars.delete(p.id) } setPeople(r.people) }
+    if (r.directory) setDirectory(r.directory)
+    setContacts(r.contacts); setRooms(r.rooms ?? [])
     const open = selectedRef.current
     onUnread?.(r.contacts.reduce((n, c) => n + (c.agent === open ? 0 : c.unread), 0) + (r.rooms ?? []).reduce((n, c) => n + (c.id === open ? 0 : c.unread), 0))
   }
@@ -1280,7 +1335,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
     () => [...(contacts ?? []).map((c) => ({ id: c.agent, description: c.description, icon: c.icon })), ...directory].sort((a, b) => a.id.localeCompare(b.id)),
     [contacts, directory],
   )
-  const refCtx = useMemo(() => ({ people, agents: allAgents }), [people, allAgents])
+  const refCtx = useMemo(() => ({ people, agents: allAgents, chatKey: selected }), [people, allAgents, selected])
   // First visit lands on the most recent conversation, the way a chat app reopens where you left off.
   useEffect(() => {
     if (selected || !contacts) return

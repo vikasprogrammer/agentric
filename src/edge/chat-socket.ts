@@ -40,7 +40,7 @@ const MAX_PER_MEMBER = 12;
 interface Conn {
   socket: Duplex; os: AgentOS; tm: TerminalManager; memberId: string;
   watch: string; thread: number; visible: boolean; busy: boolean; dirty: boolean;
-  lastThread: string; lastList: string; tick: number; openedAt: number;
+  lastThread: string; lastList: string; lastPeople: string; lastDirectory: string; tick: number; openedAt: number;
   timer: ReturnType<typeof setInterval>; buf: Buffer; closed: boolean; lastSeen: number;
 }
 const conns = new Set<Conn>();
@@ -97,8 +97,16 @@ function pump(c: Conn, force = false): void {
       if (json !== c.lastThread) { c.lastThread = json; if (!c.closed) c.socket.write(frame(json)); }
     }
     if (force || c.tick % LIST_EVERY === 0) {
-      const json = JSON.stringify({ t: 'list', data: { ...dms.list(me), rooms: dms.roomList(me), people: dms.people() } });
-      if (json !== c.lastList) { c.lastList = json; if (!c.closed) c.socket.write(frame(json)); }
+      // The sidebar changes with every message; the team (with its avatar images) and the agent directory
+      // almost never do. Those two ride along only when THEY changed — the page keeps what it has.
+      const list = dms.list(me);
+      const people = JSON.stringify(dms.people()), directory = JSON.stringify(list.directory);
+      const core = JSON.stringify({ contacts: list.contacts, rooms: dms.roomList(me) });
+      if (core !== c.lastList || people !== c.lastPeople || directory !== c.lastDirectory) {
+        const json = `{"t":"list","data":${core.slice(0, -1)}${people !== c.lastPeople ? `,"people":${people}` : ''}${directory !== c.lastDirectory ? `,"directory":${directory}` : ''}}}`;
+        c.lastList = core; c.lastPeople = people; c.lastDirectory = directory;
+        if (!c.closed) c.socket.write(frame(json));
+      }
     }
   } catch { /* a bad read must not kill the connection; the next tick looks again */ }
 }
@@ -155,7 +163,7 @@ export function chatUpgrade(os: AgentOS, tm: TerminalManager, me: Member | undef
   const accept = crypto.createHash('sha1').update(key + GUID).digest('base64');
   socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
   const c: Conn = {
-    socket, os, tm, memberId: me.id, watch: '', thread: 0, visible: true, busy: false, dirty: false, lastThread: '', lastList: '', tick: 0,
+    socket, os, tm, memberId: me.id, watch: '', thread: 0, visible: true, busy: false, dirty: false, lastThread: '', lastList: '', lastPeople: '', lastDirectory: '', tick: 0,
     openedAt: Date.now(), buf: Buffer.alloc(0), closed: false, timer: setInterval(() => pump(c), TICK_MS), lastSeen: Date.now(),
   };
   c.timer.unref?.();
