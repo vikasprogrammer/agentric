@@ -535,6 +535,30 @@ console.log('\n\x1b[1m12c) a reply to an automation\'s post reaches that run; me
   const s1 = dms.send(A, 'helper', 'Send me the detail');
   assert(s1.ok && s1.sessionId === g.sessionId && /Send me the detail/.test(row(g.sessionId).task), 'in a DM, a reply right after the report reaches the run');
 
+  // one notice per event: a run that reports into Messages raises no second, session-side notice
+  {
+    const events = [];
+    tm.setSessionEventNotifier((n) => events.push(`${n.kind}:${n.sessionId}`));
+    const cards = (sid, type) => tm.listMessages(A, 'all').filter((m) => m.sessionId === sid && m.type === type).length;
+    const h = autos.fire(autos.get(a1.id), { guard: false });
+    const plainAuto = autos.add({ agentId: 'helper', name: 'Plain sweep', type: 'cron', schedule: '0 9 * * *', mode: 'headless', task: 'Sweep.', createdBy: alice.id });
+    const pl = autos.fire(autos.get(plainAuto.id), { guard: false });
+    await settle();
+    tm.notify(h.sessionId, 'helper', 'idle_prompt', '');
+    tm.notify(pl.sessionId, 'helper', 'idle_prompt', '');
+    assert(cards(h.sessionId, 'notification') === 0 && !events.includes(`waiting:${h.sessionId}`), 'a run that posts into Messages raises no "waiting for input" card or DM');
+    assert(cards(pl.sessionId, 'notification') === 1 && events.includes(`waiting:${pl.sessionId}`), 'an ordinary run still does');
+    tm.notify(h.sessionId, 'helper', 'permission_prompt', 'Allow Bash?');
+    assert(cards(h.sessionId, 'notification') === 1 && events.includes(`waiting:${h.sessionId}`), 'a permission prompt still bells — nothing else would surface it');
+    tm.report(h.sessionId, 'helper', 'success', 'Second DM digest.');
+    tm.report(pl.sessionId, 'helper', 'success', 'Swept.');
+    assert(cards(h.sessionId, 'completed') === 0 && !events.includes(`completed:${h.sessionId}`), 'its result is the message — no "Completed" card, no session DM');
+    assert(aos.db.prepare("SELECT 1 FROM messages WHERE session_id = ? AND type = 'completed'").get(h.sessionId), 'the completed row is still recorded (a second report stays a no-op)');
+    assert(cards(pl.sessionId, 'completed') === 1 && events.includes(`completed:${pl.sessionId}`), 'an ordinary run keeps its card and DM');
+    assert(tm.chatHome(h.sessionId) === 'dest' && tm.chatHome(pl.sessionId) === undefined, 'chatHome tells the two apart');
+    tm.setSessionEventNotifier(() => {});
+  }
+
   // media
   assert(splitShow('Here it is.\n[[show: art_ab12, art_cd34]]').ids.join() === 'art_ab12,art_cd34' && splitShow('Here it is.\n[[show: art_ab12]]').body === 'Here it is.', '[[show: …]] is peeled out of the text');
   const mk = (agent, name) => aos.artifacts.ingest({ sessionId: g.sessionId, agent, filename: name, title: name, bytes: Buffer.from('png'), kind: 'image' });

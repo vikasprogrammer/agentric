@@ -1162,6 +1162,13 @@ export class TerminalManager {
   private transferNotifier?: (notice: TransferNotice) => void;
   setTransferNotifier(fn: (notice: TransferNotice) => void): void { this.transferNotifier = fn; }
   private fireSessionEvent(sessionId: string, agent: string, kind: SessionEventNotice['kind'], title: string, message: string): void {
+    // One notice per event: a run that lives in Messages already tells its people there (the message
+    // itself, plus the away-ping), so the session-side DM would be a second copy of the same news.
+    const home = kind === 'completed' || kind === 'crashed' ? this.chatHome(sessionId) : undefined;
+    if (home && (kind === 'completed' || home === 'dest')) {
+      this.audit(sessionId, agent, 'session.event.suppressed', { kind, via: home });
+      return;
+    }
     try { this.sessionEventNotifier?.({ sessionId, agent, kind, title, message }); } catch { /* advisory — never let a push wedge the caller */ }
   }
 
@@ -3090,6 +3097,19 @@ export class TerminalManager {
    * this does NOT hide the session or make it the conversation's own — the run stays an ordinary run that
    * happens to report into a room. `sent` counts what the agent posted there itself.
    */
+  /**
+   * Whether a session's news already reaches its people through Messages: `dm` = it is a conversation's
+   * own session (every turn is folded in as a message), `dest` = a run that posts its result into one.
+   * Such a session raises no second, session-side notice for the same event — see {@link fireSessionEvent},
+   * {@link notify} and the completed-card filter in {@link listMessages}. A crash is the exception for
+   * `dm`: nothing posts it into the conversation, so its card and DM stay.
+   */
+  chatHome(sessionId: string): 'dm' | 'dest' | undefined {
+    const r = this.db.prepare('SELECT dm_room, chat_dest FROM term_sessions WHERE id = ?').get<{ dm_room: string | null; chat_dest: string | null }>(sessionId);
+    if (r?.dm_room) return 'dm';
+    const dest = r?.chat_dest ? this.chatDest(sessionId) : undefined;
+    return dest && this.os.chatRooms.get(dest.room) ? 'dest' : undefined;
+  }
   setChatDest(sessionId: string, dest: { room: string; thread?: number }): void {
     this.db.prepare('UPDATE term_sessions SET chat_dest = ? WHERE id = ?').run(JSON.stringify({ room: dest.room, thread: dest.thread, sent: 0 }), sessionId);
   }
@@ -3356,6 +3376,10 @@ export class TerminalManager {
          LEFT JOIN term_sessions ts ON m.session_id = ts.id
          LEFT JOIN message_state ms ON ms.message_id = m.id AND ms.member_id = ?
          WHERE m.dismissed_at IS NULL AND ms.dismissed_at IS NULL AND m.type NOT IN ('task.chat', 'task.mention')
+           -- A run that lives in Messages said how it ended THERE; its "Completed" card would be the same
+           -- news twice (the row stays — hasCompleted reads it). A conversation's own session keeps its
+           -- crash card: nothing else reports that one.
+           AND NOT (m.type = 'completed' AND (ts.chat_dest IS NOT NULL OR (ts.dm_room IS NOT NULL AND COALESCE(m.outcome, '') <> 'crashed')))
          ORDER BY m.created_at DESC
          LIMIT 500`,
       )
@@ -8594,6 +8618,9 @@ export class TerminalManager {
     // been sitting at its prompt — including the "Interrupted · What should Claude do instead?" prompt.
     this.clearTurnBusy(sessionId);
     this.clearNotifications(sessionId);
+    // "Waiting for your input" after a turn is just the reply having landed — and in Messages the reply
+    // IS the notice. A permission prompt is different: nothing else would surface it, so it still bells.
+    if (kind !== 'permission_prompt' && this.chatHome(sessionId)) return;
     const fallback = kind === 'permission_prompt' ? 'Claude needs permission to continue.' : 'Claude is waiting for your input.';
     const body = (message || '').trim() || fallback;
     this.addMessage({ type: 'notification', sessionId, agent, title: `Waiting — ${agent}`, body, status: 'open', audienceKind: 'sessionOwner', audienceId: sessionId });
