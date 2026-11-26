@@ -28,6 +28,7 @@ import { EventEmitter } from 'node:events';
 import type { ChatJob, ChatMessage, ChatParticipant, ChatRoom, ChatStep, NotifyLevel, OrchestrateMode } from '../state/chat-rooms';
 import { routerBrain, type Brain } from './router';
 import type { ChatArtifactRef, ChatTurn } from './conversation';
+import { extractEntityIds } from './conversation';
 
 /** Past this, the next message starts a fresh session (with a recap) instead of resuming this transcript. */
 const ROLLOVER_BYTES = 6 * 1024 * 1024;
@@ -101,7 +102,7 @@ export interface RoomSummary {
   /** Unread messages that @mention the viewer, and the viewer's notification level here. */
   mentions: number; notify: NotifyLevel;
 }
-export type RoomMessage = ChatMessage & { authorName: string; authorIcon?: string; authorAvatar?: string; artifacts?: ChatArtifactRef[] };
+export type RoomMessage = ChatMessage & { authorName: string; authorIcon?: string; authorAvatar?: string; artifacts?: ChatArtifactRef[]; refs?: ChatRef[] };
 export interface RoomThread {
   room: RoomSummary; messages: RoomMessage[];
   typing: { agent: string; label: string; steps: ChatStep[]; thread?: number | null; since?: number }[];
@@ -130,7 +131,7 @@ interface Lane {
   key: string; roomId: string; agent: string; sessionId: string | null; syncedTurns: number; syncedMark: string | null;
   save(turns: number, mark: string): void;
   /** Put a finished reply into the room (and do whatever a reply there triggers). */
-  post(m: { body: string; steps: ChatStep[]; at: number; took?: number; art?: string[] }, thread: number | null): void;
+  post(m: { body: string; steps: ChatStep[]; at: number; took?: number; art?: string[]; ent?: string[] }, thread: number | null): void;
 }
 
 /** Fires `changed` (with the AgentOS it happened in) whenever a room gains a message — what the chat
@@ -241,6 +242,10 @@ export const MAX_AGENT_HOPS = 2;
 const MAX_FILES = 6;
 
 /** A hand-off the conversation's agent made to another agent — shown inline as a status card. */
+/** A task, goal, bet, automation or KB page a message is about — drawn as a live card under it. */
+export interface ChatRef { kind: 'task' | 'goal' | 'bet' | 'automation' | 'kb'; id: string; title: string; status?: string; meta?: string; /** console route, e.g. `tasks/tsk_…` */ route: string }
+/** Cards under one message — a status report naming twenty tasks is a list, not twenty cards. */
+const MAX_REFS = 4;
 export interface DmHandoff { sessionId: string; agent: string; title: string; status: string; working: boolean; blocked: boolean; summary?: string; createdAt: number; kind: string }
 export interface DmJob { id: string; kind: 'bg' | 'remind' | 'fanout'; agent: string; request: string; status: string; createdAt: number; dueAt: number | null; thread: number | null }
 export interface InboundFile { name: string; data: Buffer }
@@ -346,7 +351,7 @@ export class DirectMessages {
     const r = this.syncLane({
       key: room.id, roomId: room.id, agent: room.agent, sessionId: room.sessionId, syncedTurns: room.syncedTurns, syncedMark: room.syncedMark,
       save: (turns, mark) => this.rooms.setSync(room.id, turns, mark),
-      post: (m, thread) => { this.postAgent(room, room.agent, m.body, m.steps, m.at, { thread, took: m.took, art: m.art }); },
+      post: (m, thread) => { this.postAgent(room, room.agent, m.body, m.steps, m.at, { thread, took: m.took, art: m.art, ent: m.ent }); },
     });
     return { room: this.rooms.dm(room.memberId, room.agent) ?? room, ...r };
   }
@@ -517,7 +522,7 @@ export class DirectMessages {
     return {
       key: `${room.id}:${p.id}`, roomId: room.id, agent: p.id, sessionId: p.sessionId, syncedTurns: p.syncedTurns, syncedMark: p.syncedMark,
       save: (turns, mark) => this.rooms.setLaneSync(room.id, p.id, turns, mark),
-      post: (m, thread) => { const msg = this.postAgent(room, p.id, m.body, m.steps, m.at, { thread, took: m.took, art: m.art }); this.relay(room, p.id, msg); this.fanoutReply(room, p.id, msg); },
+      post: (m, thread) => { const msg = this.postAgent(room, p.id, m.body, m.steps, m.at, { thread, took: m.took, art: m.art, ent: m.ent }); this.relay(room, p.id, msg); this.fanoutReply(room, p.id, msg); },
     };
   }
 
@@ -985,7 +990,7 @@ export class DirectMessages {
   // ════════════════════════════════════════════════════════════════════════════════════════════
 
   /** Put an agent's message in a room; in a DM, ping the person if they are not looking. */
-  private postAgent(room: ChatRoom, agent: string, body: string, steps: ChatStep[] | undefined, at: number, extra: { tag?: string; thread?: number | null; took?: number; run?: string; art?: string[] } = {}): ChatMessage {
+  private postAgent(room: ChatRoom, agent: string, body: string, steps: ChatStep[] | undefined, at: number, extra: { tag?: string; thread?: number | null; took?: number; run?: string; art?: string[]; ent?: string[] } = {}): ChatMessage {
     // A reply whose thread has gone (or was never a main-stream message) lands in the main stream instead.
     const thread = extra.thread && this.threadRoot(room.id, extra.thread) ? extra.thread : null;
     const mentions = room.kind === 'room' ? this.peopleMentioned(body, this.rooms.participants(room.id)) : undefined;
@@ -994,7 +999,7 @@ export class DirectMessages {
     // Media: what the turn published or generated, plus anything it asked to show with `[[show: art_…]]`.
     const shown = splitShow(offered.body);
     const art = [...new Set([...(extra.art ?? []), ...shown.ids])].filter((id) => { const a = this.os.artifacts.get(id); return !!a && (a.agent === agent || a.sharedTeam); }).slice(0, MAX_SHOWN);
-    const msg = this.rooms.post(room.id, 'agent', agent, shown.body || (art.length ? '' : offered.body), steps, at, { tag: extra.tag, thread, mentions, took: extra.took, actions: offered.actions, run: extra.run, art });
+    const msg = this.rooms.post(room.id, 'agent', agent, shown.body || (art.length ? '' : offered.body), steps, at, { tag: extra.tag, thread, mentions, took: extra.took, actions: offered.actions, run: extra.run, art, ent: extra.ent?.slice(0, MAX_REFS) });
     chatBus.emit('changed', this.os);
     this.notify(room, msg);
     return msg;
@@ -1057,11 +1062,70 @@ export class DirectMessages {
   private named(m: ChatMessage): RoomMessage {
     if (m.authorKind === 'agent') return { ...this.media(m), authorName: pretty(m.authorId), authorIcon: this.os.agents.get(m.authorId)?.icon };
     const p = this.person(m.authorId);
-    return { ...m, authorName: p.name, authorAvatar: p.avatar };
+    return { ...this.media(m), authorName: p.name, authorAvatar: p.avatar };
+  }
+
+  /**
+   * The primitives a message is ABOUT, as live cards: whatever the turn behind it created or changed
+   * (`ent`), plus anything its text names — an id (`tsk_…`, `goal_…`, `bet_…`, `au_…`, `kbp_…`) or a
+   * console link to a KB page. Resolved at READ time, so a card always shows the task's status now, not
+   * when the message was written; an id that no longer resolves simply draws nothing.
+   */
+  private refs(m: ChatMessage): ChatRef[] {
+    const keys = [...new Set([...(m.ent ?? []), ...extractEntityIds(m.body), ...[...m.body.matchAll(/#\/kb\/([\w.-]+)\/([\w.-]+)/g)].map((k) => `kb:${k[1]}/${k[2]}`)])];
+    const out: ChatRef[] = [];
+    for (const k of keys) {
+      const r = this.ref(k);
+      // A KB page can arrive by id AND by path — one card.
+      if (r && !out.some((o) => o.kind === r.kind && o.id === r.id)) out.push(r);
+      if (out.length >= MAX_REFS) break;
+    }
+    return out;
+  }
+
+  private who(id?: string): string | undefined {
+    if (!id) return undefined;
+    return id.startsWith('agent:') ? pretty(id.slice(6)) : this.person(id).name;
+  }
+
+  private ref(key: string): ChatRef | undefined {
+    try {
+      if (key.startsWith('kb:') || key.startsWith('kbp_')) {
+        const [section, slug] = key.startsWith('kb:') ? key.slice(3).split('/') : [];
+        const p = key.startsWith('kb:') ? this.os.kb.read(this.os.tenant, section, slug) : this.os.kb.get(key);
+        return p ? { kind: 'kb', id: p.id, title: p.title || p.slug, meta: p.section, route: `kb/${p.section}/${p.slug}` } : undefined;
+      }
+      if (key.startsWith('tsk_')) {
+        const t = this.os.tasks.get(key);
+        if (!t) return undefined;
+        const meta = [this.who(t.assignee) ?? 'Unassigned', t.priority === 0 ? 'Urgent' : t.priority === 1 ? 'High' : ''].filter(Boolean).join(' · ');
+        return { kind: 'task', id: t.id, title: t.title, status: t.status, meta, route: `tasks/${t.id}` };
+      }
+      if (key.startsWith('goal_')) {
+        const g = this.os.goals.get(key);
+        if (!g) return undefined;
+        const ms = g.metric ? this.os.goals.metricStatus(g.id) : undefined;
+        const meta = ms ? [ms.latest ? `${ms.latest.value}${g.metric?.unit ? ` ${g.metric.unit}` : ''}` : '', ms.percent != null ? `${Math.round(ms.percent)}% to target` : '', ms.verdict].filter(Boolean).join(' · ') : g.target;
+        return { kind: 'goal', id: g.id, title: g.title, status: g.status, meta: meta || undefined, route: `goals/${g.id}` };
+      }
+      if (key.startsWith('bet_')) {
+        const b = this.os.bets.get(key);
+        if (!b) return undefined;
+        const meta = [b.verdict ? `verdict: ${b.verdict.replace('_', ' ')}` : '', b.observedLift != null ? `lift ${b.observedLift}` : b.expectedLift != null ? `expects +${b.expectedLift}` : '', `${b.windowDays}d window`].filter(Boolean).join(' · ');
+        return { kind: 'bet', id: b.id, title: b.title, status: b.state, meta, route: `goals/${b.goalId}` };
+      }
+      if (key.startsWith('au_')) {
+        const a = this.os.db.prepare('SELECT id, agent_id, name, type, schedule, enabled FROM automations WHERE id = ?').get<{ id: string; agent_id: string; name: string; type: string; schedule: string | null; enabled: number }>(key);
+        return a ? { kind: 'automation', id: a.id, title: a.name, status: a.enabled ? 'on' : 'paused', meta: [pretty(a.agent_id), a.type === 'cron' && a.schedule ? a.schedule : a.type].join(' · '), route: `automations/${a.agent_id}` } : undefined;
+      }
+    } catch { /* a card is a nicety — never fail a thread read over one */ }
+    return undefined;
   }
 
   /** Resolve a message's shown artifacts into what the page needs to draw them (gone ones drop out). */
-  private media<T extends ChatMessage>(m: T): T & { artifacts?: ChatArtifactRef[] } {
+  private media<T extends ChatMessage>(m0: T): T & { artifacts?: ChatArtifactRef[]; refs?: ChatRef[] } {
+    const refs = m0.authorKind === 'system' ? [] : this.refs(m0);
+    const m = refs.length ? { ...m0, refs } : m0;
     if (!m.art?.length) return m;
     const artifacts: ChatArtifactRef[] = [];
     for (const id of m.art) {
@@ -1129,7 +1193,7 @@ export class DirectMessages {
     return {
       key: `${room.id}:run:${job.sessionId}`, roomId: room.id, agent: job.agent, sessionId: job.sessionId, syncedTurns: Number(d.turns) || 0, syncedMark: typeof d.mark === 'string' ? d.mark : null,
       save: (turns, mark) => this.rooms.setJobData(job.id, { ...d, turns, mark }),
-      post: (m, thread) => { this.postAgent(room, job.agent, m.body, m.steps, m.at, { thread: thread ?? job.threadId, took: m.took, art: m.art, run: job.sessionId ?? undefined }); },
+      post: (m, thread) => { this.postAgent(room, job.agent, m.body, m.steps, m.at, { thread: thread ?? job.threadId, took: m.took, art: m.art, ent: m.ent, run: job.sessionId ?? undefined }); },
     };
   }
 
@@ -1144,10 +1208,14 @@ export class DirectMessages {
   }
 
   private extras(roomId: string, live: string[], me: Member): ThreadExtras {
+    const handoffs = live.flatMap((sid) => this.handoffs(sid, me));
     return {
-      cardSessionIds: [...this.tm.dmSessionIds(roomId), ...this.rooms.openJobs(roomId).filter((j) => j.kind === 'run' && j.sessionId).map((j) => j.sessionId!)],
+      // Whose approvals, questions and proposals are drawn in this conversation: its own sessions, the
+      // runs replying into it, and the runs its agent handed work to — a delegate blocked on an approval
+      // is this conversation's business, and used to be visible only in the Inbox.
+      cardSessionIds: [...new Set([...this.tm.dmSessionIds(roomId), ...this.rooms.openJobs(roomId).filter((j) => j.kind === 'run' && j.sessionId).map((j) => j.sessionId!), ...handoffs.map((h) => h.sessionId)])],
       jobs: this.rooms.openJobs(roomId).filter((j) => j.kind !== 'run').map((j) => ({ id: j.id, kind: j.kind as DmJob['kind'], agent: j.agent, request: j.request, status: j.status, createdAt: j.createdAt, dueAt: j.dueAt, thread: j.threadId })),
-      handoffs: live.flatMap((sid) => this.handoffs(sid, me)),
+      handoffs,
     };
   }
 
@@ -1306,7 +1374,7 @@ export class DirectMessages {
         const msg = foldReply(turns);
         // Back to where it was asked for — the thread, if that is still there.
         const back = job.threadId && this.threadRoot(room.id, job.threadId) ? job.threadId : null;
-        if (msg) this.postAgent(room, job.agent, msg.body, msg.steps, now, { tag: 'bg', thread: back, art: msg.art });
+        if (msg) this.postAgent(room, job.agent, msg.body, msg.steps, now, { tag: 'bg', thread: back, art: msg.art, ent: msg.ent });
         else this.rooms.post(room.id, 'system', job.memberId, `${pretty(job.agent)}'s background run ended without reporting anything back`, undefined, now, { thread: back });
         this.rooms.finishJob(job.id, msg ? 'done' : 'failed');
         chatBus.emit('changed', this.os);
@@ -1513,7 +1581,7 @@ export class DirectMessages {
 }
 
 const ACTIONS_HINT = 'When there are obvious next moves, you may offer up to 4 one-tap replies by ending your message with one line like `[[actions: Yes, ship it | Show me the diff | Not now]]` — each is sent back to you as their message when tapped, so word them as things THEY would say. Only when it genuinely saves them typing.';
-export const MEDIA_HINT = 'You can show images, video and files right in this chat. Anything you `publish` during a turn (or make with your image/video tools, if you have them) appears under your reply automatically. To show something already in your Library, put `[[show: art_…]]` on its own line in your message (ids come from `library_list`; several ids separated by commas).';
+export const MEDIA_HINT = 'You can show images, video and files right in this chat. Anything you `publish` during a turn (or make with your image/video tools, if you have them) appears under your reply automatically. To show something already in your Library, put `[[show: art_…]]` on its own line in your message (ids come from `library_list`; several ids separated by commas). Tasks, goals, bets and Knowledge pages are drawn as live cards too: one you create or change in a turn appears under your reply, and naming an id (`tsk_…`, `goal_…`, `bet_…`) in a message cards it — so say "filed tsk_…" rather than pasting its details.';
 const MAX_SHOWN = 6;
 const SHOW = /[ \t]*\[\[show:([^\]]*)\]\][ \t]*\n?/gi;
 /** Peel `[[show: art_…]]` markers out of an agent's message. */
@@ -1535,13 +1603,15 @@ export function splitActions(text: string): { body: string; actions?: string[] }
 }
 
 /** Collapse one agent turn into a message: the LAST prose is what was said; the rest is how it got there. */
-function foldReply(turns: ChatTurn[]): { body: string; steps: ChatStep[]; at: number; art?: string[] } | null {
+function foldReply(turns: ChatTurn[]): { body: string; steps: ChatStep[]; at: number; art?: string[]; ent?: string[] } | null {
   let lastSay = -1;
   for (let k = turns.length - 1; k >= 0; k--) { const t = turns[k]; if (t.kind === 'assistant' && t.text.trim()) { lastSay = k; break; } }
   if (lastSay < 0) return null; // tool calls with nothing said — nothing to show as a message
   const reply = turns[lastSay];
   const art = [...new Set(turns.flatMap((t) => (t.kind === 'activity' && t.status === 'ok' ? t.artifactIds ?? [] : [])))];
-  return { body: (reply as { text: string }).text.trim(), steps: stepsOf(turns.filter((_, k) => k !== lastSay)), at: reply.ts || Date.now(), art: art.length ? art : undefined };
+  // What the turn created or changed: tasks / goals / bets by id, KB pages by `kb:<section>/<slug>`.
+  const ent = [...new Set(turns.flatMap((t) => (t.kind === 'activity' && t.status === 'ok' ? [...(t.entityIds ?? []), ...(t.kbRefs ?? []).map((k) => `kb:${k.section}/${k.slug}`)] : [])))];
+  return { body: (reply as { text: string }).text.trim(), steps: stepsOf(turns.filter((_, k) => k !== lastSay)), at: reply.ts || Date.now(), art: art.length ? art : undefined, ent: ent.length ? ent : undefined };
 }
 
 function stepsOf(turns: ChatTurn[]): ChatStep[] {

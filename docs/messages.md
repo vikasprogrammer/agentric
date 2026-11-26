@@ -227,6 +227,21 @@ with the people in that conversation: `/api/artifacts/:id/raw` and `/thumb` also
 conversation it was shown in (`ChatRoomStore.shownTo`) — it does not appear in their Library. Every
 chat session's opening prompt says all this (`MEDIA_HINT`).
 
+## Primitives in a conversation
+
+Two mechanisms put the rest of the product inside the chat:
+
+- **Cards from the feed** — approvals, questions, deliverables and proposals raised by the sessions in
+  `cardSessionIds`: the conversation's own sessions, runs replying into it (`chat_jobs` `run`), and the
+  runs its agent handed work to (the hand-off chain). They are the same Inbox cards, decidable in place.
+- **Reference cards** (`refs` on a message, `ChatRef`) — a task, goal, bet, automation or Knowledge page
+  the message is about. Sources: what the turn created or changed (`ChatTurn.entityIds` + `kbRefs`,
+  folded into the message meta as `ent`), and what the text names — an id (`tsk_…`, `goal_…`, `bet_…`,
+  `au_…`, `kbp_…`) or a `#/kb/<section>/<slug>` link. Hydrated on every read by `DirectMessages.refs`,
+  so status is always current. Capped at `MAX_REFS` (4); only create/change tools contribute, never
+  list/get; an id that does not resolve draws nothing. A card links to the primitive's own page —
+  it does not edit it.
+
 ## Notifications
 
 | Where | What you get |

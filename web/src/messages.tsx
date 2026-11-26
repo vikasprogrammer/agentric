@@ -13,13 +13,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, MessageSquare, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
+import { ChevronRight, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, MessageSquare, ListChecks, Goal, FlaskConical, CalendarClock, BookOpen, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { chatSocket } from '@/lib/chat-socket'
-import { api, type NotificationPrefs, type NotifyLevel, type ThreadView, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type ChatArtifactRef, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
+import { api, type NotificationPrefs, type NotifyLevel, type ThreadView, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type ChatArtifactRef, type ChatRef, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
 
 /** Search people/agents by NAME first; a description match only ranks after every name match — otherwise
  *  typing "engin" lists half the fleet (anything whose blurb says "engineer") above the Engineer. */
@@ -129,6 +129,28 @@ function TypingDots() {
 // (`#/tasks/…`) still route in place.
 const chatMd = { a: ({ href, node: _n, ...p }: any) => <a href={href} {...(String(href ?? '').startsWith('#') ? {} : { target: '_blank', rel: 'noreferrer' })} {...p} /> }
 
+const REF_ICON = { task: ListChecks, goal: Goal, bet: FlaskConical, automation: CalendarClock, kb: BookOpen } as const
+const REF_NOUN = { task: 'Task', goal: 'Goal', bet: 'Bet', automation: 'Automation', kb: 'Knowledge' } as const
+const GOOD = new Set(['done', 'achieved', 'on', 'kept', 'expanded', 'active'])
+const BAD = new Set(['blocked', 'cancelled', 'killed', 'abandoned', 'paused'])
+const LIVE = new Set(['doing', 'running', 'proposed'])
+
+/** A primitive a message is about — a task, goal, bet, automation or KB page — with its status as of now. */
+function RefCard({ r }: { r: ChatRef }) {
+  const Icon = REF_ICON[r.kind]
+  const tone = !r.status ? '' : GOOD.has(r.status) ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : BAD.has(r.status) ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300' : LIVE.has(r.status) ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300' : 'bg-muted text-muted-foreground'
+  return (
+    <a href={`#/${r.route}`} title={`Open this ${REF_NOUN[r.kind].toLowerCase()}`} className="flex w-full max-w-[26rem] items-center gap-2.5 rounded-lg border bg-card px-3 py-2 no-underline transition hover:border-primary">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"><Icon className="h-4 w-4" /></span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium text-foreground">{r.title}</span>
+        <span className="block truncate text-[11px] text-muted-foreground">{REF_NOUN[r.kind]}{r.meta ? ` · ${r.meta}` : ''}</span>
+      </span>
+      {r.status && <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium capitalize ${tone}`}>{r.status.replace(/_/g, ' ')}</span>}
+    </a>
+  )
+}
+
 function Media({ a }: { a: ChatArtifactRef }) {
   if (a.isImage) return <a href={a.raw} target="_blank" rel="noreferrer" title={a.title} className="block overflow-hidden rounded-lg border bg-card"><img src={a.raw} alt={a.title} loading="lazy" className="max-h-72 max-w-full object-contain sm:max-w-sm" /></a>
   if (a.isVideo) return <video src={a.raw} controls preload="metadata" title={a.title} className="max-h-72 max-w-full rounded-lg border bg-black sm:max-w-sm" />
@@ -169,6 +191,7 @@ function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: 
         {m.tag === 'bg' && <span className="mb-0.5 inline-flex items-center gap-1 rounded bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground"><Loader2 className="h-2.5 w-2.5" />{m.authorKind === 'agent' ? 'Background result' : 'Sent to the background'}</span>}
         {m.body ? body : null}
         {m.artifacts && <div className="mt-1.5 flex flex-wrap items-start gap-2">{m.artifacts.map((a) => <Media key={a.id} a={a} />)}</div>}
+        {m.refs && <div className="mt-1.5 flex flex-col gap-1.5">{m.refs.map((r) => <RefCard key={`${r.kind}:${r.id}`} r={r} />)}</div>}
         {m.files && <div className="mt-1 flex flex-wrap gap-1">{m.files.map((f, i) => <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"><Paperclip className="h-3 w-3" />{f}</span>)}</div>}
         {(m.steps || m.took) && <Steps steps={m.steps ?? []} took={m.took} />}
         {onAction && m.actions && (

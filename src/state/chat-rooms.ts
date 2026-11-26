@@ -52,6 +52,8 @@ export interface ChatMessage {
   run?: string;
   /** Library artifacts shown with the message (images, video, files). */
   art?: string[];
+  /** Tasks / goals / bets / KB pages the turn behind this message created or changed (ids, or `kb:<section>/<slug>`). */
+  ent?: string[];
 }
 export type NotifyLevel = 'all' | 'mentions' | 'mute';
 
@@ -82,10 +84,10 @@ const toRoom = (r: RoomRow): ChatRoom => ({
 });
 
 function toMsg(r: MsgRow): ChatMessage {
-  let steps: ChatStep[] | undefined, tag: string | undefined, files: string[] | undefined, took: number | undefined, actions: string[] | undefined, run: string | undefined, art: string[] | undefined;
-  if (r.meta) { try { const m = JSON.parse(r.meta); if (Array.isArray(m.steps) && m.steps.length) steps = m.steps; if (typeof m.tag === 'string') tag = m.tag; if (Array.isArray(m.files) && m.files.length) files = m.files.map(String); if (typeof m.took === 'number' && m.took > 0) took = m.took; if (Array.isArray(m.actions) && m.actions.length) actions = m.actions.map(String); if (typeof m.run === 'string') run = m.run; if (Array.isArray(m.art) && m.art.length) art = m.art.map(String); } catch { /* a bad meta blob is just a message without detail */ } }
+  let steps: ChatStep[] | undefined, tag: string | undefined, files: string[] | undefined, took: number | undefined, actions: string[] | undefined, run: string | undefined, art: string[] | undefined, ent: string[] | undefined;
+  if (r.meta) { try { const m = JSON.parse(r.meta); if (Array.isArray(m.steps) && m.steps.length) steps = m.steps; if (typeof m.tag === 'string') tag = m.tag; if (Array.isArray(m.files) && m.files.length) files = m.files.map(String); if (typeof m.took === 'number' && m.took > 0) took = m.took; if (Array.isArray(m.actions) && m.actions.length) actions = m.actions.map(String); if (typeof m.run === 'string') run = m.run; if (Array.isArray(m.art) && m.art.length) art = m.art.map(String); if (Array.isArray(m.ent) && m.ent.length) ent = m.ent.map(String); } catch { /* a bad meta blob is just a message without detail */ } }
   const mentions = r.mentions ? r.mentions.split(',').filter(Boolean) : undefined;
-  return { tag, files, took, actions, run, art, threadId: r.thread_id ?? undefined, replies: r.replies || undefined, lastReplyAt: r.last_reply_at ?? undefined, mentions: mentions?.length ? mentions : undefined, seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : r.author_kind === 'system' ? 'system' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
+  return { tag, files, took, actions, run, art, ent, threadId: r.thread_id ?? undefined, replies: r.replies || undefined, lastReplyAt: r.last_reply_at ?? undefined, mentions: mentions?.length ? mentions : undefined, seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : r.author_kind === 'system' ? 'system' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
 }
 
 export class ChatRoomStore {
@@ -127,8 +129,8 @@ export class ChatRoomStore {
     this.db.prepare('UPDATE chat_rooms SET synced_turns = ?, synced_mark = ? WHERE id = ?').run(turns, mark, roomId);
   }
 
-  post(roomId: string, authorKind: 'member' | 'agent' | 'system', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now(), extra: { tag?: string; files?: string[]; thread?: number | null; mentions?: string[]; took?: number; actions?: string[]; run?: string; art?: string[] } = {}): ChatMessage {
-    const m = { ...(steps?.length ? { steps } : {}), ...(extra.tag ? { tag: extra.tag } : {}), ...(extra.files?.length ? { files: extra.files } : {}), ...(extra.took && extra.took > 0 ? { took: Math.round(extra.took) } : {}), ...(extra.actions?.length ? { actions: extra.actions } : {}), ...(extra.run ? { run: extra.run } : {}), ...(extra.art?.length ? { art: extra.art } : {}) };
+  post(roomId: string, authorKind: 'member' | 'agent' | 'system', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now(), extra: { tag?: string; files?: string[]; thread?: number | null; mentions?: string[]; took?: number; actions?: string[]; run?: string; art?: string[]; ent?: string[] } = {}): ChatMessage {
+    const m = { ...(steps?.length ? { steps } : {}), ...(extra.tag ? { tag: extra.tag } : {}), ...(extra.files?.length ? { files: extra.files } : {}), ...(extra.took && extra.took > 0 ? { took: Math.round(extra.took) } : {}), ...(extra.actions?.length ? { actions: extra.actions } : {}), ...(extra.run ? { run: extra.run } : {}), ...(extra.art?.length ? { art: extra.art } : {}), ...(extra.ent?.length ? { ent: extra.ent } : {}) };
     const meta = Object.keys(m).length ? JSON.stringify(m) : null;
     const mentions = extra.mentions?.length ? `,${extra.mentions.join(',')},` : null;
     const r = this.db.prepare('INSERT INTO chat_messages (room_id, author_kind, author_id, body, meta, created_at, thread_id, mentions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')

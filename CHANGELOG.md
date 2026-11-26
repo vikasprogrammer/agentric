@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.484.0] - 2026-11-26
+### Added
+- **Tasks, goals, bets, automations and Knowledge pages are drawn as live cards in Messages.** A message
+  is hydrated at read time with `refs` — what the turn behind it created or changed (`ChatTurn.entityIds`
+  from `task_create`/`task_update`/`task_claim`/`task_dispatch`/`bet_propose`/`bet_update`/`goal_measure`,
+  plus `kb_write` pages; stored as `ent` in the message meta), and anything its text names: an id
+  (`tsk_…`, `goal_…`, `bet_…`, `au_…`, `kbp_…`) or a `#/kb/…` link. Works for people's messages too.
+  Resolved on every read, so a card shows the task's status NOW; an unknown id draws nothing; at most
+  four cards per message; list/get tools never card. Agents are told in `MEDIA_HINT`.
+- **A delegate's approvals, questions and proposals show in the conversation that started the work.**
+  `cardSessionIds` now includes the runs a conversation's agent handed work to, so a hand-off blocked on
+  an approval is answerable in the chat instead of only in the Inbox.
+  **For users:** Tasks, goals, bets and Knowledge pages now appear as cards right in a conversation, with their current status — and approvals or questions from work an agent delegated can be answered there too. [Open Messages](#/chat)
+
 ## [0.483.0] - 2026-11-26
 ### Added
 - **Direct messages between people.** Messages could already hold two people in an unnamed group, but

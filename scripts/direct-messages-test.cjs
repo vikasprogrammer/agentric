@@ -589,6 +589,43 @@ console.log('\n\x1b[1m12c) a reply to an automation\'s post reaches that run; me
   tm.setRunResultSink(() => {});
 }
 
+console.log('\n\x1b[1m12d) tasks, goals and KB pages a message is about are drawn as live cards\x1b[0m');
+{
+  const A = aos.team.getMember(alice.id);
+  const task = aos.tasks.create({ tenant: aos.tenant, title: 'Rotate the deploy key', body: '', createdBy: alice.id, assignee: 'agent:helper', priority: 0 });
+  const goal = aos.goals.create({ tenant: aos.tenant, title: 'Cut churn to 2%', createdBy: alice.id, target: '2% monthly' });
+  aos.kb.write({ tenant: aos.tenant, section: 'runbooks', slug: 'deploys', title: 'Deploy runbook', body: 'Steps.', author: alice.id });
+  const made = dms.createRoom(A, { name: 'refs', members: [bob.id], agents: [] });
+  dms.roomSend(A, made.id, `Can someone pick up ${task.id}? It is for ${goal.id} — see [the runbook](#/kb/runbooks/deploys). Not real: tsk_0000000000000000`);
+  const view = () => dms.roomThread(A, made.id).messages.slice(-1)[0];
+  let refs = view().refs;
+  assert(refs && refs.map((r) => r.kind).join() === 'task,goal,kb', 'ids and KB links in a message resolve to cards; an unknown id draws nothing', JSON.stringify(refs));
+  assert(refs[0].title === 'Rotate the deploy key' && refs[0].status === 'todo' && /Helper · Urgent/.test(refs[0].meta) && refs[0].route === `tasks/${task.id}`, 'a task card carries title, status, assignee and where it opens', JSON.stringify(refs[0]));
+  assert(refs[2].title === 'Deploy runbook' && refs[2].route === 'kb/runbooks/deploys', 'a KB card opens the page');
+  aos.tasks.update(task.id, { status: 'done', by: alice.id });
+  assert(view().refs[0].status === 'done', 'the card shows the status NOW, not when the message was sent');
+  const five = [1, 2, 3, 4, 5].map((i) => aos.tasks.create({ tenant: aos.tenant, title: `T${i}`, body: '', createdBy: alice.id }).id);
+  dms.roomSend(A, made.id, `Open: ${five.join(', ')}`);
+  assert(view().refs.length === 4, 'a message naming many tasks draws at most four cards');
+
+  // what the agent's own turn created is carded even when its reply never names the id
+  const C = aos.team.getMemberByEmail('carol@example.com');
+  const r = dms.send(C, 'helper', 'file a task for the key rotation');
+  await settle();
+  const sid = r.sessionId;
+  const filed = aos.tasks.create({ tenant: aos.tenant, title: 'Key rotation follow-up', body: '', createdBy: 'agent:helper' });
+  const listed = aos.tasks.create({ tenant: aos.tenant, title: 'Only listed', body: '', createdBy: alice.id });
+  setWorking(sid, true);
+  write(sid, [user(row(sid).task),
+    tool('e1', 'mcp__agentos__task_create', { title: 'Key rotation follow-up' }), { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'e1', content: `Created ${filed.id}` }] } },
+    tool('e2', 'mcp__agentos__task_list', {}), { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'e2', content: `${listed.id} Only listed` }] } },
+    tool('e3', 'mcp__agentos__task_update', { id: 'tsk_ffffffffffffffff', status: 'done' }), { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'e3', is_error: true, content: 'not found' }] } },
+    say('Filed it.')]);
+  setWorking(sid, false);
+  const reply = dms.thread(C, 'helper').messages.slice(-1)[0];
+  assert(reply.body === 'Filed it.' && reply.refs && reply.refs.length === 1 && reply.refs[0].id === filed.id, 'a task the turn created is carded; one it only listed, or failed to change, is not', JSON.stringify(reply.refs));
+}
+
 console.log('\n\x1b[1m13) agent → agent in a room, with a hop limit\x1b[0m');
 {
   const A = aos.team.getMember(alice.id);
