@@ -125,6 +125,10 @@ function TypingDots() {
 /** Something an agent showed with its message: an image, a video or audio clip drawn in place, any
  *  other file as a tile. Opens the file itself — the people in a conversation can all read what was
  *  shown there, whether or not it is in their Library. */
+// A link in a message opens in a new tab, so following it never loses the conversation. In-app targets
+// (`#/tasks/…`) still route in place.
+const chatMd = { a: ({ href, node: _n, ...p }: any) => <a href={href} {...(String(href ?? '').startsWith('#') ? {} : { target: '_blank', rel: 'noreferrer' })} {...p} /> }
+
 function Media({ a }: { a: ChatArtifactRef }) {
   if (a.isImage) return <a href={a.raw} target="_blank" rel="noreferrer" title={a.title} className="block overflow-hidden rounded-lg border bg-card"><img src={a.raw} alt={a.title} loading="lazy" className="max-h-72 max-w-full object-contain sm:max-w-sm" /></a>
   if (a.isVideo) return <video src={a.raw} controls preload="metadata" title={a.title} className="max-h-72 max-w-full rounded-lg border bg-black sm:max-w-sm" />
@@ -141,7 +145,7 @@ function Media({ a }: { a: ChatArtifactRef }) {
  *  GROUPED: only the first carries the avatar + name, the rest sit flush under it with a hover time. */
 function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: { m: DmMessage; grouped: boolean; name: string; avatar: ReactNode; /** open this message's thread (absent inside a thread) */ onThread?: () => void; /** send one of the agent's quick replies — given only for the newest message, so stale ones can't be tapped */ onAction?: (text: string) => void; /** agents answering in this message's thread right now */ replying?: string[] }) {
   const body = m.authorKind === 'agent'
-    ? <div className="md max-w-none text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]}>{m.body}</ReactMarkdown></div>
+    ? <div className="md max-w-none text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMd}>{m.body}</ReactMarkdown></div>
     : <div className="whitespace-pre-wrap break-words text-sm">{m.body}</div>
   return (
     <div className={`group relative flex gap-3 px-5 hover:bg-muted/40 ${grouped ? 'py-0.5' : 'pb-0.5 pt-2'} ${m.pending ? 'opacity-60' : ''}`}>

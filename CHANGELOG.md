@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.482.3] - 2026-11-26
+### Fixed
+- **Links in a Messages conversation open in a new tab.** A link in an agent's message (a PR, a doc, "Open
+  the run") replaced the console and lost your place in the conversation. In-app `#/…` links still route
+  in place, matching the rest of the console.
+
 ## [0.482.2] - 2026-11-26
 ### Fixed
 - **One notice per event for a run that lives in Messages.** A run that reports into a conversation (an
