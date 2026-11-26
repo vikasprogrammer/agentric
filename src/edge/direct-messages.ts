@@ -568,6 +568,11 @@ export class DirectMessages {
     if (members.length > MAX_ROOM_PEOPLE || agents.length > MAX_ROOM_AGENTS) return { ok: false, status: 400, error: `a room holds up to ${MAX_ROOM_PEOPLE} people and ${MAX_ROOM_AGENTS} agents` };
     for (const m of members) if (this.os.team.getMember(m)?.status !== 'active') return { ok: false, status: 400, error: 'unknown team member' };
     for (const a of agents) { const denied = this.canChat(me, a); if (denied) return { ok: false, status: 403, error: denied }; }
+    // Messaging one teammate reopens the conversation you already have with them, like any chat app.
+    if (!name && agents.length === 0 && members.length === 2) {
+      const had = this.rooms.directBetween(members[0], members[1]);
+      if (had) return { ok: true, id: had.id };
+    }
     const room = this.rooms.createRoom(me.id, name);
     for (const m of members) this.rooms.addParticipant(room.id, 'member', m);
     for (const a of agents) this.rooms.addParticipant(room.id, 'agent', a);

@@ -235,6 +235,19 @@ export class ChatRoomStore {
     return this.get(id)!;
   }
 
+  /** The one-to-one conversation between two PEOPLE, if they have one: an unnamed room holding exactly
+   *  those two members and no agent. What makes "message a teammate" reopen the same conversation. */
+  directBetween(a: string, b: string): ChatRoom | undefined {
+    const r = this.db.prepare(
+      `SELECT r.id FROM chat_rooms r
+       WHERE r.kind = 'room' AND r.name IS NULL
+         AND (SELECT COUNT(*) FROM chat_participants p WHERE p.room_id = r.id) = 2
+         AND (SELECT COUNT(*) FROM chat_participants p WHERE p.room_id = r.id AND p.kind = 'member' AND p.id IN (?, ?)) = 2
+       ORDER BY r.created_at LIMIT 1`,
+    ).get<{ id: string }>(a, b);
+    return r ? this.get(r.id) : undefined;
+  }
+
   setOrchestrate(roomId: string, mode: OrchestrateMode): void { this.db.prepare('UPDATE chat_rooms SET orchestrate = ? WHERE id = ?').run(mode === 'auto' ? null : mode, roomId); }
 
   rename(roomId: string, name: string | null): void { this.db.prepare('UPDATE chat_rooms SET name = ? WHERE id = ?').run(name, roomId); }

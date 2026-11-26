@@ -286,6 +286,16 @@ console.log('\n\x1b[1m9) rooms: membership, @-addressing, a session per agent, c
   assert(both.delivered.length === 2, 'two mentions wake two agents');
 
   // group DM: unnamed, one person + one agent needs no mention
+  // person-to-person: messaging a teammate reopens the conversation you already have
+  {
+    const p1 = dms.createRoom(A, { members: [B.id] });
+    assert(p1.ok && dms.createRoom(A, { members: [B.id] }).id === p1.id, 'messaging the same teammate twice opens ONE conversation');
+    assert(dms.createRoom(B, { members: [A.id] }).id === p1.id, 'and it is the same one from their side');
+    assert(dms.createRoom(A, { members: [B.id, C.id] }).id !== p1.id && dms.createRoom(A, { members: [B.id], agents: ['helper'] }).id !== p1.id, 'a group, or one with an agent, is its own conversation');
+    assert(dms.createRoom(A, { name: 'pair', members: [B.id] }).id !== p1.id, 'a named room is never mistaken for it');
+    const sent = dms.roomSend(A, p1.id, 'lunch?');
+    assert(sent.ok && sent.delivered.length === 0 && dms.roomList(B).find((r) => r.id === p1.id).unread === 1, 'a message between two people reaches the other person and wakes no agent');
+  }
   const g = dms.createRoom(A, { agents: ['helper'] });
   const gs = dms.roomSend(A, g.id, 'quick question');
   await settle();
