@@ -841,6 +841,29 @@ session spawned and the pile-up guard blocks a second). **Isolate `AGENT_OS_HOME
 
 ---
 
+## 8b. Board cleanup — keeping the board true (v0.487.0)
+
+Agents file nearly all the work and close only some of it, so the board drifts until no view can rescue it.
+`src/edge/task-hygiene.ts` runs hourly off the scheduler tick (first tick after boot too) and corrects rows:
+
+| Rule | Condition | Action |
+|---|---|---|
+| assignees | stored assignee isn't `agent:*` or a member id | rewrite to the member id (`TaskStore.canonicalAssignee`) |
+| proposal | `proposed`, idle ≥ 14 d | archive + resync its Inbox card |
+| stale | agent-filed, agent/no assignee, idle ≥ 30 d | archive |
+| orphan | agent-filed, agent/no assignee, parent done/cancelled, idle ≥ 7 d | archive |
+| stalled | `doing`, agent/no assignee, idle ≥ 3 d | → `todo`, or → `blocked` if it would auto-dispatch |
+
+Never: a task a person holds, an archive of a person-filed task, a task with a live run (`last_session_id`
+running or a running `task:<id>` session), a future due date. **Archived** = `status='cancelled'` +
+`archived_at`/`archived_reason`/`archived_from` — columns, not a seventh status, so every existing
+"is it open?" query stays right. The store primitives (`archive`, `settle`) skip the notifier; `restore`
+goes through `update` (a person bringing work back is news). ≤300 archives per pass; a capped pass reruns
+next tick, and one admin card summarises the whole drain. Board load (`GET /api/tasks` with no `q`/`status`)
+= every open task + closed in the last 14 days, archived excluded (`?archived=1` is the Archived lens).
+The agent `task_create` lane also refuses an unknown person as assignee and points a duplicate open title at
+the existing task (non-dispatching creates only).
+
 ## 9. Future (not v1)
 
 > **Update (2026-07-09, v0.60.0): board UX + due dates shipped.** The "Richer board" and part of

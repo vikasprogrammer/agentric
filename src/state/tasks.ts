@@ -31,6 +31,7 @@ interface TaskRow {
   due_at: number | null; attempts: number; last_session_id: string | null;
   created_by: string; created_at: number; updated_at: number; updated_by: string;
   external_key?: string | null;
+  archived_at?: number | null; archived_reason?: string | null; archived_from?: string | null;
   rank?: number;
 }
 interface EventRow {
@@ -111,11 +112,11 @@ export class TaskStore {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)`)
       .run(
         id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', status, priority,
-        JSON.stringify(labels), input.assignee ?? null, input.owner ?? null, input.parentId ?? null,
+        JSON.stringify(labels), this.canonicalAssignee(input.assignee) ?? null, input.owner ?? null, input.parentId ?? null,
         mode, model, effort, input.autoDispatch ? 1 : 0, goalId, oneLine(input.criteria),
         input.callerAgent ?? null, input.callerClaudeId ?? null, input.pokeOnDone ? 1 : 0,
         input.dueAt ?? null, input.createdBy, now, now, input.createdBy, input.externalKey ?? null,
-        input.suggestedAssignee ?? null,
+        this.canonicalAssignee(input.suggestedAssignee) ?? null,
       );
     if (goalId && this.db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId)) {
       this.addEvent(id, 'link', `goal:${goalId}`, input.createdBy);
@@ -240,6 +241,9 @@ export class TaskStore {
       sets.push('status = ?'); vals.push(input.status);
       statusChange = `${t.status}→${input.status}`;
       this.addEvent(id, 'status', statusChange, input.by);
+      // Any deliberate status move takes a task out of the cleanup archive — reopening an archived task
+      // by dragging it back on the board is a restore, and a later human cancel is a decision, not cleanup.
+      if (t.archivedAt) sets.push('archived_at = NULL', 'archived_reason = NULL', 'archived_from = NULL');
     }
     // `blocked_on` travels with the blocked state and only with it: an explicit value is kept when the task
     // is (or is becoming) blocked, and any move OFF blocked clears it, so a stale "waiting on the founder"
@@ -253,7 +257,7 @@ export class TaskStore {
     }
     // Accepting a proposal that has no assignee yet takes the proposing agent's suggestion — "accept" means
     // accept it as proposed. An explicit assignee in the same edit (the reviewer's own pick) wins.
-    let assignee = input.assignee;
+    let assignee = input.assignee === undefined ? undefined : (this.canonicalAssignee(input.assignee) ?? null);
     if (assignee === undefined && t.status === 'proposed' && nextStatus !== 'proposed' && nextStatus !== 'cancelled'
       && !t.assignee && t.suggestedAssignee) assignee = t.suggestedAssignee;
     let reassigned = false;
@@ -262,9 +266,10 @@ export class TaskStore {
       reassigned = true;
       this.addEvent(id, 'assign', assignee ? `→${assignee}` : '→unassigned', input.by);
     }
-    if (input.suggestedAssignee !== undefined && (input.suggestedAssignee ?? null) !== (t.suggestedAssignee ?? null)) {
-      sets.push('suggested_assignee = ?'); vals.push(input.suggestedAssignee ?? null);
-      this.addEvent(id, 'assign', input.suggestedAssignee ? `suggested ${input.suggestedAssignee}` : 'suggestion withdrawn', input.by);
+    const suggested = input.suggestedAssignee === undefined ? undefined : (this.canonicalAssignee(input.suggestedAssignee) ?? null);
+    if (suggested !== undefined && suggested !== (t.suggestedAssignee ?? null)) {
+      sets.push('suggested_assignee = ?'); vals.push(suggested);
+      this.addEvent(id, 'assign', suggested ? `suggested ${suggested}` : 'suggestion withdrawn', input.by);
     }
     if (input.priority !== undefined) { sets.push('priority = ?'); vals.push(clampPriority(input.priority)); }
     if (input.mode !== undefined) { sets.push('mode = ?'); vals.push(input.mode === 'interactive' ? 'interactive' : 'headless'); }
@@ -348,6 +353,170 @@ export class TaskStore {
     return true;
   }
 
+  // ── Assignee identity ───────────────────────────────────────────────────────────────────────────
+  // `assignee` is `agent:<id>` or a MEMBER ID — but nothing enforced the second half, so every path that
+  // took a person from free text (an agent writing "vikas@…", "member:vikas@…", "janak", the string
+  // "null", a member literally named "Owner") stored it verbatim. The board's "Mine" filter compares
+  // against the member id, so one person's tasks were split across three spellings and most of them
+  // never showed up as theirs. One resolver, applied on every write and swept over existing rows.
+
+  /**
+   * The canonical form of an assignee reference: `agent:<id>` untouched, a person resolved to their
+   * member id (from an id, an email, `member:<id|email>`, or an unambiguous display name / email local
+   * part), and the empty-ish spellings (`''`, `null`, `undefined`, `none`, `unassigned`) to `null`.
+   * Something that resolves to nobody is returned AS GIVEN — the store never destroys data it can't
+   * interpret; refusing an unresolvable assignee is the caller's job (see {@link resolvesToAssignee}).
+   * `undefined` passes through so "field not in this edit" keeps meaning that.
+   */
+  canonicalAssignee(raw: string | null | undefined): string | null | undefined {
+    if (raw === undefined) return undefined;
+    if (raw === null) return null;
+    let v = String(raw).trim();
+    if (!v || /^(null|undefined|none|unassigned|nobody|-)$/i.test(v)) return null;
+    if (v.startsWith('agent:')) return v;
+    if (v.toLowerCase().startsWith('member:')) v = v.slice('member:'.length).trim();
+    const byId = this.db.prepare('SELECT id FROM members WHERE id = ?').get<{ id: string }>(v);
+    if (byId) return byId.id;
+    const byEmail = this.db.prepare('SELECT id FROM members WHERE email = ?').get<{ id: string }>(v.toLowerCase());
+    if (byEmail) return byEmail.id;
+    // A bare name: match a display name or an email local part, but only when exactly one member fits —
+    // guessing between two Janaks would assign the work to the wrong person, which is worse than leaving it.
+    if (!v.includes('@')) {
+      const hits = this.db
+        .prepare(`SELECT id FROM members WHERE lower(name) = ? OR lower(substr(email, 1, instr(email, '@') - 1)) = ?`)
+        .all<{ id: string }>(v.toLowerCase(), v.toLowerCase());
+      const ids = [...new Set(hits.map((h) => h.id))];
+      if (ids.length === 1) return ids[0];
+    }
+    return v;
+  }
+
+  /** Does this reference name somebody a task can actually be assigned to? Agents are checked by the
+   *  caller (manifests aren't in the DB); this answers for people. */
+  resolvesToMember(raw: string): boolean {
+    const c = this.canonicalAssignee(raw);
+    return !!c && !c.startsWith('agent:') && !!this.db.prepare('SELECT 1 FROM members WHERE id = ?').get(c);
+  }
+
+  /**
+   * Rewrite every stored assignee / suggested assignee that isn't already canonical. Idempotent and cheap
+   * after the first pass (only rows that are neither `agent:*` nor an existing member id are visited).
+   * Logs an `assign` event on each rewritten task so the change is visible in its timeline.
+   */
+  normalizeAssignees(tenant: string): number {
+    let changed = 0;
+    for (const col of ['assignee', 'suggested_assignee'] as const) {
+      const rows = this.db
+        .prepare(`SELECT id, ${col} AS v FROM tasks WHERE tenant = ? AND ${col} IS NOT NULL
+                   AND ${col} NOT LIKE 'agent:%' AND ${col} NOT IN (SELECT id FROM members)`)
+        .all<{ id: string; v: string }>(tenant);
+      for (const r of rows) {
+        const c = this.canonicalAssignee(r.v);
+        if (c === r.v) continue; // unresolvable — leave it for a human rather than guess
+        this.db.prepare(`UPDATE tasks SET ${col} = ? WHERE id = ?`).run(c ?? null, r.id);
+        this.addEvent(r.id, 'assign', `${col === 'assignee' ? '' : 'suggested '}${r.v} → ${c ?? 'unassigned'} (normalized)`, 'system');
+        changed++;
+      }
+    }
+    return changed;
+  }
+
+  // ── Cleanup archive ─────────────────────────────────────────────────────────────────────────────
+  // See src/edge/task-hygiene.ts for WHICH tasks get archived. These are the write primitives. Both are
+  // SILENT (no notifier): a cleanup pass touching a thousand dead tasks must not post a thousand Inbox
+  // cards, DM a thousand owners, or wake a thousand callers. The audit line + timeline event carry it.
+
+  /** Archive one open task (→ `cancelled`, remembering where it came from). False when it's already
+   *  closed, gone, or was touched after `staleBefore` (a racing edit wins over a stale plan). */
+  archive(id: string, reason: string, opts: { by?: string; staleBefore?: number } = {}): boolean {
+    const by = opts.by ?? 'system';
+    const now = Date.now();
+    const res = this.db
+      .prepare(`UPDATE tasks SET archived_from = status, status = 'cancelled', blocked_on = NULL,
+                 archived_at = ?, archived_reason = ?, updated_at = ?, updated_by = ?
+                 WHERE id = ? AND status NOT IN ('done','cancelled') AND updated_at < ?`)
+      .run(now, reason, now, by, id, opts.staleBefore ?? now + 1);
+    if (!res.changes) return false;
+    const from = this.db.prepare('SELECT archived_from FROM tasks WHERE id = ?').get<{ archived_from: string }>(id)?.archived_from ?? 'todo';
+    this.addEvent(id, 'status', `${from}→cancelled`, by);
+    // The reason rides a non-milestone `status` row, NOT a comment: `latestNote` reads the newest comment
+    // as the task's RESULT (what a waiting caller is told), and bookkeeping must never become an answer.
+    this.addEvent(id, 'status', `🗄 archived by board cleanup: ${reason}`, by);
+    return true;
+  }
+
+  /** Silently move an open task to another OPEN status with a timeline marker — the cleanup pass's
+   *  correction of a status that stopped being true (`doing` with nobody doing it). */
+  settle(id: string, to: 'todo' | 'blocked', mark: string, opts: { by?: string; staleBefore?: number } = {}): boolean {
+    const by = opts.by ?? 'system';
+    const now = Date.now();
+    const cur = this.get(id);
+    if (!cur || TERMINAL.has(cur.status) || cur.status === to) return false;
+    const res = this.db
+      .prepare(`UPDATE tasks SET status = ?, blocked_on = NULL, updated_at = ?, updated_by = ?
+                 WHERE id = ? AND status = ? AND updated_at < ?`)
+      .run(to, now, by, id, cur.status, opts.staleBefore ?? now + 1);
+    if (!res.changes) return false;
+    this.addEvent(id, 'status', `${cur.status}→${to}`, by);
+    this.addEvent(id, 'status', mark, by);
+    return true;
+  }
+
+  /** Put an archived task back where it was (a `doing` with no run comes back as `todo`). Goes through
+   *  {@link update}, so it's an ordinary, notified status change — a person bringing work back is news. */
+  restore(id: string, by: string): Task | null {
+    const r = this.db.prepare('SELECT archived_at, archived_from FROM tasks WHERE id = ?').get<{ archived_at: number | null; archived_from: string | null }>(id);
+    if (!r?.archived_at) return null;
+    const from = (r.archived_from && STATUSES.includes(r.archived_from as TaskStatus) ? r.archived_from : 'todo') as TaskStatus;
+    const to: TaskStatus = from === 'doing' || TERMINAL.has(from) ? 'todo' : from;
+    return this.update(id, { status: to, note: 'restored from the cleanup archive', by });
+  }
+
+  /** Archived tasks, most recently archived first — the board's "Archived" lens. */
+  archived(tenant: string, limit = 300): Task[] {
+    return this.db
+      .prepare('SELECT * FROM tasks WHERE tenant = ? AND archived_at IS NOT NULL ORDER BY archived_at DESC LIMIT ?')
+      .all<TaskRow>(tenant, Math.max(1, Math.min(limit, 1000)))
+      .map(toTask);
+  }
+
+  archivedCount(tenant: string): number {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE tenant = ? AND archived_at IS NOT NULL').get<{ n: number }>(tenant)?.n ?? 0;
+  }
+
+  /**
+   * The board's default load: EVERY open task plus what closed recently — not "the first 500 rows in
+   * status order", which on a tenant with thousands of tasks handed the console an arbitrary slice
+   * (the done column ate the budget, or open work past row 500 silently didn't exist). Archived tasks
+   * are left out; they have their own lens.
+   */
+  board(tenant: string, opts: { closedSince: number; openLimit?: number; closedLimit?: number }): Task[] {
+    const open = this.db
+      .prepare(`SELECT * FROM tasks WHERE tenant = ? AND status NOT IN ('done','cancelled')
+                 ORDER BY (CASE status WHEN 'proposed' THEN -1 WHEN 'todo' THEN 0 WHEN 'doing' THEN 1 ELSE 2 END), priority, updated_at DESC LIMIT ?`)
+      .all<TaskRow>(tenant, opts.openLimit ?? 2000);
+    const closed = this.db
+      .prepare(`SELECT * FROM tasks WHERE tenant = ? AND status IN ('done','cancelled') AND archived_at IS NULL
+                 AND updated_at >= ? ORDER BY updated_at DESC LIMIT ?`)
+      .all<TaskRow>(tenant, opts.closedSince, opts.closedLimit ?? 300);
+    return this.attachDeps([...open, ...closed].map(toTask));
+  }
+
+  /**
+   * An OPEN task with the same title, if one exists — so an agent re-filing work that's already on the
+   * board gets pointed at it instead of adding a copy (one live tenant had the same test-fix task open
+   * eight times). Title compared case- and whitespace-insensitively; archived tasks don't count.
+   */
+  findOpenDuplicate(tenant: string, title: string): Task | undefined {
+    const norm = normTitle(title);
+    if (!norm) return undefined;
+    const rows = this.db
+      .prepare(`SELECT * FROM tasks WHERE tenant = ? AND status NOT IN ('done','cancelled') AND lower(trim(title)) LIKE ? ORDER BY created_at ASC LIMIT 20`)
+      .all<TaskRow>(tenant, norm.slice(0, 24).replace(/[%_]/g, '') + '%');
+    const hit = rows.find((r) => normTitle(r.title) === norm);
+    return hit ? this.withDeps(toTask(hit)) : undefined;
+  }
+
   /** How many of one author's proposals are still awaiting a human — the per-agent queue cap. */
   openProposals(tenant: string, createdBy: string): number {
     return this.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE tenant = ? AND status = 'proposed' AND created_by = ?`)
@@ -358,7 +527,9 @@ export class TaskStore {
   counts(tenant: string): Record<TaskStatus, number> {
     const out = { proposed: 0, todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 } as Record<TaskStatus, number>;
     for (const r of this.db
-      .prepare('SELECT status, COUNT(*) AS n FROM tasks WHERE tenant = ? GROUP BY status')
+      // Archived tasks are cancelled in status but not in meaning — they get their own count
+      // (`archivedCount`), so a cleanup pass doesn't swell the Done column by a thousand.
+      .prepare('SELECT status, COUNT(*) AS n FROM tasks WHERE tenant = ? AND archived_at IS NULL GROUP BY status')
       .all<{ status: TaskStatus; n: number }>(tenant)) {
       if (r.status in out) out[r.status] = r.n;
     }
@@ -671,6 +842,11 @@ export class TaskStore {
   }
 }
 
+/** Title as compared for duplicates: lowercased, whitespace collapsed, trailing punctuation dropped. */
+function normTitle(t: string): string {
+  return String(t ?? '').toLowerCase().replace(/\s+/g, ' ').trim().replace(/[\s.!?:;,]+$/, '');
+}
+
 function clampPriority(p?: number): number {
   if (p === undefined || !Number.isFinite(p)) return 2;
   return Math.max(0, Math.min(3, Math.round(p)));
@@ -709,6 +885,7 @@ function toTask(r: TaskRow): Task {
     dueAt: r.due_at ?? undefined, attempts: r.attempts, lastSessionId: r.last_session_id ?? undefined,
     createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at, updatedBy: r.updated_by,
     externalKey: r.external_key ?? undefined,
+    ...(r.archived_at ? { archivedAt: r.archived_at, archivedReason: r.archived_reason ?? undefined } : {}),
   };
 }
 

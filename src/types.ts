@@ -900,6 +900,11 @@ export interface Task {
   updatedAt: number;
   updatedBy: string;
   externalKey?: string; // the outside record this task mirrors ('clickup:<ticket id>'); absent for most tasks
+  /** Set when board CLEANUP (src/edge/task-hygiene.ts) archived the task — status is then `cancelled`,
+   *  but it was nobody's decision, so it's kept apart from a human cancel and is one click to restore.
+   *  Cleared by any status change. Absent on every task a person or agent cancelled deliberately. */
+  archivedAt?: number;
+  archivedReason?: string;
 }
 
 /**

@@ -1573,6 +1573,14 @@ function migrate(db: Db): void {
   // Adopted as the assignee when a proposal is accepted without one. NULL on every human-filed task.
   addColumn(db, 'tasks', 'suggested_assignee', 'TEXT');
 
+  // BOARD CLEANUP (src/edge/task-hygiene.ts): an archived task is `cancelled` + these. Kept as columns
+  // rather than a seventh status because every "is it open?" query in the codebase already treats
+  // cancelled as closed — an archived task can't dispatch, be claimed or count toward a goal without
+  // anyone having to remember a new state. `archived_from` is the status to restore it to.
+  addColumn(db, 'tasks', 'archived_at', 'INTEGER');
+  addColumn(db, 'tasks', 'archived_reason', 'TEXT');
+  addColumn(db, 'tasks', 'archived_from', 'TEXT');
+
   // SESSION SEARCH (`session_history`): ranked keyword search over past runs. Two indexes, because the
   // two halves of a session change at very different rates:
   //   - term_sessions_fts — external-content FTS over the row's own prose (title, seed task, report
