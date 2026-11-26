@@ -13,13 +13,13 @@
 import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, ChevronDown, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, MessageSquare, ListChecks, Goal, FlaskConical, CalendarClock, BookOpen, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
+import { ChevronRight, ChevronDown, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, MessageSquare, ListChecks, Goal, FlaskConical, CalendarClock, BookOpen, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert, CircleHelp, Hand } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { chatSocket } from '@/lib/chat-socket'
-import { api, type NotificationPrefs, type NotifyLevel, type ThreadView, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type ChatArtifactRef, type ChatRef, type TaskStatus, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
+import { api, type NotificationPrefs, type NotifyLevel, type ThreadView, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type ChatArtifactRef, type ChatRef, type TaskStatus, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary, type Answering } from '@/lib/api'
 
 /** Search people/agents by NAME first; a description match only ranks after every name match — otherwise
  *  typing "engin" lists half the fleet (anything whose blurb says "engineer") above the Engineer. */
@@ -368,13 +368,14 @@ interface View {
   handoffs: DmHandoff[]
   /** Other people typing in the room right now. */
   peopleTyping: string[]
+  answering?: Answering
 }
 
-const roomView = (r: RoomThread): View => ({ threadView: r.threadView, messages: r.messages, typing: r.typing, sessionIds: r.sessionIds, stalled: false, working: r.typing.length > 0, room: r.room, cardSessionIds: r.cardSessionIds ?? r.sessionIds, jobs: r.jobs ?? [], handoffs: r.handoffs ?? [], peopleTyping: r.peopleTyping ?? [] })
+const roomView = (r: RoomThread): View => ({ threadView: r.threadView, messages: r.messages, typing: r.typing, sessionIds: r.sessionIds, stalled: false, working: r.typing.length > 0, room: r.room, cardSessionIds: r.cardSessionIds ?? r.sessionIds, jobs: r.jobs ?? [], handoffs: r.handoffs ?? [], peopleTyping: r.peopleTyping ?? [], answering: r.answering })
 const dmView = (id: string, r: DmThread): View => ({
   threadView: r.threadView,
   messages: r.messages, typing: r.typing ? [{ agent: id, ...r.typing }] : [], sessionIds: r.sessionId ? [r.sessionId] : [], stalled: !!r.stalled, working: r.presence === 'working',
-  cardSessionIds: r.cardSessionIds ?? (r.sessionId ? [r.sessionId] : []), jobs: r.jobs ?? [], handoffs: r.handoffs ?? [], peopleTyping: [],
+  cardSessionIds: r.cardSessionIds ?? (r.sessionId ? [r.sessionId] : []), jobs: r.jobs ?? [], handoffs: r.handoffs ?? [], peopleTyping: [], answering: r.answering,
 })
 
 /** A pushed thread from the chat socket — `data` is exactly what the REST thread route returns. */
@@ -944,6 +945,12 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
     requestAnimationFrame(() => { if (el) el.scrollTop += el.scrollHeight - prevHeight })
   }
 
+  // The agent's open question this reply will answer — unless I chose to send an ordinary message, typed a
+  // command, or (in a room) am addressing someone else.
+  const [plainFor, setPlainFor] = useState('')
+  const ask = view?.answering
+  const plain = !!ask && plainFor === ask.id
+  const answering = ask && !plain && !draft.startsWith('/') && !(isRoom && [...draft.matchAll(/(^|\s)@([\w.-]+)/g)].some((x) => x[2].toLowerCase() !== ask.agent)) ? ask : undefined
   const send = async (text: string, retryKey?: number) => {
     const body = text.trim()
     const sending = retryKey == null ? files : []
@@ -960,7 +967,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
     const key = retryKey ?? ++seq.current
     if (!isCommand) setOutgoing((o) => [...o.filter((x) => x.key !== key), { key, text: body || '(see attached)', at: Date.now() }])
     stick.current = true
-    const r: { error?: string; held?: boolean; notes?: string[] } = isRoom ? await api.roomSend(id, body, payload) : await api.dmSend(id, body, payload)
+    const r: { error?: string; held?: boolean; notes?: string[] } = isRoom ? await api.roomSend(id, body, payload, undefined, plain) : await api.dmSend(id, body, payload, undefined, plain)
     if (r.error) {
       // Held = it carried a credential: hand the text back to edit rather than leave a failed bubble.
       if (r.held || isCommand) { setOutgoing((o) => o.filter((x) => x.key !== key)); setDraft(body); setErr(r.error); return }
@@ -1205,6 +1212,13 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
             </div>
           )}
           <div className="rounded-xl border bg-background focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/20">
+            {answering && (
+              <div className="flex items-center gap-1.5 rounded-t-xl border-b bg-primary/5 px-2.5 py-1.5 text-xs text-muted-foreground">
+                <CircleHelp className="h-3.5 w-3.5 shrink-0 text-primary" />
+                <span className="min-w-0 flex-1 truncate">Your reply answers {prettyAgent(answering.agent)}: <span className="italic">{answering.prompt.replace(/\s+/g, ' ')}</span></span>
+                <button onClick={() => setPlainFor(answering.id)} title="Send an ordinary message instead" aria-label="Send an ordinary message instead" className="shrink-0 hover:text-foreground"><X className="h-3.5 w-3.5" /></button>
+              </div>
+            )}
             {files.length > 0 && (
               <div className="flex flex-wrap gap-1 px-2.5 pt-2">
                 {files.map((f, i) => (
@@ -1223,7 +1237,7 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
               onChange={(e) => onDraft(e.target.value, e.target.selectionStart ?? e.target.value.length)}
               onKeyDown={onKey}
               onBlur={() => setMention(null)}
-              placeholder={isRoom ? `Message ${room!.name ? '#' + room!.name : title}` : `Message ${title}`}
+              placeholder={answering ? `Answer ${prettyAgent(answering.agent)}` : isRoom ? `Message ${room!.name ? '#' + room!.name : title}` : `Message ${title}`}
               rows={1}
               className="max-h-48 min-h-[44px] resize-none border-0 bg-transparent text-sm shadow-none focus-visible:ring-0"
             />
@@ -1367,7 +1381,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
   ].sort((a, b) => b.at - a.at)
   const total = (contacts?.length ?? 0) + rooms.length
 
-  const item = (key: string, glyph: ReactNode, title: string, preview: ReactNode, at: number, unreadCount: number, hasPreview: boolean, level: NotifyLevel = 'all', mentions = 0) => {
+  const item = (key: string, glyph: ReactNode, title: string, preview: ReactNode, at: number, unreadCount: number, hasPreview: boolean, level: NotifyLevel = 'all', mentions = 0, waiting = 0) => {
     const on = key === selected
     const unread = !on && unreadCount > 0
     return (
@@ -1380,6 +1394,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
           </span>
           <span className="flex items-center gap-1">
             <span className={`min-w-0 flex-1 truncate text-xs ${unread ? 'text-foreground' : 'text-muted-foreground'}`}>{preview}</span>
+            {waiting > 0 && <span title={waiting === 1 ? 'Waiting on you — a question or an approval' : `Waiting on you — ${waiting} decisions`} className="flex h-4 shrink-0 items-center gap-0.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold text-white"><Hand className="h-2.5 w-2.5" />{waiting > 1 ? waiting : ''}</span>}
             {level === 'mute' && <BellOff className="h-3 w-3 shrink-0 text-muted-foreground/70" />}
             {!on && mentions > 0 && <span className="flex h-4 shrink-0 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-white">@{mentions}</span>}
             {unread && level !== 'mute' && mentions === 0 && <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">{unreadCount}</span>}
@@ -1390,7 +1405,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
   }
   const roomItem = (r: RoomSummary) => item(r.id, <RoomGlyph room={r} meId={me.id} />, roomTitle(r, me.id),
     r.agents.some((a) => a.presence === 'working') ? <span className="italic">working…</span> : r.lastText ? `${r.lastAuthor ? r.lastAuthor + ': ' : ''}${r.lastText}` : `${r.members.length + r.agents.length} in here`,
-    r.lastAt, r.unread, !!r.lastText, r.notify ?? 'all', r.mentions ?? 0)
+    r.lastAt, r.unread, !!r.lastText, r.notify ?? 'all', r.mentions ?? 0, r.waiting ?? 0)
   const sectionHead = (label: string, onPlus: () => void, plusTitle: string) => (
     <div className="flex items-center justify-between px-3 pb-1 pt-3">
       <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
@@ -1414,7 +1429,7 @@ export function MessagesPage({ me, selected, onSelect, messages, renderIcon, ren
             {direct.map((d) => d.contact
               ? item(d.contact.agent, <Avatar agent={d.contact.agent} icon={d.contact.icon} renderIcon={renderIcon} presence={d.contact.presence} />, prettyAgent(d.contact.agent),
                   d.contact.presence === 'working' ? <span className="italic">working…</span> : d.contact.lastText ? `${d.contact.lastFromMe ? 'You: ' : ''}${d.contact.lastText}` : 'Say hello',
-                  d.contact.lastAt, d.contact.unread, !!d.contact.lastText, d.contact.notify ?? 'all')
+                  d.contact.lastAt, d.contact.unread, !!d.contact.lastText, d.contact.notify ?? 'all', 0, d.contact.waiting ?? 0)
               : roomItem(d.room!))}
             {contacts && direct.length === 0 && <p className="px-2 pt-1 text-xs text-muted-foreground">No contacts yet. Add an agent to start talking.</p>}
             <button onClick={() => onSelect('add')} className={`mt-1 flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground ${adding ? 'bg-muted text-foreground' : ''}`}>

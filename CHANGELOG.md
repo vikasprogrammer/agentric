@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.486.0] - 2026-11-26
+### Added
+- **In Messages, your reply answers the agent's question.** An agent blocked on `ask` used to need its card
+  clicked: anything typed in the composer was injected into the pane, where it queued behind the very wait
+  it was meant to end. While exactly one question the reader may answer is open on the conversation's
+  session, the thread now carries `answering`, the composer shows what the reply will answer (with an ×
+  to send an ordinary message instead), and the send is recorded as the answer
+  (`question.answered.viaMessages`) rather than typed into the pane. In a room it applies only to a message
+  addressed to nobody else; a question that outlived its run is left to its card. Approvals are never
+  read from typed text.
+- **The approval card in Messages carries what the Inbox card does** — the decision brief (what it will
+  do, to what, why), *Always* / *Trust host* for an owner, a disabled state while a click is in flight and
+  the error when one fails. A reader who cannot clear it sees who it is waiting on, not buttons that 403.
+- **The Messages sidebar marks conversations waiting on you** — a count of the questions you may answer
+  and the approvals you may clear (`waiting` on contacts and rooms).
+  **For users:** When an agent asks you something in Messages, just type your reply — it goes straight to the agent as the answer. Conversations waiting on your answer or approval are now marked in the sidebar. [Open Messages](#/chat)
+
 ## [0.485.2] - 2026-11-26
 ### Fixed
 - **Signing a Claude account in from the console failed on every attempt with newer Claude Code.** claude

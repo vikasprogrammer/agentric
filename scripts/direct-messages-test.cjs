@@ -646,6 +646,66 @@ console.log('\n\x1b[1m12e) a conversation opens on its newest page, not its whol
   assert(rest.messages.length < 40 && rest.messages.some((m) => m.body === 'line 1') && dms.roomThread(A, made.id, { before: rest.messages[0].seq }).messages.length === 0, 'and ends at the start of the conversation', String(rest.messages.length));
 }
 
+console.log('\n\x1b[1m12f) a typed reply answers the agent\'s open question; the sidebar says who is waiting\x1b[0m');
+{
+  const C = aos.team.getMemberByEmail('carol@example.com');
+  const q = (id) => aos.db.prepare('SELECT status, answer, answered_by FROM questions WHERE id = ?').get(id);
+  const contact = () => dms.list(C).contacts.find((c) => c.agent === 'helper');
+  const sid = dms.send(C, 'helper', 'ship the release').sessionId;
+  await settle();
+  setWorking(sid, true);
+  const q1 = tm.askQuestion(sid, 'helper', 'Which environment?', undefined, ['staging', 'production']).id;
+  assert(dms.thread(C, 'helper').answering.id === q1 && contact().waiting === 1, 'an open question is named on the thread and counted on the contact');
+  const inj = injected.length, before = dms.thread(C, 'helper').messages.length;
+  const sent = dms.send(C, 'helper', 'staging');
+  assert(sent.ok && q(q1).status === 'answered' && q(q1).answer === 'staging' && q(q1).answered_by === C.email, 'what the person types next is recorded as the answer', JSON.stringify(q(q1)));
+  assert(injected.length === inj, 'and is not also typed into the pane');
+  const after = dms.thread(C, 'helper');
+  assert(after.messages.length === before + 1 && after.messages.slice(-1)[0].body === 'staging' && !after.answering && contact().waiting === 0, 'it still reads as a message in the conversation, and nothing is waiting any more');
+
+  const q2 = tm.askQuestion(sid, 'helper', 'Tag it too?').id;
+  dms.send(C, 'helper', 'by the way, unrelated', { plain: true });
+  assert(q(q2).status === 'pending', 'a message sent as ordinary leaves the question open');
+  const q3 = tm.askQuestion(sid, 'helper', 'And notify the team?').id;
+  assert(!dms.thread(C, 'helper').answering, 'two open questions: a typed reply is ambiguous, so the cards decide');
+  dms.send(C, 'helper', 'yes');
+  assert(q(q2).status === 'pending' && q(q3).status === 'pending', 'and neither is answered by it');
+  tm.answerQuestion(q2, 'no', C.email); tm.answerQuestion(q3, 'no', C.email);
+
+  // a question that outlived its turn is not answered by a later, unrelated message
+  const q4 = tm.askQuestion(sid, 'helper', 'Renew the cert next month?', undefined, undefined, { defaultAnswer: 'yes', expiresAt: Date.now() + 86_400_000 }).id;
+  assert(dms.thread(C, 'helper').answering.id === q4, 'a question with a default counts while its turn is still running');
+  setWorking(sid, false);
+  assert(!dms.thread(C, 'helper').answering && contact().waiting === 1, 'once the turn is over it is a card to decide, not what the next message answers');
+  tm.answerQuestion(q4, 'yes', C.email);
+
+  // approvals count for whoever may clear them
+  const ins = (id, level) => aos.db.prepare('INSERT INTO approvals (id, run_id, tenant, level, capability, args, reasoning, reason, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, sid, aos.tenant, level, 'shell.exec', '{}', '', 'needs a look', 'pending', Date.now());
+  ins('apr_chat_owner', 'owner');
+  assert(contact().waiting === 0, 'an approval the reader cannot clear is not "waiting on you"');
+  ins('apr_chat_head', 'head');
+  assert(contact().waiting === 1, 'one they can clear is');
+  aos.db.prepare("UPDATE approvals SET status = 'approved' WHERE id LIKE 'apr_chat_%'").run();
+
+  // rooms: the answer is for the agent that asked, unless the message is for someone else
+  const A = aos.team.getMember(alice.id);
+  const rid = dms.createRoom(A, { name: 'asks', members: [], agents: [AGENT, 'helper'] }).id;
+  dms.roomSetOrchestrate(A, rid, 'off');
+  dms.roomSend(A, rid, '@helper prepare the rollout');
+  await settle();
+  const ls = aos.chatRooms.participants(rid).find((p) => p.id === 'helper').sessionId;
+  setWorking(ls, true);
+  const rq = tm.askQuestion(ls, 'helper', 'Roll out to everyone?').id;
+  const rt = dms.roomThread(A, rid);
+  assert(rt.answering && rt.answering.agent === 'helper' && rt.room.waiting === 1, 'a room names the agent that is waiting on the reader');
+  dms.roomSend(A, rid, '@agent-author what do you think?');
+  await settle();
+  assert(q(rq).status === 'pending', 'a message for another agent is not the answer');
+  dms.roomSend(A, rid, 'only the beta group');
+  assert(q(rq).status === 'answered' && q(rq).answer === 'only the beta group' && dms.roomThread(A, rid).room.waiting === 0, 'an unaddressed reply is', JSON.stringify(q(rq)));
+  setWorking(ls, false);
+}
+
 console.log('\n\x1b[1m13) agent → agent in a room, with a hop limit\x1b[0m');
 {
   const A = aos.team.getMember(alice.id);

@@ -3876,7 +3876,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (sub === 'send' && method === 'POST') {
       if (tooBig()) return sendJson(res, 413, { error: 'attachments too large (max ~16MB per message)' });
       const b = await readBody(req);
-      return out(dms.roomSend(me, id, String(b.message || ''), { files: chatFiles(b), thread: Number(b.thread) || undefined }) as never);
+      return out(dms.roomSend(me, id, String(b.message || ''), { files: chatFiles(b), thread: Number(b.thread) || undefined, plain: b.plain === true }) as never);
     }
     if (sub === 'stop' && method === 'POST') {
       const room = dms.roomOf(me, id);
@@ -3930,7 +3930,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (dmMatch[2] === 'send' && method === 'POST') {
       if (tooBig()) return sendJson(res, 413, { error: 'attachments too large (max ~16MB per message)' });
       const b = await readBody(req);
-      const r = dms.send(me, agent, String(b.message || ''), { retry: b.retry === true, files: chatFiles(b), thread: Number(b.thread) || undefined });
+      const r = dms.send(me, agent, String(b.message || ''), { retry: b.retry === true, files: chatFiles(b), thread: Number(b.thread) || undefined, plain: b.plain === true });
       if (!r.ok) return sendJson(res, r.status, { error: r.error, held: r.held });
       return sendJson(res, 200, { ok: true, message: r.message, notes: r.notes ?? [] });
     }

@@ -40,6 +40,18 @@ Store: `src/state/chat-rooms.ts` (`os.chatRooms`). Engine: `src/edge/direct-mess
   reply is folded only after the transcript has been still for 2.5 s — otherwise an interim note
   becomes "the message" and the steps are lost.
 - **Approvals and questions surface inline** — the one piece of machinery a conversation must show.
+  **A typed reply answers an open question:** while an agent is blocked on a question the reader may
+  answer, the thread carries `answering` and the composer says so; the next message goes to the question
+  (`TerminalManager.answerFromMessages`, audited `question.answered.viaMessages`) and is NOT typed into the
+  pane, where it would queue behind the wait. It applies only when exactly one such question is open, in a
+  room only when the message is for nobody else, and — for a question that outlives its run (a deadline
+  or a default) — only while that turn is still running. `plain: true` on the send opts out. Approvals are
+  never taken from typed text: the card's buttons are the decision. The approval card shows the decision
+  brief and, by role, *Always* / *Trust host* (owner) or "waiting on an admin/owner" for a reader who
+  cannot clear it.
+- **The sidebar says who is waiting.** `waiting` on a contact or room counts the questions the reader may
+  answer and the approvals they may clear on any session the conversation has used (`chatWaiting`, two
+  queries for the whole list).
 - **Silence is reported.** A sent message with no reply and nothing running reads `stalled`, and the
   page offers *Try again* (re-delivers without posting twice).
 
