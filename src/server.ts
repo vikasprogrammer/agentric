@@ -7691,11 +7691,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     });
     return sendJson(res, 200, { artifacts: shaped, enabled: os.artifacts.enabled });
   }
+  // (An artifact an agent SHOWED in a Messages conversation is readable by the people in that conversation.)
   const artRawMatch = p.match(/^\/api\/artifacts\/([\w-]+)\/raw$/);
   if (method === 'GET' && artRawMatch) {
     const a = os.artifacts.get(artRawMatch[1]);
     if (!a) return sendJson(res, 404, { error: 'not found' });
-    if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam) return sendJson(res, 403, { error: 'forbidden' });
+    if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam && !os.chatRooms.shownTo(a.id, me.id)) return sendJson(res, 403, { error: 'forbidden' });
     const resolved = os.artifacts.readPath(a.id, url.searchParams.get('file') || undefined);
     if (!resolved) return sendJson(res, 404, { error: 'file not found' });
     return streamArtifactFile(req, res, resolved);
@@ -7707,7 +7708,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && artThumbMatch) {
     const a = os.artifacts.get(artThumbMatch[1]);
     if (!a) return sendJson(res, 404, { error: 'not found' });
-    if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam) return sendJson(res, 403, { error: 'forbidden' });
+    if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam && !os.chatRooms.shownTo(a.id, me.id)) return sendJson(res, 403, { error: 'forbidden' });
     const resolved = os.artifacts.readPath(a.id);
     const thumbs = os.artifacts.thumbsDir();
     if (!resolved || !thumbs) return sendJson(res, 404, { error: 'file not found' });

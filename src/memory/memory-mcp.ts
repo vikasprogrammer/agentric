@@ -1132,7 +1132,11 @@ const TOOLS = [
       'Slack/Discord if they are away. Do NOT use it to answer inside a chat conversation you are already ' +
       'in — there your reply is posted automatically when your turn ends. Posting starts no work and ' +
       'grants nothing; keep it short and lead with the point. To offer one-tap replies, end `text` with a ' +
-      'line like `[[actions: Approve | Show details | Later]]` (up to 4, worded as things they would say).',
+      'line like `[[actions: Approve | Show details | Later]]` (up to 4, worded as things they would say). ' +
+      'To show an image, video or file with the message, `publish` it first and put `[[show: art_…]]` (the ' +
+      'id `publish` or `library_list` gave you; several separated by commas) on its own line of `text` — it ' +
+      'is drawn inline for everyone in that conversation. A reply to a message you posted to this run\'s ' +
+      'results destination comes back to you in this session.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

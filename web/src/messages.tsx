@@ -13,13 +13,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, Zap, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
+import { ChevronRight, Zap, FileText, MoreHorizontal, TerminalSquare, Hash, Users, LogOut, Pencil, Paperclip, Square, Loader2, ArrowRightLeft, Clock, Info, Workflow, GitMerge, MessageSquareReply, Bell, BellOff, AtSign, Plus, Search, Send, UserMinus, RotateCcw, Check, X, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { chatSocket } from '@/lib/chat-socket'
-import { api, type NotificationPrefs, type NotifyLevel, type ThreadView, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
+import { api, type NotificationPrefs, type NotifyLevel, type ThreadView, type DmContact, type DmDirectoryAgent, type DmMessage, type DmPresence, type DmStep, type DmJob, type DmHandoff, type ChatFile, type ChatArtifactRef, type DmThread, type RoomThread, type Member, type Msg, type RoomPerson, type RoomSummary } from '@/lib/api'
 
 /** Search people/agents by NAME first; a description match only ranks after every name match — otherwise
  *  typing "engin" lists half the fleet (anything whose blurb says "engineer") above the Engineer. */
@@ -122,6 +122,21 @@ function TypingDots() {
   )
 }
 
+/** Something an agent showed with its message: an image, a video or audio clip drawn in place, any
+ *  other file as a tile. Opens the file itself — the people in a conversation can all read what was
+ *  shown there, whether or not it is in their Library. */
+function Media({ a }: { a: ChatArtifactRef }) {
+  if (a.isImage) return <a href={a.raw} target="_blank" rel="noreferrer" title={a.title} className="block overflow-hidden rounded-lg border bg-card"><img src={a.raw} alt={a.title} loading="lazy" className="max-h-72 max-w-full object-contain sm:max-w-sm" /></a>
+  if (a.isVideo) return <video src={a.raw} controls preload="metadata" title={a.title} className="max-h-72 max-w-full rounded-lg border bg-black sm:max-w-sm" />
+  if (a.mime.startsWith('audio/')) return <audio src={a.raw} controls preload="metadata" title={a.title} className="max-w-full" />
+  return (
+    <a href={a.raw} target="_blank" rel="noreferrer" className="flex max-w-[20rem] items-center gap-2.5 rounded-lg border bg-card px-3 py-2 transition hover:border-primary">
+      <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{a.title}</span><span className="block truncate text-[11px] text-muted-foreground">{a.filename}</span></span>
+    </a>
+  )
+}
+
 /** One row of the conversation. Consecutive messages from the same author within a few minutes are
  *  GROUPED: only the first carries the avatar + name, the rest sit flush under it with a hover time. */
 function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: { m: DmMessage; grouped: boolean; name: string; avatar: ReactNode; /** open this message's thread (absent inside a thread) */ onThread?: () => void; /** send one of the agent's quick replies — given only for the newest message, so stale ones can't be tapped */ onAction?: (text: string) => void; /** agents answering in this message's thread right now */ replying?: string[] }) {
@@ -148,7 +163,8 @@ function MessageRow({ m, grouped, name, avatar, onThread, onAction, replying }: 
         {m.tag === 'summary' && <span className="mb-0.5 inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-px text-[10px] font-medium text-primary"><GitMerge className="h-2.5 w-2.5" />Combined answer</span>}
         {m.tag === 'automation' && <span className="mb-0.5 inline-flex items-center gap-1 rounded bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground"><Zap className="h-2.5 w-2.5" />Automation</span>}
         {m.tag === 'bg' && <span className="mb-0.5 inline-flex items-center gap-1 rounded bg-muted px-1.5 py-px text-[10px] font-medium text-muted-foreground"><Loader2 className="h-2.5 w-2.5" />{m.authorKind === 'agent' ? 'Background result' : 'Sent to the background'}</span>}
-        {body}
+        {m.body ? body : null}
+        {m.artifacts && <div className="mt-1.5 flex flex-wrap items-start gap-2">{m.artifacts.map((a) => <Media key={a.id} a={a} />)}</div>}
         {m.files && <div className="mt-1 flex flex-wrap gap-1">{m.files.map((f, i) => <span key={i} className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"><Paperclip className="h-3 w-3" />{f}</span>)}</div>}
         {(m.steps || m.took) && <Steps steps={m.steps ?? []} took={m.took} />}
         {onAction && m.actions && (
@@ -854,10 +870,12 @@ function Conversation({ me, target, messages, people, agents, renderIcon, render
   type Item = { at: number; key: string; msg?: DmMessage; card?: Msg; handoff?: DmHandoff }
   const stream = useMemo(() => {
     const ids = new Set(view?.cardSessionIds ?? [])
+    // A deliverable already drawn under the message that produced it doesn't need its card as well.
+    const shown = new Set(all.flatMap((m) => (m.artifacts ?? []).map((a) => a.id)))
     const first = all.find((m) => m.seq > 0)?.createdAt ?? 0
     const items: Item[] = all.map((m) => ({ at: m.pending ? Number.MAX_SAFE_INTEGER - 1000 + -m.seq : m.createdAt, key: `m${m.seq}`, msg: m }))
     // Cards older than the loaded page would all pile up at the top — leave them to "Load earlier".
-    for (const c of messages) if (ids.has(c.sessionId) && c.createdAt >= first) items.push({ at: c.createdAt, key: `c${c.id}`, card: c })
+    for (const c of messages) if (ids.has(c.sessionId) && c.createdAt >= first && !(c.type === 'artifact' && shown.has(String((c.args as { artifactId?: string } | undefined)?.artifactId)))) items.push({ at: c.createdAt, key: `c${c.id}`, card: c })
     for (const h of view?.handoffs ?? []) items.push({ at: h.createdAt, key: `h${h.sessionId}`, handoff: h })
     return items.sort((a, b) => a.at - b.at)
   }, [all, messages, view?.cardSessionIds, view?.handoffs])

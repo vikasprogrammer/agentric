@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.482.0] - 2026-11-26
+### Added
+- **A reply to an automation's post reaches that run.** Messages an automation run posts now remember the
+  run behind them. Reply in the thread (or, in a DM, straight after the report) and the reply goes to
+  that run's own session — typed in if it is still up, otherwise resumed on the same transcript — and its
+  answer lands back in the same place. In a standing thread the newest run answers. A reply that names
+  another agent still goes to that agent. Audited `chat.run.reply`.
+  **For users:** You can now reply to an automation's report in Messages and the run that wrote it answers, with everything it found still in mind. [Open Messages](#/chat)
+- **Agents can show images, video and files in Messages.** Whatever an agent publishes or generates
+  during a turn is drawn under its reply (images in place, video/audio with a player, other files as a
+  tile), and `[[show: art_…]]` in a message — including `message_send` — shows something already in its
+  Library. Agents are told so in every chat session. Showing a file in a conversation lets the people in
+  that conversation open it.
+  **For users:** Agents can now put images, videos and files right in the chat — ask one to show you a chart or a screenshot. [Open Messages](#/chat)
+
 ## [0.481.0] - 2026-11-25
 ### Added
 - **Automations can report into Messages, and agents can post into a thread.** An automation gains a

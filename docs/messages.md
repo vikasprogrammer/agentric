@@ -180,8 +180,43 @@ A root that has gone is reopened; re-saving the same destination keeps the threa
 no longer resolves (room deleted, member removed) is audited `automation.post.unresolved` and the run
 goes ahead without one.
 
-⚠ A reply to one of these posts goes to the agent's ordinary session for that conversation, not back
-to the automation run — that run has usually ended. It sees the post only as conversation history.
+### Replying to an automation's post
+
+Every message an automation run posts (its own `message_send`, or the summary `runResult` posts for it)
+carries the run's session id (`meta.run`). A person's reply is routed by `runBehind`:
+
+- **in a thread** — to the NEWEST run that posted in that thread, so in a standing thread a reply always
+  reaches the latest run;
+- **in a DM's main stream** — to the run whose post is the very last thing said (anything else in
+  between and the message is ordinary conversation again; `/new` also breaks it).
+
+`runDeliver` hands the reply to that run's own session with `chatSend` — typed in if the run is still up,
+otherwise the same transcript is resumed — so the run answers with everything it found still in context.
+It runs as the person who replied (`canChat` applies; someone who may not run the agent falls through to
+the ordinary path). What the run says next is folded back by a job-backed lane (`chat_jobs.kind = 'run'`,
+cursor in the job's `data`), which starts at the transcript's length at the moment of the reply, so
+nothing the run said earlier is replayed. The lane closes once the session has gone away with nothing
+left to fold; a later reply opens a new one. Audited `chat.run.reply`.
+
+A reply that @mentions a DIFFERENT agent goes to that agent as usual. A run whose transcript is gone
+(archived, deleted) falls back to the agent's everyday session for the conversation.
+
+## Media in a conversation
+
+An agent message can carry Library artifacts (`meta.art`, resolved to `artifacts` on the way out) — an
+image is drawn in place, video and audio get a player, anything else is a file tile. Two ways in:
+
+- **automatically** — whatever the turn `publish`ed or generated (`image_generate`, `video_generate`, …)
+  is attached to that turn's reply, in whatever thread the reply lands in (`foldReply` collects the
+  turn's `artifactIds`). The deliverable's inbox card is then hidden in that conversation, so it is not
+  drawn twice;
+- **explicitly** — a `[[show: art_…]]` line (comma-separated ids) in the message, stripped from the text.
+  Works in a chat reply and in `message_send`, which is how an automation's report carries a chart.
+
+An agent can show only its OWN artifacts (or team-shared ones), six per message. Showing one shares it
+with the people in that conversation: `/api/artifacts/:id/raw` and `/thumb` also admit a member of a
+conversation it was shown in (`ChatRoomStore.shownTo`) — it does not appear in their Library. Every
+chat session's opening prompt says all this (`MEDIA_HINT`).
 
 ## Notifications
 
