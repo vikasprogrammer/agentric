@@ -473,6 +473,88 @@ console.log('\n\x1b[1m12b) message_send into a thread + an automation that posts
   tm.setRunResultSink(() => {});
 }
 
+console.log('\n\x1b[1m12c) a reply to an automation\'s post reaches that run; media shows in the chat\x1b[0m');
+{
+  const { Automations } = require(path.join(ROOT, 'dist/edge/automations.js'));
+  const { splitShow } = require(path.join(ROOT, 'dist/edge/direct-messages.js'));
+  const autos = new Automations(aos, tm);
+  const A = aos.team.getMember(alice.id);
+  tm.setRunResultSink((s, ag, kind, outcome, summary) => dms.runResult(s, ag, kind, outcome, summary));
+  const made = dms.createRoom(A, { name: 'run-replies', members: [bob.id], agents: [] });
+  const rid = made.id;
+  const dest = dms.checkDest('helper', { kind: 'room', room: rid, thread: 'own' }, A);
+  const auto = autos.add({ agentId: 'helper', name: 'Daily digest', type: 'cron', schedule: '0 9 * * *', mode: 'headless', task: 'Digest.', postTo: dest.postTo, createdBy: alice.id });
+  const f = autos.fire(autos.get(auto.id), { guard: false });
+  await settle();
+  assert(/their reply comes back to you in this session/.test(row(f.sessionId).task), 'the run is told replies come back to it');
+  write(f.sessionId, [user('Digest.'), say('Working on the digest.')]);
+  tm.report(f.sessionId, 'helper', 'success', 'Digest: 3 signups, 1 churn.');
+  setWorking(f.sessionId, false);
+  const rootSeq = autos.get(auto.id).postTo.threadSeq;
+  const posted = dms.roomThread(A, rid, { thread: rootSeq }).threadView.replies.slice(-1)[0];
+  assert(posted.run === f.sessionId, 'an automation post remembers the run behind it');
+  const lane = () => aos.chatRooms.participants(rid).find((p) => p.kind === 'agent' && p.id === 'helper');
+  const n0 = injected.length + spawned.length;
+  const r = dms.roomSend(A, rid, 'Who churned?', { thread: rootSeq });
+  await settle();
+  assert(r.ok && r.delivered.join() === 'helper' && !lane().sessionId, 'a reply in its thread is delivered — without starting an everyday room session');
+  assert(injected.length + spawned.length > n0 && row(f.sessionId).status === 'running' && /Who churned\?/.test(row(f.sessionId).task), 'it went into the RUN\'s own session');
+  assert(/replied to what this run posted/.test(row(f.sessionId).task) && new RegExp(`\\[\\[thread:${rootSeq}\\]\\]`).test(row(f.sessionId).task), 'framed as a reply, tagged with the thread');
+  write(f.sessionId, [user(row(f.sessionId).task), tool('t1', 'Bash', { command: 'echo' }), result('t1'), say('Acme Ltd churned — card declined twice.')]);
+  setWorking(f.sessionId, false);
+  const tv = dms.roomThread(A, rid, { thread: rootSeq }).threadView.replies.map((m) => m.body);
+  assert(tv.slice(-2).join('|') === 'Who churned?|Acme Ltd churned — card declined twice.', 'and its answer lands back in the thread', tv.join('|'));
+  assert(!tv.includes('Working on the digest.'), 'nothing the run said BEFORE the reply is replayed');
+  assert(dms.roomThread(A, rid).messages.every((m) => m.body !== 'Acme Ltd churned — card declined twice.'), 'not in the main stream');
+  // a follow-up goes to the same run; naming another agent does not
+  dms.roomSend(A, rid, 'And the signups?', { thread: rootSeq });
+  assert(/And the signups\?/.test(row(f.sessionId).task) && aos.chatRooms.openJobs(rid).filter((j) => j.kind === 'run').length === 1, 'a follow-up reaches the same run, on one lane');
+  dms.roomAdd(A, rid, { agents: [AGENT] });
+  const before = row(f.sessionId).task;
+  dms.roomSend(A, rid, '@agent-author your view?', { thread: rootSeq });
+  await settle();
+  assert(row(f.sessionId).task === before && !!aos.chatRooms.participants(rid).find((p) => p.id === AGENT).sessionId, 'a reply that names another agent goes to that agent instead');
+  assert(dms.roomSend(bob, rid, 'me too?', { thread: rootSeq }).delivered.length === 0, 'someone who may not run the agent does not reach the run');
+  // the newest run in the thread wins
+  const f2 = autos.fire(autos.get(auto.id), { guard: false });
+  await settle();
+  write(f2.sessionId, [user('Digest.'), say('ok')]);
+  tm.report(f2.sessionId, 'helper', 'success', 'Digest 2: quiet day.');
+  setWorking(f2.sessionId, false);
+  dms.roomSend(A, rid, 'Quiet how?', { thread: rootSeq });
+  assert(/Quiet how\?/.test(row(f2.sessionId).task), 'after a later run posts, replies go to the newest run');
+
+  // DM main stream: a reply straight after the report
+  const d1 = dms.checkDest('helper', { kind: 'dm', member: alice.id }, A);
+  const a1 = autos.add({ agentId: 'helper', name: 'DM digest', type: 'cron', schedule: '0 9 * * *', mode: 'headless', task: 'Digest.', postTo: d1.postTo, createdBy: alice.id });
+  const g = autos.fire(autos.get(a1.id), { guard: false });
+  await settle();
+  write(g.sessionId, [user('Digest.'), say('ok')]);
+  tm.report(g.sessionId, 'helper', 'success', 'DM digest ready.');
+  setWorking(g.sessionId, false);
+  const s1 = dms.send(A, 'helper', 'Send me the detail');
+  assert(s1.ok && s1.sessionId === g.sessionId && /Send me the detail/.test(row(g.sessionId).task), 'in a DM, a reply right after the report reaches the run');
+
+  // media
+  assert(splitShow('Here it is.\n[[show: art_ab12, art_cd34]]').ids.join() === 'art_ab12,art_cd34' && splitShow('Here it is.\n[[show: art_ab12]]').body === 'Here it is.', '[[show: …]] is peeled out of the text');
+  const mk = (agent, name) => aos.artifacts.ingest({ sessionId: g.sessionId, agent, filename: name, title: name, bytes: Buffer.from('png'), kind: 'image' });
+  let mine, theirs;
+  try { mine = mk('helper', 'chart.png'); theirs = mk(AGENT, 'secret.png'); } catch (e) { assert(false, 'artifact fixture', e.message); }
+  const idOf = (x) => x && (x.id || (x.artifact && x.artifact.id));
+  const sent = dms.agentPost('ses_media', 'helper', { room: 'run-replies', text: `Chart attached.\n[[show: ${idOf(mine)}, ${idOf(theirs)}]]` });
+  const shown = dms.roomThread(A, rid).messages.find((m) => m.seq === sent.seq);
+  assert(shown && shown.body === 'Chart attached.' && shown.artifacts.length === 1 && shown.artifacts[0].id === idOf(mine) && shown.artifacts[0].isImage, 'an agent shows its OWN artifact with a message; someone else\'s is dropped');
+  assert(aos.chatRooms.shownTo(idOf(mine), bob.id) && !aos.chatRooms.shownTo(idOf(theirs), bob.id), 'showing it shares it with the people in that conversation, and only it');
+  assert(!aos.chatRooms.shownTo(idOf(mine), 'm_nobody'), 'not with anyone outside it');
+  // …and what a turn publishes rides on the reply it belongs to
+  write(g.sessionId, [user(row(g.sessionId).task), { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'p1', name: 'mcp__agentos__publish', input: { path: 'chart.png' } }] } }, { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'p1', content: `Published ${idOf(mine)}` }] } }, say('Detail attached.')]);
+  setWorking(g.sessionId, false);
+  const dmLast = dms.thread(A, 'helper').messages.slice(-1)[0];
+  assert(dmLast.body === 'Detail attached.' && dmLast.artifacts && dmLast.artifacts[0].id === idOf(mine) && dmLast.run === g.sessionId, 'a file published during a turn is drawn under that turn\'s reply');
+  assert(/show images, video and files/.test(row(aos.chatRooms.participants(rid).find((p) => p.id === AGENT).sessionId).task), 'a chat session is told it can show media');
+  tm.setRunResultSink(() => {});
+}
+
 console.log('\n\x1b[1m13) agent → agent in a room, with a hop limit\x1b[0m');
 {
   const A = aos.team.getMember(alice.id);

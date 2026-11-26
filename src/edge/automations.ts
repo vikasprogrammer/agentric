@@ -821,7 +821,7 @@ export class Automations {
       if (!dest) this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: `automation:${a.id}`, type: 'automation.post.unresolved', data: { automation: a.id, name: a.name, postTo: a.postTo } });
       else {
         if (dest.threadSeq !== a.postTo.threadSeq) this.db.prepare('UPDATE automations SET post_to = ? WHERE id = ?').run(JSON.stringify({ ...a.postTo, threadSeq: dest.threadSeq }), a.id);
-        task += `\n\n[Where the results go] This run reports to ${dest.where} in Messages. Call \`message_send\` with only \`text\` to post there yourself — do that for the full write-up, once, when you have it. If you post nothing, the summary you give \`report\` is posted there for you.`;
+        task += `\n\n[Where the results go] This run reports to ${dest.where} in Messages. Call \`message_send\` with only \`text\` to post there yourself — do that for the full write-up, once, when you have it. If you post nothing, the summary you give \`report\` is posted there for you. To show an image, video or file with it, \`publish\` the file and put \`[[show: art_…]]\` (the id \`publish\` returned) on its own line of the message. If someone replies there, their reply comes back to you in this session.`;
       }
     }
     // Provenance is ALWAYS the automation (`spawned_by`); the run-as member (when a trigger resolved

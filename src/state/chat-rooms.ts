@@ -48,12 +48,16 @@ export interface ChatMessage {
   took?: number;
   /** One-tap replies the agent offered with this message. */
   actions?: string[];
+  /** Posted by an automation run (or a reply from one): that run's session — a reply here goes back to it. */
+  run?: string;
+  /** Library artifacts shown with the message (images, video, files). */
+  art?: string[];
 }
 export type NotifyLevel = 'all' | 'mentions' | 'mute';
 
 export interface ChatJob {
   /** 'fanout' = a message the orchestrator gave to several agents; `agent` is their ids, comma-joined. */
-  id: string; roomId: string; kind: 'bg' | 'remind' | 'fanout'; agent: string; memberId: string; request: string;
+  id: string; roomId: string; kind: 'bg' | 'remind' | 'fanout' | 'run'; agent: string; memberId: string; request: string;
   sessionId: string | null; status: 'running' | 'scheduled' | 'done' | 'failed' | 'cancelled'; dueAt: number | null; createdAt: number; finishedAt: number | null;
   /** The thread it was started in — its result / reminder goes back there. */
   threadId: number | null;
@@ -61,7 +65,7 @@ export interface ChatJob {
 }
 interface JobRow { id: string; room_id: string; kind: string; agent: string; member_id: string; request: string; session_id: string | null; status: string; due_at: number | null; created_at: number; finished_at: number | null; thread_id?: number | null; data?: string | null }
 const jobData = (s?: string | null): Record<string, unknown> => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
-const toJob = (r: JobRow): ChatJob => ({ data: jobData(r.data), id: r.id, roomId: r.room_id, kind: r.kind === 'remind' ? 'remind' : r.kind === 'fanout' ? 'fanout' : 'bg', agent: r.agent, memberId: r.member_id, request: r.request, sessionId: r.session_id, status: r.status as ChatJob['status'], dueAt: r.due_at, createdAt: r.created_at, finishedAt: r.finished_at, threadId: r.thread_id ?? null });
+const toJob = (r: JobRow): ChatJob => ({ data: jobData(r.data), id: r.id, roomId: r.room_id, kind: r.kind === 'remind' ? 'remind' : r.kind === 'fanout' ? 'fanout' : r.kind === 'run' ? 'run' : 'bg', agent: r.agent, memberId: r.member_id, request: r.request, sessionId: r.session_id, status: r.status as ChatJob['status'], dueAt: r.due_at, createdAt: r.created_at, finishedAt: r.finished_at, threadId: r.thread_id ?? null });
 
 interface RoomRow {
   id: string; kind: string; name?: string | null; member_id: string; agent: string; session_id: string | null;
@@ -78,10 +82,10 @@ const toRoom = (r: RoomRow): ChatRoom => ({
 });
 
 function toMsg(r: MsgRow): ChatMessage {
-  let steps: ChatStep[] | undefined, tag: string | undefined, files: string[] | undefined, took: number | undefined, actions: string[] | undefined;
-  if (r.meta) { try { const m = JSON.parse(r.meta); if (Array.isArray(m.steps) && m.steps.length) steps = m.steps; if (typeof m.tag === 'string') tag = m.tag; if (Array.isArray(m.files) && m.files.length) files = m.files.map(String); if (typeof m.took === 'number' && m.took > 0) took = m.took; if (Array.isArray(m.actions) && m.actions.length) actions = m.actions.map(String); } catch { /* a bad meta blob is just a message without detail */ } }
+  let steps: ChatStep[] | undefined, tag: string | undefined, files: string[] | undefined, took: number | undefined, actions: string[] | undefined, run: string | undefined, art: string[] | undefined;
+  if (r.meta) { try { const m = JSON.parse(r.meta); if (Array.isArray(m.steps) && m.steps.length) steps = m.steps; if (typeof m.tag === 'string') tag = m.tag; if (Array.isArray(m.files) && m.files.length) files = m.files.map(String); if (typeof m.took === 'number' && m.took > 0) took = m.took; if (Array.isArray(m.actions) && m.actions.length) actions = m.actions.map(String); if (typeof m.run === 'string') run = m.run; if (Array.isArray(m.art) && m.art.length) art = m.art.map(String); } catch { /* a bad meta blob is just a message without detail */ } }
   const mentions = r.mentions ? r.mentions.split(',').filter(Boolean) : undefined;
-  return { tag, files, took, actions, threadId: r.thread_id ?? undefined, replies: r.replies || undefined, lastReplyAt: r.last_reply_at ?? undefined, mentions: mentions?.length ? mentions : undefined, seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : r.author_kind === 'system' ? 'system' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
+  return { tag, files, took, actions, run, art, threadId: r.thread_id ?? undefined, replies: r.replies || undefined, lastReplyAt: r.last_reply_at ?? undefined, mentions: mentions?.length ? mentions : undefined, seq: r.seq, roomId: r.room_id, authorKind: r.author_kind === 'agent' ? 'agent' : r.author_kind === 'system' ? 'system' : 'member', authorId: r.author_id, body: r.body, steps, createdAt: r.created_at };
 }
 
 export class ChatRoomStore {
@@ -123,14 +127,24 @@ export class ChatRoomStore {
     this.db.prepare('UPDATE chat_rooms SET synced_turns = ?, synced_mark = ? WHERE id = ?').run(turns, mark, roomId);
   }
 
-  post(roomId: string, authorKind: 'member' | 'agent' | 'system', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now(), extra: { tag?: string; files?: string[]; thread?: number | null; mentions?: string[]; took?: number; actions?: string[] } = {}): ChatMessage {
-    const m = { ...(steps?.length ? { steps } : {}), ...(extra.tag ? { tag: extra.tag } : {}), ...(extra.files?.length ? { files: extra.files } : {}), ...(extra.took && extra.took > 0 ? { took: Math.round(extra.took) } : {}), ...(extra.actions?.length ? { actions: extra.actions } : {}) };
+  post(roomId: string, authorKind: 'member' | 'agent' | 'system', authorId: string, body: string, steps?: ChatStep[], at: number = Date.now(), extra: { tag?: string; files?: string[]; thread?: number | null; mentions?: string[]; took?: number; actions?: string[]; run?: string; art?: string[] } = {}): ChatMessage {
+    const m = { ...(steps?.length ? { steps } : {}), ...(extra.tag ? { tag: extra.tag } : {}), ...(extra.files?.length ? { files: extra.files } : {}), ...(extra.took && extra.took > 0 ? { took: Math.round(extra.took) } : {}), ...(extra.actions?.length ? { actions: extra.actions } : {}), ...(extra.run ? { run: extra.run } : {}), ...(extra.art?.length ? { art: extra.art } : {}) };
     const meta = Object.keys(m).length ? JSON.stringify(m) : null;
     const mentions = extra.mentions?.length ? `,${extra.mentions.join(',')},` : null;
     const r = this.db.prepare('INSERT INTO chat_messages (room_id, author_kind, author_id, body, meta, created_at, thread_id, mentions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(roomId, authorKind, authorId, body, meta, at, extra.thread ?? null, mentions);
     this.db.prepare('UPDATE chat_rooms SET last_message_at = ? WHERE id = ?').run(Date.now(), roomId);
-    return { seq: Number(r.lastInsertRowid), roomId, authorKind, authorId, body, steps: steps?.length ? steps : undefined, createdAt: at, tag: extra.tag, files: extra.files?.length ? extra.files : undefined, threadId: extra.thread ?? undefined, mentions: extra.mentions?.length ? extra.mentions : undefined, took: extra.took && extra.took > 0 ? Math.round(extra.took) : undefined, actions: extra.actions?.length ? extra.actions : undefined };
+    return { seq: Number(r.lastInsertRowid), roomId, authorKind, authorId, body, steps: steps?.length ? steps : undefined, createdAt: at, tag: extra.tag, files: extra.files?.length ? extra.files : undefined, threadId: extra.thread ?? undefined, mentions: extra.mentions?.length ? extra.mentions : undefined, took: extra.took && extra.took > 0 ? Math.round(extra.took) : undefined, actions: extra.actions?.length ? extra.actions : undefined, run: extra.run, art: extra.art?.length ? extra.art : undefined };
+  }
+
+  /** Was this artifact shown in a conversation `memberId` is part of? Showing it there shares it with them. */
+  shownTo(artifactId: string, memberId: string): boolean {
+    if (!/^art_[0-9a-f]+$/.test(artifactId)) return false;
+    return !!this.db.prepare(
+      `SELECT 1 FROM chat_messages m JOIN chat_rooms r ON r.id = m.room_id
+       WHERE m.meta LIKE ? AND ((r.kind = 'dm' AND r.member_id = ?)
+         OR EXISTS (SELECT 1 FROM chat_participants p WHERE p.room_id = m.room_id AND p.kind = 'member' AND p.id = ?)) LIMIT 1`,
+    ).get(`%"${artifactId}"%`, memberId, memberId);
   }
 
   /** Messages after `after` (oldest first); with no cursor, the newest `limit`. `before` pages backwards. */
@@ -281,7 +295,7 @@ export class ChatRoomStore {
   allRooms(): ChatRoom[] { return this.db.prepare("SELECT * FROM chat_rooms WHERE kind = 'room'").all<RoomRow>().map(toRoom); }
 
   // ── Jobs: background runs + reminders ──
-  addJob(j: { data?: Record<string, unknown>; roomId: string; kind: 'bg' | 'remind' | 'fanout'; agent: string; memberId: string; request: string; sessionId?: string | null; status: ChatJob['status']; dueAt?: number | null; thread?: number | null }): ChatJob {
+  addJob(j: { data?: Record<string, unknown>; roomId: string; kind: 'bg' | 'remind' | 'fanout' | 'run'; agent: string; memberId: string; request: string; sessionId?: string | null; status: ChatJob['status']; dueAt?: number | null; thread?: number | null }): ChatJob {
     const id = `job_${randomBytes(6).toString('hex')}`;
     this.db.prepare('INSERT INTO chat_jobs (id, room_id, kind, agent, member_id, request, session_id, status, due_at, created_at, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, j.roomId, j.kind, j.agent, j.memberId, j.request, j.sessionId ?? null, j.status, j.dueAt ?? null, Date.now(), j.thread ?? null);
