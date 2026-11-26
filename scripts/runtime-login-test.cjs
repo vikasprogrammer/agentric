@@ -172,6 +172,25 @@ s = m.start('claude-code', 'wrapped');
 s = m.poll(s.id);
 assert(s.phase === 'awaiting-code' && s.url === URL, 'a URL wrapped across rows is reassembled and surfaced whole', JSON.stringify(s));
 
+// claude 2.1.332 prints a SHORT link: `…/oauth/authorize?<opaque handle>` — no `state=`, no parameters.
+// Screen copied from the real CLI on a live box. Requiring `state=` read it as clipped on every attempt,
+// so a tenant whose only account had expired could not sign back in from the console at all.
+const SHORT = 'https://claude.ai/oauth/authorize?z-apbS19jrn02Haldc8tYfgqMXxtY3bfU45Oa_eeBle_c';
+m = mk();
+pane = `Opening browser to sign in…\nIf the browser didn't open, visit:\n${SHORT}\nPaste code here if prompted > `;
+s = m.start('claude-code', 'short-link');
+s = m.poll(s.id);
+assert(s.phase === 'awaiting-code' && s.url === SHORT, 'the short opaque sign-in link (claude 2.1.33x) is surfaced whole', JSON.stringify(s));
+// …but it has no terminator of its own, so a capture with nothing printed after it yet is not trusted.
+m = mk();
+pane = `If the browser didn't open, visit:\n${SHORT.slice(0, 70)}`;
+s = m.start('claude-code', 'short-midrender');
+s = m.poll(s.id);
+assert(s.phase === 'starting' && !s.url, 'a short link with nothing rendered after it waits for the next write', JSON.stringify(s));
+pane = `If the browser didn't open, visit:\n${SHORT}\nPaste code here if prompted > `;
+s = m.poll(s.id);
+assert(s.phase === 'awaiting-code' && s.url === SHORT, 'and is surfaced once the prompt lands under it', JSON.stringify(s));
+
 console.log('\n\x1b[1m2b) macOS keeps the login in the Keychain, not in the dir\x1b[0m');
 const { keychainServiceFor, credentialDirHasLogin } = require(path.join(ROOT, 'dist/edge/runtime-account-check.js'));
 // Pinned against the real items on a live Mac: claude names the item after sha256(configDir)[0..8]. Get
