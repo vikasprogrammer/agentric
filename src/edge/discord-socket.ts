@@ -21,6 +21,7 @@
  */
 import { AgentOS } from '../kernel';
 import { Automations, chatAck } from './automations';
+import type { DmRef } from '../terminal';
 import { DiscordFileRef, GATEWAY_INTENTS, OP, downloadDiscordFile, getGatewayUrl, openDmChannel, parseDiscordMessage, postMessage, startThread } from '../connectors/discord';
 
 const RECONNECT_MIN_MS = 1_000;
@@ -225,8 +226,21 @@ export class DiscordSocket {
     // directly (no trip to the web Inbox) — the approval-side twin of the question path below. Only for
     // DMs (where the approval ping was sent). Checked first: while an approval is pending, a "yes"/"no"
     // in this DM is a decision, not chat. `null` → nothing bound, fall through to the question/chat router.
-    if (ev.eventType === 'direct_message') {
-      const decided = this.autos.decideApprovalFromChat('discord', ev.user, text);
+    //
+    // WHICH notification is being answered. Each of the four DM lanes below matches on the SENDER alone
+    // ("the newest pending thing we pinged you about"), tried in a fixed order — so with two agents
+    // pinging one person, a reply to the first agent's notice went to the second, and a reply to a "run
+    // finished" notice was swallowed as the answer to an unrelated pending question. Discord's reply arrow
+    // names the message (`message_reference`), and every DM we send is recorded with what it was about:
+    // when the reply points at one, ONLY that lane runs, pinned to that approval / question / task / run.
+    // No reference (a plain message) or an unknown one keeps the recipient-keyed behaviour.
+    const target = ev.eventType === 'direct_message' && ev.replyToId
+      ? this.autos.dmReplyTarget('discord', ev.user, ev.channel, ev.replyToId)
+      : undefined;
+    const lane = (kind: 'approval' | 'question' | 'task') => !target || target.kind === kind;
+    const only = target?.id;
+    if (ev.eventType === 'direct_message' && lane('approval')) {
+      const decided = this.autos.decideApprovalFromChat('discord', ev.user, text, only);
       if (decided) {
         if (decided.status === 'decided') {
           void this.dmUser(ev.user, decided.approved ? `✅ Approved — \`${decided.capability}\` will proceed.` : `🚫 Rejected — \`${decided.capability}\` was blocked.`);
@@ -242,8 +256,8 @@ export class DiscordSocket {
     // Inline answer: a DM reply from someone with a pending `ask_human` question answers it directly (no
     // trip to the web Inbox). Only for DMs — that's where the question was sent. If nothing pending is
     // bound to this sender, fall through to the normal chat router (an ordinary DM is just a chat).
-    if (ev.eventType === 'direct_message') {
-      const answered = this.autos.answerQuestionFromChat('discord', ev.user, text);
+    if (ev.eventType === 'direct_message' && lane('question')) {
+      const answered = this.autos.answerQuestionFromChat('discord', ev.user, text, only);
       if (answered) {
         void this.dmUser(ev.user, `✅ Got it — your answer was sent to ${answered.agent}.`);
         this.os.audit.append({
@@ -259,8 +273,8 @@ export class DiscordSocket {
     // next comment and puts it back on the board (re-dispatching the agent that was waiting). After the
     // question path — a pending question is the more specific claim on the same reply — and before session
     // continuity, which would deliver the words into a run without ever clearing the block.
-    if (ev.eventType === 'direct_message') {
-      const unblocked = this.autos.unblockTaskFromChat('discord', ev.user, text);
+    if (ev.eventType === 'direct_message' && lane('task')) {
+      const unblocked = this.autos.unblockTaskFromChat('discord', ev.user, text, only);
       if (unblocked) {
         void this.dmUser(ev.user, `✅ Unblocked — *${unblocked.title}* is back on the board${unblocked.agent ? ` and ${unblocked.agent} is picking it up` : ''}.`);
         this.os.audit.append({
@@ -277,10 +291,16 @@ export class DiscordSocket {
     // the last one-way notification channel to be closed. After the two decision paths (a pending
     // approval/question is the more specific claim on the same reply), before the router — which would
     // otherwise spawn a FRESH session with none of the context the human is replying to.
-    if (ev.eventType === 'direct_message') {
-      const cont = this.autos.continueSessionDm('discord', ev.user, { actorLabel, text, channel: ev.channel }, runAsMember);
+    //
+    // A targeted reply continues the run BEHIND the message it points at — also when that message was an
+    // approval or question that has since been settled (the lanes above returned nothing): the human is
+    // still talking to that agent about that run. A targeted reply with no run behind it (a task notice,
+    // an insight alert) skips this lane entirely rather than guessing a recent one.
+    if (ev.eventType === 'direct_message' && (!target || target.sessionId)) {
+      const cont = this.autos.continueSessionDm('discord', ev.user, { actorLabel, text, channel: ev.channel }, runAsMember, target?.sessionId);
       if (cont.status !== 'none' && cont.sessionId) {
-        void this.dmUser(ev.user, `✅ Sent to **${cont.agent}** — it'll reply here. (To start something else instead: \`agent-name: your request\`.)`);
+        // The ack is itself about that run: record it so replying to the ack keeps going to the same place.
+        void this.dmUser(ev.user, `✅ Sent to **${cont.agent}** — it'll reply here. (To start something else instead: \`agent-name: your request\`.)`, { kind: 'session', sessionId: cont.sessionId });
         this.os.audit.append({
           ts: Date.now(), runId: cont.sessionId, tenant: this.os.tenant,
           principal: runAsMember ? `member:${runAsMember}` : 'discord',
@@ -362,6 +382,9 @@ export class DiscordSocket {
         files,
       },
       runAsMember,
+      // A targeted DM reply nothing above could act on (the run is past resuming, the task isn't blocked)
+      // still belongs to the agent that sent the message — start fresh with THAT agent, not the router's pick.
+      { fallbackAgent: target?.agent },
     );
     this.stageInto(result.sessions, files);
 
@@ -489,19 +512,25 @@ export class DiscordSocket {
       this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.dm.failed', data: { to: userId, error: res.error } });
       return { ok: false, error: res.error };
     }
+    // An agent's own DM is about its run: a reply pointing at it goes back to that run.
+    this.autos.noteDm('discord', res.id, userId, { kind: 'session', sessionId });
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.dm', data: { to: userId, id: res.id, chars: body.length } });
     return { ok: true };
   }
 
-  /** DM a Discord user (by their Discord user id) — best-effort, used for approval notifications.
+  /** DM a Discord user (by their Discord user id) — best-effort, used for every out-of-band notification.
    *  Returns ok / a reason; never throws. No-op when Discord isn't configured. */
-  async dmUser(discordUserId: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  async dmUser(discordUserId: string, text: string, ref?: DmRef): Promise<{ ok: true } | { ok: false; error: string }> {
     const token = this.os.settings.discordBotToken();
     if (!token || !discordUserId) return { ok: false, error: 'discord not configured' };
     const ch = await openDmChannel(token, discordUserId);
     if ('error' in ch) return { ok: false, error: ch.error };
     const res = await postMessage(token, ch.channel, text);
-    return 'error' in res ? { ok: false, error: res.error } : { ok: true };
+    if ('error' in res) return { ok: false, error: res.error };
+    // Remember what this DM was ABOUT (`ref`; a bare notice when the caller names nothing), so a reply
+    // pointing at it is routed to that exact thing — see the reply-target note in `dispatch`.
+    this.autos.noteDm('discord', res.id, discordUserId, ref);
+    return { ok: true };
   }
 
   /** Map a Discord user id → Agentric member id via the identity map (provider `discord`). Undefined

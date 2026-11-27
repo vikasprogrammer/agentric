@@ -468,6 +468,26 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_session_dms_lookup ON session_dms (provider, external_id, created_at);
 
+    -- WHICH notification a DM reply answers. The four bindings above are keyed by RECIPIENT, so an inbound
+    -- DM could only ever be matched to "the newest thing we pinged this person about" — and a person with
+    -- two agents pinging them had their reply to the first one delivered to the second (or swallowed as
+    -- the answer to an unrelated pending question, because the lanes are also tried in a fixed order).
+    -- A chat reply names the message it replies to (Discord message_reference.message_id), so each DM
+    -- we send is recorded here with what it was ABOUT; an inbound reply that carries a reference is then
+    -- routed to exactly that approval / question / task / run. kind = 'notice' marks a DM with nothing
+    -- behind it (an insight alert, an overdue task): a reply to one must not fall into another agent's
+    -- pending question either. See TerminalManager.dmReplyTarget.
+    CREATE TABLE IF NOT EXISTS dm_refs (
+      provider    TEXT NOT NULL,          -- 'discord' (the only platform recording message ids today)
+      message_id  TEXT NOT NULL,          -- the DM message WE posted
+      external_id TEXT NOT NULL,          -- who we sent it to (must equal the replier)
+      kind        TEXT NOT NULL,          -- 'approval' | 'question' | 'task' | 'session' | 'notice'
+      ref_id      TEXT,                   -- approval / question / task id ('' for session + notice)
+      session_id  TEXT,                   -- the run behind it, when there is one
+      created_at  INTEGER NOT NULL,
+      PRIMARY KEY (provider, message_id)
+    );
+
     -- Console chat ("Messages"): a ROOM is a durable conversation; kind 'dm' = one member + one agent
     -- (the member's "contact"). Messages live HERE, not in a session transcript, so the session behind a
     -- room can be reaped, resumed or replaced without the conversation changing. See src/edge/direct-messages.ts.

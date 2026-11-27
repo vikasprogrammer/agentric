@@ -16,7 +16,7 @@ import * as path from 'path';
 import { Strategist } from './strategist';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
-import { inboxFileName, TerminalManager } from '../terminal';
+import { DmRef, inboxFileName, TerminalManager } from '../terminal';
 import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDispatchBlock, TaskTimelineEntry } from '../types';
 import { chooseAgent, dispatch, routerBrain, RouterCandidate } from './router';
 import { reviewGoals } from './goal-review';
@@ -1788,8 +1788,13 @@ export class Automations {
     externalId: string,
     event: { actorLabel: string; text: string; channel: string },
     runAsMember?: string,
+    /** The run the replied-to message was about (see {@link dmReplyTarget}). Given, it IS the target —
+     *  no newest-binding guess, no staleness window. */
+    onlySession?: string,
   ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string; agent?: string } {
-    const bound = this.tm.sessionForDm(provider, externalId);
+    const bound = onlySession
+      ? this.tm.sessionForDmReply(provider, externalId, onlySession)
+      : this.tm.sessionForDm(provider, externalId);
     if (!bound || !bound.claudeSessionId) return { status: 'none' };
     // An explicit `/other-agent …` is the human starting something else, not continuing this — let the
     // router have it (same override thread continuity honours).
@@ -2135,16 +2140,26 @@ export class Automations {
    * asking agent. `null` → nothing pending is bound to them, so the caller falls through to the normal chat
    * router (a DM that isn't answering a question is just a chat). The socket posts the ack.
    */
-  answerQuestionFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string): { agent: string } | null {
-    return this.tm.answerQuestionFromChat(provider, externalId, text);
+  answerQuestionFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string, only?: string): { agent: string } | null {
+    return this.tm.answerQuestionFromChat(provider, externalId, text, only);
+  }
+
+  /** What the DM message a reply points at was about. Passthrough — see {@link TerminalManager.dmReplyTarget}. */
+  dmReplyTarget(provider: 'slack' | 'discord' | 'telegram', externalId: string, channel: string, messageId: string) {
+    return this.tm.dmReplyTarget(provider, externalId, channel, messageId);
+  }
+
+  /** Record a DM we posted + what it was about. Passthrough — see {@link TerminalManager.noteDm}. */
+  noteDm(provider: 'slack' | 'discord' | 'telegram', messageId: string, externalId: string, ref?: DmRef): void {
+    this.tm.noteDm(provider, messageId, externalId, ref);
   }
 
   /** Unblock a task from an inbound DM reply — the task-side twin of {@link answerQuestionFromChat}. The
    *  reply becomes the task's next comment and the task returns to `todo`; an auto-dispatch agent task is
    *  then kicked straight back out to a session rather than waiting on the next tick. */
-  unblockTaskFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string):
+  unblockTaskFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string, only?: string):
     { taskId: string; title: string; agent?: string } | null {
-    const r = this.tm.unblockTaskFromChat(provider, externalId, text);
+    const r = this.tm.unblockTaskFromChat(provider, externalId, text, only);
     if (!r) return null;
     const agentId = (r.assignee || '').startsWith('agent:') ? r.assignee!.slice('agent:'.length) : '';
     // Guarded: if a session is somehow still live on this task, don't stack a second one on it.
@@ -2159,8 +2174,8 @@ export class Automations {
    * `unclear`/`forbidden` → bound but the socket should nudge instead of falling through. The socket posts
    * the ack. See {@link TerminalManager.decideApprovalFromChat}.
    */
-  decideApprovalFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string) {
-    return this.tm.decideApprovalFromChat(provider, externalId, text);
+  decideApprovalFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string, only?: string) {
+    return this.tm.decideApprovalFromChat(provider, externalId, text, only);
   }
 
   /** Strip a leading `/agent` router prefix (only when it names a known agent) and any `<@…>` mention
