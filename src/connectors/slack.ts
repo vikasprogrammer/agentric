@@ -224,6 +224,9 @@ export interface SlackMessageEvent {
   text: string;
   /** The thread to reply in: an existing `thread_ts`, else the message's own `ts` (start a thread). */
   threadTs: string;
+  /** The message this one was threaded UNDER (`thread_ts` when it isn't the message's own `ts`), else ''.
+   *  In a DM that is the notification being answered — see `TerminalManager.dmReplyTarget`. */
+  replyToTs: string;
   /** Whether this looks like the bot's own message / a bot message (caller should skip these). */
   fromBot: boolean;
   /** Files attached to the message (images, PDFs, logs). Empty when there are none. */
@@ -256,6 +259,7 @@ export function parseSlackEvent(envelope: any): SlackMessageEvent | null {
     user: String(ev.user || ''),
     text: String(ev.text || ''),
     threadTs: String(ev.thread_ts || ev.ts || ''),
+    replyToTs: ev.thread_ts && String(ev.thread_ts) !== String(ev.ts || '') ? String(ev.thread_ts) : '',
     fromBot,
     files: parseSlackFiles(ev.files),
     raw: ev,

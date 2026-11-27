@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.487.4] - 2026-11-27
+### Fixed
+- **Slack + Telegram: a reply to a notification reaches the agent that sent it** — the Discord fix from
+  0.487.3, on the other two chat platforms. Their DM lanes had the same flaw: an inbound DM was matched
+  on the sender alone, newest-first, so with two agents pinging one person a reply meant for the first
+  went to the second, and a reply to a "run finished" notice could be swallowed as the answer to another
+  agent's pending question. Each platform names the message its own way and both are now read: on Slack
+  a reply **threaded under** the notification (`thread_ts`), on Telegram the **Reply** gesture
+  (`reply_to_message`, keyed `<chat>:<message>` because Telegram ids are per-chat). Every DM the bot
+  posts on either platform is recorded in `dm_refs` — including Telegram's notification lane, which
+  posts without a socket (`recordDmRef`) — and a targeted reply runs only that lane, pinned to that
+  approval / question / task / run; settled ones lead to the run behind them, an unresumable run starts
+  fresh with the same agent (`fireTelegram` gained `fallbackAgent`), and Telegram's chat-keyed
+  continuity is skipped for a targeted reply. Slack acks stay in the thread. An untargeted DM is
+  unchanged. Pinned by `scripts/chat-dm-reply-target-test.cjs` (45 assertions).
+  **For users:** On Slack, reply in a thread under a notification — on Telegram, use Reply on it — and your answer goes to that exact approval, question or agent, even when several agents have pinged you.
+
 ## [0.487.3] - 2026-11-27
 ### Fixed
 - **Discord: a reply to a notification reaches the agent that sent it.** Every DM lane — approval,

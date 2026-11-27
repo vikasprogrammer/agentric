@@ -135,6 +135,19 @@ Having spoken in a thread **is** the targeting signal: an untagged reply there i
 (`fallbackAgent`) rather than being re-classified by the intent router or answered with a roster. A thread
 the bot has never posted in is still ignored in full silence.
 
+### DM replies: which notification is being answered (v0.487.4)
+
+A notification DM (approval, `ask` question, blocked task, an agent's `notify`, "your run finished") is
+matched to a plain reply by RECIPIENT — "the newest pending thing we pinged you about" — which cannot
+tell two agents apart. Slack's way of pointing at one message is to reply **in a thread under it**, so
+`parseSlackEvent` exposes that as `replyToTs` (`thread_ts` when it is not the message's own `ts`) and
+every DM the bot posts is recorded per message in `dm_refs`. A threaded DM reply runs only the lane the
+root message was about, pinned to that approval / question / task / run; the bot's acks stay in that
+thread. A thread under something an agent posted itself resolves through `slack_bot_threads`. A top-level
+DM, or a thread under a message with no record, keeps the newest-first behaviour. The full outcome table
+is in [discord.md](discord.md#dm-replies-which-notification-is-being-answered) — the three platforms
+share `dmReplyTarget`. Pinned by `scripts/chat-dm-reply-target-test.cjs`.
+
 ### Addressing an agent (v0.416.0)
 
 Slack **intercepts a leading `/`** as a slash command, so `/support-ops fix this` typed in a DM never

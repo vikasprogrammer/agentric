@@ -89,6 +89,9 @@ platforms route through the same front door: `@support-ops …`, `support-ops: �
 
 ## DM replies: which notification is being answered
 
+*Slack and Telegram route the same way since v0.487.4 — a Slack thread under the notification, or
+Telegram's Reply, plays the part of Discord's reply arrow. See their connector pages.*
+
 Notifications arrive as DMs (approvals, `ask` questions, blocked tasks, an agent's `notify`, "your run
 finished / crashed"). Four recipient-keyed bindings (`approval_dms`, `question_dms`, `task_dms`,
 `session_dms`) let a plain reply act on "the newest pending thing we pinged you about", tried in that
@@ -111,8 +114,8 @@ to that target**:
 | an agent-less notice (insight alert, overdue task) | goes to the router; touches no pending decision |
 
 The reference only counts for the person the DM was sent to. A plain DM (no reply arrow), or a reply to a
-message older than the index, keeps the recipient-keyed newest-first behaviour. Slack and Telegram do not
-record message ids yet and are unchanged. Pinned by `scripts/dm-reply-target-test.cjs`.
+message older than the index, keeps the recipient-keyed newest-first behaviour. Pinned by `scripts/dm-reply-target-test.cjs`
+(Discord) and `scripts/chat-dm-reply-target-test.cjs` (Slack, Telegram).
 
 ## Egress
 

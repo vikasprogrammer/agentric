@@ -16,6 +16,7 @@
  */
 import { AgentOS } from '../kernel';
 import { Automations, chatAck } from './automations';
+import type { DmRef } from '../terminal';
 import { downloadSlackFile, explainSlackError, fetchThreadMessages, historyScopeFor, threadReadWarning, joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage, SlackFileRef } from '../connectors/slack';
 
 const RECONNECT_MIN_MS = 1_000;
@@ -333,15 +334,27 @@ export class SlackSocket {
     // directly (no trip to the web Inbox) — the approval-side twin of the question path below. Only for
     // DMs (where the approval ping was sent). Checked first: while an approval is pending, a "yes"/"no"
     // in this DM is a decision, not chat. `null` → nothing bound, fall through to the question/chat router.
-    if (isDm) {
-      const decided = this.autos.decideApprovalFromChat('slack', ev.user, text);
+    //
+    // WHICH notification is being answered. Each DM lane below matches on the SENDER alone ("the newest
+    // pending thing we pinged you about"), in a fixed order — so with two agents pinging one person a
+    // reply meant for the first went to the second. Slack's way of pointing at a message is to reply IN A
+    // THREAD under it (`thread_ts` = that message), and every DM we send is recorded with what it was
+    // about: a threaded reply runs ONLY that lane, pinned to that approval / question / task / run, and
+    // our acks stay in the same thread. A top-level message, or a thread under a message we have no record
+    // of, keeps the recipient-keyed behaviour. Mirrors discord-socket's reply-arrow handling.
+    const target = isDm && ev.replyToTs ? this.autos.dmReplyTarget('slack', ev.user, ev.channel, ev.replyToTs) : undefined;
+    const lane = (kind: 'approval' | 'question' | 'task') => !target || target.kind === kind;
+    const only = target?.id;
+    const inThread = target ? ev.replyToTs : undefined;
+    if (isDm && lane('approval')) {
+      const decided = this.autos.decideApprovalFromChat('slack', ev.user, text, only);
       if (decided) {
         if (decided.status === 'decided') {
-          void this.dmUser(ev.user, decided.approved ? `✅ Approved — \`${decided.capability}\` will proceed.` : `🚫 Rejected — \`${decided.capability}\` was blocked.`);
+          void this.dmUser(ev.user, decided.approved ? `✅ Approved — \`${decided.capability}\` will proceed.` : `🚫 Rejected — \`${decided.capability}\` was blocked.`, undefined, inThread);
         } else if (decided.status === 'unclear') {
-          void this.dmUser(ev.user, `I couldn't tell if that's a yes or no — reply *approve* or *deny* to decide the pending request.`);
+          void this.dmUser(ev.user, `I couldn't tell if that's a yes or no — reply *approve* or *deny* to decide the pending request.`, undefined, inThread);
         } else {
-          void this.dmUser(ev.user, `You're no longer able to approve that request.`);
+          void this.dmUser(ev.user, `You're no longer able to approve that request.`, undefined, inThread);
         }
         return;
       }
@@ -350,10 +363,10 @@ export class SlackSocket {
     // Inline answer: a DM reply from someone with a pending `ask_human` question answers it directly (no
     // trip to the web Inbox). Only for DMs — that's where the question was sent. If nothing pending is
     // bound to this sender, fall through to the normal chat router (an ordinary DM is just a chat).
-    if (isDm) {
-      const answered = this.autos.answerQuestionFromChat('slack', ev.user, text);
+    if (isDm && lane('question')) {
+      const answered = this.autos.answerQuestionFromChat('slack', ev.user, text, only);
       if (answered) {
-        void this.dmUser(ev.user, `✅ Got it — your answer was sent to ${answered.agent}.`);
+        void this.dmUser(ev.user, `✅ Got it — your answer was sent to ${answered.agent}.`, undefined, inThread);
         this.os.audit.append({
           ts: Date.now(), runId: '-', tenant: this.os.tenant,
           principal: runAsMember ? `member:${runAsMember}` : 'slack',
@@ -367,10 +380,10 @@ export class SlackSocket {
     // next comment and puts it back on the board (re-dispatching the agent that was waiting). After the
     // question path — a pending question is the more specific claim on the same reply — and before session
     // continuity, which would deliver the words into a run without ever clearing the block.
-    if (isDm) {
-      const unblocked = this.autos.unblockTaskFromChat('slack', ev.user, text);
+    if (isDm && lane('task')) {
+      const unblocked = this.autos.unblockTaskFromChat('slack', ev.user, text, only);
       if (unblocked) {
-        void this.dmUser(ev.user, `✅ Unblocked — *${unblocked.title}* is back on the board${unblocked.agent ? ` and ${unblocked.agent} is picking it up` : ''}.`);
+        void this.dmUser(ev.user, `✅ Unblocked — *${unblocked.title}* is back on the board${unblocked.agent ? ` and ${unblocked.agent} is picking it up` : ''}.`, undefined, inThread);
         this.os.audit.append({
           ts: Date.now(), runId: '-', tenant: this.os.tenant,
           principal: runAsMember ? `member:${runAsMember}` : 'slack',
@@ -385,10 +398,14 @@ export class SlackSocket {
     // last one-way notification channel to be closed. Checked after the two decision paths (a pending
     // approval/question is the more specific claim on the same reply) and before the router, which would
     // otherwise spawn a FRESH session with none of the context the human is replying to.
-    if (isDm) {
-      const cont = this.autos.continueSessionDm('slack', ev.user, { actorLabel, text, channel: ev.channel }, runAsMember);
+    //
+    // A threaded reply continues the run BEHIND the message it sits under — also when that was an approval
+    // or question since settled. One with no run behind it (a task notice, an insight alert) skips this
+    // lane rather than guessing a recent run, and goes to the router below.
+    if (isDm && (!target || target.sessionId)) {
+      const cont = this.autos.continueSessionDm('slack', ev.user, { actorLabel, text, channel: ev.channel }, runAsMember, target?.sessionId);
       if (cont.status !== 'none' && cont.sessionId) {
-        void this.dmUser(ev.user, `✅ Sent to *${cont.agent}* — it'll reply here. (To start something else instead: \`/agent-name your request\`.)`);
+        void this.dmUser(ev.user, `✅ Sent to *${cont.agent}* — it'll reply here. (To start something else instead: \`/agent-name your request\`.)`, { kind: 'session', sessionId: cont.sessionId }, inThread);
         this.os.audit.append({
           ts: Date.now(), runId: cont.sessionId, tenant: this.os.tenant,
           principal: runAsMember ? `member:${runAsMember}` : 'slack',
@@ -412,6 +429,8 @@ export class SlackSocket {
         historyError,
       },
       runAsMember,
+      // A threaded reply whose precise target is no longer actionable still belongs to that agent.
+      { fallbackAgent: target?.agent },
     );
     this.stageInto(result.sessions, files);
 
@@ -658,6 +677,8 @@ export class SlackSocket {
     if ('error' in ch) return this.dmFailed(sessionId, userId, ch.error);
     const res = await postMessage(token, ch.channel, body);
     if ('error' in res) return this.dmFailed(sessionId, userId, res.error);
+    // An agent's own DM is about its run: a reply threaded under it goes back to that run.
+    this.autos.noteDm('slack', res.ts, userId, { kind: 'session', sessionId });
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.dm', data: { to: userId, ts: res.ts, chars: body.length } });
     return { ok: true };
   }
@@ -669,13 +690,18 @@ export class SlackSocket {
 
   /** DM a Slack user (by their Slack user id) — best-effort, used for approval notifications.
    *  Returns ok / a reason; never throws. No-op when Slack isn't configured. */
-  async dmUser(slackUserId: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  async dmUser(slackUserId: string, text: string, ref?: DmRef, threadTs?: string): Promise<{ ok: true } | { ok: false; error: string }> {
     const token = this.os.settings.slackBotToken();
     if (!token || !slackUserId) return { ok: false, error: 'slack not configured' };
     const ch = await openDmChannel(token, slackUserId);
     if ('error' in ch) return { ok: false, error: ch.error };
-    const res = await postMessage(token, ch.channel, text);
-    return 'error' in res ? { ok: false, error: res.error } : { ok: true };
+    const res = await postMessage(token, ch.channel, text, threadTs);
+    if ('error' in res) return { ok: false, error: res.error };
+    // Remember what this DM was ABOUT (`ref`; a bare notice when the caller names nothing), so a reply
+    // threaded under it reaches that exact thing — see the reply-target note in `dispatch`. A message
+    // posted INTO a thread is never a thread root, so nothing can point at it: not recorded.
+    if (!threadTs) this.autos.noteDm('slack', res.ts, slackUserId, ref);
+    return { ok: true };
   }
 
   private async resolveEmail(userId: string): Promise<string> {
