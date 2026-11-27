@@ -195,10 +195,12 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     const p0 = await create('ses_r', { title: 'assign from the card', suggestedAssignee: 'agent:qa' });
     const toBob = await member(alice, 'POST', '/api/tasks/proposals/decide', { ids: [p0.id], action: 'assign', assignee: bob.id });
     const t0 = aos.tasks.get(p0.id);
-    assert(toBob.status === 200 && toBob.body.decided.includes(p0.id) && t0.assignee === bob.id && t0.status === 'todo', 'picking an assignee on the card accepts it onto the board', t0);
+    assert(toBob.status === 200 && toBob.body.reassigned.includes(p0.id) && !toBob.body.decided.length && t0.assignee === bob.id && t0.status === 'proposed', 'picking an assignee on the card re-points it but leaves it proposed', t0);
+    assert(taskCards(p0.id).length === 0, 'and nobody hears about it before it is accepted', taskCards(p0.id).length);
+    assert(cards('ses_r')[0].status === 'open', 'so the review card stays up for Accept / Accept & run', cards('ses_r')[0].status);
+    const acc0 = await member(alice, 'POST', '/api/tasks/proposals/decide', { ids: [p0.id], action: 'accept' });
+    assert(acc0.status === 200 && acc0.body.decided.includes(p0.id) && aos.tasks.get(p0.id).status === 'todo' && aos.tasks.get(p0.id).assignee === bob.id, 'Accept then puts it on the board with the new pick', aos.tasks.get(p0.id));
     assert(taskCards(p0.id).length === 1, 'and the new assignee hears about it exactly once', taskCards(p0.id).length);
-    const viaCard = aos.db.prepare("SELECT data FROM audit_events WHERE type = 'task.proposal.accepted' ORDER BY rowid DESC LIMIT 1").get();
-    assert(JSON.parse(viaCard.data).via === 'assign' && JSON.parse(viaCard.data).id === p0.id, 'audited as an accept via assign', viaCard.data);
 
     const noAgent = await member(owner, 'POST', '/api/tasks/proposals/decide', { ids: [p1.id], action: 'accept', run: true });
     assert(noAgent.body.error && aos.tasks.get(p1.id).status === 'proposed', 'Accept & run without an agent assignee accepts nothing', noAgent.body);

@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.487.1] - 2026-11-27
+### Fixed
+- **Re-pointing a task proposal in the Inbox no longer accepts it in the same click.** Picking a different
+  assignee on a proposed task used to put it on the board straight away, so the card vanished before you
+  could press **Accept & run**. Now the pick only re-points the proposal: the card stays, nobody is notified
+  yet, and Accept / Accept & run use your new pick. The board's task panel is unchanged.
+  **For users:** In the Inbox you can now change who a proposed task is for and then choose Accept or Accept & run — the card no longer disappears when you pick someone. [Open Inbox](#/inbox)
+
 ## [0.487.0] - 2026-11-26
 ### Added
 - **Board cleanup: the task board stops lying.** On the busiest tenant the board held 1,776 open tasks, 97%
