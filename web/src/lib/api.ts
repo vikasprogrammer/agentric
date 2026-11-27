@@ -806,6 +806,8 @@ export interface Task {
   owner?: string
   parentId?: string
   goalId?: string
+  /** The Bet (one falsifiable attempt at the goal's number) this task is work for. Implies goalId. */
+  betId?: string
   criteria?: string
   dependsOn?: string[]
   mode: 'headless' | 'interactive'
@@ -925,6 +927,7 @@ export interface AddTaskReq {
   labels?: string[]
   parentId?: string
   goalId?: string
+  betId?: string
   criteria?: string
   dependsOn?: string[]
   mode?: 'headless' | 'interactive'
@@ -1204,6 +1207,8 @@ export interface Automation {
   /** Where each run's results post in Messages, and that destination named for display. */
   postTo?: PostTo
   postToLabel?: string
+  /** The goal its runs work for — tasks they file inherit it. */
+  goalId?: string
 }
 /** A Messages destination for an automation: a person's DM with the agent, or a room — `thread: 'own'`
  *  keeps every run in one standing thread instead of the main conversation. */
@@ -1270,6 +1275,7 @@ export interface AddAutomationReq {
   task: string
   runAs?: string
   postTo?: PostTo | null
+  goalId?: string
 }
 
 export type Transport = 'stdio' | 'http' | 'sse'
@@ -2303,7 +2309,7 @@ export const api = {
   addAutomation: (a: AddAutomationReq) => call<Automation & { error?: string }>('POST', '/api/automations', a),
   // `signingSecret` is write-only and therefore not part of `Automation`: null removes it, a string sets
   // it, omitted leaves the stored one alone.
-  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'filter' | 'task' | 'enabled' | 'runAs' | 'threadPath'>> & { signingSecret?: string | null; postTo?: PostTo | null }) =>
+  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'filter' | 'task' | 'enabled' | 'runAs' | 'threadPath'>> & { signingSecret?: string | null; postTo?: PostTo | null; goalId?: string | null }) =>
     call<Automation & { error?: string }>('PATCH', '/api/automations/' + id, patch),
   deleteAutomation: (id: string) => call<{ ok: boolean }>('DELETE', '/api/automations/' + id),
   /** Fire an automation once now. `mode` overrides its saved default for this run only (headless =
@@ -2364,7 +2370,7 @@ export const api = {
   whatsNew: () => call<{ entries: WhatsNewEntry[]; unseen: string[]; seen: string | null; version: string }>('GET', '/api/whats-new'),
   markWhatsNewSeen: () => call<{ ok: boolean; seen: string }>('POST', '/api/whats-new/seen'),
   addTask: (b: AddTaskReq) => call<{ ok: boolean; task?: Task; error?: string }>('POST', '/api/tasks', b),
-  patchTask: (id: string, b: { title?: string; body?: string; status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; goalId?: string | null; criteria?: string | null; dependsOn?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
+  patchTask: (id: string, b: { title?: string; body?: string; status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; goalId?: string | null; betId?: string | null; criteria?: string | null; dependsOn?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
   commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
   dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string; /** refused: this session is already working the task */ live?: boolean }>('POST', `/api/tasks/${id}/dispatch`),
   /** Accept (→ todo) or dismiss (→ cancelled) agent-proposed tasks: by `ids`, or every task on one Inbox card (`messageId`). */
@@ -2415,7 +2421,7 @@ export const api = {
   deleteGoal: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/goals/${id}`),
   planGoal: (id: string, steer?: { guidance?: string; maxTasks?: number; autoDispatch?: boolean }) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/goals/${id}/plan`, steer ?? {}),
   /** The bets on a goal (or every bet when `goalId` is omitted), each with its assets, plus per-state counts. */
-  bets: (goalId?: string) => call<{ bets: (Bet & { assets: BetAsset[] })[]; counts: Record<string, number>; canEdit: boolean; cap?: number; live?: number; capCeiling?: number; capDefault?: number; error?: string }>('GET', '/api/bets' + (goalId ? '?goal=' + encodeURIComponent(goalId) : '')),
+  bets: (goalId?: string) => call<{ bets: (Bet & { assets: BetAsset[]; tasks?: { total: number; done: number; open: number } })[]; counts: Record<string, number>; canEdit: boolean; cap?: number; live?: number; capCeiling?: number; capDefault?: number; error?: string }>('GET', '/api/bets' + (goalId ? '?goal=' + encodeURIComponent(goalId) : '')),
   /** The live-bet cap (owner/admin). `value` null = use the default; the server refuses anything past its ceiling. */
   saveBetsCap: (value: number | null) => call<{ ok: boolean; value?: number | null; resolved?: number; default?: number; ceiling?: number; error?: string }>('PUT', '/api/settings/bets', { value }),
   /** Decide a bet and record what it taught (owner/admin). A terminal state without a lesson is refused —

@@ -1403,6 +1403,11 @@ function migrate(db: Db): void {
   // Which BET this task is work for (src/state/bets.ts). Nullable and inert: a task with no bet behaves
   // exactly as before, and the bet never spawns anything — only its tasks do.
   addColumn(db, 'tasks', 'bet_id', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_bet ON tasks(bet_id)');
+  // The goal an automation's runs WORK FOR (docs/tasks-plan.md §8d). Every task one of its runs files
+  // inherits it, so recurring work lands under the goal it serves without each run naming it. NULL =
+  // operational work that serves no goal — most automations, by design.
+  addColumn(db, 'automations', 'goal_id', 'TEXT');
 
   // The Claude Code OUTPUT STYLE the run LAUNCHED with ('Default' | 'Concise' | a library style),
   // stamped from the `session.tuning` audit alongside model/effort. It is the join key adoption groups

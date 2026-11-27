@@ -43,6 +43,7 @@ import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/co
 import { summarizeConversation } from './edge/summarize';
 import { artifactThumb } from './edge/artifact-thumbs';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
+import { workContextFor } from './edge/work-context';
 import { automationEditBase, buildAutomationEditBrief, planAutomationEdit, planAutomationLifecycle, agentAutomationView, editStateOf, EDITABLE_TYPES, LIFECYCLE_ACTIONS, type AutomationLifecycle } from './edge/automation-edit';
 import { chooseAgent, dispatch, routerBrain, routableAgents, addressedAgent, RouteDecision } from './edge/router';
 import { recordCapabilityGap } from './edge/capability-gap';
@@ -2320,6 +2321,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     try {
       // owner defaults to the creating session's run-as member — HUMAN PASSTHROUGH: a task filed by an
       // agent acting as Alice dispatches (later) as Alice too, so accountability ladders to the person.
+      // Goals as the spine (docs/tasks-plan.md §8d): a run that knows what goal it works for — a goal-room
+      // run, a dispatched task's run, an automation that declares one — files its work under that goal
+      // without the agent naming it. An explicit goalId/betId wins; a parentId inherits the parent's in
+      // the store, which is more specific than the session's.
+      const explicitGoal = typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined;
+      const explicitBet = typeof b.betId === 'string' && b.betId ? b.betId : undefined;
+      const ctx = explicitGoal || explicitBet || typeof b.parentId === 'string'
+        ? {} : workContextFor(os.db, tm.sessionProvenance(session));
       const task = os.tasks.create({
         tenant: os.tenant, title, body: b.body !== undefined ? String(b.body) : '',
         assignee: proposed ? undefined : (assignee ?? suggestion),
@@ -2332,7 +2341,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         model: tuning.model,
         effort: tuning.effort,
         autoDispatch: wantsAutoDispatch,
-        goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
+        goalId: explicitGoal ?? ctx.goalId,
+        betId: explicitBet ?? ctx.betId,
+        linkedVia: explicitGoal || explicitBet ? undefined : ctx.via,
         criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,
         dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
         callerAgent: pokeOnDone ? `agent:${agent}` : undefined,
@@ -2452,6 +2463,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
       mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
       goalId: b.goalId === null ? null : (typeof b.goalId === 'string' ? b.goalId : undefined),
+      betId: b.betId === null ? null : (typeof b.betId === 'string' && b.betId ? b.betId : undefined),
       criteria: b.criteria === null ? null : (typeof b.criteria === 'string' ? b.criteria : undefined),
       dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
       dueAt: b.dueAt === null ? null : (typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined),
@@ -2622,8 +2634,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // the agent's actual decision is "have I got a slot", and it used to learn the answer only by being
     // refused at `bet_propose`.
     const goalId = b.goalId != null ? String(b.goalId) : undefined;
+    // Goal → Bet → Task: each bet carries how much work points at it, so a bet with assets but no tasks
+    // (or tasks but no assets) is visible from the board without opening anything.
+    const taskCounts = os.tasks.betTaskCounts(bets.map((bet) => bet.id));
     return sendJson(res, 200, {
-      bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })),
+      bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id), tasks: taskCounts[bet.id] ?? { total: 0, done: 0, open: 0 } })),
       cap: os.bets.maxLiveBets(),
       live: goalId ? os.bets.liveCount(os.tenant, goalId) : undefined,
     });
@@ -3415,8 +3430,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       if (runAs && !os.team.getMember(runAs)) return sendJson(res, 400, { error: 'unknown run-as member' });
       const dest = new DirectMessages(os, tm).checkDest(String(b.agentId || ''), b.postTo, me);
       if (!dest.ok) return sendJson(res, dest.status, { error: dest.error });
+      const goalId = b.goalId ? String(b.goalId) : '';
+      if (goalId && !os.goals.get(goalId)) return sendJson(res, 400, { error: `no goal "${goalId}"` });
       const created = autos.add({
         postTo: dest.postTo ?? undefined,
+        goalId: goalId || undefined,
         agentId: String(b.agentId || ''),
         name: String(b.name || ''),
         type,
@@ -3727,6 +3745,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       if (id && !os.team.getMember(id)) return sendJson(res, 400, { error: 'unknown run-as member' });
       runAs = id || null;
     }
+    // The goal its runs work for: undefined leaves it, a goal id sets it (validated), ''/null clears it.
+    let goalLink: string | null | undefined;
+    if (b.goalId !== undefined) {
+      const id = String(b.goalId || '');
+      if (id && !os.goals.get(id)) return sendJson(res, 400, { error: `no goal "${id}"` });
+      goalLink = id || null;
+    }
     try {
       let postTo: PostTo | null | undefined;
       if (b.postTo !== undefined) {
@@ -3738,6 +3763,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       }
       const updated = autos.update(autoMatch[1], {
         postTo,
+        goalId: goalLink,
         name: b.name !== undefined ? String(b.name) : undefined,
         mode: b.mode === 'headless' ? 'headless' : b.mode === 'interactive' ? 'interactive' : undefined,
         schedule: b.schedule !== undefined ? String(b.schedule) : undefined,
@@ -5090,6 +5116,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         mode: b.mode === 'interactive' ? 'interactive' : 'headless',
         autoDispatch: b.autoDispatch === true,
         goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
+        betId: typeof b.betId === 'string' && b.betId ? b.betId : undefined,
         criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,
         dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
         dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
@@ -5128,6 +5155,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
       mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
       goalId: b.goalId === null ? null : (typeof b.goalId === 'string' ? b.goalId : undefined),
+      betId: b.betId === null ? null : (typeof b.betId === 'string' && b.betId ? b.betId : undefined),
       criteria: b.criteria === null ? null : (typeof b.criteria === 'string' ? b.criteria : undefined),
       dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
       dueAt: b.dueAt === null ? null : (typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined),
@@ -5270,8 +5298,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const bets = os.bets.list(os.tenant, { goalId, limit: 200 });
     // The cap rides along with the board: "how many of my slots are used" is the question a human asks
     // before deciding whether to raise it, and it belongs next to the lanes rather than in Settings.
+    const taskCounts = os.tasks.betTaskCounts(bets.map((bet) => bet.id)); // Goal → Bet → Task, as on bet_list
     return sendJson(res, 200, {
-      bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id) })),
+      bets: bets.map((bet) => ({ ...bet, assets: os.bets.assets(bet.id), tasks: taskCounts[bet.id] ?? { total: 0, done: 0, open: 0 } })),
       counts: os.bets.counts(os.tenant, goalId),
       canEdit: isAdmin(me),
       cap: os.bets.maxLiveBets(),

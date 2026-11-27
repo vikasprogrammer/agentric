@@ -25,7 +25,7 @@ import { TASK_BLOCKED_ON, Task, TaskAttachment, TaskCreateInput, TaskEvent, Task
 interface TaskRow {
   id: string; tenant: string; title: string; body: string; status: string; priority: number;
   labels: string; assignee: string | null; suggested_assignee?: string | null; owner: string | null; parent_id: string | null;
-  mode: string; model: string | null; effort: string | null; auto_dispatch: number; goal_id: string | null; criteria: string | null;
+  mode: string; model: string | null; effort: string | null; auto_dispatch: number; goal_id: string | null; bet_id?: string | null; criteria: string | null;
   caller_agent: string | null; caller_claude_id: string | null; poke_on_done: number;
   blocked_on: string | null;
   due_at: number | null; attempts: number; last_session_id: string | null;
@@ -100,33 +100,63 @@ export class TaskStore {
     // A sub-task inherits its parent's goal when it doesn't name one — so a strategist's umbrella + its
     // sub-tasks all roll up to the same goal without the agent stamping goalId on every child.
     let goalId = input.goalId ?? null;
-    if (!goalId && input.parentId) {
-      const parent = this.db.prepare('SELECT goal_id FROM tasks WHERE id = ?').get<{ goal_id: string | null }>(input.parentId);
+    let betId = input.betId ?? null;
+    if (!goalId && !betId && input.parentId) {
+      const parent = this.db.prepare('SELECT goal_id, bet_id FROM tasks WHERE id = ?').get<{ goal_id: string | null; bet_id: string | null }>(input.parentId);
       goalId = parent?.goal_id ?? null;
+      betId = parent?.bet_id ?? null;
+    }
+    // A bet belongs to exactly one goal, so the bet decides it: a task can't serve a bet on goal A while
+    // counting toward goal B. An unknown bet id is dropped rather than stored as a dangling pointer.
+    if (betId) {
+      const betGoal = this.betGoal(betId);
+      if (betGoal) goalId = betGoal; else betId = null;
     }
     this.db
       .prepare(`INSERT INTO tasks
         (id, tenant, title, body, status, priority, labels, assignee, owner, parent_id, mode, model, effort, auto_dispatch,
          goal_id, criteria, caller_agent, caller_claude_id, poke_on_done, due_at, attempts, last_session_id,
-         created_by, created_at, updated_at, updated_by, external_key, suggested_assignee)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)`)
+         created_by, created_at, updated_at, updated_by, external_key, suggested_assignee, bet_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', status, priority,
         JSON.stringify(labels), this.canonicalAssignee(input.assignee) ?? null, input.owner ?? null, input.parentId ?? null,
         mode, model, effort, input.autoDispatch ? 1 : 0, goalId, oneLine(input.criteria),
         input.callerAgent ?? null, input.callerClaudeId ?? null, input.pokeOnDone ? 1 : 0,
         input.dueAt ?? null, input.createdBy, now, now, input.createdBy, input.externalKey ?? null,
-        this.canonicalAssignee(input.suggestedAssignee) ?? null,
+        this.canonicalAssignee(input.suggestedAssignee) ?? null, betId,
       );
     if (goalId && this.db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId)) {
-      this.addEvent(id, 'link', `goal:${goalId}`, input.createdBy);
+      this.addEvent(id, 'link', `goal:${goalId}${input.linkedVia ? ` (from ${input.linkedVia})` : ''}`, input.createdBy);
     }
+    if (betId) this.addEvent(id, 'link', `bet:${betId}`, input.createdBy);
     this.addEvent(id, 'status', `→${status}`, input.createdBy);
     if (input.parentId && this.get(input.parentId)) this.addEvent(input.parentId, 'link', `task:${id}`, input.createdBy);
     if (input.dependsOn && input.dependsOn.length) this.setDeps(id, input.dependsOn, input.createdBy);
     const task = this.get(id)!;
     this.notify({ task, kind: 'created', by: input.createdBy });
     return task;
+  }
+
+  /** The goal a bet belongs to, or undefined for an unknown bet. Read straight off the `bets` table so the
+   *  store stays free of a BetStore dependency (the same way `create` checks `goals`). */
+  private betGoal(betId: string): string | undefined {
+    try {
+      return this.db.prepare('SELECT goal_id FROM bets WHERE id = ?').get<{ goal_id: string }>(betId)?.goal_id ?? undefined;
+    } catch { return undefined; }
+  }
+
+  /** Task counts per bet for a set of bets — the Bets board's "n of m tasks done" line. One query. */
+  betTaskCounts(betIds: readonly string[]): Record<string, { total: number; done: number; open: number }> {
+    const out: Record<string, { total: number; done: number; open: number }> = {};
+    if (!betIds.length) return out;
+    const rows = this.db
+      .prepare(`SELECT bet_id AS bet, COUNT(*) AS total, SUM(status = 'done') AS done,
+                       SUM(status IN ('todo','doing','blocked')) AS open
+                FROM tasks WHERE bet_id IN (${betIds.map(() => '?').join(', ')}) AND status != 'cancelled' GROUP BY bet_id`)
+      .all<{ bet: string; total: number; done: number; open: number }>(...betIds);
+    for (const r of rows) out[r.bet] = { total: r.total, done: r.done ?? 0, open: r.open ?? 0 };
+    return out;
   }
 
   get(id: string): Task | undefined {
@@ -273,9 +303,23 @@ export class TaskStore {
     }
     if (input.priority !== undefined) { sets.push('priority = ?'); vals.push(clampPriority(input.priority)); }
     if (input.mode !== undefined) { sets.push('mode = ?'); vals.push(input.mode === 'interactive' ? 'interactive' : 'headless'); }
-    if (input.goalId !== undefined && (input.goalId ?? null) !== (t.goalId ?? null)) {
-      sets.push('goal_id = ?'); vals.push(input.goalId ?? null);
-      this.addEvent(id, 'link', input.goalId ? `goal:${input.goalId}` : 'unlinked from goal', input.by);
+    // Goal and bet move together. Linking a bet sets the goal to the bet's own; re-pointing the goal
+    // somewhere the current bet doesn't belong drops the bet (it would otherwise count toward two goals).
+    let nextGoal = input.goalId === undefined ? (t.goalId ?? null) : (input.goalId ?? null);
+    let nextBet = input.betId === undefined ? (t.betId ?? null) : (input.betId ?? null);
+    if (input.betId) {
+      const betGoal = this.betGoal(input.betId);
+      if (betGoal) nextGoal = betGoal; else nextBet = t.betId ?? null; // unknown bet → leave as it was
+    } else if (nextBet && input.goalId !== undefined && this.betGoal(nextBet) !== nextGoal) {
+      nextBet = null;
+    }
+    if (nextGoal !== (t.goalId ?? null)) {
+      sets.push('goal_id = ?'); vals.push(nextGoal);
+      this.addEvent(id, 'link', nextGoal ? `goal:${nextGoal}` : 'unlinked from goal', input.by);
+    }
+    if (nextBet !== (t.betId ?? null)) {
+      sets.push('bet_id = ?'); vals.push(nextBet);
+      this.addEvent(id, 'link', nextBet ? `bet:${nextBet}` : 'unlinked from bet', input.by);
     }
     if (input.criteria !== undefined) { sets.push('criteria = ?'); vals.push(oneLine(input.criteria)); }
     if (input.dependsOn !== undefined) this.setDeps(id, input.dependsOn, input.by); // join table, not a task column
@@ -879,7 +923,7 @@ function toTask(r: TaskRow): Task {
     mode: r.mode === 'interactive' ? 'interactive' : 'headless',
     model: r.model ?? undefined, effort: (r.effort ?? undefined) as Task['effort'],
     autoDispatch: r.auto_dispatch === 1,
-    goalId: r.goal_id ?? undefined, criteria: r.criteria ?? undefined,
+    goalId: r.goal_id ?? undefined, ...(r.bet_id ? { betId: r.bet_id } : {}), criteria: r.criteria ?? undefined,
     callerAgent: r.caller_agent ?? undefined, callerClaudeId: r.caller_claude_id ?? undefined,
     pokeOnDone: r.poke_on_done === 1,
     dueAt: r.due_at ?? undefined, attempts: r.attempts, lastSessionId: r.last_session_id ?? undefined,

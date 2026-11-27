@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.489.0] - 2026-11-27
+### Added
+- **Goals as the spine: Goal → Bet → Task.** Work now lands under the goal it serves without anyone naming
+  it. A task an agent files inherits the goal (and bet) of the run that filed it: a goal-room run, a run
+  dispatched for a task that belongs to a goal, or an automation marked with the new **Works toward goal**.
+  A member's own chat runs and automations with no goal stay unlinked on purpose — nothing is guessed from
+  a title. Tasks can also point at a **bet**: the task panel has a Bet picker, the goal room groups its tasks
+  by bet, and each bet card shows how many of its tasks are done. The `tasks.bet_id` column existed but
+  nothing used it; now the store, task routes, `task_create`/`task_update` (`betId`) and `bet_list` all do.
+  **For users:** Goals now collect their work automatically — tasks filed from a goal, from that goal's tasks, or by an automation you mark "Works toward goal" land under it, and a task can point at the bet it serves. [Open Goals](#/goals)
+
 ## [0.488.0] - 2026-11-27
 ### Added
 - **My work: Tasks opens on what is yours.** A new default Tasks view splits the board into *Needs you*
