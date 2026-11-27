@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.488.0] - 2026-11-27
+### Added
+- **My work: Tasks opens on what is yours.** A new default Tasks view splits the board into *Needs you*
+  (tasks blocked on you, agent proposals you decide — Accept, Accept & run or Dismiss right there — and your
+  overdue work), *Assigned to you*, *In flight* (work you asked for that someone else is doing), and two
+  folded sections: agent work filed while running as you, and what got done this week. The whole team's
+  queue is still on Board and List, and the tab shows how many things need you.
+  Board and List also open on **Open** tasks instead of everything, "Needs you" there is renamed
+  **Blocked** (it counted every blocked task, not yours), and the proposals strip shows five with
+  "Show all" and an **Accept & run** button.
+  **For users:** Tasks now opens on My work — what needs you, what's assigned to you and what you're waiting on — instead of the whole team's board. [Open Tasks](#/tasks)
+
 ## [0.487.4] - 2026-11-27
 ### Fixed
 - **Slack + Telegram: a reply to a notification reaches the agent that sent it** — the Discord fix from

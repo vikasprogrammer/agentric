@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Inbox as InboxIcon, MessagesSquare, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
 import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, CircleDashed, Ban, Pause, Copy as CopyIcon } from 'lucide-react'
-import { ArchiveRestore, GitPullRequest, GitPullRequestClosed, GitMerge, Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
+import { ArchiveRestore, UserCheck, GitPullRequest, GitPullRequestClosed, GitMerge, Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -12162,6 +12162,40 @@ function matchesQuickStatus(t: Task, s: QuickStatus): boolean {
 // or filterable, so on a board where agents file most of the rows a person's own tasks were unfindable —
 // and an agent-filed sub-task looked exactly like one you'd written yourself. 'me' is the narrow case of
 // 'human'; both are answered from the row, so this is a lens, not a schema change.
+/** Proposals strip on Board/List: show this many, the rest behind "Show all". */
+const PROPOSALS_SHOWN = 5
+
+/** Sections of the Tasks "My work" view — the board read as ONE person's to-do list.
+ *
+ *  - needs: what only `me` can clear — a block on a task I hold/own/filed (unless it waits on another agent
+ *    or an outside party), a proposal I'm the run-as human for (admins also take the owner-less ones),
+ *    and my own overdue work. Each task lands in exactly ONE section, in this order.
+ *  - queue: assigned to me, still to do.
+ *  - flight: work I ASKED for (filed it, or own a person-filed task) that someone else is doing.
+ *  - agentWork: agent→agent tasks filed while running as me (run-as passthrough makes me the owner of
+ *    every sub-task an agent splits off — on the busiest tenant that was the bulk of "my" tasks). Folded.
+ *  - done: mine, finished in the last 7 days. `updatedAt` stands in for the close time. */
+function myWorkSections(tasks: Task[], meId: string, isAdmin: boolean, now: number) {
+  const isOpen = (t: Task) => t.status === 'todo' || t.status === 'doing' || t.status === 'blocked'
+  const agentFiled = (t: Task) => t.createdBy.startsWith('agent:')
+  const mineAny = (t: Task) => t.assignee === meId || t.owner === meId || t.createdBy === meId
+  const byUrgency = (a: Task, b: Task) => (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) || a.priority - b.priority || b.updatedAt - a.updatedAt
+  const seen = new Set<string>()
+  const take = (pred: (t: Task) => boolean, sort: (a: Task, b: Task) => number = byUrgency) => {
+    const out = tasks.filter((t) => !seen.has(t.id) && pred(t)).sort(sort)
+    for (const t of out) seen.add(t.id)
+    return out
+  }
+  const blocked = take((t) => t.status === 'blocked' && (t.assignee === meId || ((t.owner === meId || t.createdBy === meId) && t.blockedOn !== 'agent' && t.blockedOn !== 'external')))
+  const proposed = take((t) => t.status === 'proposed' && (t.owner === meId || (isAdmin && !t.owner)), (a, b) => a.priority - b.priority || b.createdAt - a.createdAt)
+  const overdue = take((t) => t.assignee === meId && isOpen(t) && !!t.dueAt && t.dueAt < now)
+  const queue = take((t) => t.assignee === meId && (t.status === 'todo' || t.status === 'doing'))
+  const flight = take((t) => isOpen(t) && t.assignee !== meId && (t.createdBy === meId || (t.owner === meId && !agentFiled(t))))
+  const agentWork = take((t) => isOpen(t) && t.owner === meId && agentFiled(t))
+  const done = take((t) => t.status === 'done' && t.updatedAt >= now - 7 * 86_400_000 && mineAny(t), (a, b) => b.updatedAt - a.updatedAt)
+  return { needs: [...blocked, ...proposed, ...overdue], blocked, proposed, overdue, queue, flight, agentWork, done }
+}
+
 type TaskAuthor = '' | 'me' | 'human' | 'agent'
 function matchesAuthor(t: Task, a: TaskAuthor, meId: string): boolean {
   if (a === 'me') return t.createdBy === meId
@@ -12235,7 +12269,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
   // `null` records a miss (deleted/invisible row) so we neither retry it forever nor block the pane.
   const [extraRuns, setExtraRuns] = useState<Record<string, Session | null>>({})
   // view + filters
-  const [view, setView] = useState<'board' | 'list' | 'focus'>(() => { const v = localStorage.getItem('aos_tasks_view'); return v === 'list' || v === 'focus' ? v : 'board' })
+  // 'mine' (My work) is the default for a first visit: the board is the whole team's queue, and opening on
+  // ~500 rows of other people's (and agents') work is why the page read as a dump rather than a to-do list.
+  const [view, setView] = useState<'mine' | 'board' | 'list' | 'focus'>(() => { const v = localStorage.getItem('aos_tasks_view'); return v === 'board' || v === 'list' || v === 'focus' ? v : 'mine' })
+  // My work's quiet sections (agent work on your behalf, done this week) start folded.
+  const [mwOpen, setMwOpen] = useState<Record<string, boolean>>({})
   useEffect(() => { localStorage.setItem('aos_tasks_view', view) }, [view])
   // Task room: the state sidebar collapses so the discussion/session column gets the full width — a
   // long transcript or an attached terminal is the reason you opened the room. Sticky across rooms.
@@ -12263,7 +12301,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
   // machine into the three questions actually asked of a list — what's still open, what's stuck, what's
   // finished — and `fUnassigned` finds work nobody has picked up. Default '' (everything) so the view
   // opens exactly as it always has.
-  const [fStatus, setFStatus] = useState<'' | 'open' | 'blocked' | 'done'>('')
+  const [fStatus, setFStatus] = useState<'' | 'open' | 'blocked' | 'done'>('open') // the open work, not 14 days of done
+  // The proposals strip shows a handful; the rest are one click away (21 rows used to push the board off-screen).
+  const [allProposals, setAllProposals] = useState(false)
   const [fUnassigned, setFUnassigned] = useState(false)
   // Authorship lens (see `matchesAuthor`) + the sub-task brake next to it: `fRoot` hides anything with a
   // parent, so the board shows the work somebody actually asked for rather than the decomposition an
@@ -12466,9 +12506,138 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
   const subCount = (tasks ?? []).filter((t) => passes(t, 'root') && t.parentId).length
   const overdueCount = (tasks ?? []).filter((t) => passes(t, 'overdue') && dueMeta(t.dueAt, t.status)?.overdue).length
   const goalsPresent = [...new Set((tasks ?? []).map((t) => t.goalId).filter(Boolean) as string[])]
-  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue || fLive || fStatus !== '' || fUnassigned || fAuthor !== '' || fRoot
-  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false); setFLive(false); setFStatus(''); setFUnassigned(false); setFAuthor(''); setFRoot(false) }
+  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue || fLive || fStatus !== 'open' || fUnassigned || fAuthor !== '' || fRoot
+  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false); setFLive(false); setFStatus('open'); setFUnassigned(false); setFAuthor(''); setFRoot(false) }
 
+  /** One task as a list row — shared by the List view and My work. `depth` indents chain mode. */
+  const listRow = (t: Task, depth = 0) => {
+    const dm = dueMeta(t.dueAt, t.status)
+    const live = liveOf(t)
+    const agentAssigned = (t.assignee || '').startsWith('agent:')
+    // Child count comes from the FULL board, not the visible set, so the badge doesn't
+    // shrink as you filter — "this spawned 3" stays true whatever the list is showing.
+    const spawned = childCount.get(t.id) ?? 0
+    return (
+      <div key={t.id} onClick={() => openTask(t.id)} className={`group flex cursor-pointer items-center gap-3 border-b px-3 py-2 last:border-b-0 hover:bg-muted/50 ${selId === t.id ? 'bg-muted' : ''} ${depth ? 'bg-muted/20' : ''}`}>
+        {depth > 0 && <span className="shrink-0" style={{ width: `${Math.min(depth, 4) * 14}px` }} aria-hidden />}
+        <StatusDot status={t.status} />
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`truncate text-[13px] text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a>
+          {/* Fan-out marker — present in every grouping mode, because "this task started
+              others" is worth seeing without switching to the chain view first. */}
+          {spawned > 0 && (
+            <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-foreground/20 px-1.5 text-[10px] font-medium text-foreground/70" title={`spawned ${spawned} task${spawned === 1 ? '' : 's'}`}>
+              <GitBranch className="h-2.5 w-2.5 shrink-0" />{spawned}
+            </span>
+          )}
+          {t.goalId && goalChip(t.goalId, 'hidden shrink-0 sm:inline-flex')}
+          {prCounts[t.id] && <span className="shrink-0"><TaskPrChip s={prCounts[t.id]} /></span>}
+          {unmetCount(t) > 0 && <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blockers">⏳ {unmetCount(t)}</span>}
+          {live && <span className={`inline-flex shrink-0 items-center gap-1 font-mono text-[10px] ${statusTone(live)}`}><SessionStatus s={live} iconClass="h-3 w-3" />{statusLabel(live)} · {fmtElapsed(now - live.createdAt)}</span>}
+          {t.labels.map((l) => <Badge key={l} variant="outline" className="hidden shrink-0 px-1 py-0 text-[10px] md:inline-flex">{l}</Badge>)}
+        </div>
+        <div className="hidden w-32 shrink-0 items-center gap-1.5 truncate text-xs text-muted-foreground sm:flex">
+          <span className="min-w-0 truncate">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</span>
+          {/* The filer, when it isn't the assignee — the same distinction the board card
+              makes, kept in the list so switching view doesn't lose it. */}
+          {t.createdBy && t.createdBy !== t.assignee && (
+            <span className="shrink-0 opacity-60" title={`Filed by ${nameOf(t.createdBy)}`}>{assigneeIcon(t.createdBy, 'h-3 w-3')}</span>
+          )}
+          {workers[t.id] && (
+            <span title={`worked by ${workers[t.id].agents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')}`}><AgentStack agents={workers[t.id].agents} /></span>
+          )}
+        </div>
+        <div className="hidden w-16 shrink-0 text-xs sm:block">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</div>
+        <PriorityPips p={t.priority} />
+        <div className="w-20 shrink-0 text-right">
+          {live
+            ? <button onClick={(e) => { e.stopPropagation(); attach(t, live) }} className="font-mono text-[10px] text-sky-600 hover:underline">attach ▸</button>
+            : agentAssigned && (t.status === 'todo' || t.status === 'blocked')
+              ? <button onClick={(e) => { e.stopPropagation(); dispatch(t) }} disabled={busy} className="font-mono text-[10px] text-muted-foreground opacity-0 hover:underline group-hover:opacity-100 disabled:opacity-50">↻ dispatch</button>
+              : <span className="font-mono text-[10px] text-muted-foreground/50">{t.id}</span>}
+        </div>
+      </div>
+    )
+  }
+  // ── My work: the board read as ONE person's to-do list. Filters don't apply here (it is its own lens);
+  //    search still does, since `load` narrows `tasks` by it. Sections are derived in `myWorkSections`. ──
+  const myWork = useMemo(() => myWorkSections(tasks ?? [], me.id, isAdmin, Date.now()), [tasks, me.id, isAdmin])
+  const mwHead = (key: string, title: ReactNode, n: number, hint: string, fold: boolean, tone = '') => {
+    const open = !fold || !!mwOpen[key]
+    return (
+      <button
+        type="button"
+        onClick={() => fold && setMwOpen((m) => ({ ...m, [key]: !m[key] }))}
+        className={`flex w-full items-center gap-2 border-b bg-muted/40 px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider ${tone || 'text-muted-foreground'} ${fold ? 'cursor-pointer hover:bg-muted/60' : 'cursor-default'}`}
+      >
+        {fold && <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />}
+        {title}<span className="font-mono normal-case">{n}</span>
+        <span className="ml-auto hidden truncate normal-case tracking-normal text-muted-foreground sm:inline">{hint}</span>
+      </button>
+    )
+  }
+  const mwSub = (label: string) => <div className="border-b bg-muted/15 px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
+  const proposalRow = (t: Task) => (
+    <div key={t.id} onClick={() => openTask(t.id)} className="flex min-w-0 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 last:border-b-0 hover:bg-muted/50">
+      <StatusDot status={t.status} />
+      <a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className="min-w-0 flex-1 basis-48 truncate text-[13px] text-foreground no-underline hover:underline">{t.title}</a>
+      <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">{assigneeChip(t.createdBy)}{(t.assignee || t.suggestedAssignee) && <>→ {assigneeChip(t.assignee ?? t.suggestedAssignee)}</>}</span>
+      {proposalActions(t)}
+    </div>
+  )
+  const myWorkView = () => {
+    const { needs, blocked, proposed, overdue, queue, flight, agentWork, done } = myWork
+    const openOnBoard = (tasks ?? []).filter((t) => t.status !== 'done' && t.status !== 'cancelled' && t.status !== 'proposed').length
+    if (!tasks) return <div className="min-w-0 flex-1 py-10 text-center text-sm text-muted-foreground">Loading…</div>
+    const nothing = !needs.length && !queue.length && !flight.length && !agentWork.length && !done.length
+    return (
+      <div className="min-w-0 flex-1 space-y-3">
+        {nothing && (
+          <div className="rounded-md border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
+            Nothing on your plate{q ? ' matching that search' : ''}.
+            {openOnBoard > 0 && <> The team board has <button onClick={() => setView('list')} className="text-foreground underline-offset-2 hover:underline">{openOnBoard} open task{openOnBoard === 1 ? '' : 's'}</button>.</>}
+          </div>
+        )}
+        {needs.length > 0 && (
+          <div className="overflow-hidden rounded-md border border-red-200">
+            {mwHead('needs', 'Needs you', needs.length, 'decisions and blocks only you can clear', false, 'text-red-600')}
+            {blocked.length > 0 && <>{mwSub('Blocked — waiting on you')}{blocked.map((t) => listRow(t))}</>}
+            {proposed.length > 0 && <>{mwSub('Proposed by agents — accept to put it on the board')}{proposed.map(proposalRow)}</>}
+            {overdue.length > 0 && <>{mwSub('Overdue')}{overdue.map((t) => listRow(t))}</>}
+          </div>
+        )}
+        {queue.length > 0 && (
+          <div className="overflow-hidden rounded-md border">
+            {mwHead('queue', 'Assigned to you', queue.length, 'soonest due first', false)}
+            {queue.map((t) => listRow(t))}
+          </div>
+        )}
+        {flight.length > 0 && (
+          <div className="overflow-hidden rounded-md border">
+            {mwHead('flight', 'In flight', flight.length, 'work you asked for, being done by someone else', false)}
+            {flight.map((t) => listRow(t))}
+          </div>
+        )}
+        {agentWork.length > 0 && (
+          <div className="overflow-hidden rounded-md border">
+            {mwHead('agent', 'Agent work on your behalf', agentWork.length, 'tasks agents filed for each other while running as you', true)}
+            {mwOpen.agent && agentWork.map((t) => listRow(t))}
+          </div>
+        )}
+        {done.length > 0 && (
+          <div className="overflow-hidden rounded-md border">
+            {mwHead('done', 'Done this week', done.length, 'yours, finished in the last 7 days', true, 'text-emerald-700')}
+            {mwOpen.done && done.map((t) => listRow(t))}
+          </div>
+        )}
+        {!nothing && openOnBoard > 0 && (
+          <p className="text-center text-[11px] text-muted-foreground">
+            That's yours. The whole team's queue — {openOnBoard} open — is on the <button onClick={() => setView('board')} className="underline-offset-2 hover:underline">Board</button> and <button onClick={() => setView('list')} className="underline-offset-2 hover:underline">List</button>.
+          </p>
+        )}
+      </div>
+    )
+  }
   const liveTasks = visible.filter((t) => liveOf(t))
   const liveCount = liveTasks.length
   // A metric tile for the fleet strip.
@@ -12495,11 +12664,24 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
   }
   // Re-link or complete a task and the goal's derived progress moves with it, so refresh the goal
   // list too — otherwise the "part of goal" banner keeps showing the pre-edit bar.
-  const decideProposal = async (id: string, action: 'accept' | 'dismiss') => {
-    setBusy(true)
-    const r = await api.decideTaskProposals({ ids: [id], action })
-    if (r.error) alert(r.error)
+  const decideProposal = async (id: string, action: 'accept' | 'dismiss', run = false) => {
+    setBusy(true); setHint('')
+    const r = await api.decideTaskProposals({ ids: [id], action, ...(run ? { run: true } : {}) })
+    if (r.error) setHint('⚠ ' + r.error)
+    else if (run && r.dispatched?.some((d) => d.sessionId)) setHint('Accepted — a session is running it')
     await load(); setBusy(false)
+  }
+  /** Accept / Accept & run / Dismiss for one proposal — Accept & run only when an AGENT would work it. */
+  const proposalActions = (t: Task) => {
+    if (!(isAdmin || t.owner === me.id)) return <span className="shrink-0 text-[11px] text-muted-foreground">awaiting its owner</span>
+    const pick = t.assignee ?? t.suggestedAssignee ?? ''
+    return (
+      <span className="flex shrink-0 gap-1">
+        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy} onClick={(e) => { e.stopPropagation(); decideProposal(t.id, 'accept') }}><Check className="mr-1 h-3 w-3" />Accept</Button>
+        {pick.startsWith('agent:') && <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy} title={`Accept and dispatch it to ${pick.slice('agent:'.length)} now`} onClick={(e) => { e.stopPropagation(); decideProposal(t.id, 'accept', true) }}><Play className="mr-1 h-3 w-3" />Accept &amp; run</Button>}
+        <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={busy} onClick={(e) => { e.stopPropagation(); decideProposal(t.id, 'dismiss') }}>Dismiss</Button>
+      </span>
+    )
   }
   const restore = async (id: string) => { setBusy(true); const r = await api.restoreTask(id); if (r.error) alert(r.error); await load(); setBusy(false) }
   const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); const r = await api.patchTask(id, b); if (r.error) alert(r.error); await load(); if (b.goalId !== undefined || b.status || b.assignee) await loadGoals(); setBusy(false) }
@@ -13080,7 +13262,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
           spawns a governed session that works it and closes its own loop.
         </p>
         <div className="inline-flex overflow-hidden rounded-md border">
-          <button onClick={() => setView('board')} className={`flex items-center gap-1 px-2.5 py-1.5 text-xs ${view === 'board' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><LayoutGrid className="h-3.5 w-3.5" />Board</button>
+          <button onClick={() => setView('mine')} title="What needs you, what you're waiting on, and what got done" className={`flex items-center gap-1 px-2.5 py-1.5 text-xs ${view === 'mine' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>
+            <UserCheck className="h-3.5 w-3.5" />My work
+            {myWork.needs.length > 0 && <span className="rounded-full bg-red-500/15 px-1.5 font-mono text-[10px] tabular-nums text-red-600">{myWork.needs.length}</span>}
+          </button>
+          <button onClick={() => setView('board')} className={`flex items-center gap-1 border-l px-2.5 py-1.5 text-xs ${view === 'board' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><LayoutGrid className="h-3.5 w-3.5" />Board</button>
           <button onClick={() => setView('list')} className={`flex items-center gap-1 border-l px-2.5 py-1.5 text-xs ${view === 'list' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><List className="h-3.5 w-3.5" />List</button>
           <button onClick={() => setView('focus')} className={`flex items-center gap-1 border-l px-2.5 py-1.5 text-xs ${view === 'focus' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><PanelLeftOpen className="h-3.5 w-3.5" />Focus</button>
         </div>
@@ -13090,7 +13276,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
         </div>
         {(archivedCount > 0 || showArchived) && (
           <button
-            onClick={() => { const on = !showArchived; setShowArchived(on); if (on && view === 'board') setView('list') }}
+            onClick={() => { const on = !showArchived; setShowArchived(on); if (on && (view === 'board' || view === 'mine')) setView('list') }}
             className={`flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs ${showArchived ? 'bg-muted font-medium' : 'text-muted-foreground hover:text-foreground'}`}
             title="Tasks board cleanup archived: agent-filed work nobody touched in 30+ days, children of closed tasks, and proposals nobody accepted. Each is one click to restore."
           ><ArchiveRestore className="h-3.5 w-3.5" />Archived · {archivedCount}</button>
@@ -13100,14 +13286,15 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
 
       {/* Filter bar. Quick filters lead — one click each, with a live count of what they'd yield — and the
           narrower select-driven filters follow. */}
+      {view !== 'mine' && (
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <div className="inline-flex overflow-hidden rounded-md border">
-          {([['', 'All'], ['open', 'Open'], ['blocked', 'Needs you'], ['done', 'Done']] as [QuickStatus, string][]).map(([s, label], i) => {
+          {([['', 'All'], ['open', 'Open'], ['blocked', 'Blocked'], ['done', 'Done']] as [QuickStatus, string][]).map(([s, label], i) => {
             const n = statusCount(s)
             const on = fStatus === s
             const tone = on ? (s === 'blocked' ? 'bg-red-500/10 font-medium text-red-600' : 'bg-muted font-medium') : 'text-muted-foreground'
             return (
-              <button key={s || 'all'} onClick={() => setFStatus(s)} title={s === 'open' ? 'Everything not finished' : s === 'blocked' ? 'Stuck — needs a human' : s === 'done' ? 'Done and cancelled' : 'No status filter'} className={`px-2.5 py-1 ${i ? 'border-l' : ''} ${tone}`}>
+              <button key={s || 'all'} onClick={() => setFStatus(s)} title={s === 'open' ? 'Everything not finished' : s === 'blocked' ? 'Stuck — waiting on someone or something' : s === 'done' ? 'Done and cancelled' : 'No status filter'} className={`px-2.5 py-1 ${i ? 'border-l' : ''} ${tone}`}>
                 {label}{s !== '' && <span className="ml-1 font-mono text-[10px] tabular-nums opacity-70">{n}</span>}
               </button>
             )
@@ -13182,6 +13369,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
         {filterActive && <button onClick={clearFilters} className="text-muted-foreground underline-offset-2 hover:underline">Clear</button>}
         <span className="ml-auto text-muted-foreground">{visible.length} shown</span>
       </div>
+      )}
 
       {showNew && (
         <Card>
@@ -13270,7 +13458,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
 
       {/* Agent proposals — tasks an agent filed that no person has accepted yet. They sit in no column (the
           board is agreed work) and are decided here or from the Inbox card; the server gates who may. */}
-      {proposals.length > 0 && (
+      {view !== 'mine' && proposals.length > 0 && (
         <div className="rounded-md border border-violet-300 bg-violet-50/40 px-3 py-2.5">
           <div className="mb-1.5 flex items-center gap-2 text-[11px] uppercase tracking-wider text-violet-700">
             <span className="font-medium">Proposed by agents</span>
@@ -13278,31 +13466,31 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
             <span className="ml-auto normal-case tracking-normal text-muted-foreground">not on the board until accepted</span>
           </div>
           <ul className="space-y-1">
-            {proposals.map((t) => (
+            {(allProposals ? proposals : proposals.slice(0, PROPOSALS_SHOWN)).map((t) => (
               <li key={t.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                 <a href={navHref('tasks', t.id)} onClick={onNavClick(() => openTask(t.id))} className="min-w-0 flex-1 truncate text-foreground no-underline hover:underline">{t.title}</a>
                 <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">{assigneeChip(t.createdBy)}{t.assignee ? <>→ {assigneeChip(t.assignee)}</> : t.suggestedAssignee && <span className="flex items-center gap-1" title="The agent's suggestion — accepting assigns it">→ {assigneeChip(t.suggestedAssignee)}<span className="text-violet-700">suggested</span></span>}</span>
-                {isAdmin || t.owner === me.id ? (
-                  <span className="flex shrink-0 gap-1">
-                    <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" disabled={busy} onClick={() => decideProposal(t.id, 'accept')}><Check className="mr-1 h-3 w-3" />Accept</Button>
-                    <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" disabled={busy} onClick={() => decideProposal(t.id, 'dismiss')}>Dismiss</Button>
-                  </span>
-                ) : <span className="shrink-0 text-[11px] text-muted-foreground">awaiting its owner</span>}
+                {proposalActions(t)}
               </li>
             ))}
           </ul>
+          {proposals.length > PROPOSALS_SHOWN && (
+            <button onClick={() => setAllProposals((v) => !v)} className="mt-1.5 text-[11px] text-violet-700 hover:underline">
+              {allProposals ? 'Show fewer' : `Show all ${proposals.length}`}
+            </button>
+          )}
         </div>
       )}
 
       <div className="flex gap-4">
-        {view === 'board' ? (
+        {view === 'mine' ? myWorkView() : view === 'board' ? (
           <div className="min-w-0 flex-1 space-y-3">
             {/* Fleet strip — the board header as an operations readout: how many agents are working, what's stuck. */}
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md border bg-muted/20 px-4 py-2.5">
               {metric(liveCount, 'live now', 'text-emerald-600', true)}
               {counts.proposed > 0 && metric(counts.proposed, 'proposed', 'text-violet-600')}
               {metric(counts.todo, 'queued')}
-              {metric(counts.blocked, 'needs you', counts.blocked ? 'text-amber-600' : '')}
+              {metric(counts.blocked, 'blocked', counts.blocked ? 'text-amber-600' : '')}
               {metric(counts.done, 'done', 'text-emerald-600')}
             </div>
 
@@ -13376,56 +13564,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
                   <div className="flex items-center gap-2 border-b border-t bg-muted/40 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground first:border-t-0">
                     {g.label}<span className="ml-auto font-mono normal-case">{g.items.length}</span>
                   </div>
-                  {g.items.map((t) => {
-                    const dm = dueMeta(t.dueAt, t.status)
-                    const live = liveOf(t)
-                    const agentAssigned = (t.assignee || '').startsWith('agent:')
-                    const depth = chain?.depth.get(t.id) ?? 0
-                    // Child count comes from the FULL board, not the visible set, so the badge doesn't
-                    // shrink as you filter — "this spawned 3" stays true whatever the list is showing.
-                    const spawned = childCount.get(t.id) ?? 0
-                    return (
-                      <div key={t.id} onClick={() => openTask(t.id)} className={`group flex cursor-pointer items-center gap-3 border-b px-3 py-2 last:border-b-0 hover:bg-muted/50 ${selId === t.id ? 'bg-muted' : ''} ${depth ? 'bg-muted/20' : ''}`}>
-                        {depth > 0 && <span className="shrink-0" style={{ width: `${Math.min(depth, 4) * 14}px` }} aria-hidden />}
-                        <StatusDot status={t.status} />
-                        <div className="flex min-w-0 flex-1 items-center gap-2">
-                          <a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`truncate text-[13px] text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a>
-                          {/* Fan-out marker — present in every grouping mode, because "this task started
-                              others" is worth seeing without switching to the chain view first. */}
-                          {spawned > 0 && (
-                            <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-foreground/20 px-1.5 text-[10px] font-medium text-foreground/70" title={`spawned ${spawned} task${spawned === 1 ? '' : 's'}`}>
-                              <GitBranch className="h-2.5 w-2.5 shrink-0" />{spawned}
-                            </span>
-                          )}
-                          {t.goalId && goalChip(t.goalId, 'hidden shrink-0 sm:inline-flex')}
-                          {prCounts[t.id] && <span className="shrink-0"><TaskPrChip s={prCounts[t.id]} /></span>}
-                          {unmetCount(t) > 0 && <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blockers">⏳ {unmetCount(t)}</span>}
-                          {live && <span className={`inline-flex shrink-0 items-center gap-1 font-mono text-[10px] ${statusTone(live)}`}><SessionStatus s={live} iconClass="h-3 w-3" />{statusLabel(live)} · {fmtElapsed(now - live.createdAt)}</span>}
-                          {t.labels.map((l) => <Badge key={l} variant="outline" className="hidden shrink-0 px-1 py-0 text-[10px] md:inline-flex">{l}</Badge>)}
-                        </div>
-                        <div className="hidden w-32 shrink-0 items-center gap-1.5 truncate text-xs text-muted-foreground sm:flex">
-                          <span className="min-w-0 truncate">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</span>
-                          {/* The filer, when it isn't the assignee — the same distinction the board card
-                              makes, kept in the list so switching view doesn't lose it. */}
-                          {t.createdBy && t.createdBy !== t.assignee && (
-                            <span className="shrink-0 opacity-60" title={`Filed by ${nameOf(t.createdBy)}`}>{assigneeIcon(t.createdBy, 'h-3 w-3')}</span>
-                          )}
-                          {workers[t.id] && (
-                            <span title={`worked by ${workers[t.id].agents.map((a) => `${a.id} (${a.runs} run${a.runs === 1 ? '' : 's'}${a.alive ? ', live' : ''})`).join(' · ')}`}><AgentStack agents={workers[t.id].agents} /></span>
-                          )}
-                        </div>
-                        <div className="hidden w-16 shrink-0 text-xs sm:block">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</div>
-                        <PriorityPips p={t.priority} />
-                        <div className="w-20 shrink-0 text-right">
-                          {live
-                            ? <button onClick={(e) => { e.stopPropagation(); attach(t, live) }} className="font-mono text-[10px] text-sky-600 hover:underline">attach ▸</button>
-                            : agentAssigned && (t.status === 'todo' || t.status === 'blocked')
-                              ? <button onClick={(e) => { e.stopPropagation(); dispatch(t) }} disabled={busy} className="font-mono text-[10px] text-muted-foreground opacity-0 hover:underline group-hover:opacity-100 disabled:opacity-50">↻ dispatch</button>
-                              : <span className="font-mono text-[10px] text-muted-foreground/50">{t.id}</span>}
-                        </div>
-                      </div>
-                    )
-                  })}
+                  {g.items.map((t) => listRow(t, chain?.depth.get(t.id) ?? 0))}
                 </div>
               ))
             })()}

@@ -864,6 +864,25 @@ next tick, and one admin card summarises the whole drain. Board load (`GET /api/
 The agent `task_create` lane also refuses an unknown person as assignee and points a duplicate open title at
 the existing task (non-dispatching creates only).
 
+## 8c. My work — the board read as one person's to-do list (v0.488.0)
+
+The board is the whole team's queue; on a busy tenant even after cleanup it is ~180 open rows, nearly all
+agent work. **My work** (`myWorkSections` in `web/src/App.tsx`, the default Tasks view for a first visit)
+derives five sections from the rows the board already loaded — no new API. Each task lands in exactly one:
+
+| Section | A task is here when | Folded |
+|---|---|---|
+| Needs you | `blocked` and assigned to me, or owned/filed by me and not waiting on another agent / an outside party · `proposed` with me as owner (admins also take owner-less ones; Accept / Accept & run / Dismiss inline) · assigned to me and overdue | no |
+| Assigned to you | assigned to me, `todo`/`doing` — soonest due first | no |
+| In flight | open, someone else holds it, and I asked for it (filed it, or own a person-filed task) | no |
+| Agent work on your behalf | open, I'm the owner, an agent filed it — run-as passthrough makes me owner of every sub-task an agent splits off | yes |
+| Done this week | `done`, mine any way, `updatedAt` in the last 7 days | yes |
+
+Filters don't apply to My work (it is its own lens); search does. Board/List changed with it: the status
+quick filter opens on **Open** (14 days of done used to outnumber the open work), "Needs you" is renamed
+**Blocked** (it was the global blocked count, not you), and the proposals strip shows 5 with "Show all"
+plus **Accept & run** when an agent would work it.
+
 ## 9. Future (not v1)
 
 > **Update (2026-07-09, v0.60.0): board UX + due dates shipped.** The "Richer board" and part of
