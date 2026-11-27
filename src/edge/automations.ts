@@ -2257,6 +2257,7 @@ export class Automations {
   async fireTelegram(
     event: { eventType: string; chat: string; messageThreadId: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown; files?: { name: string; data: Buffer }[] },
     runAsMember?: string,
+    opts: { fallbackAgent?: string } = {},
   ): Promise<{ fired: number; sessions: string[]; agents: string[]; reply?: string }> {
     const sessions: string[] = [];
     const agents: string[] = [];
@@ -2286,6 +2287,7 @@ export class Automations {
         text: event.text,
         extra,
         runAs: runAsMember,
+        fallbackAgent: opts.fallbackAgent,
         telegram: bind,
       });
       sessions.push(...r.sessions);

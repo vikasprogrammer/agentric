@@ -15,7 +15,7 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager, DmRef, ApprovalNotice, QuestionNotice, QuestionAnswerNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice, renderOptions } from './terminal';
+import { TerminalManager, DmRef, recordDmRef, ApprovalNotice, QuestionNotice, QuestionAnswerNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice, renderOptions } from './terminal';
 import { Automations } from './edge/automations';
 import { WAKE_KIND_ANSWER, WAKE_KIND_DONE } from './edge/wakeups';
 import { AppSupervisor } from './edge/app-supervisor';
@@ -24,7 +24,7 @@ import { SlackSocket } from './edge/slack-socket';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { TelegramSocket } from './edge/telegram-socket';
-import { sendMessage as telegramSend } from './connectors/telegram';
+import { sendMessage as telegramSend, telegramDmKey } from './connectors/telegram';
 import { Member, Task } from './types';
 import { TaskNotice } from './state/tasks';
 import { GoalNotice } from './state/goals';
@@ -473,14 +473,18 @@ async function deliverDM(slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, 
         slackId = found;
       }
     }
-    if (slackId && (await slack.dmUser(slackId, render('slack'))).ok) dms++;
     // `ref` = what this DM is about, recorded against the posted message so a REPLY to it reaches that
-    // exact approval/question/task/run (Discord only: the one platform whose reply carries a reference we read).
+    // exact approval/question/task/run. Each platform names the message its own way: Discord's reply
+    // arrow, a Slack thread under it, Telegram's swipe-to-reply.
+    if (slackId && (await slack.dmUser(slackId, render('slack'), ref)).ok) dms++;
     if (discordId && (await discord.dmUser(discordId, render('discord'), ref)).ok) dms++;
     // A private chat's id IS the user id, so the identity-map handle doubles as the DM target. No-ops
     // when Telegram isn't configured (`telegramBotToken()` empty → `sendMessage` returns an error).
     const telegramId = ids.find((i) => i.provider === 'telegram')?.externalId;
-    if (telegramId && 'ok' in (await telegramSend(os.settings.telegramBotToken(), telegramId, render('telegram')))) dms++;
+    if (telegramId) {
+      const sent = await telegramSend(os.settings.telegramBotToken(), telegramId, render('telegram'));
+      if ('ok' in sent) { dms++; recordDmRef(os.db, 'telegram', telegramDmKey(telegramId, sent.id), telegramId, ref); }
+    }
   }
   return dms;
 }

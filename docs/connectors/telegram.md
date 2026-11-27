@@ -88,3 +88,17 @@ links as `label: url` for `telegram` (same as ClickUp) instead of masked markup.
 - Forum topics: continuity keys on `(chat_id, message_thread_id)`, so the same chat's topics stay separate.
 - **The file download URL contains the bot token.** Never log it, audit it, or hand it to an agent.
 - **`photo` is an array**, smallest-first. Taking `photo[0]` gets a thumbnail, not the screenshot.
+
+## DM replies: which notification is being answered (v0.487.4)
+
+A notification in a private chat (approval, `ask` question, blocked task, a run notice) is matched to a
+plain message by RECIPIENT — "the newest pending thing we pinged you about" — which cannot tell two
+agents apart. Telegram's Reply (swipe / long-press) names the message: `parseTelegramUpdate` exposes
+`replyToId` when the replied-to message is the bot's, and every message the bot sends to a private chat
+(notifications from `deliverDM`, the socket's acks, an agent's `telegram_reply`) is recorded in `dm_refs`
+under **`<chat id>:<message id>`** — Telegram message ids are only unique within a chat. A reply pointing
+at one runs only that lane, pinned to that approval / question / task / run, and skips the chat-keyed
+"keep talking to the last run" continuity (that is the guess the reply was made to avoid). A plain
+message keeps the old behaviour. Outcome table:
+[discord.md](discord.md#dm-replies-which-notification-is-being-answered). Pinned by
+`scripts/chat-dm-reply-target-test.cjs`.

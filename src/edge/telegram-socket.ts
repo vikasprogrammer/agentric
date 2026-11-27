@@ -23,7 +23,8 @@
 import { AgentOS } from '../kernel';
 import { isCodingRuntime } from '../types';
 import { Automations, chatAck } from './automations';
-import { getMe, getUpdates, parseTelegramUpdate, sendMessage, setMyCommands, telegramCommandName, TelegramFileRef, downloadTelegramFile } from '../connectors/telegram';
+import type { DmRef } from '../terminal';
+import { getMe, getUpdates, parseTelegramUpdate, sendMessage, setMyCommands, telegramCommandName, telegramDmKey, TelegramFileRef, downloadTelegramFile } from '../connectors/telegram';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -204,8 +205,20 @@ export class TelegramSocket {
     // Inline approve/deny: a private-chat reply from someone with a pending approval we sent them resolves
     // the gate directly (no trip to the web Inbox). Only for private chats (where the ping was sent).
     // Checked first: while an approval is pending, a "yes"/"no" here is a decision, not chat.
-    if (isDM) {
-      const decided = this.autos.decideApprovalFromChat('telegram', ev.user, text);
+    //
+    // WHICH notification is being answered. Each DM lane below matches on the SENDER alone ("the newest
+    // pending thing we pinged you about"), in a fixed order — so with two agents pinging one person a
+    // reply meant for the first went to the second. Telegram's reply (swipe / long-press → Reply) names
+    // the message, and every DM we send is recorded with what it was about: a reply pointing at one runs
+    // ONLY that lane, pinned to that approval / question / task / run. A plain message, or a reply to a
+    // message we have no record of, keeps the recipient-keyed behaviour. Mirrors discord-socket.
+    const target = isDM && ev.replyToId
+      ? this.autos.dmReplyTarget('telegram', ev.user, ev.chatId, telegramDmKey(ev.chatId, ev.replyToId))
+      : undefined;
+    const lane = (kind: 'approval' | 'question' | 'task') => !target || target.kind === kind;
+    const only = target?.id;
+    if (isDM && lane('approval')) {
+      const decided = this.autos.decideApprovalFromChat('telegram', ev.user, text, only);
       if (decided) {
         if (decided.status === 'decided') {
           void this.dmUser(ev.chatId, decided.approved ? `✅ Approved — ${decided.capability} will proceed.` : `🚫 Rejected — ${decided.capability} was blocked.`);
@@ -220,8 +233,8 @@ export class TelegramSocket {
 
     // Inline answer: a private-chat reply from someone with a pending `ask_human` question answers it
     // directly. Only for private chats — that's where the question was sent.
-    if (isDM) {
-      const answered = this.autos.answerQuestionFromChat('telegram', ev.user, text);
+    if (isDM && lane('question')) {
+      const answered = this.autos.answerQuestionFromChat('telegram', ev.user, text, only);
       if (answered) {
         void this.dmUser(ev.chatId, `✅ Got it — your answer was sent to ${answered.agent}.`);
         this.os.audit.append({
@@ -237,8 +250,8 @@ export class TelegramSocket {
     // next comment and puts it back on the board (re-dispatching the agent that was waiting). After the
     // question path — a pending question is the more specific claim on the same reply — and before session
     // continuity, which would deliver the words into a run without ever clearing the block.
-    if (isDM) {
-      const unblocked = this.autos.unblockTaskFromChat('telegram', ev.user, text);
+    if (isDM && lane('task')) {
+      const unblocked = this.autos.unblockTaskFromChat('telegram', ev.user, text, only);
       if (unblocked) {
         void this.dmUser(ev.chatId, `✅ Unblocked — *${unblocked.title}* is back on the board${unblocked.agent ? ` and ${unblocked.agent} is picking it up` : ''}.`);
         this.os.audit.append({
@@ -252,10 +265,14 @@ export class TelegramSocket {
 
     // DM continuity: a reply to a private-chat message we sent ABOUT a run (an agent's `notify`, "your run
     // finished / crashed") goes back INTO that run — after the two decision paths, before the router.
-    if (isDM) {
-      const cont = this.autos.continueSessionDm('telegram', ev.user, { actorLabel, text, channel: ev.chatId }, runAsMember);
+    //
+    // A targeted reply continues the run BEHIND the message it points at — also when that was an approval
+    // or question since settled. One with no run behind it (a task notice, an insight alert) skips this
+    // lane rather than guessing a recent run.
+    if (isDM && (!target || target.sessionId)) {
+      const cont = this.autos.continueSessionDm('telegram', ev.user, { actorLabel, text, channel: ev.chatId }, runAsMember, target?.sessionId);
       if (cont.status !== 'none' && cont.sessionId) {
-        void this.dmUser(ev.chatId, `✅ Sent to ${cont.agent} — it'll reply here. (To start something else instead: /agent-name your request.)`);
+        void this.dmUser(ev.chatId, `✅ Sent to ${cont.agent} — it'll reply here. (To start something else instead: /agent-name your request.)`, { kind: 'session', sessionId: cont.sessionId });
         this.os.audit.append({
           ts: Date.now(), runId: cont.sessionId, tenant: this.os.tenant,
           principal: runAsMember ? `member:${runAsMember}` : 'telegram',
@@ -272,7 +289,10 @@ export class TelegramSocket {
     // one. The `continueSessionDm` path above is the narrower case (a run the OS proactively DM'd about);
     // this is the general "keep talking in this chat". Only the first message (nothing bound yet) falls
     // through to a fresh spawn below.
-    {
+    //
+    // Skipped for a targeted reply: the chat's bound run is "whoever spoke here last", which is exactly
+    // the guess the reply was made to avoid. Past this point such a reply starts fresh with its own agent.
+    if (!target) {
       const cont = this.autos.continueTelegramThread({ chat: ev.chatId, messageThreadId: ev.messageThreadId, actorLabel, text, raw: ev.raw, files }, runAsMember);
       if (cont.status !== 'none') {
         this.os.audit.append({
@@ -302,6 +322,7 @@ export class TelegramSocket {
         files,
       },
       runAsMember,
+      { fallbackAgent: target?.agent },
     );
     for (const sid of result.sessions) this.autos.stageInboundFiles(sid, files);
 
@@ -345,17 +366,24 @@ export class TelegramSocket {
       this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'telegram', type: 'telegram.reply.failed', data: { chat: row.chat_id, error: res.error } });
       return { ok: false, error: res.error };
     }
+    // The agent's own message is about its run: a reply pointing at it goes back to that run. Recorded
+    // against the chat id, which in a private chat IS the user id (a group reply never matches a sender,
+    // so the row is inert there).
+    this.autos.noteDm('telegram', telegramDmKey(row.chat_id, res.id), row.chat_id, { kind: 'session', sessionId });
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'telegram', type: 'telegram.reply', data: { chat: row.chat_id, id: res.id, chars: body.length } });
     return { ok: true };
   }
 
   /** Post to a Telegram chat by id — best-effort, used for the inline acks above. Returns ok / a reason;
    *  never throws. No-op when Telegram isn't configured. */
-  async dmUser(chatId: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  async dmUser(chatId: string, text: string, ref?: DmRef): Promise<{ ok: true } | { ok: false; error: string }> {
     const token = this.os.settings.telegramBotToken();
     if (!token || !chatId) return { ok: false, error: 'telegram not configured' };
     const res = await sendMessage(token, chatId, text);
-    return 'error' in res ? { ok: false, error: res.error } : { ok: true };
+    if ('error' in res) return { ok: false, error: res.error };
+    // Remember what this message was ABOUT, so a reply pointing at it reaches that exact thing.
+    this.autos.noteDm('telegram', telegramDmKey(chatId, res.id), chatId, ref);
+    return { ok: true };
   }
 
   /** Strip a leading @botusername mention and any `@botusername` appended to a `/cmd@bot` command, so a

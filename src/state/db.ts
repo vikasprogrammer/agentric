@@ -478,7 +478,7 @@ function migrate(db: Db): void {
     -- behind it (an insight alert, an overdue task): a reply to one must not fall into another agent's
     -- pending question either. See TerminalManager.dmReplyTarget.
     CREATE TABLE IF NOT EXISTS dm_refs (
-      provider    TEXT NOT NULL,          -- 'discord' (the only platform recording message ids today)
+      provider    TEXT NOT NULL,          -- 'discord' | 'slack' (message ts) | 'telegram' (chat:message id)
       message_id  TEXT NOT NULL,          -- the DM message WE posted
       external_id TEXT NOT NULL,          -- who we sent it to (must equal the replier)
       kind        TEXT NOT NULL,          -- 'approval' | 'question' | 'task' | 'session' | 'notice'

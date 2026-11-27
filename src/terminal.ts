@@ -136,6 +136,16 @@ const STALE_PROMPT_MAX_MS = 3 * 24 * 60 * 60_000; // ignore anything pending lon
  * within a working day; past that a fresh DM means a fresh request and belongs to the router.
  */
 const SESSION_DM_WINDOW_MS = 24 * 60 * 60_000;
+/** Write one `dm_refs` row. Standalone because the Telegram notification lane posts without a socket or
+ *  a TerminalManager in hand (`deliverDM`); {@link TerminalManager.noteDm} is the same write. Best-effort. */
+export function recordDmRef(db: Db, provider: 'slack' | 'discord' | 'telegram', messageId: string, externalId: string, ref: DmRef = { kind: 'notice' }): void {
+  if (!messageId || !externalId) return;
+  try {
+    db.prepare('INSERT OR REPLACE INTO dm_refs (provider, message_id, external_id, kind, ref_id, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(provider, messageId, externalId, ref.kind, ref.id ?? '', ref.sessionId ?? null, Date.now());
+  } catch { /* best-effort: never break a notification over the index */ }
+}
+
 /** What a DM we sent was about — recorded per message in `dm_refs` (see {@link TerminalManager.noteDm}). */
 export interface DmRef {
   kind: 'approval' | 'question' | 'task' | 'session' | 'notice';
@@ -8455,16 +8465,11 @@ export class TerminalManager {
 
   /**
    * Record a DM we just posted together with what it was ABOUT, so a reply that references it (Discord's
-   * reply arrow) is routed to that exact approval / question / task / run rather than to whatever we
+   * reply arrow, a Slack thread under it, Telegram's swipe-to-reply) is routed to that exact approval / question / task / run rather than to whatever we
    * pinged the person about most recently. Best-effort: never break a notification over the index.
    */
   noteDm(provider: 'slack' | 'discord' | 'telegram', messageId: string, externalId: string, ref: DmRef = { kind: 'notice' }): void {
-    if (!messageId || !externalId) return;
-    try {
-      this.db
-        .prepare('INSERT OR REPLACE INTO dm_refs (provider, message_id, external_id, kind, ref_id, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(provider, messageId, externalId, ref.kind, ref.id ?? '', ref.sessionId ?? null, Date.now());
-    } catch { /* best-effort */ }
+    recordDmRef(this.db, provider, messageId, externalId, ref);
   }
 
   /**
@@ -8496,6 +8501,11 @@ export class TerminalManager {
     }
     if (provider === 'discord') {
       const s = this.sessionForDiscordMessage(channel, messageId);
+      if (s) return { kind: 'session', sessionId: s.sessionId, agent: s.agent };
+    }
+    // Slack's reference IS the thread root, and a thread the agent spoke in is already indexed by root.
+    if (provider === 'slack') {
+      const s = this.sessionForSlackThread(channel, messageId);
       if (s) return { kind: 'session', sessionId: s.sessionId, agent: s.agent };
     }
     return undefined;

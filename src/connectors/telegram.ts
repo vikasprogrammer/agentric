@@ -139,6 +139,11 @@ export async function setMyCommands(
 }
 
 /** A normalized inbound Telegram message, parsed from an `update.message` payload. */
+/** `dm_refs` key for a Telegram message. Message ids are only unique within a chat, so the chat rides along. */
+export function telegramDmKey(chatId: string, messageId: string): string {
+  return chatId && messageId ? `${chatId}:${messageId}` : '';
+}
+
 export interface TelegramMessageEvent {
   /** The event kind for filtering/labels: `direct_message` (private chat) or `mention` (group). */
   eventType: string;
@@ -152,6 +157,9 @@ export interface TelegramMessageEvent {
   messageThreadId: string;
   /** The message id (the reply target — Telegram's analogue of Slack's thread root `ts`). */
   messageId: string;
+  /** The id of OUR message this one replies to (Telegram's swipe-to-reply), else ''. In a private chat
+   *  that is the notification being answered — see `TerminalManager.dmReplyTarget`. */
+  replyToId: string;
   /** The sender's Telegram user id (the join key for member run-as). '' for service messages. */
   user: string;
   /** The sender's display handle (@username → first/last name), for the inbox/task label. */
@@ -216,6 +224,7 @@ export function parseTelegramUpdate(update: any, botId: string, botUsername: str
     // a distinct conversation, so keying on it there would fragment continuity.
     messageThreadId: m.is_topic_message ? String(m.message_thread_id || '') : '',
     messageId: String(m.message_id || ''),
+    replyToId: replyToBot ? String(m.reply_to_message?.message_id || '') : '',
     user: String(from.id || ''),
     username: String(from.username || [from.first_name, from.last_name].filter(Boolean).join(' ') || ''),
     text,
