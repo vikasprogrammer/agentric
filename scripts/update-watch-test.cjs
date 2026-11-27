@@ -73,42 +73,35 @@ const status = (over = {}) => ({
   console.log('\n\x1b[1m1) default mode is notify — silence was the failure, so the safe half is on\x1b[0m');
   check('a fresh workspace watches in notify mode', aos.settings.updateWatch().mode === 'notify', JSON.stringify(aos.settings.updateWatch()));
 
-  console.log('\n\x1b[1m2) behind → exactly one owner-addressed card + a DM\x1b[0m');
+  console.log('\n\x1b[1m2) behind in notify mode → recorded, but NO Inbox card and NO DM (it was noise)\x1b[0m');
+  // A leftover "Update available" card from an older build must be retired, not left in the Inbox.
+  tm.postSystemCard({ topic: 'update', type: 'notification', title: 'Update available — v1.0.9', body: 'old', audience: { kind: 'approvers', level: 'owner' }, args: { kind: 'available', head: 'old0000' }, notify: false });
   STATUS = status();
   const r1 = await watch().run();
-  check('reports it notified', r1.action === 'notified', JSON.stringify(r1));
-  check('one card posted', openCards().length === 1, JSON.stringify(openCards().map((c) => c.title)));
-  const c1 = openCards()[0];
-  check('...as a plain notification (nothing to approve in notify mode)', c1.type === 'notification' && !c1.approval_id);
-  check('...addressed to owners, not to a session', c1.audience_kind === 'approvers' && c1.audience_id === 'owner', `${c1.audience_kind}/${c1.audience_id}`);
-  check('...naming the version it would move to', c1.title.includes('1.1.0'));
-  check('...carrying the changelog preview', c1.body.includes('feat: a thing'));
-  check('a DM went out — the whole point on a headless box', dms.length === 1 && dms[0].kind === 'system.update', JSON.stringify(dms[0] && dms[0].kind));
-  const inbox = tm.listMessages(owner).filter((m) => m.sessionId === 'system:update');
-  check('it reaches the OWNER inbox — a session-less card routed purely by audience', inbox.length === 1, JSON.stringify(inbox.map((m) => m.title)));
-  const admin = { id: 'm_admin', email: 'admin@x.io', name: 'Admin', role: 'admin', status: 'active', createdAt: Date.now() };
-  check('...and an admin sees it too (oversight), but only the owner can approve it', tm.listMessages(admin, 'all').some((m) => m.sessionId === 'system:update'));
+  check('reports available', r1.action === 'available', JSON.stringify(r1));
+  check('no open card', openCards().length === 0, JSON.stringify(openCards().map((c) => c.title)));
+  check('...and the leftover card from an older build was retired', cards().some((c) => c.args.head === 'old0000' && c.status === 'cancelled'));
+  check('no DM went out', dms.length === 0, JSON.stringify(dms.map((d) => d.title)));
+  const owner0 = tm.listMessages(owner).filter((m) => m.sessionId === 'system:update' && (m.status === 'open' || m.status === 'pending'));
+  check('nothing open in the owner Inbox', owner0.length === 0);
   check('audited update.available', auditTypes().includes('update.available'));
 
-  console.log('\n\x1b[1m3) the same upstream commit never cards twice\x1b[0m');
+  console.log('\n\x1b[1m3) the same upstream commit is recorded once\x1b[0m');
   const r2 = await watch().run();
   check('a second tick on the same head is a duplicate', r2.action === 'duplicate', JSON.stringify(r2));
-  check('...and posts nothing new', openCards().length === 1);
-  check('...and sends no second DM', dms.length === 1);
+  check('...audited only once', auditTypes().filter((t) => t === 'update.available').length === 1);
 
-  console.log('\n\x1b[1m4) origin moves on → supersede, do not stack\x1b[0m');
+  console.log('\n\x1b[1m4) origin moves on → recorded again, still silent\x1b[0m');
   STATUS = status({ head: 'bbbb222', latest: '1.2.0', behind: 5 });
   const r3 = await watch().run();
-  check('a new head cards again', r3.action === 'notified', JSON.stringify(r3));
-  check('still exactly one OPEN card', openCards().length === 1, JSON.stringify(openCards().map((c) => c.title)));
-  check('...the new one', openCards()[0].args.head === 'bbbb222');
-  check('...and the old one was retired, not deleted', cards().filter((c) => c.args.head === 'aaaa111' && c.status === 'cancelled').length === 1);
+  check('a new head is recorded', r3.action === 'available', JSON.stringify(r3));
+  check('...still no card, no DM', openCards().length === 0 && dms.length === 0);
 
-  console.log('\n\x1b[1m5) up to date → the stale card is retired\x1b[0m');
+  console.log('\n\x1b[1m5) up to date\x1b[0m');
   STATUS = status({ updateAvailable: false, behind: 0, current: '1.2.0', latest: '1.2.0' });
   const r4 = await watch().run();
   check('reports up-to-date', r4.action === 'up-to-date', JSON.stringify(r4));
-  check('no open card is left asking for an update that landed', openCards().length === 0);
+  check('no open card', openCards().length === 0);
 
   console.log('\n\x1b[1m6) a dirty tree BLOCKS — and says so, naming the files\x1b[0m');
   STATUS = status({ head: 'cccc333', dirty: true, dirtyFiles: ['web/src/Xterm.tsx', 'src/server.ts'] });

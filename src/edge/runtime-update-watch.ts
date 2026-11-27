@@ -65,7 +65,7 @@ export type RuntimeWatchAction =
   | 'not-installed'   // no claude on the box — a different problem, and Settings → System already says so
   | 'error'           // registry/probe failed — reported, not swallowed
   | 'duplicate'       // already carded this exact version
-  | 'notified'
+  | 'available'       // behind → recorded; shown in Settings → System only (no card, no DM)
   | 'requested'
   | 'denied'          // policy refuses the upgrade lane; notified instead
   | 'applying';
@@ -94,6 +94,14 @@ export class RuntimeUpdateWatch {
       .prepare(`SELECT args FROM messages WHERE session_id = ? AND status IN ('open','pending')`)
       .all<{ args: string | null }>(`system:${TOPIC}`)
       .map((r) => { try { return String((JSON.parse(r.args || '{}') as { latest?: unknown }).latest ?? ''); } catch { return ''; } });
+  }
+
+  /** The CLI version the last `runtime.update.available` was recorded for — notify mode's dedupe. */
+  private lastAvailableVersion(): string {
+    const row = this.os.db
+      .prepare(`SELECT data FROM audit_events WHERE run_id = ? AND type = 'runtime.update.available' ORDER BY id DESC LIMIT 1`)
+      .get<{ data: string }>(`system:${TOPIC}`);
+    try { return String((JSON.parse(row?.data || '{}') as { latest?: unknown }).latest ?? ''); } catch { return ''; }
   }
 
   /** One line naming what a human is being asked to vouch for, in the specific rather than the abstract. */
@@ -140,20 +148,18 @@ export class RuntimeUpdateWatch {
       return { ...base, ...facts, action: 'up-to-date' };
     }
     if (this.openHeads().includes(latest)) return { ...base, ...facts, action: 'duplicate' };
+    if (cfg.mode === 'notify' && this.lastAvailableVersion() === latest) return { ...base, ...facts, action: 'duplicate' };
 
     const summary = `The \`${BIN}\` CLI on this box is **v${installed}**; the registry has **v${latest}**.`;
 
     if (cfg.mode === 'notify') {
-      const id = this.tm.postSystemCard({
-        topic: TOPIC, type: 'notification',
-        title: `Agent runtime update available — claude v${latest}`,
-        body: `${summary}${this.gateNote(latest)}\n\nUpgrade it from Settings → System → Dependencies.`,
-        audience: AUDIENCE,
-        args: { kind: 'available', latest, installed },
-      });
-      this.tm.closeSystemCards(TOPIC, 'cancelled', id);
+      // Informational only — Settings → System → Dependencies already flags the stale CLI. An Inbox card
+      // + DM per CLI release was noise (v0.487.2); the gate-risk note rides the ask-mode approval, which
+      // is where a human actually vouches for the new version. Retire any card an older build left.
+      const closed = this.tm.closeSystemCards(TOPIC, 'cancelled');
+      if (closed) this.audit('runtime.notice.retired', { ...facts, closed });
       this.audit('runtime.update.available', facts);
-      return { ...base, ...facts, action: 'notified' };
+      return { ...base, ...facts, action: 'available' };
     }
 
     // ── ask mode ────────────────────────────────────────────────────────────────────────────────────
