@@ -15,7 +15,7 @@ Two modes close that, and they are deliberately different asks:
 | mode | what it does | who it is for |
 |---|---|---|
 | `off` | nothing | a box someone else deploys on a schedule |
-| **`notify`** (default) | periodic check → Inbox card + DM to the owner when behind. Applies nothing. | every box; this is the drift alarm |
+| **`notify`** (default) | periodic check → recorded (`update.available`) and shown in the console's update banner / Settings → Updates. **No Inbox card, no DM** (v0.487.2 — a card + chat ping per release was noise). Applies nothing. | every box |
 | `ask` | additionally raises an **owner approval**; approving it pulls, rebuilds and restarts that box | remote boxes you would otherwise ssh into |
 
 Configured per box in **Settings → System → Software**, owner-only (`POST /api/update/watch`).
@@ -104,7 +104,7 @@ The mechanism was already complete — `checkDepUpdates()` asks the npm registry
 `updateNpmDep('claude')` upgrades in place — and, exactly as above, nothing ever asked on a timer. A box
 pinned to a months-old runtime reports a green "all dependencies installed" and looks healthy.
 
-Same three modes (`off` / **`notify`**, default, every 12h / `ask`), a **separate** setting, and one
+Same three modes (`off` / **`notify`**, default, every 12h — recorded + flagged in Settings → System, no card or DM / `ask`), a **separate** setting, and one
 important difference in posture.
 
 ## Why it is not the OS watcher pointed at npm

@@ -9,8 +9,11 @@
  *
  * This adds the two missing halves, as two modes:
  *
- *   • **notify** (default) — a periodic check that posts an Inbox card and DMs the owner when the box
- *     falls behind. Pure signal; applies nothing. This is the half that ends the silent-drift class.
+ *   • **notify** (default) — a periodic check that records (audits) that the box is behind; the console's
+ *     update banner and Settings → Updates show it. Applies nothing, and deliberately posts NO Inbox card
+ *     and NO chat DM: a card + Discord/Slack ping for every release was pure noise (v0.487.2). Cards are
+ *     reserved for what needs a human — an approval (ask mode), a dirty tree blocking the update, a
+ *     failed or half-applied update.
  *   • **ask** — additionally raises an OWNER approval. Approving it applies the update on the box
  *     itself, so one tap from a phone replaces an ssh session. The approval IS the human's choice of
  *     moment, which is why this tier needs no quiet-window logic of its own.
@@ -70,7 +73,7 @@ export type UpdateWatchAction =
   | 'error'          // the git fetch/compare failed — reported, not swallowed
   | 'duplicate'      // already carded this exact upstream commit
   | 'blocked'        // behind, but a dirty tree means an ff-only apply can't run
-  | 'notified'       // behind → card + DM posted
+  | 'available'      // behind → recorded; shown in the console only (no card, no DM)
   | 'requested'      // behind → owner approval raised (ask mode)
   | 'denied'         // behind → policy refuses the apply lane; notified instead
   | 'applying';      // an apply from a previous approval is still running
@@ -108,6 +111,15 @@ export class UpdateWatch {
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate a corrupt payload */ }
         return { id: r.id, head: String(a.head ?? ''), kind: String(a.kind ?? '') };
       });
+  }
+
+  /** The upstream head the last `update.available` was recorded for — notify mode's dedupe, now that
+   *  it posts no card to dedupe against. */
+  private lastAvailableHead(): string {
+    const row = this.os.db
+      .prepare(`SELECT data FROM audit_events WHERE run_id = ? AND type = 'update.available' ORDER BY id DESC LIMIT 1`)
+      .get<{ data: string }>(`system:${TOPIC}`);
+    try { return String((JSON.parse(row?.data || '{}') as { head?: unknown }).head ?? ''); } catch { return ''; }
   }
 
   /**
@@ -148,6 +160,9 @@ export class UpdateWatch {
     // or behind-count is what keeps a fast-moving dev box from re-carding on every tick.)
     const open = this.openCards();
     if (open.some((c) => c.head === status.head)) return { ...base, ...facts, action: 'duplicate' };
+    if (cfg.mode === 'notify' && !status.dirty && this.lastAvailableHead() === status.head) {
+      return { ...base, ...facts, action: 'duplicate' };
+    }
 
     // A dirty tree can't take an ff-only pull, so there is nothing to approve — but silence here is the
     // failure mode that let a box hand-patched weeks ago quietly stop updating altogether. Card it.
@@ -171,16 +186,13 @@ export class UpdateWatch {
       (status.log.length ? `\n\n${status.log.slice(0, 8).map((l) => `• ${l}`).join('\n')}` : '');
 
     if (cfg.mode === 'notify') {
-      const id = this.tm.postSystemCard({
-        topic: TOPIC, type: 'notification',
-        title: `Update available — v${status.latest}`,
-        body: `${summary}\n\nApply it from Settings → Updates, or run the deploy script.`,
-        audience: AUDIENCE,
-        args: { kind: 'available', head: status.head, latest: status.latest, behind: status.behind },
-      });
-      this.tm.closeSystemCards(TOPIC, 'cancelled', id);
+      // Informational only. "A newer build exists" is not something a human must act on, and the
+      // console's update banner already says it whenever anyone looks — so no Inbox card and no DM.
+      // Retire any card an older build left behind (an "Update available" notice, a stale blocked one).
+      const closed = this.tm.closeSystemCards(TOPIC, 'cancelled');
+      if (closed) this.audit('update.notice.retired', { closed, version: status.current });
       this.audit('update.available', facts);
-      return { ...base, ...facts, action: 'notified' };
+      return { ...base, ...facts, action: 'available' };
     }
 
     // ── ask mode: raise an owner approval whose resolution applies the update ────────────────────────

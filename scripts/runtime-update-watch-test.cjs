@@ -71,31 +71,25 @@ const dep = (over = {}) => ({ bin: 'claude', label: 'Claude Code', purpose: '', 
   check('...separately from the OS watcher, so a box can pin its runtime and still update itself',
     aos.settings.updateWatch().mode === 'notify' && cfg.everyHours !== aos.settings.updateWatch().everyHours, JSON.stringify([cfg, aos.settings.updateWatch()]));
 
-  console.log('\n\x1b[1m2) a stale CLI cards, and the card names the governance risk\x1b[0m');
+  console.log('\n\x1b[1m2) a stale CLI in notify mode is recorded — no card, no DM\x1b[0m');
+  tm.postSystemCard({ topic: 'runtime-update', type: 'notification', title: 'Agent runtime update available — claude v2.1.210', body: 'old', audience: { kind: 'approvers', level: 'owner' }, args: { kind: 'available', latest: '2.1.210' }, notify: false });
   DEP = dep();
   const r1 = await watch().run();
-  check('reports notified', r1.action === 'notified', JSON.stringify(r1));
-  check('one card', open().length === 1);
-  const c1 = open()[0];
-  check('...naming both versions', c1.body.includes('2.1.200') && c1.body.includes('2.1.230'));
-  check('...warning that a new CLI can add ungoverned tools', /ungoverned/.test(c1.body), c1.body.slice(0, 80));
-  check('...citing the real precedent rather than an abstraction', c1.body.includes('2.1.224'));
-  check('...saying nothing has been signed off yet on a fresh box', /No version has been signed off/.test(c1.body));
-  check('...and that running sessions keep their CLI', /NEXT session/.test(c1.body));
-  check('a DM went out', dms.length === 1 && dms[0].kind === 'system.update');
+  check('reports available', r1.action === 'available', JSON.stringify(r1));
+  check('no open card', open().length === 0, JSON.stringify(open().map((c) => c.title)));
+  check('...and an older build\'s leftover card was retired', cards().some((c) => c.args.latest === '2.1.210' && c.status === 'cancelled'));
+  check('no DM went out', dms.length === 0);
   check('audited runtime.update.available', audits().includes('runtime.update.available'));
 
-  console.log('\n\x1b[1m3) dedupe per version; a newer one supersedes\x1b[0m');
-  check('the same latest does not card twice', (await watch().run()).action === 'duplicate');
+  console.log('\n\x1b[1m3) dedupe per version\x1b[0m');
+  check('the same latest is a duplicate', (await watch().run()).action === 'duplicate');
   DEP = dep({ latest: '2.1.240' });
-  await watch().run();
-  check('a newer version cards again', open().length === 1 && open()[0].args.latest === '2.1.240', JSON.stringify(open().map((c) => c.args.latest)));
-  check('...retiring the old card rather than stacking', cards().filter((c) => c.args.latest === '2.1.230' && c.status === 'cancelled').length === 1);
+  check('a newer version is recorded again', (await watch().run()).action === 'available');
+  check('...still silent', open().length === 0 && dms.length === 0);
 
   console.log('\n\x1b[1m4) up to date / not installed\x1b[0m');
   DEP = dep({ updateAvailable: false, version: '2.1.240', latest: '2.1.240' });
   check('reports up-to-date', (await watch().run()).action === 'up-to-date');
-  check('...and retires the stale card', open().length === 0);
   DEP = dep({ installed: false, version: undefined });
   check('a missing CLI is left to Settings → System, not double-reported', (await watch().run()).action === 'not-installed');
   check('...and posts nothing', open().length === 0);
@@ -109,6 +103,12 @@ const dep = (over = {}) => ({ bin: 'claude', label: 'Claude Code', purpose: '', 
   check('one approval pending for runtime.update', ap.length === 1 && ap[0].attempt.capabilityId === 'runtime.update');
   check('...at OWNER level', ap[0].level === 'owner', ap[0].level);
   check('...bound to an approval card', open()[0].type === 'approval' && open()[0].approval_id === ap[0].id);
+  check('...naming both versions', open()[0].body.includes('2.1.200') && open()[0].body.includes('2.1.250'));
+  check('...warning that a new CLI can add ungoverned tools', /ungoverned/.test(open()[0].body));
+  check('...citing the real precedent', open()[0].body.includes('2.1.224'));
+  check('...saying nothing has been signed off yet on a fresh box', /No version has been signed off/.test(open()[0].body));
+  check('...and that running sessions keep their CLI', /NEXT session/.test(open()[0].body));
+  check('the approval DMs the owner — it needs a decision', dms.length === 1 && dms[0].kind === 'system.update');
   check('nothing upgraded yet', upgrades.length === 0);
   check('nothing signed off yet', aos.settings.gateReviewedRuntimeVersion() === '');
 
@@ -123,9 +123,12 @@ const dep = (over = {}) => ({ bin: 'claude', label: 'Claude Code', purpose: '', 
 
   console.log('\n\x1b[1m6) the next card reports the signed-off version, not a standing warning\x1b[0m');
   DEP = dep({ version: '2.1.251', latest: '2.1.260' });
-  __resetRuntimeWatch(); setMode('notify');
+  __resetRuntimeWatch(); setMode('ask');
   await watch().run();
-  check('the card says what was last signed off', open()[0].body.includes('last signed off against **v2.1.251**'), open()[0].body.slice(0, 200));
+  const ap6 = open().find((c) => c.type === 'approval');
+  check('the approval card says what was last signed off', !!ap6 && ap6.body.includes('last signed off against **v2.1.251**'), ap6 && ap6.body.slice(0, 200));
+  aos.approvals.resolve(aos.approvals.pending(TENANT)[0].id, false, owner.email);
+  await new Promise((r) => setTimeout(r, 40));
 
   console.log('\n\x1b[1m7) the ROUTES — a manual console upgrade stamps the same version\x1b[0m');
   aos.settings.setGateReviewedRuntimeVersion('0.0.0', 'test');

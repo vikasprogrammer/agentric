@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.487.2] - 2026-11-27
+### Fixed
+- **"Update available" no longer lands in the Inbox or pings Discord/Slack.** In the default `notify`
+  mode the self-update watcher (and its runtime-CLI sibling) posted an owner card plus a chat DM for every
+  new release — pure noise, since nothing needs doing and the console's update banner already says it.
+  `notify` now only records `update.available` / `runtime.update.available` (deduped per head/version) and
+  retires any such card an older build left behind. Cards + DMs remain for what needs a human: the
+  ask-mode approval, an update blocked by a dirty tree, and a failed or half-applied update. The setting
+  is relabelled "Show in console" / "Show here".
+  **For admins:** update notices now show only in the console's update banner — no more Inbox cards or
+  Discord/Slack DMs for each new version. [Open Updates](#/settings/updates)
+
 ## [0.487.1] - 2026-11-27
 ### Fixed
 - **Re-pointing a task proposal in the Inbox no longer accepts it in the same click.** Picking a different

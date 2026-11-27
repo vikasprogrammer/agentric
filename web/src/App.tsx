@@ -19001,7 +19001,7 @@ function RuntimeWatchControl({ me, watch, reviewed }: { me: Member; watch?: Upda
 
   const OPTIONS: Array<{ mode: UpdateWatchMode; label: string; hint: string }> = [
     { mode: 'off', label: 'Off', hint: 'Never mention it.' },
-    { mode: 'notify', label: 'Tell me', hint: 'Inbox card + DM when the runtime CLI falls behind. Upgrades nothing.' },
+    { mode: 'notify', label: 'Show here', hint: 'Flagged on this page when the runtime CLI falls behind. No Inbox card or DM; upgrades nothing.' },
     { mode: 'ask', label: 'Ask to upgrade', hint: 'Also raises an approval — approving upgrades the CLI and records that version as reviewed.' },
   ]
 
@@ -19045,8 +19045,8 @@ function RuntimeWatchControl({ me, watch, reviewed }: { me: Member; watch?: Upda
 const RUNTIME_OUTCOME: Record<string, string> = {
   'up-to-date': 'The agent runtime is current.',
   'not-installed': 'No claude CLI on this box — see the rows above.',
-  notified: 'The runtime is behind — posted a card and DM\'d the owner.',
-  duplicate: 'The runtime is behind — already carded this version.',
+  available: 'The runtime is behind — upgrade it from the rows above.',
+  duplicate: 'The runtime is behind — already recorded this version.',
   requested: 'The runtime is behind — raised an approval to upgrade it.',
   denied: 'The runtime is behind — policy denies the upgrade, so it only notified.',
   applying: 'An upgrade is already running.',
@@ -19084,7 +19084,7 @@ function UpdateWatchControl({ me, watch }: { me: Member; watch?: UpdateWatchConf
 
   const OPTIONS: Array<{ mode: UpdateWatchMode; label: string; hint: string }> = [
     { mode: 'off', label: 'Off', hint: 'Never mention it.' },
-    { mode: 'notify', label: 'Tell me', hint: 'Inbox card + DM when this box falls behind. Applies nothing.' },
+    { mode: 'notify', label: 'Show in console', hint: 'The console\'s update banner shows when this box falls behind. No Inbox card or DM; applies nothing.' },
     { mode: 'ask', label: 'Ask to update', hint: 'Also raises an approval — approving it updates and restarts this box.' },
   ]
 
@@ -19123,8 +19123,8 @@ function UpdateWatchControl({ me, watch }: { me: Member; watch?: UpdateWatchConf
 /** What one watch pass did, in words — the "Check now" button's feedback. */
 const OUTCOME: Record<string, string> = {
   'up-to-date': 'This box is up to date.',
-  notified: 'Behind origin — posted a card and DM\'d the owner.',
-  duplicate: 'Behind origin — already carded this update.',
+  available: 'Behind origin — apply it from the panel above.',
+  duplicate: 'Behind origin — already recorded this update.',
   blocked: 'Behind origin, but uncommitted changes block the update — carded.',
   requested: 'Behind origin — raised an approval to update this box.',
   denied: 'Behind origin — policy denies self-update, so it only notified.',
