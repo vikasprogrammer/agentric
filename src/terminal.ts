@@ -136,6 +136,14 @@ const STALE_PROMPT_MAX_MS = 3 * 24 * 60 * 60_000; // ignore anything pending lon
  * within a working day; past that a fresh DM means a fresh request and belongs to the router.
  */
 const SESSION_DM_WINDOW_MS = 24 * 60 * 60_000;
+/** What a DM we sent was about — recorded per message in `dm_refs` (see {@link TerminalManager.noteDm}). */
+export interface DmRef {
+  kind: 'approval' | 'question' | 'task' | 'session' | 'notice';
+  /** The approval / question / task id. */
+  id?: string;
+  /** The run behind it, when there is one. */
+  sessionId?: string;
+}
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
@@ -7567,18 +7575,20 @@ export class TerminalManager {
    * makes the answer reach the agent — an auto-dispatch task is re-dispatched by the very next tick with
    * the comment in its prompt.
    */
-  unblockTaskFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, reply: string):
+  unblockTaskFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, reply: string, only?: string):
     { taskId: string; title: string; assignee?: string; by: string } | null {
     const body = (reply || '').trim();
     if (!body || !externalId) return null;
+    // `only` pins the match to the ONE task whose DM was replied to (see dmReplyTarget) instead of the
+    // newest blocked task we pinged this person about.
     const row = this.db
       .prepare(
         `SELECT td.task_id AS tid
            FROM task_dms td JOIN tasks t ON t.id = td.task_id
-          WHERE td.provider = ? AND td.external_id = ? AND t.status = 'blocked'
+          WHERE td.provider = ? AND td.external_id = ? AND t.status = 'blocked' AND (? = '' OR td.task_id = ?)
           ORDER BY td.created_at DESC LIMIT 1`,
       )
-      .get<{ tid: string }>(provider, externalId);
+      .get<{ tid: string }>(provider, externalId, only ?? '', only ?? '');
     if (!row) return null;
     // Defense in depth: the binding proves we DM'd them, not that they are still on the team.
     const member = this.os.team.memberByExternalId(provider, externalId);
@@ -8303,17 +8313,18 @@ export class TerminalManager {
    * answered question's agent on success, or `null` when nothing pending is bound to this sender (so the
    * caller falls through to the normal chat router — a DM that isn't answering a question is just a chat).
    */
-  answerQuestionFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, answer: string): { agent: string } | null {
+  answerQuestionFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, answer: string, only?: string): { agent: string } | null {
     const body = (answer || '').trim();
     if (!body || !externalId) return null;
+    // `only` pins the match to the ONE question whose DM was replied to (see dmReplyTarget).
     const row = this.db
       .prepare(
         `SELECT qd.question_id AS qid, q.agent AS agent
            FROM question_dms qd JOIN questions q ON q.id = qd.question_id
-          WHERE qd.provider = ? AND qd.external_id = ? AND q.status = 'pending'
+          WHERE qd.provider = ? AND qd.external_id = ? AND q.status = 'pending' AND (? = '' OR qd.question_id = ?)
           ORDER BY qd.created_at DESC LIMIT 1`,
       )
-      .get<{ qid: string; agent: string }>(provider, externalId);
+      .get<{ qid: string; agent: string }>(provider, externalId, only ?? '', only ?? '');
     if (!row) return null;
     // A reply that just PICKS one of the offered choices ("2") is expanded to that option's text before it
     // reaches the agent — the DM numbers them, so the number has to mean something on the way back.
@@ -8365,7 +8376,7 @@ export class TerminalManager {
    *  - `{ status:'forbidden' }` — bound, but the sender can no longer approve this level (role changed).
    *  - `{ status:'decided', … }` — the gate was settled; `approved` + `capability` for the ack.
    */
-  decideApprovalFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string):
+  decideApprovalFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string, only?: string):
     | { status: 'decided'; approved: boolean; capability: string }
     | { status: 'unclear' }
     | { status: 'forbidden' }
@@ -8375,10 +8386,10 @@ export class TerminalManager {
       .prepare(
         `SELECT ad.approval_id AS aid, a.run_id AS runId, a.capability AS capability, a.level AS level
            FROM approval_dms ad JOIN approvals a ON a.id = ad.approval_id
-          WHERE ad.provider = ? AND ad.external_id = ? AND a.status = 'pending'
+          WHERE ad.provider = ? AND ad.external_id = ? AND a.status = 'pending' AND (? = '' OR ad.approval_id = ?)
           ORDER BY ad.created_at DESC LIMIT 1`,
       )
-      .get<{ aid: string; runId: string; capability: string; level: ApprovalLevel }>(provider, externalId);
+      .get<{ aid: string; runId: string; capability: string; level: ApprovalLevel }>(provider, externalId, only ?? '', only ?? '');
     if (!row) return null;
     // A pending approval is bound to this sender — read their reply as a decision.
     const intent = parseApprovalIntent(text);
@@ -8436,6 +8447,76 @@ export class TerminalManager {
       .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null; spawnedBy: string | null }>(
         provider, externalId, now - SESSION_DM_WINDOW_MS,
       );
+    if (!row) return undefined;
+    const member = this.os.team.memberByExternalId(provider, externalId);
+    if (!member || !this.canViewRow(row.spawnedBy, row.runAs, member)) return undefined;
+    return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
+
+  /**
+   * Record a DM we just posted together with what it was ABOUT, so a reply that references it (Discord's
+   * reply arrow) is routed to that exact approval / question / task / run rather than to whatever we
+   * pinged the person about most recently. Best-effort: never break a notification over the index.
+   */
+  noteDm(provider: 'slack' | 'discord' | 'telegram', messageId: string, externalId: string, ref: DmRef = { kind: 'notice' }): void {
+    if (!messageId || !externalId) return;
+    try {
+      this.db
+        .prepare('INSERT OR REPLACE INTO dm_refs (provider, message_id, external_id, kind, ref_id, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(provider, messageId, externalId, ref.kind, ref.id ?? '', ref.sessionId ?? null, Date.now());
+    } catch { /* best-effort */ }
+  }
+
+  /**
+   * What the DM message `messageId` was about, for a reply from `externalId` — the reply-reference twin of
+   * the recipient-keyed lookups above, and the only one that can tell two agents' notifications apart.
+   * Two sources, in order: `dm_refs` (every notification the OS DMs) and, on Discord, the agent's own
+   * voice (`discord_bot_messages` — a `discord_reply`/mirror posted into the DM), which is a run.
+   * `agent` is who to stay with when the precise target is no longer actionable (the question was already
+   * answered, the run is past resuming): the conversation still belongs to that agent, never to another
+   * one that happens to have pinged more recently. Undefined → an unknown message (pre-dating the index,
+   * or not ours) → the caller keeps the old recipient-keyed behaviour.
+   */
+  dmReplyTarget(provider: 'slack' | 'discord' | 'telegram', externalId: string, channel: string, messageId: string):
+    { kind: DmRef['kind']; id?: string; sessionId?: string; agent?: string } | undefined {
+    if (!externalId || !messageId) return undefined;
+    const row = this.db
+      .prepare('SELECT kind, ref_id AS refId, session_id AS sessionId FROM dm_refs WHERE provider = ? AND message_id = ? AND external_id = ?')
+      .get<{ kind: DmRef['kind']; refId: string | null; sessionId: string | null }>(provider, messageId, externalId);
+    const agentOf = (sid?: string | null) => sid
+      ? this.db.prepare('SELECT agent FROM term_sessions WHERE id = ?').get<{ agent: string }>(sid)?.agent
+      : undefined;
+    if (row) {
+      let agent = agentOf(row.sessionId);
+      if (!agent && row.kind === 'task' && row.refId) {
+        const who = this.os.tasks.get(row.refId)?.assignee;
+        if (who?.startsWith('agent:')) agent = who.slice('agent:'.length);
+      }
+      return { kind: row.kind, id: row.refId || undefined, sessionId: row.sessionId ?? undefined, agent };
+    }
+    if (provider === 'discord') {
+      const s = this.sessionForDiscordMessage(channel, messageId);
+      if (s) return { kind: 'session', sessionId: s.sessionId, agent: s.agent };
+    }
+    return undefined;
+  }
+
+  /**
+   * The session a DM reply to a SPECIFIC message continues — {@link sessionForDm} without the two things
+   * that only exist because that lookup has to guess: the newest-binding order and the staleness window.
+   * The human pointed at the message, so the run it was about is the target however old it is. The
+   * resumability + visibility guards stay: an explicit reply still must not revive a blank transcript or
+   * reach a run the sender can no longer see.
+   */
+  sessionForDmReply(provider: 'slack' | 'discord' | 'telegram', externalId: string, sessionId: string):
+    { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    if (!externalId || !sessionId) return undefined;
+    const row = this.db
+      .prepare(
+        `SELECT id, agent, run_as AS runAs, claude_session_id AS claudeSessionId, spawned_by AS spawnedBy
+           FROM term_sessions WHERE id = ? AND archived_at IS NULL AND claude_session_id IS NOT NULL`,
+      )
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null; spawnedBy: string | null }>(sessionId);
     if (!row) return undefined;
     const member = this.os.team.memberByExternalId(provider, externalId);
     if (!member || !this.canViewRow(row.spawnedBy, row.runAs, member)) return undefined;

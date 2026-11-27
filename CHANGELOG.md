@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.487.3] - 2026-11-27
+### Fixed
+- **Discord: a reply to a notification reaches the agent that sent it.** Every DM lane — approval,
+  question, blocked task, run notice — matched an inbound DM on the SENDER alone ("the newest thing we
+  pinged you about") and the lanes were tried in a fixed order. With two agents pinging one person that
+  misrouted two ways: a reply to the first agent's notice was delivered to the second because it pinged
+  later, and a reply to a "run finished" notice was swallowed as the answer to an unrelated pending
+  question (or met "reply approve or deny") because those lanes run first. Each DM the bot sends is now
+  recorded with what it was about (`dm_refs`), and a reply made with Discord's reply arrow
+  (`message_reference`) runs ONLY that lane, pinned to that approval / question / task / run — ignoring
+  the 24h staleness window, since the human pointed at the message. A reply to a settled approval or
+  answered question talks to the run behind it; when that run is past resuming the request starts fresh
+  with the SAME agent rather than the router's pick; a reply to an agent-less notice (insight alert,
+  overdue task) goes to the router and touches no pending decision. The bot's own "Sent to X" ack, an
+  agent's `discord_dm`, and anything an agent said in the DM are reply targets too. A plain DM with no
+  reply reference keeps the old newest-first behaviour, and Slack/Telegram are unchanged. Pinned by
+  `scripts/dm-reply-target-test.cjs`.
+  **For users:** In Discord, use Reply on the specific notification you are answering — your message now
+  goes to the agent that sent that notification, even if another agent has pinged you since.
+
 ## [0.487.2] - 2026-11-27
 ### Fixed
 - **"Update available" no longer lands in the Inbox or pings Discord/Slack.** In the default `notify`

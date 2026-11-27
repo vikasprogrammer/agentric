@@ -15,7 +15,7 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager, ApprovalNotice, QuestionNotice, QuestionAnswerNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice, renderOptions } from './terminal';
+import { TerminalManager, DmRef, ApprovalNotice, QuestionNotice, QuestionAnswerNotice, MemberNotice, SessionEventNotice, TransferNotice, ReviewNotice, renderOptions } from './terminal';
 import { Automations } from './edge/automations';
 import { WAKE_KIND_ANSWER, WAKE_KIND_DONE } from './edge/wakeups';
 import { AppSupervisor } from './edge/app-supervisor';
@@ -452,7 +452,7 @@ export class TenantRegistry {
  * with no per-notifier threading to forget. A member's Telegram DM only lands if they've started a chat
  * with the bot, so a failure here is normal and silent, exactly like an unreachable Discord DM.
  */
-async function deliverDM(slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, os: AgentOS, recipients: Member[], text: string | ((platform: ChatPlatform) => string)): Promise<number> {
+async function deliverDM(slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, os: AgentOS, recipients: Member[], text: string | ((platform: ChatPlatform) => string), ref?: DmRef): Promise<number> {
   // `text` may be a per-platform builder so a message can carry a masked deep-link, whose syntax differs
   // between Slack mrkdwn (`<url|label>`) and Discord markdown (`[label](url)`). A plain string is sent as-is.
   const render = (platform: ChatPlatform) => (typeof text === 'function' ? text(platform) : text);
@@ -474,7 +474,9 @@ async function deliverDM(slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, 
       }
     }
     if (slackId && (await slack.dmUser(slackId, render('slack'))).ok) dms++;
-    if (discordId && (await discord.dmUser(discordId, render('discord'))).ok) dms++;
+    // `ref` = what this DM is about, recorded against the posted message so a REPLY to it reaches that
+    // exact approval/question/task/run (Discord only: the one platform whose reply carries a reference we read).
+    if (discordId && (await discord.dmUser(discordId, render('discord'), ref)).ok) dms++;
     // A private chat's id IS the user id, so the identity-map handle doubles as the DM target. No-ops
     // when Telegram isn't configured (`telegramBotToken()` empty → `sendMessage` returns an error).
     const telegramId = ids.find((i) => i.provider === 'telegram')?.externalId;
@@ -540,7 +542,7 @@ export async function notifyApprovers(os: AgentOS, tm: Pick<TerminalManager, 'bi
     `${dot} ${notice.riskClass.toUpperCase()} approval — ${notice.agent}: ${notice.headline || `\`${notice.capability}\``}` +
     `\n\`${notice.capability}\` (${notice.level})${notice.reason ? ` — ${notice.reason}` : ''}` +
     `\n*Reply "approve" or "deny"* to decide, or open the ${chatLink(p, inbox, 'Agentric Inbox')}.`;
-  const dms = await deliverDM(slack, discord, os, approvers, text);
+  const dms = await deliverDM(slack, discord, os, approvers, text, { kind: 'approval', id: notice.approvalId, sessionId: notice.sessionId });
   // Bind the approval to each approver's DM channel so they can resolve it by REPLYING "approve"/"deny"
   // to the DM — the reply is matched back to this approval on inbound (TerminalManager.decideApprovalFromChat).
   // AFTER `deliverDM`, deliberately: that's where a member with no linked Slack handle gets auto-linked
@@ -569,7 +571,7 @@ export async function notifyQuestionAsked(os: AgentOS, tm: Pick<TerminalManager,
     `❓ Agent ${notice.agent} is waiting on your answer:\n${notice.prompt}` +
     (choices ? `\n\n${choices}` : '') +
     `\n\n*Reply to this message to answer*${choices ? ' — just the number is enough' : ''}, or open the ${chatLink(p, inbox, 'Agentric Inbox')}.`;
-  const dms = await deliverDM(slack, discord, os, targets, text);
+  const dms = await deliverDM(slack, discord, os, targets, text, { kind: 'question', id: notice.questionId, sessionId: notice.sessionId });
   // Bind the question to each recipient's DM channel so they can answer by REPLYING to the DM (the reply
   // is matched back to this question on inbound — see TerminalManager.answerQuestionFromChat). AFTER
   // `deliverDM` for the auto-link reason described in {@link notifyApprovers}.
@@ -719,7 +721,7 @@ export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'po
     (isAsk
       ? `\n\n*Reply to this message to unblock it* — ${choices ? 'just the number, or your own words' : 'your reply'} is filed as a comment and the task goes back on the board. Or open it in the ${chatLink(p, url, 'Agentric console')}.`
       : `\nOpen it in the ${chatLink(p, url, 'Agentric console')}.`);
-  const dms = await deliverDM(slack, discord, os, recipients, text);
+  const dms = await deliverDM(slack, discord, os, recipients, text, { kind: 'task', id: t.id });
   // Bind the task to each recipient's DM so their reply UNBLOCKS it (see TerminalManager.unblockTaskFromChat).
   // Only for a human-blocked task: that is the one case where a reply has an unambiguous meaning. AFTER
   // `deliverDM`, for the same auto-link reason as the question/approval binds.
@@ -887,7 +889,7 @@ export async function notifyMember(os: AgentOS, tm: Pick<TerminalManager, 'bindS
   if (!targets.length) return;
   const bell = notice.important ? '❗' : '📨';
   const text = `${bell} Message from agent ${notice.agent}:\n${notice.message}\n_Reply here to answer ${notice.agent}_, or open the Agentric console → Inbox.`;
-  const dms = await deliverDM(slack, discord, os, targets, text);
+  const dms = await deliverDM(slack, discord, os, targets, text, { kind: 'session', sessionId: notice.sessionId });
   // Bind the run to this DM so a reply reaches the AGENT rather than the router (see
   // Automations.continueSessionDm) — the reason the message above can promise "reply here".
   bindDmRecipients(os, targets, (provider, externalId, memberId) => tm.bindSessionDm(notice.sessionId, provider, externalId, memberId));
@@ -959,7 +961,7 @@ export async function notifySessionEvent(os: AgentOS, tm: Pick<TerminalManager, 
   const icon = notice.kind === 'waiting' ? '🔔' : notice.kind === 'crashed' ? '💥' : notice.kind === 'started' ? '🚀' : '✅';
   const url = consolePage(consoleOrigin, 'sessions');
   const text = (p: ChatPlatform) => `${icon} ${notice.title}\n${notice.message}\n_Reply here to pick it back up with ${notice.agent}_, or open it in the ${chatLink(p, url, 'Agentric console')}.`;
-  const dms = await deliverDM(slack, discord, os, targets, text);
+  const dms = await deliverDM(slack, discord, os, targets, text, { kind: 'session', sessionId: notice.sessionId });
   // Bind the run to this DM so a reply resumes THAT conversation — "it crashed" / "it finished" is exactly
   // the moment a human wants to say "retry it" or "now do the other half" (see Automations.continueSessionDm).
   bindDmRecipients(os, targets, (provider, externalId, memberId) => tm.bindSessionDm(notice.sessionId, provider, externalId, memberId));
@@ -981,7 +983,7 @@ export async function notifySessionTransferred(os: AgentOS, tm: Pick<TerminalMan
   const url = consolePage(consoleOrigin, 'sessions', notice.sessionId);
   const text = (p: ChatPlatform) => `🤝 ${notice.byName} handed you ${what} — you're now the owner.
 _Reply here to pick it up with ${notice.agent}_, or open it in the ${chatLink(p, url, 'Agentric console')}.`;
-  const dms = await deliverDM(slack, discord, os, targets, text);
+  const dms = await deliverDM(slack, discord, os, targets, text, { kind: 'session', sessionId: notice.sessionId });
   bindDmRecipients(os, targets, (provider, externalId, memberId) => tm.bindSessionDm(notice.sessionId, provider, externalId, memberId));
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'session.transfer.notified', data: { to: notice.to, agent: notice.agent, dms } });
 }

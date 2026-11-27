@@ -87,6 +87,33 @@ that motivated the `/agentric` command does not exist here. The shared aliases a
 platforms route through the same front door: `@support-ops …`, `support-ops: …` and a bare
 `support-ops …` all reach the agent, guarded on the first token being a real agent id.
 
+## DM replies: which notification is being answered
+
+Notifications arrive as DMs (approvals, `ask` questions, blocked tasks, an agent's `notify`, "your run
+finished / crashed"). Four recipient-keyed bindings (`approval_dms`, `question_dms`, `task_dms`,
+`session_dms`) let a plain reply act on "the newest pending thing we pinged you about", tried in that
+order. That key cannot tell two agents apart: with both pinging one person, a reply to the first went to
+the second, and a reply to a run notice was taken as the answer to an unrelated pending question.
+
+So every DM the bot posts is also recorded per MESSAGE in **`dm_refs`** (`kind` = approval / question /
+task / session / notice, plus the id and the run behind it). When an inbound DM carries
+`message_reference.message_id`, `dmReplyTarget` resolves it and the socket runs **only that lane, pinned
+to that target**:
+
+| The replied-to DM was… | The reply… |
+|---|---|
+| a pending approval | decides THAT approval (`approve` / `deny`) |
+| a pending question | answers THAT question |
+| a blocked-task notice | unblocks THAT task |
+| a run notice, the "Sent to X" ack, an agent's `discord_dm`, or something an agent said in the DM | continues THAT run — no 24h staleness window |
+| an approval/question already settled | continues the run behind it |
+| any of the above with nothing resumable | starts fresh with the SAME agent (`fallbackAgent`) |
+| an agent-less notice (insight alert, overdue task) | goes to the router; touches no pending decision |
+
+The reference only counts for the person the DM was sent to. A plain DM (no reply arrow), or a reply to a
+message older than the index, keeps the recipient-keyed newest-first behaviour. Slack and Telegram do not
+record message ids yet and are unchanged. Pinned by `scripts/dm-reply-target-test.cjs`.
+
 ## Egress
 
 | Tool | Exposed when | Does |
