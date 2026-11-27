@@ -2368,7 +2368,7 @@ export const api = {
   commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
   dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string; /** refused: this session is already working the task */ live?: boolean }>('POST', `/api/tasks/${id}/dispatch`),
   /** Accept (→ todo) or dismiss (→ cancelled) agent-proposed tasks: by `ids`, or every task on one Inbox card (`messageId`). */
-  decideTaskProposals: (b: { ids?: string[]; messageId?: string; action: 'accept' | 'dismiss' | 'assign'; assignee?: string | null; run?: boolean }) => call<{ ok: boolean; decided?: string[]; denied?: number; dispatched?: Array<{ id: string; sessionId?: string; error?: string }>; error?: string }>('POST', '/api/tasks/proposals/decide', b),
+  decideTaskProposals: (b: { ids?: string[]; messageId?: string; action: 'accept' | 'dismiss' | 'assign'; assignee?: string | null; run?: boolean }) => call<{ ok: boolean; decided?: string[]; reassigned?: string[]; denied?: number; dispatched?: Array<{ id: string; sessionId?: string; error?: string }>; error?: string }>('POST', '/api/tasks/proposals/decide', b),
   /** What agents put in the commits + PRs they author: the Agentric session link + the runtime's own AI
    *  trailer (`session-link`, default), or nothing (`none`). Owner/admin to change. */
   commitAttribution: () => call<{ mode: 'session-link' | 'none'; error?: string }>('GET', '/api/settings/commit-attribution'),

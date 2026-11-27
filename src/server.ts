@@ -5028,9 +5028,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       ? (tm.taskProposalCardTasks(b.messageId) ?? [])
       : Array.isArray(b.ids) ? b.ids.map(String) : [];
     if (!ids.length) return sendJson(res, 400, { error: 'no tasks named' });
-    // The reviewer can re-point a proposal at the right person/agent from the card itself. Picking someone
-    // (`assign`) IS accepting it — the same rule as assigning on the board: choosing who works it is the
-    // reviewer saying it is work. Only `null` (clearing the pick) leaves it proposed.
+    // The reviewer can re-point a proposal at the right person/agent from the card itself. `assign` ONLY
+    // re-points: the task stays proposed and the card stays up, so the reviewer can still Accept or
+    // Accept & run with the new pick (v0.488.0 — it used to accept in the same click, which made the card
+    // vanish before "Accept & run" could be pressed). The board's task panel keeps assign-accepts.
     const hasAssignee = 'assignee' in b;
     const assignee = hasAssignee ? (typeof b.assignee === 'string' && b.assignee ? b.assignee : null) : undefined;
     if (action === 'assign' && !hasAssignee) return sendJson(res, 400, { error: 'assign needs an assignee (or null to clear it)' });
@@ -5042,25 +5043,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // and only by someone allowed to run that agent — the same gate as the board's Run button.
     const run = action === 'accept' && b.run === true;
     const decided: string[] = [];
+    const reassigned: string[] = [];
     const dispatched: Array<{ id: string; sessionId?: string; error?: string }> = [];
     let denied = 0;
     for (const id of ids) {
       const t = os.tasks.get(id);
       if (!t || t.status !== 'proposed') continue;
       if (!mayDecideProposal(me, t)) { denied++; continue; }
-      if (action === 'assign' && assignee) {
-        // One edit, so the new assignee gets one "assigned" notice for accepted work, not two.
-        if (!os.tasks.update(id, { assignee, status: 'todo', note: 'accepted onto the board', by: me.id })) continue;
-        if ((t.assignee ?? null) !== assignee) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.proposal.reassigned', data: { id, from: t.assignee ?? null, to: assignee } });
-        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.proposal.accepted', data: { id, title: t.title, by: t.createdBy, via: 'assign' } });
-        decided.push(id);
-        continue;
-      }
       if (hasAssignee && (t.assignee ?? null) !== assignee) {
         os.tasks.update(id, { assignee, by: me.id });
         os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.proposal.reassigned', data: { id, from: t.assignee ?? null, to: assignee } });
       }
-      if (action === 'assign') { decided.push(id); continue; }
+      if (action === 'assign') { reassigned.push(id); continue; } // still proposed — not a decision
       const now = os.tasks.get(id);
       const target = now?.assignee ?? now?.suggestedAssignee ?? ''; // accepting adopts the agent's suggestion
       const agentId = target.startsWith('agent:') ? target.slice('agent:'.length) : '';
@@ -5074,9 +5068,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         dispatched.push(r.ok ? { id, sessionId: r.sessionId } : { id, error: r.reason });
       }
     }
-    if (!decided.length && denied) return sendJson(res, 403, { error: 'only the person this run acted for, or an owner/admin, can decide these proposals' });
+    if (!decided.length && !reassigned.length && denied) return sendJson(res, 403, { error: 'only the person this run acted for, or an owner/admin, can decide these proposals' });
     const failed = dispatched.find((d) => d.error);
-    return sendJson(res, 200, { ok: true, decided, denied, ...(run ? { dispatched } : {}), ...(failed ? { error: failed.error } : {}) });
+    return sendJson(res, 200, { ok: true, decided, ...(action === 'assign' ? { reassigned } : {}), denied, ...(run ? { dispatched } : {}), ...(failed ? { error: failed.error } : {}) });
   }
   if (method === 'POST' && p === '/api/tasks') {
     const b = await readBody(req);
