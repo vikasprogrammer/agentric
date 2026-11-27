@@ -1214,7 +1214,8 @@ const TOOLS = [
         priority: { type: 'number', minimum: 0, maximum: 3, description: '0 urgent … 3 low (default 2).' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Optional freeform labels.' },
         parentId: { type: 'string', description: 'Parent task id, to file this as a sub-task.' },
-        goalId: { type: 'string', description: 'Link this task to a strategic goal it advances (see goal_list for ids). Its progress then counts toward that goal.' },
+        goalId: { type: 'string', description: 'Link this task to a strategic goal it advances (see goal_list for ids). Its progress then counts toward that goal. Omit it when you are working FOR a goal already (a goal-room run, a task or automation that belongs to one) — the task inherits that goal.' },
+        betId: { type: 'string', description: 'Link this task to a bet it is work for (see bet_list). Sets the goal to the bet\'s goal.' },
         goal: { type: 'string', description: 'Single-line definition of done. On a headless dispatch the worker runs under it as a `/goal` and converges until it holds. Alias of `criteria`.' },
         criteria: { type: 'string', description: 'Single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". Synonym of `goal`.' },
         poke_on_done: { type: 'boolean', description: 'Wake me when it finishes, without polling. ON by default when you delegate to another agent. Asymmetric on purpose: a hand-back or a dead delegate wakes you even if you have exited; a plain completion does not — read the task later, or use `wait`. Ignored when you assign to yourself.' },
@@ -1305,6 +1306,7 @@ const TOOLS = [
         priority: { type: 'number', minimum: 0, maximum: 3, description: '0 urgent … 3 low.' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Replace the label set.' },
         goalId: { type: 'string', description: 'Link this task to a strategic goal (or null to unlink).' },
+        betId: { type: 'string', description: 'Link this task to a bet (sets its goal to the bet\'s), or null to unlink.' },
         criteria: { type: 'string', description: 'Set the single-line acceptance condition for `/goal` convergence on dispatch (or null to clear).' },
         dependsOn: { type: 'array', items: { type: 'string' }, description: 'Replace the set of task ids this task is blocked by (won\'t dispatch until they finish); [] clears them.' },
         due: { type: 'string', description: 'Set a soft deadline as an ISO date (e.g. "2026-07-15"), or "" / null to clear it.' },
@@ -3017,6 +3019,7 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
       parentId: args.parentId !== undefined ? String(args.parentId) : undefined,
       goalId: args.goalId !== undefined ? String(args.goalId) : undefined,
+      betId: typeof args.betId === 'string' && args.betId ? args.betId : undefined,
       // `goal` is the ergonomic alias for `criteria` (the /goal convergence condition); either sets it.
       criteria: args.criteria !== undefined ? String(args.criteria) : (args.goal !== undefined ? String(args.goal) : undefined),
       dependsOn: Array.isArray(args.dependsOn) ? args.dependsOn.map(String) : undefined,
@@ -3191,6 +3194,9 @@ async function betList(args: Record<string, unknown>): Promise<string> {
       + `  hypothesis: ${b.hypothesis || '(none)'}\n`
       + `  window ${b.windowDays}d, judge on ${judge}; baseline ${b.baseline ?? 0}, expected ${b.expectedLift ?? '(none)'}\n`
       + `  assets ${assets.length} (${measured.length} measured, total ${+total.toFixed(2)})`
+      + (b.tasks && Number((b.tasks as { total?: number }).total) > 0
+        ? `; tasks ${(b.tasks as { done: number }).done}/${(b.tasks as { total: number }).total} done (file more with task_create({ betId: "${b.id}" }))`
+        : ['proposed', 'waiting', 'running'].includes(String(b.state)) ? `; no tasks yet — file the work with task_create({ betId: "${b.id}" })` : '')
       + `${b.verdict ? `\n  verdict: ${b.verdict} — ${b.verdictNote ?? ''}` : ''}`
       + `${b.lesson ? `\n  lesson: ${b.lesson}` : ''}`
       + `${assets.length ? `\n  ${assets.map((a) => `${a.url} → ${a.value ?? 'unmeasured'}${a.indexed === false ? ' (not indexed)' : ''}`).join('\n  ')}` : ''}`;
@@ -3812,6 +3818,7 @@ async function taskUpdate(args: Record<string, unknown>): Promise<string> {
       priority: typeof args.priority === 'number' ? args.priority : undefined,
       labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
       goalId: args.goalId === null ? null : (args.goalId !== undefined ? String(args.goalId) : undefined),
+      betId: args.betId === null ? null : (typeof args.betId === 'string' && args.betId ? args.betId : undefined),
       criteria: args.criteria === null ? null : (args.criteria !== undefined ? String(args.criteria) : undefined),
       dependsOn: Array.isArray(args.dependsOn) ? args.dependsOn.map(String) : undefined,
       dueAt: parseDue(args.due),

@@ -883,6 +883,48 @@ quick filter opens on **Open** (14 days of done used to outnumber the open work)
 **Blocked** (it was the global blocked count, not you), and the proposals strip shows 5 with "Show all"
 plus **Accept & run** when an agent would work it.
 
+## 8d. Goals as the spine — Goal → Bet → Task (v0.489.0)
+
+A goal says where to get to, a bet is one attempt at its number, a task is the work. Until now only the
+first link was real: `tasks.goal_id` existed, `tasks.bet_id` was a column nothing read or wrote, and
+agents almost never set `goalId` themselves — on globex over 60 days, **44 of 1,981** agent-filed tasks
+carried a goal. Goal progress therefore counted only what a strategist planned from the goal room.
+
+**Measured before building.** The plan said "inherit goalId down the delegation chain". The data said that
+alone would move almost nothing: of the 365 tasks filed from a dispatched task's run, only 10 came from a
+task that had a goal (and those already inherited it via `parentId`). The unlinked work came from member
+chat runs (31%), automations (20%, mostly a support-ticket webhook and daily sweeps) and runs since purged.
+So the change is one resolver over every source the server already knows, plus a way to say an
+automation serves a goal — and deliberately **no guessing** for the rest.
+
+| Source of the filing run | Goal it inherits |
+|---|---|
+| explicit `goalId` / `betId` on `task_create` | that (a bet sets the goal to its own) |
+| `parentId` given | the parent's goal **and bet** (store-level, more specific than the run) |
+| `goal:<id>` (goal room / plan run) | that goal |
+| `task:<id>` (dispatched for a task) | that task's goal and bet |
+| `automation:<id>` | the automation's new **Works toward goal** (`automations.goal_id`) |
+| `bet:<id>` | the bet and its goal |
+| `poke:<source>` (caller resumed with a delegate's result) | the delegate source's context |
+| a member's own chat run, or an automation with no goal | **nothing** — operational/unclassified work stays unlinked |
+
+`src/edge/work-context.ts` (`workContextFor`) is the one place this lives; `/api/tasks/create` calls it.
+The task's `link` event names where an inherited goal came from (`goal:<id> (from task:<id>)`), so an
+inherited link is never a mystery. Not inferring a goal from a title is the point: a mislinked task
+inflates a goal's progress with work that doesn't serve it; an unlinked one is merely honest.
+
+**Bet ↔ task.** `tasks.bet_id` is now wired end to end (store, both task routes, `task_create`/`task_update`
+`betId`, console). A bet belongs to one goal, so the bet decides it: linking a bet sets the task's goal to
+the bet's, moving the goal elsewhere drops the bet, unlinking the goal unlinks both, and an unknown bet id
+is dropped rather than stored dangling. Still inert as before — a bet never spawns anything.
+
+**Console.** The task panel gets a **Bet** picker under Goal (the goal's live bets) and the "Part of goal"
+card names the bet. The goal room's Tasks tab groups work under each bet ("Not under a bet" last) once any
+bet has work; bet cards say "n of m tasks done"; `bet_list` tells the agent the same and how to file
+more. Automations get **Works toward goal** in the form and a goal label on the card.
+
+Pinned by `scripts/goal-spine-test.cjs`.
+
 ## 9. Future (not v1)
 
 > **Update (2026-07-09, v0.60.0): board UX + due dates shipped.** The "Richer board" and part of

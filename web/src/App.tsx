@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
-import { Inbox as InboxIcon, MessagesSquare, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer } from 'lucide-react'
+import { Inbox as InboxIcon, MessagesSquare, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer, ListTodo } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
 import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, CircleDashed, Ban, Pause, Copy as CopyIcon } from 'lucide-react'
 import { ArchiveRestore, UserCheck, GitPullRequest, GitPullRequestClosed, GitMerge, Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
@@ -10736,7 +10736,7 @@ function GoalChart({ metric, readings, bets }: { metric: GoalMetric; readings: G
  *  is the decision and the lesson, and a terminal state without a lesson is refused server-side, so the
  *  error that comes back is shown verbatim rather than guessed at here. */
 function BetsBoard({ goalId, metric, readings, onCount }: { goalId: string; metric?: GoalMetric; readings?: GoalReading[]; onCount?: (n: number) => void }) {
-  const [bets, setBets] = useState<(Bet & { assets: BetAsset[] })[]>([])
+  const [bets, setBets] = useState<(Bet & { assets: BetAsset[]; tasks?: { total: number; done: number; open: number } })[]>([])
   const [counts, setCounts] = useState<Record<string, number>>({})
   const [canEdit, setCanEdit] = useState(false)
   const [loaded, setLoaded] = useState(false)
@@ -10786,7 +10786,7 @@ function BetsBoard({ goalId, metric, readings, onCount }: { goalId: string; metr
     return measured.reduce((s, a) => s + (a.value as number), 0) - (b.baseline ?? 0)
   }
 
-  const card = (b: Bet & { assets: BetAsset[] }) => {
+  const card = (b: Bet & { assets: BetAsset[]; tasks?: { total: number; done: number; open: number } }) => {
     const lift = liftOf(b)
     const v = b.verdict ? BET_VERDICT[b.verdict] : null
     const elapsed = b.startedAt ? Math.max(1, Math.min(b.windowDays, Math.ceil((Date.now() - b.startedAt) / 86_400_000))) : null
@@ -10829,6 +10829,15 @@ function BetsBoard({ goalId, metric, readings, onCount }: { goalId: string; metr
           {b.expectedLift != null && <span className="text-[10px] text-muted-foreground">of {signed(b.expectedLift)} predicted</span>}
           {b.observedLift != null && <span className="text-[10px] text-muted-foreground">· judged at {signed(b.observedLift)}</span>}
         </div>
+
+        {/* Goal → Bet → Task: the work filed for this bet. Tasks are the effort, assets the evidence — a bet
+            with tasks done and no assets shipped has nothing to be judged on yet. */}
+        {b.tasks && b.tasks.total > 0 && (
+          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <ListTodo className="h-3 w-3 shrink-0" />
+            <span className="tabular-nums">{b.tasks.done} of {b.tasks.total} task{b.tasks.total === 1 ? '' : 's'} done{b.tasks.open ? ` · ${b.tasks.open} open` : ''}</span>
+          </div>
+        )}
 
         {/* The assets are the evidence, so they are links, not a count — and an unmeasured or unindexed one
             says so in words instead of showing a zero somebody would read as a result. */}
@@ -11146,6 +11155,15 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
   // goals list), not always the list.
   const closeGoal = () => { setEditing(false); backTo('goals').go() }
   const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[]; tasks: Task[]; runs: Record<string, TaskRunState>; progress?: GoalProgress; chat?: GoalChatState | null; metricStatus?: GoalMetricStatus | null; readings?: GoalReading[] } | null>(null)
+  // The open goal's bets, to title the room's task groups (Goal → Bet → Task). Refetched with the goal.
+  const [roomBets, setRoomBets] = useState<Bet[]>([])
+  const roomGoalId = detail?.goal.id
+  useEffect(() => {
+    if (!roomGoalId) { setRoomBets([]); return }
+    let live = true
+    api.bets(roomGoalId).then((r) => { if (live) setRoomBets(r.bets ?? []) }).catch(() => {})
+    return () => { live = false }
+  }, [roomGoalId])
   // Elapsed clocks on live runs tick locally — the detail poll below only moves server truth.
   const [now, setNow] = useState(Date.now())
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
@@ -11513,7 +11531,34 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
             No tasks linked yet — set this goal on a task to ground work under it.
           </div>
         )}
-        {detail.tasks.map((t) => {
+        {(() => {
+          // Goal → Bet → Task: when any of this goal's work points at a bet, group it under that bet so the
+          // room reads as "these attempts, and the work behind each". Work under no bet keeps its own group.
+          // No bets in play → the flat list exactly as before.
+          const betIds = [...new Set(detail.tasks.map((t) => t.betId).filter(Boolean) as string[])]
+          if (!betIds.length) return detail.tasks.map(taskRow)
+          const order = [...betIds.sort((a, b) => (roomBets.find((x) => x.id === a)?.title ?? a).localeCompare(roomBets.find((x) => x.id === b)?.title ?? b)), '']
+          return order.map((bid) => {
+            const items = detail.tasks.filter((t) => (t.betId ?? '') === bid)
+            if (!items.length) return null
+            const bet = bid ? roomBets.find((x) => x.id === bid) : undefined
+            return (
+              <div key={bid || 'none'} className="space-y-1.5">
+                <div className="flex items-center gap-1.5 pt-1 text-[11px] font-medium text-muted-foreground">
+                  {bid ? <><Target className="h-3 w-3" />Bet: <span className="truncate text-foreground">{bet?.title ?? bid}</span>{bet && <span className="font-normal capitalize">· {bet.state}</span>}</> : 'Not under a bet'}
+                  <span className="font-normal">· {items.filter((t) => t.status === 'done').length}/{items.length} done</span>
+                </div>
+                {items.map(taskRow)}
+              </div>
+            )
+          })
+        })()}
+      </div>
+    </div>
+  )
+
+  const taskRow = (t: Task) => {
+          if (!detail) return null
           // Dependency gating — resolve each blocker from this goal's own tasks (no extra fetch).
           // A dep is *unmet* only if its blocker is present here AND not yet done/cancelled.
           const unmet = (t.dependsOn ?? []).filter((id) => { const b = detail.tasks.find((x) => x.id === id); return b && b.status !== 'done' && b.status !== 'cancelled' }).length
@@ -11559,10 +11604,7 @@ function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; na
               </div>
             </div>
           )
-        })}
-      </div>
-    </div>
-  )
+  }
 
   /** Activity tab — the goal's timeline (its own events MERGED with the milestones of the work under it,
    *  server-derived) plus the comment box that writes to it. A `task` entry names the task, what it did and
@@ -12259,6 +12301,16 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
   // that goal, not to the board you were never on. Falls back to the board for a deep link (no trail).
   const closeTask = () => { setEditing(false); backTo('tasks').go() }
   const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; children: TaskChild[]; runs: TaskRun[]; prs: TaskPr[]; discussion: TaskTimelineEntry[]; unread: number; choices: { id: string; agentId: string; message: string }[] } | null>(null)
+  // The open task's goal's bets — the Bet picker under Goal (Goal → Bet → Task). Fetched per goal, only
+  // while a task with a goal is open; a goal with no bets hides the picker unless the task already has one.
+  const [goalBets, setGoalBets] = useState<Bet[]>([])
+  const detailGoalId = detail?.task.goalId
+  useEffect(() => {
+    if (!detailGoalId) { setGoalBets([]); return }
+    let live = true
+    api.bets(detailGoalId).then((r) => { if (live) setGoalBets(r.bets ?? []) }).catch(() => { if (live) setGoalBets([]) })
+    return () => { live = false }
+  }, [detailGoalId])
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // Which run from the task's history the room's Session tab is showing ('' = the live/last one).
@@ -12684,7 +12736,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
     )
   }
   const restore = async (id: string) => { setBusy(true); const r = await api.restoreTask(id); if (r.error) alert(r.error); await load(); setBusy(false) }
-  const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); const r = await api.patchTask(id, b); if (r.error) alert(r.error); await load(); if (b.goalId !== undefined || b.status || b.assignee) await loadGoals(); setBusy(false) }
+  const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); const r = await api.patchTask(id, b); if (r.error) alert(r.error); await load(); if (b.goalId !== undefined || b.betId !== undefined || b.status || b.assignee) await loadGoals(); setBusy(false) }
   // Dispatch a task. A HEADLESS run is background work — it drives itself to completion and exits — so
   // opening the terminal on it yanks you out of the board you were working to watch a pane you can't
   // usefully drive; the card's own live tape (and the run history) is how you follow it. An INTERACTIVE
@@ -12895,6 +12947,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
                   {g && g.status !== 'active' && <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px] capitalize">{g.status}</Badge>}
                 </div>
                 <GoalProgressBar p={goalProgress[gid]} className="mt-1" />
+                {detail.task.betId && (() => {
+                  const bet = goalBets.find((x) => x.id === detail.task.betId)
+                  return <div className="mt-1 truncate text-xs text-muted-foreground">Bet: <span className="text-foreground">{bet?.title ?? detail.task.betId}</span>{bet && <span className="capitalize"> · {bet.state}</span>}</div>
+                })()}
               </div>
               <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
             </a>
@@ -12962,6 +13018,17 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo, sessionActions }: 
               </SelectContent>
             </Select>
           </Field>
+          {(goalBets.length > 0 || detail.task.betId) && (
+            <Field label="Bet">
+              <Select value={detail.task.betId || 'none'} onValueChange={(v) => patch(detail.task.id, { betId: !v || v === 'none' ? null : v })}>
+                <SelectTrigger className="h-8 w-full min-w-0"><SelectValue>{(v) => !v || v === 'none' ? '— none —' : (goalBets.find((x) => x.id === v)?.title ?? (v as string))}</SelectValue></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— none —</SelectItem>
+                  {goalBets.filter((x) => !['kept', 'expanded', 'killed'].includes(x.state) || x.id === detail.task.betId).map((x) => <SelectItem key={x.id} value={x.id}><span className="truncate">{x.title}</span><span className="ml-1.5 text-[10px] capitalize text-muted-foreground">{x.state}</span></SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
           <Field label="Criteria">
             <Input
               value={detail.task.criteria ?? ''}
@@ -14662,6 +14729,10 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
   const [runAs, setRunAs] = useState('') // member id the fired session acts as ('' = company identity)
   // Where results post in Messages: '' = nowhere, `dm:<member id>`, or `room:<room id>`.
   const [postTo, setPostTo] = useState('')
+  // The goal this automation's runs work for — tasks they file inherit it (Goal → Bet → Task). '' = none.
+  const [autoGoal, setAutoGoal] = useState('')
+  const [autoGoals, setAutoGoals] = useState<Goal[]>([])
+  useEffect(() => { api.goals().then((r) => setAutoGoals(r.goals ?? [])).catch(() => {}) }, [])
   const [postThread, setPostThread] = useState(false)
   const [postRooms, setPostRooms] = useState<{ id: string; label: string }[]>([])
   const [members, setMembers] = useState<Member[]>([])
@@ -14683,7 +14754,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
   // form into view when it opens (or when switching which automation is being edited) so it isn't missed.
   useEffect(() => { if (showForm) formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, [showForm, editId])
 
-  const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setRunAs(''); setPostTo(''); setPostThread(false); setThreadPath(''); setSigningSecret(''); setEditSigned(false); setEditId(null) }
+  const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setRunAs(''); setPostTo(''); setAutoGoal(''); setPostThread(false); setThreadPath(''); setSigningSecret(''); setEditSigned(false); setEditId(null) }
   const startCreate = () => { resetForm(); setShowForm(true); setHint('') }
   const startEdit = (a: Automation) => {
     if (a.type === 'once') return // one-shot deferred runs aren't editable from the console
@@ -14694,6 +14765,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
     setMode(a.mode)
     setFilter(a.filter ?? '')
     setRunAs(a.runAs ?? '')
+    setAutoGoal(a.goalId ?? '')
     setPostTo(a.postTo ? (a.postTo.kind === 'dm' ? `dm:${a.postTo.member}` : `room:${a.postTo.room}`) : '')
     setPostThread(!!a.postTo?.thread)
     // A room the editor isn't in still has to be selectable, or saving would silently drop it.
@@ -14725,10 +14797,10 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
     setHint('')
     if (editId) {
       // agentId + type are immutable on edit; everything else is patchable. filter only for event triggers.
-      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs, postTo: postToReq(), ...webhookPatch() })
+      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs, postTo: postToReq(), goalId: autoGoal || null, ...webhookPatch() })
       if (r.error) return setHint('⚠ ' + r.error)
     } else {
-      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs: runAs || undefined, postTo: postToReq(), ...webhookPatch() })
+      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs: runAs || undefined, postTo: postToReq(), goalId: autoGoal || undefined, ...webhookPatch() })
       if (r.error) return setHint('⚠ ' + r.error)
     }
     closeForm()
@@ -14979,6 +15051,15 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                     </label>
                   )}
                 </Field>
+                <Field label="Works toward goal" help="Tasks this automation's runs file land under this goal (and count toward its progress) without the agent naming it. Leave it on none for operational work that serves no goal.">
+                  <Select items={{ __none: 'No goal', ...Object.fromEntries(autoGoals.map((g) => [g.id, g.title])) }} value={autoGoal || '__none'} onValueChange={(v) => setAutoGoal(v && v !== '__none' ? v : '')}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none">No goal</SelectItem>
+                      {autoGoals.filter((g) => g.status === 'active' || g.id === autoGoal).map((g) => <SelectItem key={g.id} value={g.id}>{g.title}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </Field>
               </div>
               <Field label="Task">
                 <Textarea value={task} onChange={(e) => setTask(e.target.value)} className="min-h-[64px]" placeholder="What should the agent do each time this fires? (Webhook payloads are appended automatically.)" />
@@ -15031,6 +15112,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
                     {a.postToLabel && <><span className="inline-flex items-center gap-1" title="Each run's results post to this Messages conversation"><MessagesSquare className="h-3 w-3" />{a.postToLabel}</span><span className="text-muted-foreground/40">·</span></>}
+                    {a.goalId && <><a href={navHref('goals', a.goalId)} className="inline-flex max-w-[16rem] items-center gap-1 text-muted-foreground no-underline hover:text-foreground hover:underline" title="Tasks its runs file land under this goal"><Target className="h-3 w-3 shrink-0" /><span className="truncate">{autoGoals.find((g) => g.id === a.goalId)?.title ?? 'goal'}</span></a><span className="text-muted-foreground/40">·</span></>}
                     {a.nextRunAt ? (
                       <span className="inline-flex items-center gap-1 text-emerald-600" title={serverTz ? `${fmtInServerTz(a.nextRunAt, serverTz)} (${serverTz})` : new Date(a.nextRunAt).toLocaleString()}>
                         <Clock className="h-3 w-3" />next in {timeUntil(a.nextRunAt)}

@@ -222,6 +222,9 @@ export interface Automation {
   /** Where each run's results post in Messages (a DM, a room, or a thread in one) — the run is told, a
    *  bare `message_send` lands there, and the `report` summary is posted for it if it says nothing. */
   postTo?: PostTo;
+  /** The goal this automation's runs work for — every task a run files inherits it (§8d). Unset =
+   *  operational work that serves no goal. */
+  goalId?: string;
   enabled: boolean;
   createdBy?: string;
   createdAt: number;
@@ -250,6 +253,7 @@ interface AutomationRow {
   signing_secret: string | null;
   thread_path: string | null;
   post_to: string | null;
+  goal_id?: string | null;
 }
 
 function toAutomation(r: AutomationRow): Automation {
@@ -274,6 +278,7 @@ function toAutomation(r: AutomationRow): Automation {
     signingSecret: r.signing_secret ?? undefined,
     threadPath: r.thread_path ?? undefined,
     postTo: parsePostTo(r.post_to),
+    ...(r.goal_id ? { goalId: r.goal_id } : {}),
   };
 }
 
@@ -297,6 +302,8 @@ export interface AddAutomationInput {
   threadPath?: string;
   /** Already checked by `DirectMessages.checkDest`. */
   postTo?: PostTo;
+  /** The goal its runs work for (validated by the caller). */
+  goalId?: string;
   task: string;
   createdBy?: string;
   /** Member id the fired session should act as — so a cron/webhook/etc. spawn binds THAT member's
@@ -645,10 +652,11 @@ export class Automations {
       signingSecret: input.type === 'webhook' ? (input.signingSecret?.trim() || undefined) : undefined,
       threadPath: input.type === 'webhook' ? (input.threadPath?.trim() || undefined) : undefined,
       postTo: input.postTo,
+      ...(input.goalId ? { goalId: input.goalId } : {}),
     };
     this.db
-      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_as, signing_secret, thread_path, post_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(a.id, a.agentId, a.name, a.type, a.mode, a.schedule ?? null, a.secret ?? null, a.filter ?? null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAs ?? null, a.signingSecret ?? null, a.threadPath ?? null, a.postTo ? JSON.stringify(a.postTo) : null);
+      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_as, signing_secret, thread_path, post_to, goal_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(a.id, a.agentId, a.name, a.type, a.mode, a.schedule ?? null, a.secret ?? null, a.filter ?? null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAs ?? null, a.signingSecret ?? null, a.threadPath ?? null, a.postTo ? JSON.stringify(a.postTo) : null, a.goalId ?? null);
     return a;
   }
 
@@ -731,7 +739,7 @@ export class Automations {
     return { ok: false, reason: r.queued ? `queued: ${r.reason}` : r.reason };
   }
 
-  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean; runAs?: string | null; signingSecret?: string | null; threadPath?: string | null; postTo?: PostTo | null }): Automation | undefined {
+  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean; runAs?: string | null; signingSecret?: string | null; threadPath?: string | null; postTo?: PostTo | null; goalId?: string | null }): Automation | undefined {
     const a = this.get(id);
     if (!a) return undefined;
     if (patch.schedule !== undefined && a.type === 'cron') parseCron(patch.schedule);
@@ -770,7 +778,7 @@ export class Automations {
       nextPostTo = { ...nextPostTo, threadSeq: a.postTo.threadSeq };
     }
     this.db
-      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, filter = ?, task = ?, enabled = ?, run_as = ?, signing_secret = ?, thread_path = ?, post_to = ? WHERE id = ?')
+      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, filter = ?, task = ?, enabled = ?, run_as = ?, signing_secret = ?, thread_path = ?, post_to = ?, goal_id = ? WHERE id = ?')
       .run(
         patch.name?.trim() || a.name,
         patch.mode ?? a.mode,
@@ -782,6 +790,7 @@ export class Automations {
         nextSigning,
         nextThreadPath,
         nextPostTo ? JSON.stringify(nextPostTo) : null,
+        patch.goalId === undefined ? (a.goalId ?? null) : (patch.goalId || null),
         id,
       );
     return this.get(id);

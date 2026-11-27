@@ -887,6 +887,7 @@ export interface Task {
   effort?: Effort; // override the assignee agent's reasoning effort for the dispatched session
   autoDispatch: boolean;
   goalId?: string; // the strategic Goal this task advances (Slice 2 linkage)
+  betId?: string; // the Bet (one falsifiable attempt at the goal's number) this task is work for; implies goalId
   criteria?: string; // single-line acceptance condition; drives a headless run under a `/goal` on dispatch
   dependsOn?: string[]; // task ids this task is blocked by — it won't dispatch until they're done/cancelled
   callerAgent?: string; // 'agent:<id>' that delegated this task and wants a poke-back on completion
@@ -1055,6 +1056,8 @@ export interface TaskCreateInput {
   effort?: Effort; // override the dispatched session's reasoning effort
   autoDispatch?: boolean;
   goalId?: string; // link to a strategic Goal (Slice 2)
+  betId?: string; // link to a Bet — its goal wins over `goalId` (a task can't serve a bet on another goal)
+  linkedVia?: string; // where an INHERITED goal came from ('task:<id>' | 'goal room' | 'automation:<id>') — logged on the link event
   criteria?: string; // single-line acceptance condition → `/goal` convergence on a headless dispatch
   dependsOn?: string[]; // task ids this task is blocked by (won't dispatch until they finish)
   callerAgent?: string; // 'agent:<id>' delegating this task — poked back on completion (poke-on-done)
@@ -1093,6 +1096,7 @@ export interface TaskUpdateInput {
   labels?: string[];
   mode?: 'headless' | 'interactive';
   goalId?: string | null; // link/unlink (null) the strategic Goal
+  betId?: string | null; // link/unlink (null) a Bet; linking one also sets goalId to the bet's goal
   criteria?: string | null; // set/clear (null) the acceptance condition
   dependsOn?: string[]; // replace the dependency set (task ids this task is blocked by); [] clears it
   dueAt?: number | null; // epoch ms soft deadline; null clears it
