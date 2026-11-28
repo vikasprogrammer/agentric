@@ -8,6 +8,33 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.490.0] - 2026-11-28
+### Added
+- **Antigravity (`agy`) as a fourth governed runtime.** Pick it per agent like Codex or opencode; install it
+  from Settings → Runtime → Runtimes. agy's PreToolUse hook is real but speaks its own wire, so
+  `terminal/antigravity-gate-hook.sh` translates it into the shared `gate-hook.sh` (one gate
+  implementation) and DENIES any agy tool it doesn't recognise. Routing goes by argument shape first
+  (`CommandLine`, `ServerName`, a write path) so a renamed tool can't slip through, and agy's own
+  scheduler, swarm, script runner, persistent subagents and `ask_question` are refused with the governed
+  alternative. The hook and a one-entry MCP hub (`terminal/antigravity-mcp-hub.js`, fronting the session's
+  agentos + connectors) live in the GLOBAL `~/.gemini/config` as session-agnostic entries that read
+  their session from the inherited environment. Global, because a workspace hook doesn't load in an
+  untrusted folder (and the TUI still runs its prompt there), and a workspace plugin's MCP never loads in
+  the TUI. agy hot-reloads hooks.json, and a workspace `.agents/hooks.json` can disable the global gate by
+  name, so every `.agents/` and `~/.gemini` write is refused: in the adapter, engine-level for every
+  runtime, and at launch. Google sign-in only (file token storage forced; API-key/ADC auth stripped,
+  where hooks were reported not firing), no self-update, no account pool. Transcript, tokens, turns and
+  the timeline come from agy's `brain/` JSONL; cost is priced only for the Claude models agy serves.
+  Every behaviour was verified against a signed-in agy 1.5.18/1.5.19 — see `docs/antigravity-runtime.md`.
+  **For admins:** You can now run agents on Google's Antigravity CLI — install it under Settings → Runtime → Runtimes, sign in once on the box, then choose Antigravity as an agent's runtime. [Open Runtime settings](#/settings/runtime)
+
+### Fixed
+- **Pane-less agent reaping also covers `agy`.** agy, like `claude`, keeps running after its tmux pane
+  is killed. The launcher now runs it as a waited child so the teardown signal reaches it, and passes a
+  per-session `--log-file` first in argv so the process janitor can reap one that escapes anyway.
+- **`gemini-*` model ids are now foreign to Claude Code, Codex and opencode,** and the console's three
+  copies of the foreign-model check are one shared helper.
+
 ## [0.489.0] - 2026-11-27
 ### Added
 - **Goals as the spine: Goal → Bet → Task.** Work now lands under the goal it serves without anyone naming
@@ -761,7 +788,7 @@ new version heading in the same commit.
   `includeCoAuthoredBy: false`) into the session settings. From the 2026-10-26 fleet chat mining: one
   member removed the trailer and the session link by hand in 10 sessions in a month, on a public plugin
   repo where the link points at an internal console. Audited `settings.commitAttribution.updated`.
-  **For admins:** you can now stop agents adding AI attribution and the Agentric session link to commits and pull requests. [Open Settings](#/settings)
+  **For admins:** you can now stop agents adding AI attribution and the Agentric session link to commits and pull requests. [Open Runtime settings](#/settings/runtime)
 - **A credential typed or pasted into a session is held instead of sent.** The same mining found people
   pasting live keys into agent chats (X API keys and OAuth tokens, a LinkedIn client secret, an OpenRouter
   key) on three tenants — each one sent to the model and kept in the transcript. The TUI's

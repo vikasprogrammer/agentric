@@ -794,6 +794,17 @@ function groupByCategory(agents: AgentInfo[]): [string, AgentInfo[]][] {
  *  silently drops support for the other runtimes. */
 function isCodingRuntime(runtime?: AgentInfo['runtime']) { return !!runtime && runtime !== 'mock' }
 
+/** Does model id `m` plainly belong to a DIFFERENT runtime than `runtime`? Mirrors
+ *  `CodingRuntimeSpec.foreignModel` server-side (which still has the final say) — one copy here so the
+ *  three places that clear or flag a model can't drift apart. */
+function foreignModelFor(runtime: string | undefined, m: string): boolean {
+  if (runtime === 'opencode') return !m.includes('/')
+  if (runtime === 'codex') return /^(claude|opus|sonnet|haiku|fable|gemini)\b/i.test(m)
+  // agy serves Claude models too, but always with an effort suffix (`claude-opus-5-5-high`).
+  if (runtime === 'antigravity') return /^(?:(?:opus|sonnet|haiku|fable|codex|o[0-9])\b|gpt-(?!oss)|claude-(?!.*-(?:low|medium|high|xhigh|max)$)|[^/]*\/)/i.test(m)
+  return /^(gpt|o[0-9]|codex|glm|kimi|deepseek|gemini)\b/i.test(m)
+}
+
 function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
   // Name the runtime the agent actually runs on. This used to print 'claude' or 'mock', so every
   // codex agent was badged 'mock' — a real agent labelled as the demo adapter.
@@ -952,7 +963,7 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
   // so switching runtimes silently hands e.g. `claude-opus-4-8` to `codex --model`. The server rejects
   // it too — this just says so before the round-trip.
   const foreign = !!(tuning.model && models.length && !models.includes(tuning.model) &&
-    (runtime?.id === 'codex' ? /^claude/i.test(tuning.model) : /^(gpt|o[0-9]|codex)/i.test(tuning.model)))
+    foreignModelFor(runtime?.id, tuning.model))
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="space-y-1">
@@ -15987,9 +15998,7 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
                     // server 400 on submit. Blank = inherit the workspace default.
                     const m = tuning.model
                     if (m) {
-                      const foreign = next === 'opencode' ? !m.includes('/')
-                        : next === 'codex' ? /^(claude|opus|sonnet|haiku|fable)\b/i.test(m)
-                        : /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i.test(m)
+                      const foreign = foreignModelFor(next, m)
                       if (foreign) setTuning((t) => ({ ...t, model: undefined }))
                     }
                     if (next !== 'claude-code') setTuning((t) => ({ ...t, permissionMode: undefined }))
@@ -16155,9 +16164,7 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
                   // `provider/model`, so for it "foreign" is any id with no provider prefix; for the
                   // others it is an id that clearly belongs to another family.
                   const m = tuning.model
-                  const foreign = next === 'opencode' ? !m.includes('/')
-                    : next === 'codex' ? /^(claude|opus|sonnet|haiku|fable)\b/i.test(m)
-                    : /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i.test(m)
+                  const foreign = foreignModelFor(next, m)
                   if (foreign) setTuning({ ...tuning, model: undefined })
                 }
                 // permission-mode is a Claude Code flag; every other runtime holds the invariant
@@ -20917,7 +20924,7 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
             <div className="flex flex-wrap items-center gap-2">
               <Select value={runtime} onValueChange={(v) => setRuntime(v ?? 'claude-code')}>
                 <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder="Runtime" /></SelectTrigger>
-                <SelectContent>{runtimes.map((r) => <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>)}</SelectContent>
+                <SelectContent>{runtimes.filter((r) => r.liveCredentialKinds.length > 0).map((r) => <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>)}</SelectContent>
               </Select>
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="name (e.g. overflow-1)" className="h-8 w-44 font-mono text-xs" />
               <Select value={effKind} onValueChange={(v) => setKind((v as RuntimeAccountKind) ?? 'token')}>

@@ -44,6 +44,14 @@ export function protectedRoots(dataHome?: string): string[] {
     path.join(home, '.claude', 'history.jsonl'),     // the box owner's own prompt history
     path.join(home, '.claude.json'),                 // folder-trust store + account state
     path.join(home, '.codex', 'auth.json'),          // the Codex login
+    // Antigravity (`agy`): its login, every conversation's transcript, and the GLOBAL config that carries
+    // the governance hook. agy HOT-RELOADS that hooks.json, so a shell write there switches the gate off
+    // for every live antigravity session on the box — from ANY runtime's agent, not just agy's own.
+    path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+    path.join(home, '.gemini', 'antigravity-cli', 'brain'),
+    path.join(home, '.gemini', 'antigravity-cli', 'conversations'),
+    path.join(home, '.gemini', 'antigravity-cli', 'settings.json'),
+    path.join(home, '.gemini', 'config'),
   ];
   if (dataHome) {
     for (const d of ['agent-os.db', 'secret.key', 'connectors', 'control', 'tenants', 'runtime-accounts', 'claude-config']) {
@@ -134,7 +142,7 @@ export function protectedReadDecision(capability: string, command: string, cwd: 
   if (!hit) return ALLOW;
   const steer = /agent-os\.db|\/projects$|\/tenants$/.test(hit)
     ? ' Past sessions are searchable with session_history (scope "member" for runs your human was in) and session_open; tasks, goals, automations, memory and the KB each have their own tools.'
-    : /connectors|secret\.key|credentials|auth\.json|runtime-accounts|claude-config|\.claude\.json/.test(hit)
+    : /connectors|secret\.key|credentials|auth\.json|runtime-accounts|claude-config|\.claude\.json|oauth-token/.test(hit)
       ? ' Credentials come from the vault: secret_get for a key you were given, secret_request to ask a human for one.'
       : ' If you genuinely need something from it, ask a human with ask_human.';
   return {

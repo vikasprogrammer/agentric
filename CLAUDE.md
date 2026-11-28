@@ -173,7 +173,7 @@ Key modules:
 - `src/gateway/gateway.ts` — the 7-step mediated effect boundary. The heart of the trust layer.
 - `src/server.ts` — zero-dependency Node `http` server: JSON API + serves `web/dist` + terminal sessions.
 - `src/terminal.ts` — tmux-backed agent sessions; routes every effect through the same gateway via the
-  PreToolUse gate hook (`terminal/gate-hook.sh`). **Three real runtimes** — `claude-code`, `codex` and `opencode`
+  PreToolUse gate hook (`terminal/gate-hook.sh`). **Four real runtimes** — `claude-code`, `codex`, `opencode` and `antigravity`
   (`AgentManifest.runtime`; `CODING_RUNTIMES` in `src/types.ts` declares what each supports, probed via
   `runtimeSupports()` / `isCodingRuntime()` — never compare runtime ids). `launchAgentRuntime` picks
   `terminal/<runtime>-launch.sh` and `$HOOK` = `terminal/<spec.gateHook>`. claude-code + codex SHARE
@@ -188,7 +188,16 @@ Key modules:
   rather than silent. Sub-agents are disabled there (opencode#6396: hooks may not fire for a sub-agent's
   calls). Runtime CLIs are installed from **Settings → Runtime → Runtimes** (owner-only, audited
   `runtime.install.*`); the agent runtime picker offers the same install when the box lacks the binary.
-  See `docs/opencode-runtime.md`. Only claude-code auto-loads `CLAUDE.md`: codex and opencode both get the
+  See `docs/opencode-runtime.md`. **antigravity** (Google's `agy`) HAS a PreToolUse hook but its own wire
+  and tool names, so `terminal/antigravity-gate-hook.sh` is an ADAPTER onto the shared `gate-hook.sh` that
+  DENIES unknown tools (agy ships ~100). Its hook + a one-entry MCP hub (`terminal/antigravity-mcp-hub.js`)
+  live in the GLOBAL `~/.gemini/config` as session-agnostic entries keyed off inherited env — workspace
+  hooks don't load in an untrusted folder and workspace-plugin MCP never loads in the TUI. Two traps, both
+  verified: agy HOT-RELOADS hooks.json and a workspace `.agents/hooks.json` `{"agentric":{"enabled":false}}`
+  disables the global gate, so every `.agents/`/`~/.gemini` write is refused (adapter + engine, all
+  runtimes); and agy OUTLIVES its pane, so the launcher runs it as a waited child and passes a leading
+  `--log-file …/session-<id>.agy.log` for the process janitor. See `docs/antigravity-runtime.md`.
+  Only claude-code auto-loads `CLAUDE.md`: codex, opencode and antigravity all get the
   agent's persona + Company context composed into **`AGENTS.md`** by their launcher. At launch it resolves each claude-code agent's
   **runtime tuning** (`resolveRuntimeTuning` in `src/types.ts`: agent manifest → workspace default → CLI
   default) and exports `CLAUDE_MODEL`/`CLAUDE_EFFORT`/`CLAUDE_PERMISSION_MODE`, which `claude-launch.sh`
