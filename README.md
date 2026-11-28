@@ -56,7 +56,7 @@ First boot prints an owner login link to the console and `data/server.log`; clic
 walks the rest — runtime credential, company context, chat channel, GitHub, memory, team, first agents.
 `npm run demo` shows the governance layer before you wire up any keys.
 
-Real agents need [Claude Code](https://claude.com/claude-code), Codex or opencode (Settings → Runtime
+Real agents need [Claude Code](https://claude.com/claude-code), Codex, opencode or Antigravity (Settings → Runtime
 installs them for you), plus `tmux` and `ttyd` for the browser terminal.
 
 *On the name:* the product is Agentric, the plumbing is still `agent-os` — the npm package and CLI
@@ -125,7 +125,7 @@ and hand back.</sub>
 | | |
 |---|---|
 | **Agents are folders** | An `agent.json` manifest plus a `CLAUDE.md` prompt, managed from the console or the CLI. |
-| **Three runtimes** | Claude Code, Codex and opencode under the same gate; call sites probe declared runtime capabilities, so a runtime lacking attach or resident chat degrades cleanly. |
+| **Four runtimes** | Claude Code, Codex, opencode and Google's Antigravity CLI under the same gate; call sites probe declared runtime capabilities, so a runtime lacking attach or resident chat degrades cleanly. |
 | **Runtime management** | Install a missing CLI from Settings, pick the runtime per agent, and hear when the runtime — or Agentric — has fallen behind, with a one-tap owner update. |
 | **Browser terminal** | Sessions are tmux panes in the console behind the same login: watch a run, take it over losslessly, hand it back, or reopen a finished one and resume. |
 | **Two lanes** | Unattended runs are attachable TUIs closed at turn end unless a human took over, a person is blocking, or background work is live; interactive runs stay until closed, with age ceilings and idle reaping. |
@@ -278,7 +278,7 @@ the file up first. Outside Agentric the governance half stays silent and the bar
 | [`docs/memory-model.md`](docs/memory-model.md) | How agents capture, recall, distil and apply what they learn |
 | [`docs/tasks-plan.md`](docs/tasks-plan.md) | The task queue, dispatch and delegation model |
 | [`docs/connectors/`](docs/connectors/) | Per-connector reference for every native integration |
-| [`docs/codex-runtime.md`](docs/codex-runtime.md) · [`docs/opencode-runtime.md`](docs/opencode-runtime.md) | Running the other two runtimes under the same invariant |
+| [`docs/codex-runtime.md`](docs/codex-runtime.md) · [`docs/opencode-runtime.md`](docs/opencode-runtime.md) · [`docs/antigravity-runtime.md`](docs/antigravity-runtime.md) | Running the other three runtimes under the same invariant |
 | [`docs/process-per-tenant.md`](docs/process-per-tenant.md) | Running multiple isolated tenants |
 | [`CLAUDE.md`](CLAUDE.md) | Build and run notes plus the production deployment runbook |
 

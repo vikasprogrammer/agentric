@@ -201,7 +201,11 @@ export function parseProcessTable(stdout: string, uid: number, self: number): Ca
     }
     // A claude-code agent process, identified by the per-session MCP config its launcher minted. Whether it
     // is orphaned is the TENANT's call (is that session's pane alive?) — see ProcessJanitor.sweep.
-    const agent = args.match(/(?:^|\/)claude\s.*--mcp-config\s+(\S+)\/session-([A-Za-z0-9_-]+)\.mcp\.json(?:\s|$)/);
+    // Antigravity's `agy` is the same class (it outlives its pane too — verified on 1.5.19) and carries no MCP
+    // config flag, so its launcher passes `--log-file <connectors>/session-<id>.agy.log` FIRST in argv: a
+    // real flag that names the session and survives `ps` argv truncation of the long `-i <task>` after it.
+    const agent = args.match(/(?:^|\/)claude\s.*--mcp-config\s+(\S+)\/session-([A-Za-z0-9_-]+)\.mcp\.json(?:\s|$)/)
+      ?? args.match(/(?:^|\/)agy\s+--log-file\s+(\S+)\/session-([A-Za-z0-9_-]+)\.agy\.log(?:\s|$)/);
     if (agent) {
       out.push({ pid, kind: 'claude', socket: '', session: agent[2], connectors: agent[1], ageMs });
       continue;

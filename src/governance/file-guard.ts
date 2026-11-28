@@ -30,7 +30,14 @@ import { ApprovalLevel, Decision, riskClassForLevel } from '../types';
 const ALLOW: Decision = { effect: 'allow', riskClass: 'green', reason: 'no file-write concern' };
 
 /** Dot-dirs under the SERVICE USER's home that hold credentials or agent-runtime state. */
-const SENSITIVE_HOME_DIRS = ['.ssh', '.aws', '.gnupg', '.claude', '.codex', '.config/gcloud'];
+// `.gemini` is Antigravity's login + global config, including the hooks.json that IS its governance gate
+// (hot-reloaded — a write there turns the gate off box-wide). agy's own per-conversation artifact dir under
+// it is allowed by the antigravity adapter before the gateway, so it never reaches this check.
+const SENSITIVE_HOME_DIRS = ['.ssh', '.aws', '.gnupg', '.claude', '.codex', '.config/gcloud', '.gemini'];
+/** An Antigravity customization root's hook / plugin / MCP files, wherever the folder sits. A workspace
+ *  `.agents/hooks.json` can DISABLE the global gate by name (verified against agy 1.5.x), so writing one
+ *  is gate tampering whichever runtime's agent does it. */
+const AGY_CONFIG_FILE = /(?:^|\/)(?:\.agents?|_agents?)\/(?:hooks\.json|mcp_config\.json|plugins(?:\/|$))/;
 /** Sub-paths of the DATA HOME that are the OS's own state, never an agent's working material.
  *  `agents/` is deliberately absent — that's where every agent's folder lives. */
 const SENSITIVE_DATA_DIRS = ['connectors', 'control', 'tenants', 'secret.key'];
@@ -93,6 +100,12 @@ export function fileGovernanceDecision(
           reason: `writes to a protected path (${path.basename(root)}) — credentials or workspace state`,
         };
       }
+    }
+  }
+
+  for (const t of targets) {
+    if (AGY_CONFIG_FILE.test(path.resolve(t))) {
+      return { effect: 'deny', riskClass: 'deny', reason: 'writes an Antigravity hooks / plugin / MCP config file — that can switch the governance hook off' };
     }
   }
 

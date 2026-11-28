@@ -137,6 +137,16 @@ function harness(rows, liveSockets = []) {
   assert.deepStrictEqual([c.kind, c.session, c.connectors], ['claude', 'ses_dead', CONN], 'session + folder parsed off --mcp-config');
   assert.deepStrictEqual(got.map((x) => x.pid).sort(), [300, 301], 'a claude with no session MCP config, or another uid, is never a candidate');
 
+  // Antigravity's `agy` outlives its pane the same way (verified 1.5.19); its launcher puts the session in
+  // argv via a leading `--log-file <connectors>/session-<id>.agy.log`, and it joins the same `claude` kind.
+  const agy = parseProcessTable(table(
+    row(310, 77, `agy --log-file ${CONN}/session-ses_agy.agy.log --dangerously-skip-permissions --settings {"agentMode":""} -i do the thing`),
+    row(311, 77, 'agy --dangerously-skip-permissions -i the box owner running agy by hand'),
+    row(312, 77, `/home/u/.local/bin/agy --log-file ${CONN}/session-ses_agy2.agy.log -i x`),
+  ), UID, SELF);
+  assert.deepStrictEqual(agy.map((x) => [x.pid, x.kind, x.session]), [[310, 'claude', 'ses_agy'], [312, 'claude', 'ses_agy2']], 'agy with a session log is a pane-less-agent candidate; a hand-run agy is not');
+  assert.strictEqual(agy[0].connectors, CONN);
+
   const answers = { ses_dead: false, ses_live: true, ses_unknown: null };
   const asked = [];
   const sent = [];

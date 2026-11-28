@@ -1389,7 +1389,7 @@ export interface RuntimeTuning {
 
 /** Every runtime an agent manifest may declare. `mock` is the in-process demo adapter (no CLI, no
  *  tmux); the others are real coding CLIs. */
-export type RuntimeId = 'mock' | 'claude-code' | 'codex' | 'opencode';
+export type RuntimeId = 'mock' | 'claude-code' | 'codex' | 'opencode' | 'antigravity';
 /** The runtimes that spawn a real CLI in a governed tmux pane — everything except `mock`. */
 export type CodingRuntimeId = Exclude<RuntimeId, 'mock'>;
 
@@ -1539,7 +1539,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     guidedLogin: true,
     loginArgs: ['auth', 'login', '--claudeai'],
     suggestedModels: ['claude-opus-4-8', 'claude-sonnet-4-8', 'claude-haiku-4-5'],
-    foreignModel: /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i,
+    foreignModel: /^(gpt|o[0-9]|codex|glm|kimi|deepseek|gemini)\b/i,
     capabilities: {
       pinnedSessionId: true, resume: true, fork: true, attachableUnattended: true,
       residentChat: true, transcript: true, nativeSkills: true, nativeSubagents: true,
@@ -1573,7 +1573,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     // and Codex answers `The 'opus' model is not supported` — seen live. Anchor on a word
     // boundary so `opus` and `claude-opus-4-8` are both caught but a hypothetical
     // `opusgpt-x` custom id is not.
-    foreignModel: /^(claude|opus|sonnet|haiku|fable)\b/i,
+    foreignModel: /^(claude|opus|sonnet|haiku|fable|gemini)\b/i,
     capabilities: {
       // Codex mints its own rollout id (`codex exec resume <id>` / `codex fork <id>`), so the id is
       // captured after launch rather than pinned. The unattended lane is `codex exec`, which exits at
@@ -1627,7 +1627,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     // A Claude/GPT id WITHOUT a provider prefix belongs to another runtime — `claude-opus-4-8` is what
     // claude-code pins, and opencode answers "model not found" for it. Anything containing a `/` is a
     // well-formed opencode id and passes, which is why the negative lookahead comes first.
-    foreignModel: /^(?![^/]*\/)(claude|opus|sonnet|haiku|fable|gpt|o[0-9]|codex)\b/i,
+    foreignModel: /^(?![^/]*\/)(claude|opus|sonnet|haiku|fable|gpt|o[0-9]|codex|gemini)\b/i,
     capabilities: {
       // opencode mints its own session id; the launcher captures it and reports it back, exactly like
       // Codex's rollout id. `--session <id>` resumes and `--fork` branches.
@@ -1651,12 +1651,65 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
       steerOnAllow: false,
     },
   },
+  antigravity: {
+    id: 'antigravity',
+    label: 'Antigravity',
+    bin: 'agy',
+    // Google ships `agy` as a single binary behind a curl installer, not an npm package. The script is a
+    // CONSTANT (no caller input reaches it) and installs into `~/.local/bin` — the same prefix every
+    // launcher and the presence probe already put first on PATH. It verifies the download's SHA-512
+    // against Google's manifest before installing, and the install route still trusts the re-probe,
+    // not the exit code.
+    install: ['sh', '-c', 'curl -fsSL https://antigravity.google/cli/install.sh | sh'],
+    launchScript: 'antigravity-launch.sh',
+    // agy HAS a PreToolUse command hook, but its wire is its own (`{toolCall:{name,args}}` in,
+    // `{decision,reason}` out) and its tool names are its own (`run_command`, `write_file`,
+    // `call_mcp_tool`, …). This adapter translates both ways and hands the call to the SHARED
+    // gate-hook.sh, so the fail-closed retry + approval-wait logic stays in one file. Unlike the Claude
+    // table, the adapter DENIES any tool it does not recognise — agy has ~100 internal tools.
+    gateHook: 'antigravity-gate-hook.sh',
+    // agy keeps its Google sign-in at `~/.gemini/antigravity-cli/antigravity-oauth-token` (file storage,
+    // which the launcher forces with AGY_CLI_FORCE_FILE_TOKEN_STORAGE). There is NO env var that
+    // relocates that dir short of HOME, so a pooled account cannot be swapped in per session — hence no
+    // live kinds below. GEMINI_API_KEY is declared for completeness but deliberately NOT live: hooks were
+    // reported not firing under API-key and ADC auth (google-antigravity/antigravity-cli#893, #1310), so
+    // the launcher strips both from the environment rather than risk an ungoverned run.
+    credentialEnv: { configDirVar: 'AOS_REAL_AGY_DIR', apiKeyVar: 'GEMINI_API_KEY', configDirFile: 'antigravity-oauth-token' },
+    liveCredentialKinds: [],
+    guidedLogin: false,
+    // Ids as `agy models` lists them; the effort is part of the id. `--effort` is forwarded as well.
+    suggestedModels: ['gemini-4-carbon-high', 'gemini-4-neon-high', 'gemini-3.8-flash-medium', 'claude-sonnet-5-5-high'],
+    // agy serves Claude models too, but always with an effort suffix (`claude-opus-5-5-high`). What does
+    // NOT resolve is what other runtimes pin: a bare alias (`opus`), a suffix-less Claude id
+    // (`claude-opus-4-8`), a GPT/Codex id, or opencode's `provider/model`.
+    foreignModel: /^(?:(?:opus|sonnet|haiku|fable|codex|o[0-9])\b|gpt-(?!oss)|claude-(?!.*-(?:low|medium|high|xhigh|max)$)|[^/]*\/)/i,
+    capabilities: {
+      // agy mints the conversation id; the SessionStart hook reports it back (first write wins, so a
+      // subagent's own SessionStart cannot re-point it). `--conversation <id>` resumes; there is no fork.
+      pinnedSessionId: false, resume: true, fork: false,
+      // Every lane is the interactive TUI: it survives the turn, and agy's Stop hook beacons
+      // /api/turn-idle exactly like Claude's — verified, including follow-ups typed via send-keys.
+      attachableUnattended: true, residentChat: true,
+      // `brain/<conversation>/.system_generated/logs/transcript_full.jsonl`, parsed by
+      // src/edge/antigravity-transcript.ts (turns, tokens, tool calls, timeline). Cost stays unknown:
+      // there is no published price for a subscription-billed Gemini step.
+      transcript: true,
+      // agy discovers `.agents/skills`, not `.claude/skills`, and every `.agents/` write is refused by
+      // the gate (a workspace hooks.json can switch the gate off) — so skills are not materialised yet.
+      nativeSkills: false, nativeSubagents: false,
+      statusLine: false, permissionMode: false, outputStyle: false,
+      // PreToolUse fires for write_file / edit_file / call_mcp_tool and for subagents' calls (verified).
+      fileWriteGate: true, mcpGate: true,
+      // A hook's `reason` reaches the model only on a deny; there is no context channel on an allow.
+      steerOnAllow: false,
+    },
+  },
 };
 
 /** Is this a real CLI-backed agent (as opposed to the `mock` demo adapter)? This is what almost every
  *  former `runtime === 'claude-code'` check actually meant. */
 export function isCodingRuntime(runtime: RuntimeId | undefined): runtime is CodingRuntimeId {
-  return runtime === 'claude-code' || runtime === 'codex' || runtime === 'opencode';
+  return runtime === 'claude-code' || runtime === 'codex' || runtime === 'opencode' || runtime === 'antigravity';
 }
 
 /** The spec for a runtime, or undefined for `mock`/unknown. */

@@ -53,6 +53,7 @@ import { readSessionCost } from './edge/session-cost';
 import { readTranscriptEnd } from './edge/outcome';
 import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF, WAITING_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
+import { antigravityTranscriptPath, readAntigravityCost, readAntigravityConversation } from './edge/antigravity-transcript';
 import { readConversation, readConversationBounded, findTranscript, registerTranscriptRoot, transcriptInRoot, transcriptHasTurns, claudeConfigDir, Conversation } from './edge/conversation';
 import { digestConversation, sessionConsoleUrl, toSessionFtsQuery, SESSION_TEXT_READ_HEAD, SESSION_TEXT_READ_MAX, SESSION_TEXT_REREAD_MS } from './edge/session-search';
 
@@ -2409,7 +2410,7 @@ export class TerminalManager {
       .get<{ agent: string; claude_session_id: string | null }>(sessionId);
     if (!row) return {};
     const runtime = this.os.agents.get(row.agent)?.runtime;
-    if (runtime === 'codex') return { other: true };
+    if (runtime === 'codex' || runtime === 'antigravity') return { other: true };
     if (!runtimeSupports(runtime, 'transcript') || !row.claude_session_id) return {};
     const file = findTranscript(row.claude_session_id);
     if (!file) return {};
@@ -3831,6 +3832,12 @@ export class TerminalManager {
       // a portable scale, and permission-mode has no analogue (Agentric is the sole authority via the
       // generated config's `permission: allow`), so neither is forwarded.
       if (tuning.model) env.OPENCODE_MODEL = tuning.model;
+    } else if (runtime === 'antigravity') {
+      // agy takes `--model <id>` (ids as `agy models` lists them, effort baked in) and also a portable
+      // `--effort low|medium|high|xhigh|max`. No permission-mode: Agentric is the sole authority via
+      // --dangerously-skip-permissions + the PreToolUse hook (see antigravity-launch.sh).
+      if (tuning.model) env.AGY_MODEL = tuning.model;
+      if (tuning.effort) env.AGY_EFFORT = tuning.effort;
     } else {
       if (tuning.model) env.CLAUDE_MODEL = tuning.model;
       if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
@@ -3983,6 +3990,10 @@ export class TerminalManager {
       const file = home ? findCodexRollout(home) : undefined;
       return file ? readCodexCost(file) : null;
     }
+    if (runtime === 'antigravity') {
+      const file = runtimeSessionId ? antigravityTranscriptPath(runtimeSessionId) : undefined;
+      return file ? readAntigravityCost(file) : null;
+    }
     // A runtime with no transcript reader (opencode) must report "unknown", NOT fall through to the
     // Claude reader — that one resolves an id against `~/.claude/projects`, where a foreign session id
     // simply is not, so the honest `null` would arrive as a confidently wrong zero.
@@ -4003,6 +4014,10 @@ export class TerminalManager {
       const home = this.codexHomePath(sessionId);
       const file = home ? findCodexRollout(home) : undefined;
       return file ? readCodexConversation(file) : { turns: [], found: false };
+    }
+    if (runtime === 'antigravity') {
+      const file = row.claude_session_id ? antigravityTranscriptPath(row.claude_session_id) : undefined;
+      return file ? readAntigravityConversation(file) : { turns: [], found: false };
     }
     // Same reasoning as readCostFor: no reader → an empty timeline, never the Claude tree.
     if (!runtimeSupports(runtime, 'transcript')) return { turns: [], found: false };

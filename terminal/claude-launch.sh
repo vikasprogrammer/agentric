@@ -151,7 +151,10 @@ H="$HOME"
 PROTECTED="$H/.ssh
 $H/.aws
 $H/.gnupg
-$H/.claude"
+$H/.claude
+$H/.gemini/antigravity-cli/antigravity-oauth-token
+$H/.gemini/antigravity-cli/brain
+$H/.gemini/antigravity-cli/conversations"
 DATA_HOME="$(cd "$AGENT_DIR/../.." 2>/dev/null && pwd)"
 if [ -n "$DATA_HOME" ]; then
   # agent-os.db's WAL/SHM sidecars are separate files — name them, or a read of `agent-os.db-wal`
